@@ -1,0 +1,34 @@
+# 依赖与缓存
+node_modules/
+.pnpm-store/
+
+# 编辑/系统
+.DS_Store
+Thumbs.db
+*.swp
+
+# 日志
+*.log
+
+# 进程 PID 文件（启停脚本生成，不入库）
+*.pid
+
+# 临时产物
+tmp/
+.trash/
+
+# ---- 刻意排除：Spine 运行时源码（3.2MB）----
+# 合规原因：Spine Runtimes 受 Esoteric Software 自定义协议约束，不纳入本仓库。
+# 由 tool/resolve-runtimes.mjs 在构建时自动探测获取（环境变量 / 项目内 / 工作区共享 / 基线兜底）。
+src/spine-runtimes/
+
+# ---- 刻意排除：构建产物 dist/index.html ----
+# 原因：产物内联了 Spine 运行时源码，入库等于又把运行时带回仓库（违背上面的合规目的）。
+# 需要交付时用 node tool/build.mjs 现生成即可。
+dist/
+
+# ---- 注意：以下刻意入库 ----
+#   baseline/index.html  原版基线（4.17MB），是等价性校验基准，且是运行时兜底来源
+#   src/app-shell.html   应用外壳（798KB）
+#   config/  tool/       配置与工具脚本
+# 游戏提取资源（.skel/.atlas/.png 等）一律不入库 —— 见 README 合规说明
