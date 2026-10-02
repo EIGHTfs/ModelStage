@@ -27,6 +27,16 @@ src/spine-runtimes/
 # 需要交付时用 node tool/build.mjs 现生成即可。
 dist/
 
+# ---- 刻意排除：自动生成的资源清单 ----
+# config/models.<rootId>.json 是服务端扫描资源目录后落盘的索引（可随时重建，
+# 类似构建产物），不入库；配置文件 config/resources.json 则要入库。
+config/models.*.json
+config/live2d.*.json
+config/*.tmp
+
+# 导入配置时的自动备份（应急恢复用，不入库；轮换后旧的移入 config/.trash/）
+config/.bak-*/
+
 # ---- 注意：以下刻意入库 ----
 #   baseline/index.html  原版基线（4.17MB），是等价性校验基准，且是运行时兜底来源
 #   src/app-shell.html   应用外壳（798KB）
