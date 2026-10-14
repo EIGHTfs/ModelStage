@@ -42,3 +42,7 @@ config/.bak-*/
 #   src/app-shell.html   应用外壳（798KB）
 #   config/  tool/       配置与工具脚本
 # 游戏提取资源（.skel/.atlas/.png 等）一律不入库 —— 见 README 合规说明
+
+# ---- 复刻版实验已中止（2026-10-14）：现场移 .trash，git 不再跟踪 ----
+rebuild/
+dist-rebuild/

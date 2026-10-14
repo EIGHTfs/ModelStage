@@ -111,7 +111,8 @@ node tool/import-name-table-azurlane.mjs \
 - 实测：`aerbien_3`→阿尔比恩/香气来朱阁、`aerbien_4`→阿尔比恩/晨光里的事故，跨格式聚合正确。
 - 覆盖率：名表 2558 条；碧蓝 Live2D 171/178 命中，Spine 132/141 命中。未命中目录（如 `aimierbeierding_2`、`z46_2`、`i404_3`、`dahuangfengii_2`、`suweiaitongmengnew` 等，约 7+9 个）多为 `_ii`/`_new`/罗马数字后缀变体，上游 painting 表没这些键 → 界面回退显示拼音目录名，**功能不受影响**。
 
-> ⚠️ **规划中**：角色名映射与角色头像映射**后续会重新设计**（现方案是「每游戏一份 JSON + 手工关联 icons.dir」，属过渡形态，已知不足：中文名依赖上游、头像来源分散、新游戏要手工配）。重设计时以 `data/upstream/README.md` 的「待重设计」节与 `config/names/` 现状为起点。
+> ⚠️ **规划中**：角色名映射与角色头像映射**后续会重新设计**（现方案是「每游戏一份 JSON + 手工关联 icons.dir」，属过渡形态，已知不足：中文名依赖上游、头像来源分散、新游戏要手工配）。
+> 重设计方案已成文：**`doc/name-table-v2.md`**（本地统一索引表：角色 ID + 多语言名称 + 头像本地化；含已克隆 7 资源仓调查与 5 个待讨论决策点），以 `data/upstream/README.md` 的「待重设计」节与 `config/names/` 现状为起点。
 
 ## 5. Live2D 双代支持（Cubism 2 与 Cubism 4）
 
@@ -136,6 +137,7 @@ node tool/import-name-table-azurlane.mjs \
 - **几何避侧栏**：覆盖层 z-index 盖不过侧栏（侧栏父级有自己的 stacking context），所以覆盖层被**几何裁剪**到「左侧面板右缘 ↔ 右侧栏左缘」之间的舞台区，用 MutationObserver 跟两侧栏宽同步。
 - **`showSeq` 序号守卫**：每次 `show(m)` 取一个递增序号，`Live2DModel.from()` resolve 后若序号已被后来的调用超过，就 destroy 结果并丢弃——防止**刷新时同一模型被 show() 两次、孤儿模型留在背景**（历史 bug `8e0a849` 修的）。
 - **早期恢复**：`char-tree.js` 在首帧前就恢复上次浏览的 Live2D 模型（`earlyRestoredId`），常规恢复路径跳过它；早期恢复失败则重置标志并 `stage.hide()`。
+- **首屏防闪烁**：原版左栏与空状态欢迎页由 React 挂载后渲染，而补丁脚本挂在 body 末尾、执行晚于 React 首帧——运行时再隐藏会闪现。解法是 `server.mjs` 在 `/` 响应的 `<head>` 里**提前注入隐藏 CSS**（React 首帧即生效），补丁脚本里的同款规则保留作双保险。DOM 只藏不删（左栏 `[data-mid]` 仍被复用）。防回归检查：`node test/check-flash.mjs`（CDP 多次硬刷新采样断言两特征节点不可见）。
 
 ## 7. 已知技术债
 
