@@ -16,11 +16,24 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stripProductMods } from './lib/mods.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const BASELINE = path.join(ROOT, 'baseline', 'index.html');
 const BUILT = path.join(ROOT, 'dist', 'index.html');
+
+// 声明式 MOD 清单（tool/mods/app-shell.json）：校验 1 用它把产物侧的 MOD 剥掉后再与基线比。
+//   与 tool/build-byte-equal.mjs 走的是同一份清单、同一套严格校验（tool/lib/mods.mjs），
+//   不另写第二套实现，避免两份真相源。
+const MODS_MANIFEST = (() => {
+  const p = path.join(ROOT, 'tool', 'mods', 'app-shell.json');
+  try {
+    return fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : { mods: [] };
+  } catch (e) {
+    throw new Error(`读取 tool/mods/app-shell.json 失败: ${e.message}`);
+  }
+})();
 const KEY = 'window.__SPINE_RUNTIME_SOURCES__';
 
 /** 从 html 中抽出运行时对象并解析为 {版本: 源码}。 */
@@ -68,19 +81,34 @@ function main() {
   const baseBuf = fs.readFileSync(BASELINE);
   const builtBuf = fs.readFileSync(BUILT);
 
-  // 校验 1：字节数
-  console.log('【校验 1】字节数');
-  console.log(`  基线: ${baseBuf.length}`);
-  console.log(`  产物: ${builtBuf.length}`);
-  if (baseBuf.length === builtBuf.length) {
-    console.log('  ✅ 一致');
-  } else {
-    console.log(`  ❌ 不一致（差 ${builtBuf.length - baseBuf.length} 字节）`);
-    fail++;
-  }
-
+  // 校验 1：基线 ≡ 产物（剥 MOD）——同类对同类
+  //
+  // 口径：dist 自 P4 起是「原版 + MOD 产物」（不是基线本身），直接比长度没有意义。
+  //   这里先用与 tool/build-byte-equal.mjs 相同的能力把产物侧的 MOD 剥掉
+  //   （MOD 块标记 + tool/mods/app-shell.json 清单，同一份清单、同一套严格校验），
+  //   再与 baseline/index.html **逐字节**比对；剥离后若仍有任何差异 → 报错（拦截力不变）。
+  console.log('【校验 1】基线 ≡ 产物（剥 MOD）');
+  console.log(`  基线: ${baseBuf.length} 字节`);
+  console.log(`  产物: ${builtBuf.length} 字节（含 MOD；dist 自 P4 起为「原版 + MOD 产物」）`);
   const baseHtml = baseBuf.toString('utf8');
   const builtHtml = builtBuf.toString('utf8');
+  let strippedHtml = null;
+  try {
+    strippedHtml = stripProductMods(builtHtml, MODS_MANIFEST.mods);
+  } catch (e) {
+    console.log(`  ❌ 剥离产物 MOD 失败：${e.message}`);
+    fail++;
+  }
+  if (strippedHtml !== null) {
+    const strippedBuf = Buffer.from(strippedHtml, 'utf8');
+    console.log(`  剥 MOD 后: ${strippedBuf.length} 字节（清单条目 ${(MODS_MANIFEST.mods || []).length} 条 + MOD 块标记）`);
+    if (strippedBuf.length === baseBuf.length && strippedBuf.equals(baseBuf)) {
+      console.log('  ✅ 逐字节一致（基线 ≡ 产物剥 MOD）');
+    } else {
+      console.log(`  ❌ 不一致（长度差 ${strippedBuf.length - baseBuf.length} 字节）`);
+      fail++;
+    }
+  }
 
   // 校验 2：运行时对象逐版本比对
   console.log('');
@@ -120,7 +148,7 @@ function main() {
 
   console.log('');
   if (fail === 0) {
-    console.log('✅ 全部校验通过：拆分产物与原始基线等价（行为未改变）');
+    console.log('✅ 全部校验通过：产物（剥 MOD 后）与原始基线逐字节等价，运行时对象与基线一致');
     process.exit(0);
   } else {
     console.log(`❌ ${fail} 项未通过，请排查 tool/build.mjs`);

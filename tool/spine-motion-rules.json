@@ -1,0 +1,101 @@
+{
+  // Spine 动作名 → 分组 / 循环 / 置信度 规则（能力层数据文件，可编辑）
+  // 依据：**全量**扫描 bd2（393 个 skel，成功 389）与 azurlane_spine（195 个，成功 194）的真实动作名归纳
+  //       （spine_mod 下无 .skel）；合计 1075 个去重动作名，其中 948 个被下列族覆盖，其余走 defaults。
+  //       5 个失败样本均无同名 .atlas（4 个 bd2 cutscene/illust + 1 个 azurlane_spine 的 jinshi）。
+  // 约定：
+  //   · families 按声明顺序匹配，首个命中即用；overrides 优先于 families（精确名）。
+  //   · 每条族的 hits 是「实测命中数」（对上述抽样样本的去重名字统计），由 tool 脚本回填校验。
+  //   · 拿不准循环语义的族，一律 loop:false + confidence:"low"（宁可当一次性动作，也不误判成循环）。
+  //   · 未命中任何族的名字走 defaults：group=动作名、loop=false、confidence:"low"。
+  "version": 1,
+  "comment": "Spine 动作分组/循环规则；新增游戏时在 families 里加族，并注明实测依据与命中数",
+  "defaults": {
+    "loop": false,
+    "confidence": "low"
+  },
+  "families": [
+    {
+      "id": "loop",
+      "group": "loop",
+      "patterns": ["^loop\\d*$", "^loop_"],
+      "loop": true,
+      "confidence": "high",
+      "hits": 26,
+      "note": "名字里显式带 loop（bd2 的 loop / loop_2 / loop2 / loop_2_button），语义明确，判为循环"
+    },
+    {
+      "id": "idle",
+      "group": "idle",
+      "patterns": ["^idle\\d*$", "_idle\\d*$"],
+      "loop": true,
+      "confidence": "high",
+      "hits": 24,
+      "note": "待机族（bd2 的 idle / idle1~3、azurlane_spine 的 idle）；待机应当循环"
+    },
+    {
+      "id": "face",
+      "group": "face",
+      "patterns": ["^_face\\d+$", "^_face\\d+_talk$"],
+      "loop": false,
+      "confidence": "high",
+      "hits": 64,
+      "note": "bd2 的表情族（_face0~_face29 及 _faceN_talk），属于表情切换动作，一次性播放"
+    },
+    {
+      "id": "cut",
+      "group": "cut",
+      "patterns": ["(^|_)cut(\\d|_|$)"],
+      "loop": false,
+      "confidence": "high",
+      "hits": 148,
+      "note": "bd2 的 cut 演出族（cut_A/cut_B/cut_1~4/A_cut/B_cut_All/cut_A_BG 等），是过场演出，一次性"
+    },
+    {
+      "id": "mix",
+      "group": "mix",
+      "patterns": ["^mix\\d+_"],
+      "loop": false,
+      "confidence": "low",
+      "hits": 618,
+      "note": "bd2 的 mix 族（mix1_1_1 这类混合动作）；命名族可识别，但循环语义无实测依据，保守按一次性、低置信"
+    },
+    {
+      "id": "motion",
+      "group": "motion",
+      "patterns": ["^motion\\d*(_\\d+)*$"],
+      "loop": false,
+      "confidence": "low",
+      "hits": 42,
+      "note": "通用 motion 命名（bd2 的 motion / motion1_19 / motion2_22）；语义不明确，保守按一次性、低置信"
+    },
+    {
+      "id": "normal",
+      "group": "normal",
+      "patterns": ["^normal$"],
+      "loop": false,
+      "confidence": "low",
+      "hits": 1,
+      "note": "azurlane_spine 的 normal（默认立绘动作）；是否循环无实测依据，保守按一次性、低置信"
+    },
+    {
+      "id": "variant",
+      "group": "variant",
+      "patterns": ["^\\d+$"],
+      "loop": false,
+      "confidence": "low",
+      "hits": 24,
+      "note": "azurlane_spine 的纯数字命名（1~11，多个立绘变体）；语义不明，按变体组、一次性、低置信"
+    }
+  ],
+  "overrides": [
+    {
+      "name": "zhayan",
+      "group": "blink",
+      "loop": false,
+      "confidence": "high",
+      "hits": 1,
+      "note": "azurlane_spine 的 zhayan（眨眼）；单次眨眼动作，一次性"
+    }
+  ]
+}

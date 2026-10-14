@@ -1,10 +1,23 @@
 # Spine Multi Viewer（暂定名）
 
-> ⚠️ **项目名待定**：当前目录名 `spine-multi-viewer` 为占位名，待用户确认后统一改名（目录 + README + git remote）。
+> ⚠️ **项目名待定**：当前目录名 `spine-multi-viewer` 为占位名，改名需同步目录 + README + git remote。
 
 从 原版 拆分而来的模块化 Spine 动画预览器，目标是演进成**多游戏通用**的 Spine / Live2D 查看器。
 
 ---
+
+## 开发方向（2026-10-17 起）
+
+**重心转向功能层；现有前端仅作行为参考，后续将更换前端框架。**
+
+- 投入优先级：**能力层/接口** > 前端交互细节
+- 能力层 = 服务端 API + 插件机制 + 纯函数解析库（`plugins/*/lib/*.js`）+ 诊断探针；这些与前端框架无关，换框架时零改动
+- 现有 `public/*.js`（角色库树、设置导入导出、本地根等）属**现前端实现**，不构成契约，新前端不必移植
+- 新前端接入所需的接口、契约与已知缺口，见 [doc/功能层接口清单（面向新前端）.MD](doc/功能层接口清单（面向新前端）.MD)
+- 后续新增功能应优先落在能力层（API / 插件 / 纯函数），前端只做展示与交互
+
+---
+
 
 ## 来源与署名（保留来源）
 
@@ -60,18 +73,26 @@ spine-multi-viewer/
 │   ├── app-shell.html       应用外壳（798 KB，含运行时占位符；应用代码仍为压缩态，待进一步拆）
 │   └── spine-runtimes/      7 个 Spine 运行时源码（**不入库**，见 .gitignore）
 ├── public/                  自有前端脚本（经服务端注入到页面）
+│   ├── vendor/              第三方库（localforage.min.js + LICENSE，MIT，构建/注入时内联）
 │   ├── local-roots.js       自动加载本地资源根 + 模型内容懒加载
-│   ├── live2d-stage.js      Live2D 渲染覆盖层（运行时探测 / show() 序号守卫 / 几何避侧栏）
+│   ├── live2d-stage.js      Live2D 渲染覆盖层（运行时探测 / show() 序号守卫 / 覆盖层与 Spine 画布同几何）
 │   ├── roots-ui.js          界面「＋资源根」按钮（浏览本机目录、添加即自动写配置）
 │   ├── settings-io.js       localStorage 持久化（每游戏「上次」+ 展开态）
 │   └── char-tree.js         左栏三级树（游戏→角色→变体，名表聚合 + 跨格式归并）
-├── doc/
-│   └── handover.md          项目交接文档（架构/名表/踩坑/技术债/验证方式）
+├── doc/                     设计与交接文档
+│   ├── handover.md                    项目交接文档（架构/名表/踩坑/技术债/验证方式）
+│   ├── name-table-v2.md               名表 v2 设计（本地统一索引表：角色 ID + 多语言名 + 头像本地化）
+│   ├── 2026-10-14主站刷新闪烁修复.MD   首屏防闪烁方案（head 注入 CSS，已实施）
+│   ├── 2026-10-14浏览器持久化迁移localForage.MD  浏览器持久化迁移方案
+│   ├── frontend-rebuild.md            前端复刻方案（**实验已中止**，保留作决策记录）
+│   └── 2026-10-14复刻版性能优化与localForage缓存.MD  复刻版缓存方案（随实验中止）
 ├── config/
 │   ├── resources.json       资源根配置（JSONC，可写注释；由界面添加时自动生成）
 │   ├── names/               角色名表（统一规范 v1：bd2 / dcg / azurlane）
 │   └── models.<rootId>.json 自动生成的资源清单（**不入库**，可随时重建）
 ├── data/upstream/           名表转换器的上游源数据留档（碧蓝 6 + 天命之子 1 个 JSON，见其 README.md）
+├── test/                    验证脚本（node --test 直接跑）
+│   └── check-flash.mjs      首屏防闪烁防回归（CDP 三次硬刷新采样断言）
 ├── server.mjs               本地服务：静态托管 + 资源扫描 + 路由（零依赖）
 ├── server.sh                启停脚本（start/stop/restart/status）
 ├── tool/
@@ -82,9 +103,20 @@ spine-multi-viewer/
 │   ├── resolve-runtimes.mjs  Spine 运行时自动探测
 │   ├── resolve-live2d-runtimes.mjs  Live2D 运行时探测（PIXI6 组合优先）
 │   ├── parse-jsonc.mjs      JSONC 注释剥离（零依赖）
+│   ├── extract-dom.mjs      CDP 提取原版渲染 DOM 为组件文件（headless 独立会话，无回传截断）
+│   ├── shot-compare.mjs     双站点无头截图对比（8803 vs 8804，可只截一端）
 │   └── extract-runtimes.mjs / split-app.mjs / build.mjs / verify.mjs
 └── dist/index.html           构建产物（等价于基线；**不入库**）
+
+已中止的实验：前端复刻（rebuild/ + dist-rebuild/，2026-10-14 中止）——现场移 .trash/，
+git 已出库（历史保留可回溯），决策记录见 doc/frontend-rebuild.md 头部标注。
 ```
+
+`public/live2d-stage.js` 的两条几何约定（决定「模型画在哪、多大」）：
+
+- **覆盖层几何 = Spine 画布 rect**：`syncRect()` 把 Spine 画布的 `getBoundingClientRect()` 逐值写进覆盖层的 `left/top/width/height`（铺满整窗），所以 Live2D 的可视舞台与 Spine 完全一致（同尺寸同位置，背景/棋盘格覆盖范围也一致）。覆盖层是 `pointer-events:none`，因此铺满不会挡住左右侧栏。
+- **渲染器尺寸随覆盖层校准**：`fitAppToOverlay()` 在「PIXI app 创建后」与「每次 `syncRect()` 写完覆盖层尺寸后」把 `renderer.width/height`（除以 resolution）与覆盖层实际 CSS 尺寸对齐，随后把 canvas 的 `style` 拉回 `100%` 并重排模型；`ResizeObserver` 同时观察**覆盖层**与 **Spine 画布**。
+  只靠 PIXI 的 `resizeTo` 不够：它只跟随 window resize，而 app 可能在覆盖层还没有尺寸时创建 → 渲染器停在 PIXI 默认 800×600，模型会被居中到 800×600 的逻辑空间里（表现为「模型缩在左上角、被角色库面板盖住」）。
 
 ## 本地资源根（指定本机设备文件夹）
 
@@ -106,6 +138,12 @@ spine-multi-viewer/
 > 合并后同一角色的不同来源归到一起——实测碧蓝航线：
 > `aerbien` → `aerbien_3`(Live2D) + `aerbien_4`(Spine)；`aidang` → `aidang_2` + `aidang_6`。
 > 归组键取自资源名去掉 `_N` 皮肤后缀（无名字表时），Live2D 目录名与 Spine 的 atlas 名恰好同源。
+>
+> **后缀归一化（含 `_hx`）**：Live2D 与 Spine 走同一套规则 ——
+> ① 先按资源名**原样**查角色名表；② 未命中则剥掉换装后缀 `_hx` 再查一次；③ 仍未命中再剥尾部 `_N`；④ 三级都未命中才用归一化名（剥 `cutscene_` / `_hx` / `_N`）当分组键。
+> 依据与实测（`config/names/azurlane.json` 的 `byAsset` 2,557 条里带 `_hx` 的键只有 1 条，而碧蓝 Live2D 查不到名表的 15 个模型**全部**是 `_hx` 尾缀）：
+> 剥掉 `_hx` 后 `dafeng_2_hx → dafeng_2` 命中「大凤 / 服装=毒苹果」，于是这些换装变体得以并进各自角色组。
+> 碧蓝 Live2D 实测：**119 个模型 → 78 个角色条目**，名表命中 **104 条原样 + 15 条归一 = 119/119**。
 
 ### 两种添加方式
 
@@ -159,26 +197,50 @@ spine-multi-viewer/
 
 ## 左栏三级树（游戏 → 角色 → 变体）
 
-原作者的左侧边栏已**整体隐藏**，界面改由本项目自己的面板承载。左栏用**三级树**：
+原作者左侧边栏对应的 DOM 已被**整体移除**（不是简单隐藏：`public/char-tree.js` 移除节点并持续守护，
+避免 React 重渲染把它放回来），界面改由本项目自己的面板承载。左栏用**三级树**：
+
+- 面板显隐**只由顶栏「模型库」按钮控制**（用与原版一致的滑出 + 淡出过渡：`opacity` + `translateX(-320px)`，不是 `display` 切换）
+- 面板内只有**两个按钮**：「选择目录」（打开服务端目录浏览器、添加资源根）与「收起」（**只收起树节点**，面板保留）
+- 原版右侧栏（菜单面板：动作 / 皮肤 / 播放 / 滤镜…）保持原样不动，是 Live2D 与 Spine 共用的唯一控制面板
 
 | 层级 | 内容 | 来源 |
 |---|---|---|
 | 一级 | **游戏名** | 资源根配置的 `name` 字段；**同名资源根合并**为一个条目 |
-| 二级 | **角色** | 角色名表（`config/names/*.json`）；无名表时退回资源名推导的角色键 |
-| 三级 | **变体** | 该角色的立绘 / 技能 / 各套服装 |
+| 二级 | **角色** | 角色名表（`config/names/*.json`）；无名表时退回资源名推导的角色键。**Live2D 与 Spine 走同一条分组路径** |
+| 三级 | **变体** | 该角色的各套模型：Spine 立绘/技能各版本 + Live2D 各换装 |
 
 ```
-▾ 棕色尘埃2                        118          ← 一级：游戏（默认展开）
+▾ 棕色尘埃2                        109          ← 一级：游戏（默认展开）
     ▸ Lathel                        8          ← 二级：角色（默认收起）
-    ▾ Justia                       16
-        立绘  Pool Party
-        技能  Pool Party
-        技能2 …
+    ▾ Justia        16
+         Spine  Pool Party
+         Spine  Pool Party 2
+    ▾ 大凤            5
+         Live2D 毒苹果
+         Live2D 毒苹果
+         Live2D 放学后的甜蜜时光
+         Live2D 凤鸣春晓
+         Live2D 海滨的白日美梦
 ```
+
+**标签体系（两种，不再细分）**
+
+- 变体标签只有两个：**`Spine`**（蓝底 `#2b6cb0`）与 **`Live2D`**（紫底 `#6d28d9`）。
+  历史版本曾按资源名再细分成「技能 / 技能N」（`cutscene_*`）与「NPC」（`npc*`），现已收敛为类型标签。
+- 角色行有**绿色「原名」标签**：显示该角色组的**归一化键**（`charKeyOf(基础变体的 name)`：剥 `^cutscene_`、`_hx`、尾部 `_\d+`，例如 `adaerbote`、`dafeng`、`char060301`、`npc200551`、`aijierB`）。这样「被中文名替换掉的原始名」仍然可见，且多皮肤角色不会随变体增减而改变标签；
+  当行标题本身就等于该键时（名表未命中的角色，标题就是用归一化名渲染的）省略该标签，避免出现 `char003803 char003803` 这种重复。
+- 变体行的可见文本 = **主文本 · 弱化原名**：
+  - 主文本优先**服装名**（名表 `costume` 字段），无名表时退回目录名，再退回原名；
+  - 后面接同行的**小号灰字原名**（`font-size:11px;color:#8a94a0`），随主文本一起参与省略（ellipsis）；
+  - **去重**：主文本本身就等于原名时不重复显示（避免 `X · X`）。
+  - 例：`[Live2D] 闭店后的特别时光 · adaerbote_2`、`[Live2D包] 浴室中的小小意外 · adaerbote_3`。
+- 变体行的悬停提示（`title`）= 资源名 + 目录名；**两者相同则只显示一次**（避免 `adaerbote_2  ·  adaerbote_2`）。
+- 同皮肤的**多载体并列两条**：分组只按「角色」（`char:<游戏>|<角色名>`）、不按服装名去重，所以同一皮肤的目录版与单文件版各占一条变体（标签分别为 `Live2D` / `Live2D包`）。
 
 **展开规则**：
 1. 启动时**默认全部收起**（只显示游戏名那一层）
-2. 用户手动开合过的层保持其状态（两级各自独立）
+2. 手动开合过的层保持其状态（两级各自独立）
 3. 有搜索词时一律展开到变体（搜什么就展开什么）
 
 **刷新恢复上次状态**：展开到哪一层、最后看的是哪个模型，都存进 `localStorage`
@@ -216,7 +278,7 @@ spine-multi-viewer/
 > ⚠️ **踩坑记录：同一模型被 show() 两次 → 一个留在背景**。
 > 「提前恢复」加进来后，常规恢复**没有跳过**它，于是同一个 Live2D 模型被 `show()` 两次。
 > 而 `show()` 是异步的：两次都在加载完成后 `addChild`，`st.model` 只指向后完成的那次，
-> **先完成的那次成了孤儿**，永远留在舞台上继续渲染（用户实测现象：「刷新加载了两遍默认，
+> **先完成的那次成了孤儿**，永远留在舞台上继续渲染（实测现象：「刷新加载了两遍默认，
 > 其中一个一直留在背景」）。
 > 修法两层：
 > 1. `char-tree.js` 记下已提前恢复的 id，常规恢复**跳过**它（消除重复调用）
@@ -421,7 +483,7 @@ spine-multi-viewer/
 
 > 注意：原版 自带的搜索框只按模型名（资源号）过滤，中文搜不到，
 > 故已用 CSS 隐藏它，只保留本面板的搜索框。
-> 踩坑记录：曾只隐藏了它的模型列表而漏掉搜索框，导致用户误用后反馈「只能搜 id、搜中文搜不到」。
+> 踩坑记录：曾只隐藏了它的模型列表而漏掉搜索框，导致误用（反馈「只能搜 id、搜中文搜不到」）。
 
 ## 配置导出 / 导入（改造原版按钮）
 
@@ -469,7 +531,7 @@ spine-multi-viewer/
 >
 > ⚠️ 踩坑记录：偏好部分的导入必须要求**有字段**才应用——原版 `importSettings` 内部是
 > `{...默认值, ...传入值}`，传入空对象等于把偏好**重置为默认**；
-> 若把空对象也当成功，用户导入一个空文件就会静默清掉自己的偏好（自检抓到过这个问题）。
+> 若把空对象也当成功，导入一个空文件就会静默清掉自己的偏好（自检抓到过这个问题）。
 
 ## Live2D 集成（天命之子，与 Spine 同一界面）
 
@@ -478,43 +540,60 @@ Spine 与 Live2D 是两套完全不同的渲染体系，但在本项目里**显�
 
 ### 怎么做到同界面共存
 
-- 左栏三级树同时收纳 Spine 与 Live2D 条目（Live2D 每个模型本身就是角色，做成**叶子条目**单行可点）
+- 左栏三级树同时收纳 Spine 与 Live2D 条目，**走同一条分组路径**：查角色名表命中就用角色名归组、
+  行标题显示「中文名 英文名」，未命中才退回归一化资源名；展开后按变体列出（Live2D 的换装变体与
+  Spine 的立绘/技能并列，标签分别为 `Live2D` / `Spine`）
 - 选中 **Live2D** 条目 → 在 Spine 画布之上**覆盖一层 Live2D 画布**渲染（`public/live2d-stage.js`），
-  同时用 CSS 把 Spine 画布设为 `visibility:hidden`
-- 选中 **Spine** 条目 → 隐藏 Live2D 覆盖层，切回 Spine 渲染
-- 覆盖层对齐到 Spine 画布的位置（rAF + try/catch 读一次 `getBoundingClientRect`）
+  同时把 Spine 画布设为 `opacity:0`（视觉隐藏但**保留命中测试**，见下）
+- 选中 **Spine** 条目 → 隐藏 Live2D 覆盖层并恢复 Spine 画布
+- 覆盖层与 Spine 画布**几何完全一致**（`syncRect()` 逐值同步 rect），所以舞台尺寸、背景覆盖范围两者相同
+
+> 为什么是 `opacity:0` 而不是 `visibility:hidden`：原版的**公共事件层绑在 Spine 画布上**
+> （滚轮 / 单指拖动 / 双指缩放）；`visibility:hidden` 会让画布退出命中测试，
+> 事件就落不到公共事件层。Live2D 覆盖层自身是 `pointer-events:none`，于是所有交互都
+> 下穿到 Spine 画布、由原版公共事件层统一驱动 —— Live2D 与 Spine 共用同一条交互路径。
 
 > 运行时库（PIXI / Cubism 核心 / pixi-live2d-display，合计约 1.4MB）**按需懒加载**：
 > 只有第一次选中 Live2D 模型时才注入 `<script>`，不拖慢 Spine 首屏。
 
-### 右栏控制区块（与 Spine 同处一个菜单面板）
+### Live2D 接入原版公共管线（没有自建 UI）
 
-右栏（菜单面板）原本只针对 Spine；Live2D 激活时会在其顶部注入一个 **Live2D 控制区块**
-（只在 Live2D 显示时出现，切回 Spine 自动收起）：
+Live2D 走的是**原版自己的通路**，界面上不额外造一套控件：
 
-| 控件 | 说明 |
-|---|---|
-| **缩放滑杆** | 20%–600%，1.0 = 适应视图 |
-| 重置视图 / ＋ / － | 复位与步进缩放 |
-| 动作 / 表情 | 该模型的动作组与表情列表 |
+- **动作区**：原版右栏「动作」区直接列出当前 Live2D 的 motions（标签形如 `idle / idle`，
+  即「动作组 / 文件名」，`idle` 组排最前），点击即切换 —— 走
+  「原版 UI → 引擎 `setAnimation()` → `bridge.playLabel(label)` → 模型 `motion(group, index)`」。
+  自建的紫色控制区块、缩放滑杆、±/重置按钮、动作下拉、表情下拉**已全部删除**（不再有两套重复控件）。
+- **缩放/平移/复位与 Spine 同源**：引擎在 Live2D 激活时把相机方法委托给桥 ——
+  `applyUserScale()` → `bridge.setZoomRatio(userScale)`、`applyPan()` → `bridge.pan(dx, dy)`、
+  `resetCamera()` → `bridge.resetView()`。语义两侧一致：**`userScale` 越大模型越大**，
+  所以双指**捏开变大**、捏合变小；滚轮同理（`applyZoom()` 里的 L2D 分支写在
+  `if (!this.camera) return;` **之前** —— Live2D 不建 Spine 相机，否则滚轮会在计算缩放前提前返回而完全失效）。
+- **画布与几何**：覆盖层几何 = Spine 画布 rect（铺满整窗），PIXI 渲染器尺寸由 `fitAppToOverlay()`
+  校准到覆盖层实际尺寸，模型按真实包围盒居中（实测 `modelCenter = (960, 540)`、离中心 **0px**、
+  渲染器 `1920×1080`）。
+- **表达式**：原版「皮肤」区对应 Live2D 的 expressions（`bridge.setExpressions(names)`）。
+- **改动位置**：引擎侧改动全部写在 `src/engine.js` 的
+  `/*<<<MOD id>>>*/ … /*<<<ENDMOD id>>>*/` 标记块内（原文一字未动，剥块后可逐字节还原）；
+  产物构建用 `node tool/build-product.mjs --out /tmp/product.html`，等价性校验用 `node tool/build-byte-equal.mjs`。
 
-区块是 React 之外的自有节点，React 重渲染右栏可能把它移除，故用 MutationObserver 补回。
-
-> ⚠️ **踩坑记录：覆盖层不能整窗铺满，否则挡住侧栏**。
-> 覆盖层原本对齐到 Spine 画布（画布是整窗的），于是它也整窗，把**右栏整个盖住**——
-> 表现为「右栏点不动、缩放滑杆拖不了」，用户会以为「Live2D 不能缩放」。
-> 试过调 z-index 无效：实测覆盖层 z=10 仍压过 z=30 的右栏，
-> **因为右栏所在父级创建了更低的堆叠上下文**，层级比较不在同一层。
-> 最终改为**几何上避开侧栏**：覆盖层只占「左栏右侧 ~ 右栏左侧」之间的可视舞台区域，
-> 侧栏开合（framer-motion 动画）时由 MutationObserver 跟着重算。这与层级无关，稳妥可靠。
+> ⚠️ **踩坑记录：覆盖层铺满整窗并不会挡住侧栏**（前提：覆盖层 `pointer-events:none`）。
+> 早期实现担心遮挡，把覆盖层**收窄**到「左栏右侧 ~ 右栏左侧」之间，副作用是 Live2D 的可视舞台
+> 比 Spine 小（实测 1200×1080 @ x=544，模型拖到两侧会被裁掉），背景覆盖范围也与 Spine 不一致。
+> 改为 `pointer-events:none` 之后几何规避已无必要，现在覆盖层与 Spine 画布同几何；
+> 右栏可点性用 `document.elementFromPoint` 做**命中测试**复核（程序化派发事件测不出遮挡问题）。
 >
-> 自检用 `document.elementFromPoint` 做**命中测试**（程序化派发事件测不出遮挡问题）：
-> 舞台中心应命中自己的画布、右栏内一点应命中右栏自身。
+> ⚠️ **踩坑记录：只靠 PIXI 的 `resizeTo` 会停在 800×600**。覆盖层尺寸由 `syncRect()` 在
+> `requestAnimationFrame` 里写入，而 PIXI app 可能在此之前就创建完成（那时覆盖层还没有尺寸）
+> → 渲染器停在 PIXI 默认 800×600，模型被居中到 800×600 的逻辑空间（表现为「模型缩在左上角、
+> 被左栏面板盖住」）。修法：`fitAppToOverlay()` 在「app 创建后」与「每次 `syncRect()` 后」
+> 显式对齐渲染器尺寸、把 canvas 的 `style` 拉回 `100%`，并让 `ResizeObserver` 同时观察
+> **覆盖层**与 **Spine 画布**（画布恒为整窗，单观察它几乎不触发）。
 
 > **为什么没有 Spine 那三档「初始缩放」**：Spine 的「主体优先 / 全部部件 / 动画全程」在 Live2D 上
 > **没有对应物**——实测 `internalModel.width/height`、`originalWidth/Height` 与真实包围盒
 > （`getBounds()`）完全一致（都是 960x1600），三档结果必然相同，做成三档只会误导。
-> 故 Live2D 只按真实包围盒适配，缩放交给滑杆与画布滚轮。
+> 故 Live2D 只按真实包围盒适配，缩放统一由原版公共事件层（滚轮 / 双指）与原版「重置视图」控制。
 
 ### 适配视图：用真实包围盒，不用画布尺寸
 
@@ -530,12 +609,16 @@ model.x = W / 2 - (b.x + b.width / 2) * s;       // 包围盒中心对齐视口�
 model.y = H / 2 - (b.y + b.height / 2) * s;
 ```
 
-**交互**：画布支持**拖动平移**（指针事件）与**滚轮缩放**（以光标为锚点）；
-底部控件条另有「适应 / ＋ / －」按钮。
+**交互**：滚轮缩放 / 单指拖动 / 双指捏合都由**原版公共事件层**（Spine 画布上的指针与滚轮处理）
+统一驱动，再经引擎委托给桥；原版底部工具条里的「重置视图」同样能复位 Live2D 视图
+（`resetCamera()` → `bridge.resetView()`）。覆盖层自身 `pointer-events:none`，不接管任何事件。
 
 > ⚠️ 自检陷阱：`getBounds()` 返回的是**世界坐标**（已包含位置与缩放），
 > 校验居中时**不能再乘一次缩放**——曾因此算出「偏差 234px」的假象，实际完全居中。
-> 实测两种窗口尺寸下偏差均为 **0px**，高度填充 98%。
+> 桥里的 `bridge.fitInfo()` 提供只读读数（读完原样恢复现场）：适配矩形、渲染器尺寸、
+> 模型包围盒中心、离中心像素差。实测 `modelCenter=(960,540)`、`offCenterPx=0`、
+> 渲染器 `1920×1080`；连续缩小 8 次（`modelScale 0.16283 → 0.07009`）与放大 14 次
+> （`→ 0.26618`）全程中心不变、画布恒为 1920×1080。
 
 ### 资源形态与识别
 
@@ -674,7 +757,7 @@ GET /files/<rootId>/<相对路径>
 | GET | `/api/file?root=<id>&path=<相对路径>` | 读文件（正确 MIME；路径限制在 root 内防穿越） |
 | GET | `/api/browse?path=<绝对路径>` | 浏览服务端本机目录（供界面选文件夹） |
 
-> 为什么需要服务端目录浏览：浏览器 File System Access API 只能选用户自己电脑的文件，
+> 为什么需要服务端目录浏览：浏览器 File System Access API 只能选浏览器所在机器上的文件，
 > 且拿不到绝对路径；而资源在 NAS/部署设备上，必须由服务端列目录。
 
 ## 工具用法
@@ -702,6 +785,28 @@ bash server.sh start|stop|restart|status   # 启停服务（默认端口 8803）
 
 即：**拆分后的构建产物与原版行为等价**。
 
+> **切片级 MOD 的登记与门禁（2026-10-16 更新：基线已重新变绿）**
+>
+> 顶部栏的标题与图标已参数化：读 `window.__APP_BRAND__`（服务端从项目根 `.env` 注入 `<head>`；缺省回落
+> 源码内置默认标题「骨骼动画预览器」与原版 lucide 图标）。这是本项目**首次切片级 MOD**（此前所有改动
+> 都走服务端注入、不落构建切片）。
+>
+> 做法：`src/app-shell.html` 必须始终与 `src/.app-shell.orig.html` **逐字节一致**（校验链的 ⓪ 项），
+> 所以改动只落在**切片**里（`src/js/app/main-component.js`），并在 `tool/mods/app-shell.json` 里声明
+> `{id, file, from, to, netChars}`（本次两处：标题 +51 字符、图标 +283 字符，合计 +334）。
+> 基线模式（`node tool/build-byte-equal.mjs`）会先剥 MOD 块标记、再按清单把「现片段」反替换回「原片段」，
+> 之后仍要求与原文区间**逐字节相等** —— 门禁强度没有削弱，反而更严：
+> 声明的现片段必须**恰好命中 1 次**、原片段必须**已不存在**、净增字符数必须与声明**完全一致**。
+>
+> 为什么用清单而不是 MOD 块标记（`/*<<<MOD id>>>*/`）：该标记要求标记**单独成行**（见 `tool/lib/mods.mjs`
+> 的 OPEN/CLOSE 正则），而本片是压缩过的单行代码，表达式中间插不进整行标记。
+>
+> 自证（实测）：把切片里一个**非 MOD 字节**改 1 个字符（`截图导出`→`截土导出`）→ 门禁报 5 项失败（分片、
+> 拼接、装配、基线回填全红）；还原（sha256 复核一致）→ 全绿。产物模式同样通过（`dist ≡ 产物（含 MOD）`）。
+>
+> 产物重建：`node tool/rebuild-from-slices.mjs --out <tmp>` 或 `node tool/build-product.mjs --out <tmp>`
+> （两者都**拒绝直接写 dist/**，需自行 `cp` 到 `dist/index.html`）。
+
 ## 进度
 
 ### 已完成
@@ -720,6 +825,34 @@ bash server.sh start|stop|restart|status   # 启停服务（默认端口 8803）
 
 ### 待办
 
+- [ ] **展示类型插件机制（动态加载）** —— 往项目根 `plugins/` 放 js 即给网页增加一种「展示类型」能力，
+      不预解包、不改 `dist` 核心。宿主 `public/plugin-host.js` 暴露 `window.SpineViewerPlugins`
+      （`register` / `list` / `host`），插件以 `{ id, name, label, fileKinds, probe, open }` 声明能力；
+      **模块文件按功能命名、不带序号**，加载顺序由 `plugin.json` 的 `files` 数组声明；
+      服务端新增 `GET /api/plugins`（扫描项目根 `plugins/`，支持 `plugin.json` 清单）；
+      资源根新增 `kind:"bundle"`（目录里是无扩展名单文件，按 `UnityFS` 魔数识别），
+      其条目**进现有角色库**（左栏三级树，与 Live2D 模型并列，按名表归组）。
+- [ ] **首个插件：Unity Live2D 资源包（通用，不止碧蓝航线）** —— `plugins/unity-live2d-bundle/`
+      面向「Unity AssetBundle 内嵌 Live2D/Cubism」这一类文件：解析 `UnityFS` 容器 → 抽
+      `.moc3`（可能藏在 MonoBehaviour 字节数组，魔数 `MOC3` + 前置 u32 长度）、
+      `TextAsset`（`.model3.json` / `.motion3.json` / `physics3.json`）、`Texture2D`
+      （按 `m_TextureFormat` 分发的解码器，本样本为 `ETC2_RGBA8`）→ 重建 `model3.json`；
+      **Unity 集成版**（只有 AnimationClip、无 motion3）另需把动画曲线转 `motion3.json`。
+      各游戏差异放 `profiles/<游戏>.json`（数据，不写死游戏名），碧蓝航线为首个 profile；
+      渲染复用现有 Live2D 桥与公共管线（原版右栏动作区、双指缩放同源）。
+      方案、模块拆分与验证关卡见 `doc/2026-10-15展示类型插件机制与碧蓝Live2D单文件.MD`。
+- [ ] **前端内置诊断探针（`__DIAG__`）** —— 把「临时注入 console 探针」变成前端内置能力，
+      出问题时前端可自证、AI 可直接取证（不依赖浏览器会话）：
+      · **采集**：`window.onerror` / `unhandledrejection` / 资源加载失败 / 包装 `console.error|warn|info`
+        （幂等、保留原引用、防递归）
+      · **条目结构**：`{t, level, src, event, data, model, plugin}`；大对象只记摘要（TypedArray → 字节数），
+        环形缓冲默认 500 条
+      · **内置事件语义**：`plugin.load`（插件加载/耗时/注册表）、`bundle.parse`（容器/对象数/moc3/纹理/
+        motions emitted-skipped）、`model.mount`（形状/动作数/各阶段耗时）、`motion.fail`（框架
+        MotionManager 失败 → 动作名 + 错误摘要）、`interaction`（缩放/拖动低频采样）
+      · **读取**：`window.__DIAG__.dump() / errors() / warnings() / timeline() / tail(n) / clear() / size()`；
+        并 `POST /api/diag` 追加写 `data/diag.jsonl`（服务端只追加、不接受前端指定路径）
+      · **开关**：复用右栏现有「调试日志」开关——开 = 面板可视化；关 = 仍保留内存缓冲与落盘（避免出问题没证据）
 - [ ] 应用代码（798 KB 压缩混淆态）的进一步模块化拆分：
       React / 第三方库、`store.js`、`importer/`、`components/`、`renderer/`
 - [ ] 资源根管理界面（当前只能添加；改名 / 删除 / 启用停用待做）
@@ -728,19 +861,30 @@ bash server.sh start|stop|restart|status   # 启停服务（默认端口 8803）
 
 ### 已知未修复 bug（挂起）
 
-- [ ] **Live2D 覆盖层双指 pinch 缩放未实现**：当前只有滚轮缩放 + 单点拖拽，
-      触摸屏/平板双指捏合缩放无响应（`public/live2d-stage.js`，挂起待修）
-- [ ] **右栏动作控制与 原版 自带控件重复**：Live2D 模型在右栏既出现本项目
-      加的控制区块，又出现 原版 原生控件，操作冗余（挂起待重构）
+- [x] **Live2D 双指捏合缩放**：已实现 —— 双指手势由原版公共事件层（Spine 画布）接住，
+      经引擎 `applyZoom()` → `applyUserScale()` 委托给桥（`bridge.setZoomRatio(userScale)`）；
+      语义与 Spine 一致：捏开变大。实测 `modelScale 0.16283 → 0.65132`（userScale 1 → 4）。
+- [x] **右栏控件重复**：已消除 —— 自建的 Live2D 紫色控制区块（缩放滑杆 / ± / 重置 / 动作下拉 /
+      表情下拉）整体删除，右栏只保留 原版 原生控件（「动作」区直接列出 L2D motions）。
 - [ ] **碧蓝航线 16 个未命名字目录**（Live2D 7 + Spine 9）：上游
       `ship_skin_template.json` 没有这些键（`_ii`/`_new`/罗马数字等后缀变体），
       界面回退显示拼音目录名，功能不受影响（见 `doc/handover.md` 第 4 节）
+- [ ] **模型数据层面的重影（非渲染代码缺陷）**：`aimierbeierding_3` / `aimierbeierding_3_hx`
+      这类**带裁剪遮罩（18 个遮罩对象）且含常驻半透明叠加层（110 个默认不透明度 < 1 的绘制对象，
+      部件名含 `doubleshadow`）**的模型，渲染出来有半透明覆层，观感即"重影"。
+      已用独立的第三方查看器复现同一现象 ⇒ 缺陷在模型数据本身；同一缺陷在本项目里幅度更大，
+      候选原因是半透明层的预乘 alpha 合成口径差异（待验证）。
+      结构对照与判定手法见 `doc/2026-10-16重影问题定案与模型特殊性对照.MD`
 
 完整改造方案见：`../spine-viewers/2026-10-02-原版多文件夹根目录分大类改造方案.MD`
 
 ## 免责
 
 本 README 中的许可证与合规说明基于对原仓库元数据的查证与开源许可一般原理，**不构成法律意见**。对外分发前建议咨询专业 IP 律师。
+
+## 导出物版权
+
+`tool/export-bundle.mjs` 导出的 `moc3`、`physics3`、贴图 PNG 等均为**游戏原始素材**，仅供本地研究与个人使用，请勿再分发。导出产物默认写入 `data/export/`（该目录已在 `.gitignore`）。
 
 ## 致谢与来源
 

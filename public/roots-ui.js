@@ -14,7 +14,7 @@
  *   - local-roots.js 暴露的 window.__LOCAL_ROOTS__（用于添加后重新加载模型）
  */
 
-(function () {
+{
   'use strict';
 
   const START_PATH = '/volume1'; // 浏览起始点（NAS 数据卷；可按部署环境调整）
@@ -182,4 +182,4 @@
   // 暴露给同页的其他脚本（char-tree.js 的「选择目录」按钮）
   window.__ROOTS_UI__ = { open: openPicker };
   console.info('[roots-ui] 已就绪，目录选择器入口: window.__ROOTS_UI__.open()');
-})();
+}

@@ -1,0 +1,62 @@
+{
+  "id": "unity-live2d-bundle",
+  "name": "Unity Live2D 资源包",
+  "label": "Live2D包",
+  "version": 1,
+  "entry": "index.js",
+  "fileKinds": [
+    "bundle"
+  ],
+  "produces": {
+    "entry": "open(ctx)",
+    "schema": "doc/插件产出schema（prepare）.MD",
+    "fields": [
+      "model",
+      "modelMeta",
+      "model3",
+      "urls",
+      "textures",
+      "motions",
+      "curveStats",
+      "paramTable",
+      "container",
+      "serialized"
+    ],
+    "note": "open() 返回对象；字段含义、样例与限制见 schema 文档"
+  },
+  "errorCodes": [
+    "ULB_ERR_BAD_ARGS",
+    "ULB_ERR_NO_FILE",
+    "ULB_ERR_IO",
+    "ULB_ERR_NOT_UNITYFS",
+    "ULB_ERR_NO_CAB",
+    "ULB_ERR_CONTAINER_PARSE",
+    "ULB_ERR_EXTRACT",
+    "ULB_ERR_TEX_FORMAT_UNSUPPORTED",
+    "ULB_ERR_TEX_DATA_SHORT",
+    "ULB_ERR_TEX_DECODE",
+    "ULB_ERR_CURVE_BINDING_MISMATCH",
+    "ULB_ERR_STREAMED_CLIP_INVALID",
+    "ULB_ERR_MODEL_BUILD"
+  ],
+  "files": [
+    "lib/errors.js",
+    "lib/bytes.js",
+    "lib/common-strings.js",
+    "lib/unityfs.js",
+    "lib/serialized.js",
+    "lib/typetree.js",
+    "lib/extract.js",
+    "lib/etc2.js",
+    "lib/dxt.js",
+    "lib/texdecode.js",
+    "lib/bundle-probe.js",
+    "lib/png.js",
+    "lib/anim-to-motion.js",
+    "lib/model3.js",
+    "index.js"
+  ],
+  "assets": [
+    "profiles/azurlane.json"
+  ]
+}

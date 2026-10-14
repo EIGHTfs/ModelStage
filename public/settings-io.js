@@ -15,7 +15,7 @@
 //
 // 兼容性：导入时若文件顶层直接就是那 20 项偏好（原版导出的旧文件），按「仅偏好」处理。
 
-(function () {
+{
   'use strict';
 
   const BTN_EXPORT = '导出设置';
@@ -24,7 +24,7 @@
   const TOAST_ID = 'settings-io-toast';
 
   // 简易提示条。
-  // 需求：导入/导出要给用户明确反馈（成功写了几个文件、备份在哪、失败原因）。
+  // 需求：导入/导出后给出明确反馈（成功写了几个文件、备份在哪、失败原因）。
   // 思路：自建一个固定定位的小条，不依赖原版的 sonner 提示库（不易从外部调用）。
   let toastTimer = null;
   function toast(msg, ok) {
@@ -257,4 +257,61 @@
       }, 1200);
     }, 3500);
   }
-})();
+
+  // ---- 大幅插画型资源提示 ----
+  //
+  // 背景：部分模型是「整张插画切成可动部件」的 spine-painting 资产（例如碧蓝航线的场景图），
+  //   按整图适配后会铺满视口，观感像"画面被异常放大"。实测这类模型的适配计算是正确的
+  //   （引擎日志里的 bbox/zoom 与独立复算逐位一致、整图完整可见），故这里只做提示，不改适配行为。
+  //
+  // 取数：引擎在适配后会往右栏日志打一行
+  //   `相机 fit: bbox=[x, y] WxH, center=(…), vw=…, vh=…, zoom=…`
+  //   日志行由 React 渲染在 div.sv-selectable.font-mono 容器内，这里观察该容器的子节点变化，
+  //   解析新出现的 fit 行，算出「模型 bbox 面积 / 视口面积」。
+  //
+  // 去重：同一模型只提示一次（键 = 当前模型 id + bbox 尺寸），避免每次切换都弹。
+  // 失败静默：容器未出现 / 解析不出 / 未达阈值，一律什么都不做。
+  const LARGE_SCENE_RATIO = 3.0;      // 阈值：模型 bbox 面积 / 视口面积（倍数）
+  const largeSceneSeen = new Set();
+  const FIT_RE = /相机 fit: bbox=\[(-?[\d.]+), (-?[\d.]+)\] ([\d.]+)x([\d.]+), center=\([^)]*\), vw=([\d.]+), vh=([\d.]+)/;
+  let logObserver = null;
+
+  function scanFitRows(box) {
+    const rows = box.querySelectorAll('div');
+    for (const row of rows) {
+      const text = row.textContent || '';
+      const m = text.match(FIT_RE);
+      if (!m) continue;
+      const w = parseFloat(m[3]);
+      const h = parseFloat(m[4]);
+      const vw = parseFloat(m[5]);
+      const vh = parseFloat(m[6]);
+      if (!(w > 0 && h > 0 && vw > 0 && vh > 0)) continue;
+      const st = window.__SPINE_STORE__ && window.__SPINE_STORE__.getState ? window.__SPINE_STORE__.getState() : null;
+      const modelKey = `${(st && st.currentModelId) || ''}|${w.toFixed(0)}x${h.toFixed(0)}`;
+      if (largeSceneSeen.has(modelKey)) continue;
+      largeSceneSeen.add(modelKey);
+      const ratio = (w * h) / (vw * vh);
+      if (ratio >= LARGE_SCENE_RATIO) {
+        toast(`大幅插画型资源（约视口 ${ratio.toFixed(1)} 倍），已按整图适配；可滚轮缩小查看全貌`);
+      }
+    }
+  }
+
+  function watchLogPanel() {
+    if (logObserver) return;
+    const box = document.querySelector('div.sv-selectable.font-mono');
+    if (!box) return;
+    scanFitRows(box);                      // 先扫已有行（面板可能已渲染过历史日志）
+    logObserver = new MutationObserver(() => scanFitRows(box));
+    logObserver.observe(box, { childList: true, subtree: true });
+  }
+
+  // 面板由 React 后渲染：等它出现（最多 60 次 × 500ms，拿到即停，不留常驻定时器）
+  let watchTries = 0;
+  const watchTimer = setInterval(() => {
+    watchTries += 1;
+    watchLogPanel();
+    if (logObserver || watchTries >= 60) clearInterval(watchTimer);
+  }, 500);
+}

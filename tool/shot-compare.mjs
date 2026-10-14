@@ -24,7 +24,7 @@ const MAIN = 'http://127.0.0.1:8803/';
 const RB = 'http://127.0.0.1:8804/';
 const OUT_DIR = '/tmp/shot-compare/' + new Date().toISOString().replace(/[:.]/g, '-');
 
-// chrome-headless-shell 位置（与本会话 headless-browser-screenshot skill 一致）
+// chrome-headless-shell 位置（与 headless-browser-screenshot 的定位方式一致）
 const CHROME = '/volume1/VirtualDSM/DeepSeekHarness/pwviewer/browsers/chromium_headless_shell-1243/chrome-headless-shell-linux64/chrome-headless-shell';
 const ENV = {
   ...process.env,

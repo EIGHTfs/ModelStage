@@ -22,6 +22,18 @@ tmp/
 # 由 tool/resolve-runtimes.mjs 在构建时自动探测获取（环境变量 / 项目内 / 工作区共享 / 基线兜底）。
 src/spine-runtimes/
 
+# ---- 刻意排除：运行时诊断数据 ----
+# data/diag.jsonl 是前端诊断探针经 POST /api/diag 追加写入的运行期日志（8 MB 轮转，可随时重建），
+# 属运行产物不入库；需要取证时直接读本机文件即可。
+data/
+
+# ---- 刻意排除：部署侧本地配置 .env ----
+# 原因：.env 按约定是"本机部署差异"的载体（顶部栏标题/图标等），且该文件名会被审计规则
+#   判定为凭据/密钥文件而拒绝入库。需要的键与取值说明见随仓库入库的 .env.example，
+#   本地复制成 .env 再改即可；服务端每次请求重新读取，改完刷新页面生效。
+.env
+.env.local
+
 # ---- 刻意排除：构建产物 dist/index.html ----
 # 原因：产物内联了 Spine 运行时源码，入库等于又把运行时带回仓库（违背上面的合规目的）。
 # 需要交付时用 node tool/build.mjs 现生成即可。
@@ -46,3 +58,10 @@ config/.bak-*/
 # ---- 复刻版实验已中止（2026-10-14）：现场移 .trash，git 不再跟踪 ----
 rebuild/
 dist-rebuild/
+
+# ---- P2 解压工作副本（2026-10-14）----
+# src/.app-shell.orig.html 是 src/app-shell.html 的逐字节相同副本（sha256 ae8a5cad…），
+# 被 tool/rebuild-from-slices.mjs 用作回填基准。为避免 823KB 纯重复入库，不入库；
+# 需要时重建：cp src/app-shell.html src/.app-shell.orig.html
+# （等价信息已由已跟踪的 src/app-shell.html + baseline/index.html 提供）
+src/.app-shell.orig.html
