@@ -1,0 +1,7 @@
+{
+  // 调试日志上传的上限（复制为 config/diag-upload.json 生效；缺失时用代码内默认值）
+  // maxCount：单次上传最多保留多少条；超出时只保留最新的 N 条，并在文件里标 "truncated": true
+  "maxCount": 5000,
+  // maxBytes：单次请求体字节上限；超出服务端直接回 413（不会先读进内存再判断）
+  "maxBytes": 5242880
+}

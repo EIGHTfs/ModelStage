@@ -1,0 +1,1157 @@
+/* ============================================================================
+   ModelStage 本实现 · 右侧控制面板 + 底部播放条样式（M3）
+   只管这两个区域内部的样子：手风琴、分段按钮、开关、占位说明、播放条控件。
+   区域几何（右栏贴右、播放条居中）仍在 style.css，不在这里重复。
+   配色沿用 style.css 的变量（--color-card / --color-border / --color-primary …）。
+   ========================================================================== */
+
+/* --------------------------------------------------------------- 手风琴 */
+
+.acc {
+  border-bottom: 1px solid rgba(53, 58, 62, 0.5);
+}
+
+.acc-trigger > .btn-icon > svg {
+  width: 15px;
+  height: 15px;
+  color: var(--color-primary);
+}
+
+.acc-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 6px;
+  color: var(--color-foreground);
+  font-size: 12px;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+
+.acc-trigger:hover {
+  background: var(--color-secondary);
+}
+
+/* 箭头：CSS 画三角（不依赖字体），展开时转向下 */
+.acc-arrow {
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
+  border-top: 1.5px solid currentColor;
+  border-right: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 0.15s ease;
+  opacity: 0.75;
+}
+
+.acc-trigger[aria-expanded='true'] .acc-arrow {
+  transform: rotate(135deg);
+}
+
+.acc-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.acc-body {
+  padding: 2px 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.acc-body[hidden] {
+  display: none;
+}
+
+/* --------------------------------------------------------- 控件公共行 */
+
+.ctl-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ctl-row-switch {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ctl-label {
+  color: var(--color-muted-foreground);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* 分段按钮组：窄面板里自动换行，避免横向溢出 */
+.ctl-seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.seg-btn {
+  flex: 0 1 auto;
+  padding: 3px 7px;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  background: var(--color-muted);
+  color: var(--color-foreground);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* ---- 选中态与按压反馈（选中的那一档用主色描边 + 主色文字 + 主色淡底）----
+   为什么必须补：分段按钮/芯片组此前只有"可点"样式、没有"已选中"样式，
+   用户点完看不出当前生效的是哪一档；而芯片（滤镜 12 档）连基础样式都没有，是裸按钮。 */
+.ctl-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* ---- 面板内可选列表（动作列表 / 皮肤列表）：同一套行样式 ----
+   既有的原文：
+     容器  className="space-y-1 max-h-48 overflow-y-auto pr-1"
+     行    className="w-full text-left px-2 lg:px-3 py-1 lg:py-1.5 rounded-md text-sm transition-colors
+                     flex items-center justify-between
+                     选中: bg-primary/15 text-primary border border-primary
+                     未选中: hover:bg-accent/60 border border-transparent"
+     名称  className="truncate"        时长 className="text-[10px] text-muted-foreground font-mono shrink-0 ml-2"
+   换算：max-h-48 = 192px；py-1/lg:py-1.5 = 4/6px；px-2/lg:px-3 = 8/12px；rounded-md = 6px；text-sm = 14px。 */
+.ctl-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 192px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.ctl-list-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid transparent;   /* 未选中：透明描边，选中才显主色（避免文字跳动） */
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-foreground);
+  font-size: 14px;
+  text-align: left;
+  transition: background-color 200ms var(--ui-ease), color 200ms var(--ui-ease), border-color 200ms var(--ui-ease);
+}
+
+@media (min-width: 1024px) {
+  .ctl-list-row { padding: 6px 12px; }
+}
+
+.ctl-list-row:not(:disabled):hover {
+  background: var(--color-secondary);
+}
+
+.ctl-list-row[aria-pressed='true'] {
+  background: rgba(255, 255, 255, 0.06);
+  background: color-mix(in srgb, var(--color-primary) 15%, transparent);
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.ctl-list-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.ctl-list-time {
+  flex: 0 0 auto;
+  margin-left: 8px;
+  font-size: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--color-muted-foreground);
+}
+
+.ctl-list-empty {
+  padding: 8px 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--color-muted-foreground);
+}
+
+/* ---- 资源根管理：列表要能滚（根多时不能只看到前几条）---- */
+#root-manager-body {
+  max-height: min(38vh, 320px);
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+#root-list {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- 目录浏览器（「选择目录」弹层，roots-ui.js 的结构）---- */
+.dir-picker {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dir-picker-box {
+  width: min(560px, 92vw);
+  max-height: min(70vh, 640px);
+  display: flex;
+  flex-direction: column;
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.dir-picker-head,
+.dir-picker-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.dir-picker-foot {
+  border-bottom: none;
+  border-top: 1px solid var(--color-border);
+  flex-wrap: wrap;
+  font-size: 11px;
+}
+
+.dir-picker-foot input {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+.dir-picker-spacer { flex: 1; }
+
+.dir-picker-body {
+  padding: 12px 14px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dir-picker-hint { font-size: 12px; color: var(--color-muted-foreground); }
+.dir-picker-error { font-size: 12px; color: #e88; }
+.dir-picker-list { display: flex; flex-direction: column; gap: 4px; }
+.dir-picker-nav { width: 100%; text-align: left; }
+
+/* ---- 左栏「选择目录」：面板上只有一个按钮 ---- */
+.root-add {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.root-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.root-add > #btn-add-root {
+  align-self: flex-start;
+}
+
+
+
+.chip-btn {
+  flex: 0 1 auto;
+  padding: 3px 7px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-muted);
+  color: var(--color-foreground);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* 悬停：主色描边，提示"可点" */
+.seg-btn:not(:disabled):hover,
+.chip-btn:not(:disabled):hover,
+.ctl-actions .mini-btn:not(:disabled):hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+/* 选中：主色描边 + 主色文字 + 主色淡底 + 加粗
+   （color-mix 前先给一层 rgba 兜底，老 Chromium 不支持 color-mix 时仍有可辨底色） */
+.seg-btn[aria-pressed='true'],
+.chip-btn[aria-pressed='true'] {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: rgba(255, 255, 255, 0.06);
+  background: color-mix(in srgb, var(--color-primary) 16%, transparent);
+  font-weight: 600;
+}
+
+/* 按压：轻微下沉，给"点到了"的即时反馈 */
+.seg-btn:not(:disabled):active,
+.chip-btn:not(:disabled):active,
+.ctl-actions .mini-btn:not(:disabled):active {
+  transform: translateY(1px);
+}
+
+/* 键盘可达：焦点环用主色，不依赖浏览器默认蓝框 */
+.seg-btn:focus-visible,
+.chip-btn:focus-visible,
+.switch-btn:focus-visible,
+.ctl-actions .mini-btn:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+
+/* 未接线：视觉上明确"暂不可用"，但仍然可读（不是隐藏） */
+.seg-btn:disabled,
+.switch-btn:disabled,
+.transport-select:disabled,
+#app-footer .mini-btn:disabled,
+#btn-collapse-menu:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* 假开关：一个胶囊 + 圆点（M6 接线后由 aria-checked 驱动位置） */
+.switch-btn {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 16px;
+  padding: 2px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-secondary);
+  display: inline-flex;
+  align-items: center;
+}
+
+.switch-knob {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--color-muted-foreground);
+  transition: transform 0.15s ease;
+}
+
+.switch-btn[aria-checked='true'] {
+  background: var(--color-primary);
+}
+
+.switch-btn[aria-checked='true'] .switch-knob {
+  transform: translateX(14px);
+  background: #0a0a0c;
+}
+
+/* 动作按钮组（导出/导入/恢复默认） */
+.ctl-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* 动态内容占位说明 */
+.ctl-dynamic {
+  border: 1px dashed var(--color-border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.ctl-note {
+  margin: 0;
+  color: var(--color-muted-foreground);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* --------------------------------------------------- 底部播放条内部 */
+
+/* 三段布局：左中右，组内按需换行不溢出 */
+#app-footer .transport-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+#app-footer .mini-btn {
+  height: 26px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+#app-footer .transport-select {
+  height: 26px;
+  max-width: 96px;
+  padding: 0 4px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-muted);
+  color: var(--color-foreground);
+  font-size: 11px;
+}
+
+/* 主题：dark-cyan（色值取自既有的 --color-* 变量，逐值一致） */
+[data-ui-theme="dark-cyan"] {
+  --color-background: #131416;
+  --color-foreground: #e9ebed;
+  --color-card: #1f2326;
+  --color-primary: #1fc0c5;
+  --color-primary-foreground: #0a0a0c;
+  --color-secondary: #2a2f33;
+  --color-muted: #23272a;
+  --color-muted-foreground: #9ca3af;
+  --color-text-secondary: #9ca3af;
+  --color-border: #353a3e;
+}
+
+/* 主题：eye-gray（色值取自既有的 --color-* 变量，逐值一致） */
+[data-ui-theme="eye-gray"] {
+  --color-background: #262624;
+  --color-foreground: #f0eee9;
+  --color-card: #30302e;
+  --color-primary: #d97757;
+  --color-primary-foreground: #1f1d1a;
+  --color-secondary: #3a3936;
+  --color-muted: #2e2d2b;
+  --color-muted-foreground: #b0aea5;
+  --color-text-secondary: #b0aea5;
+  --color-border: #4a4843;
+}
+
+/* 主题：day-paper（色值取自既有的 --color-* 变量，逐值一致） */
+[data-ui-theme="day-paper"] {
+  --color-background: #f4f1ea;
+  --color-foreground: #262420;
+  --color-card: #fbf9f4;
+  --color-primary: #0e8a8f;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #e7e2d7;
+  --color-muted: #ece8de;
+  --color-muted-foreground: #5c574b;
+  --color-text-secondary: #5c574b;
+  --color-border: #d8d2c4;
+}
+
+/* 主题：neon-violet（色值取自既有的 --color-* 变量，逐值一致） */
+[data-ui-theme="neon-violet"] {
+  --color-background: #0b0814;
+  --color-foreground: #ece8f7;
+  --color-card: #16111f;
+  --color-primary: #a855f7;
+  --color-primary-foreground: #160a22;
+  --color-secondary: #221a30;
+  --color-muted: #1a1426;
+  --color-muted-foreground: #b0a6cc;
+  --color-text-secondary: #b0a6cc;
+  --color-border: #352b49;
+}
+
+/* 主题：cloud-blue（色值取自既有的 --color-* 变量，逐值一致） */
+[data-ui-theme="cloud-blue"] {
+  --color-background: #eef2f7;
+  --color-foreground: #16202e;
+  --color-card: #fbfcfe;
+  --color-primary: #2563eb;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #e2e8f0;
+  --color-muted: #e6ebf2;
+  --color-muted-foreground: #4f5e78;
+  --color-text-secondary: #4f5e78;
+  --color-border: #cbd5e1;
+}
+
+/* 舞台底色：背景模式（本实现同时写存储与画面，切换即时生效）
+   三种模式互斥：棋盘格画图案、纯色只上色、透明完全不上色；每条都显式清掉另一条的属性。 */
+#stage { --stage-solid: #2a2a2a; }
+
+/* 棋盘格：4 层 45° 渐变拼出 16×16 格；方块色 rgba(255,255,255,0.06)，底色 rgb(23,26,28) */
+#stage[data-bg="checkerboard"] {
+  background-color: rgb(23, 26, 28);
+  background-image:
+    linear-gradient(45deg,  rgba(255,255,255,0.06) 25%, rgba(0,0,0,0) 25%),
+    linear-gradient(-45deg, rgba(255,255,255,0.06) 25%, rgba(0,0,0,0) 25%),
+    linear-gradient(45deg,  rgba(0,0,0,0) 75%, rgba(255,255,255,0.06) 75%),
+    linear-gradient(-45deg, rgba(0,0,0,0) 75%, rgba(255,255,255,0.06) 75%);
+  background-size: 16px 16px, 16px 16px, 16px 16px, 16px 16px;
+  background-position: 0px 0px, 0px 8px, 8px -8px, -8px 0px;
+  background-repeat: repeat, repeat, repeat, repeat;
+}
+
+/* 纯色模式：沿用现有 --stage-solid 变量，清掉棋盘图案 */
+#stage[data-bg="solid"] {
+  background-image: none;
+  background-color: var(--stage-solid, rgb(23, 26, 28));
+}
+
+/* 透明模式：完全不上色 */
+#stage[data-bg="transparent"] {
+  background-image: none;
+  background-color: transparent;
+}
+
+/* ---- 删除线只表达「未接线」，不再表达「当前渲染器不支持」 ----
+   为什么这么分（这不只是样式取舍，两种禁用是完全不同的事实）：
+     · 未接线（data-pending）：功能本应存在、但还没接上 → 划线，表示"这条先划掉"；
+     · 能力不支持（data-disabled-reason）：当前渲染器压根没有这项能力（如 Live2D 没有
+       动画混合时长、部件筛除是 Spine 插槽概念）→ 只灰化 + 原生 title 说明，**不划线**。
+   曾经两者共用 :disabled 划线，导致 Live2D 面「混合模式 / 皮肤列表 / 部件筛除」
+   被划成"像坏了一样"，掩盖了"这一面本来就没这个能力"的真实原因。
+   颜色用弱化色，避免抢视觉。 */
+#right-panel button[data-pending="true"],
+#right-panel select[data-pending="true"],
+#right-panel .chip-btn[data-pending="true"] {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--color-muted-foreground);
+}
+
+#right-panel .ctl-row:has(> [role="switch"][data-pending="true"]) > .ctl-label,
+#right-panel .ctl-row:has(> select[data-pending="true"]) > .ctl-label,
+#right-panel .ctl-row:has(> .ctl-chips > .chip-btn[data-pending="true"]) > .ctl-label {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--color-muted-foreground);
+}
+
+/* ---- 禁用 / 待接线控件的统一视觉：灰化 + 删除线 + 原因走原生 title ----
+   覆盖三类控件（都归 panel.js 挂状态，本文件只负责呈现）：
+     ① button:disabled            —— 普通按钮、开关（<button role="switch">）、分段按钮
+     ② [role="switch"][aria-disabled="true"] —— 用 aria 表达禁用的开关
+     ③ .chip-btn[data-pending]    —— 分段按钮组里标记待接线的单个按钮
+   原因提示统一用 title 属性（浏览器原生 tooltip）：表现层不复制文案、不写死原因，
+   避免与 panel.js 的文案来源分叉；也不引入脚本或伪元素气泡。
+   只作用于禁用态，可点控件不受影响。 */
+#right-panel {
+  /* 禁用态强度集中在这里，便于整体调深浅（不散落在各处） */
+  --ctl-off-opacity: 0.5;
+  --ctl-off-saturate: 0.55;
+}
+
+/* 灰化 + 不可点光标：三类控件同一口径 */
+#right-panel button:disabled,
+#right-panel select:disabled,
+#right-panel [role="switch"][aria-disabled="true"],
+#right-panel .chip-btn[data-pending="true"] {
+  opacity: var(--ctl-off-opacity);
+  filter: saturate(var(--ctl-off-saturate));
+  cursor: not-allowed;
+  user-select: none;
+}
+
+/* 删除线：有可见文字的控件划自己的文字（分段按钮逐项精确）；
+   开关与下拉没有可见文字，则划掉所在行的 .ctl-label（见上一条规则组）。 */
+
+/* ---- 底栏自绘下拉（替代原生 select）----
+   结构与交互见 panel/transport.js 的 createPicker：触发按钮 + 弹出列表。
+   视觉沿用底栏行内控件的底色/圆角/描边，选中项用主色。 */
+.transport-picker {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.transport-picker-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 96px;
+  max-width: 220px;
+  padding: 4px 8px;
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.12));
+  border-radius: 6px;
+  background: var(--color-secondary, rgba(255, 255, 255, 0.06));
+  color: var(--color-foreground);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.transport-picker-btn:hover { border-color: var(--color-primary, #1fc0c5); }
+
+.transport-picker-btn .picker-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.transport-picker-btn::after {
+  content: '';
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg) translateY(-2px);
+  opacity: 0.7;
+}
+
+.transport-picker-list {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  min-width: 100%;
+  max-width: 260px;
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.12));
+  border-radius: 8px;
+  background: var(--color-panel, #14181a);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.transport-picker-item {
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--color-foreground);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+
+  display: flex;
+  align-items: center;
+}
+
+.transport-picker-item:hover { background: var(--color-secondary, rgba(255, 255, 255, 0.06)); }
+.transport-picker-item.is-active { outline: 1px solid var(--color-primary, #1fc0c5); }
+.transport-picker-item[aria-selected='true'] { color: var(--color-primary, #1fc0c5); font-weight: 600; }
+
+/* ---- 右栏「自定义图片」列表（主题背景组）----
+   结构见 panel/background-list.js：状态行 + 上传按钮 + 若干行（缩略图 / 名称+大小 / 改名 / 删除）。 */
+.ctl-dynamic[data-ctl='ctl-bg-list'] { display: flex; flex-direction: column; gap: 8px; }
+
+.bg-actions { display: flex; gap: 6px; }
+
+.bg-btn {
+  padding: 4px 8px;
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.12));
+  border-radius: 6px;
+  background: var(--color-secondary, rgba(255, 255, 255, 0.06));
+  color: var(--color-foreground);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.bg-btn:hover { border-color: var(--color-primary, #1fc0c5); }
+.bg-btn-primary { border-color: var(--color-primary, #1fc0c5); color: var(--color-primary, #1fc0c5); }
+.bg-btn-danger.is-armed { border-color: #e05a5a; color: #e05a5a; font-weight: 600; }
+
+.bg-hint { margin: 0; min-height: 0; font-size: 12px; color: var(--color-muted, #8b949e); }
+.bg-hint[data-kind='error'] { color: #e05a5a; }
+
+.bg-items { display: flex; flex-direction: column; gap: 6px; }
+
+/* 行会换行：右栏被拖窄时（实测约 130px）缩略图与名称一行、动作按钮另起一行，
+   否则名称会被压成一个字、按钮竖着叠起来看不清。 */
+.bg-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+
+.bg-item:hover { border-color: var(--color-border, rgba(255, 255, 255, 0.12)); }
+
+.bg-thumb {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.12));
+  border-radius: 4px;
+  background: #000 center/cover no-repeat;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.bg-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.bg-thumb:hover { border-color: var(--color-primary, #1fc0c5); }
+
+.bg-meta { flex: 1 1 56px; min-width: 56px; display: flex; flex-direction: column; gap: 2px; }
+.bg-item > .bg-btn { flex: 0 0 auto; }
+.bg-name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bg-size { font-size: 11px; color: var(--color-muted, #8b949e); }
+
+.bg-name-input {
+  width: 100%;
+  padding: 2px 4px;
+  border: 1px solid var(--color-primary, #1fc0c5);
+  border-radius: 4px;
+  background: var(--color-panel, #14181a);
+  color: var(--color-foreground);
+  font-size: 13px;
+}
+
+/* 编辑态：行内的「改名/删除」让位给「确定/取消」（窄面板下它们会重叠并拦住点击） */
+.bg-item.is-editing > .bg-btn { display: none; }
+.bg-item.is-editing .bg-meta { gap: 4px; }
+
+/* 底栏背景下拉里的分组标题（内置模式 / 自定义图片的分界，不参与键盘高亮） */
+.transport-picker-group {
+  padding: 6px 8px 3px;
+  margin-top: 2px;
+  border-top: 1px solid var(--color-border, rgba(255, 255, 255, 0.12));
+  font-size: 11px;
+  color: var(--color-muted, #8b949e);
+  cursor: default;
+}
+
+/* ---- 底栏三块对齐（配合 style.css 的 .app-footer grid minmax(0,1fr) auto minmax(0,1fr)）----
+   三块都必须 min-width:0：grid 列能收缩了，但块内是 flex，子项的隐式最小宽度同样会撑破。 */
+#app-footer > .transport-group { min-width: 0; flex-wrap: nowrap; }
+/* 按角色定列（不是 nth-child）：空块被跳过时，剩下的块仍落在正确的列上 */
+#app-footer > .transport-group[data-slot='left'] { grid-column: 1; justify-self: start; }
+#app-footer > .transport-group[data-slot='center'] { grid-column: 2; justify-self: center; }
+#app-footer > .transport-group[data-slot='right'] {
+  grid-column: 3;
+  justify-self: end;
+  justify-content: flex-end;
+}
+
+/* ---- 右栏 240px 下的自适应：控件行撑满、长文本省略、列表/分段不溢出 ---- */
+#right-panel .ctl-row,
+#right-panel .ctl-seg,
+#right-panel .ctl-dynamic,
+#right-panel .ctl-list { max-width: 100%; min-width: 0; }
+
+#right-panel .ctl-seg { flex-wrap: wrap; }          /* 四个档位在 240px 下可换行，不横向溢出 */
+#right-panel .ctl-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#right-panel .acc-trigger { width: 100%; min-width: 0; }
+
+/* ---- 竖屏 / 窄屏：底栏只留图标（文字标签隐藏，按钮收成方形并保留触控尺寸）---- */
+/* 纯图标断点：底栏"全部显示不裁字"时内容宽约 1068px（7 个控件 + 名称），
+   加上左右各 16px 边距 ⇒ 视口 < 1100px 就放不下，此时自动转纯图标模式
+   （否则只能靠裁字/换行/压盖，三者都不合需求）。竖屏同样命中这条。 */
+@media (orientation: portrait), (max-width: 1100px) {
+  /* 只显示图标后右块仍可能放不下一行（4 个 32px 按钮 + 间距 > 列宽）⇒ 允许换行，
+     此时浮条必须能长高，否则换行出来的按钮会溢出浮条底边。 */
+  #app-footer { height: auto; min-height: var(--footer-h); padding: 6px 9px; }
+
+  #app-footer button .btn-label,
+  #app-footer .transport-picker-btn .picker-label { display: none; }
+
+  #app-footer .transport-picker-btn {
+    min-width: 32px;
+    /* 触控目标不小于 32×32：只留图标时按钮变方，高度也要补够 */
+    min-height: 32px;
+    /* 纯图标时左右 padding 会把图标推偏 ⇒ 清零并居中 */
+    padding: 0;
+    justify-content: center;
+  }
+
+  /* 只留图标时去掉下拉箭头（否则一个方块里挤两个图形） */
+  #app-footer .transport-picker-btn::after { display: none; }
+
+  #app-footer .mini-btn {
+    min-width: 32px;
+    min-height: 32px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  /* 图标本身不能有左右外边距残留（否则居中会偏） */
+  #app-footer .btn-icon { margin: 0; }
+
+  #app-footer .transport-picker-list { min-width: 140px; }
+}
+
+/* 底栏的下拉按内容自然宽度显示（浮条宽度是 fit-content，不靠裁字来省空间）。
+   只解除右栏那套 220px 上限，名称不省略。 */
+#app-footer .transport-picker-btn { max-width: none; }
+#app-footer .transport-picker-btn .picker-label {
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+/* ---- PMA 预乘：档位 2×2 + 四行只读诊断（布局与信息量）----
+   布局：2×2 四个档位 + 下方一组 11px 小字诊断行。
+   四行的意义：让人（和 AI）一眼看出"这个模型到底按哪种预乘在渲染"——
+   Atlas 声明 / 像素检测 是输入证据，直通支持 是运行时能力，实际生效 是最终结论。 */
+#right-panel .ctl-seg[data-layout='grid-2'] {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+
+#right-panel .ctl-seg[data-layout='grid-2'] .seg-btn {
+  /* 比默认 chip 大一档（高 32px / 圆角 6px / 字号 12px / 左右内边距 12px），才像按钮 */
+  justify-content: center;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+/* 四行小字：只读、不可点（纯诊断，不抢控件的视觉层级） */
+#right-panel .ctl-diag {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.45;
+  /* 用专门的诊断文字令牌：每个主题块都有定义，切主题自动跟随（不写字面色值）。
+     之前误用 --color-muted —— 那是"深色底"的名字，当文字色就是黑字压深底、标签看不见。 */
+  color: var(--color-text-secondary);
+}
+
+#right-panel .ctl-diag-row {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+}
+
+#right-panel .ctl-diag-value {
+  overflow: hidden;
+  color: var(--color-foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 实际生效 = 最终结论：主色 + 加重 */
+#right-panel .ctl-diag-value.is-primary {
+  font-weight: 500;
+  color: var(--color-primary);
+}
+
+/* ---------------- 滑块控件（播放速度 / 混合时长） ----------------
+   结构：标签在左、当前值在右（等宽），滑块单独一行占满宽度 —— 。
+   契约《禁止内联 CSS 与 JS》：颜色/尺寸/字体全部走 CSS 变量，JS 不写任何 element.style；
+   轨道与手柄用原生 `accent-color` 跟随主题主色，无需自绘。 */
+.ctl-slider {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;                       /* 标签行与滑块的间距 */
+  padding: 2px 0;
+}
+
+.ctl-slider-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between; /* 标签左、值右 */
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.ctl-slider-label {
+  color: var(--color-muted-foreground);
+}
+
+/* 当前值：等宽字体 + 表格数字，避免拖动时宽度跳动 */
+.ctl-slider-value {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-foreground);
+  cursor: pointer;                /* 双击复位默认值 */
+  user-select: none;
+}
+
+/* 滑块的定位容器：刻度线用伪元素叠在轨道中线（原生 input 内部结构不可插入伪元素） */
+.ctl-slider-track {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+/* 基准刻度：中线（速度的 1.0x 正好落在正中）
+   注意：accent-color 不作用于伪元素，所以颜色必须自己指定主题令牌 */
+.ctl-slider-track::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 2px;
+  height: 10px;
+  border-radius: 1px;
+  background: var(--color-muted-foreground);
+  opacity: 0.45;
+  pointer-events: none;      /* 不挡拖动 */
+}
+
+.ctl-slider-input {
+  width: 100%;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--color-primary);   /* 轨道/手柄颜色跟随五套主题 */
+}
+
+/* 键盘可达性：焦点用主色描边（不写字面色值） */
+.ctl-slider-input:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: 999px;
+}
+
+/* 禁用态（当前渲染面未声明该能力时由面板压制） */
+.ctl-slider-input:disabled {
+  opacity: var(--ctl-off-opacity);
+  cursor: not-allowed;
+}
+
+
+/* 隐藏的文件选择器（导入/导出、自定义背景用）
+   为什么不写内联 style：契约《禁止内联CSS与JS》——定位交给类名，JS 只加类。
+   用 position:fixed + 视口外偏移而非 display:none：某些浏览器对 display:none 的 input 不弹选择框。 */
+.file-picker-hidden {
+  position: fixed;
+  left: -9999px;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+
+/* ---- 纯色预设列表（ctl-bg-solids）----
+   与自定义图片列表同构：行 = 色块 + 名称 + 操作；底部 = 添加 / 恢复默认。
+   色块颜色是运行时数据 ⇒ 由 --swatch 变量驱动，不在 JS 里拼 background 字面量。 */
+.bg-solids { display: flex; flex-direction: column; gap: 6px; }
+
+.bg-solid-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+
+.bg-solid-row:hover { border-color: var(--color-border, rgba(255, 255, 255, 0.12)); }
+
+.bg-solid-swatch {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: var(--swatch, #2a2a2a);
+  cursor: pointer;
+}
+
+.bg-solid-swatch:hover { border-color: var(--color-primary, #1fc0c5); }
+
+.bg-solid-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bg-solid-foot { display: flex; gap: 6px; }
+
+.bg-solid-hint { margin: 0; min-height: 0; font-size: 12px; color: var(--color-muted, #8b949e); }
+.bg-solid-hint[data-kind='error'] { color: #e05a5a; }
+
+
+/* ---- 背景来源统一列表（bg-source.renderSourceGroup）----
+   选中态用「描边 + ✓」双标识：只靠颜色变化在灰度/色盲下无法分辨。 */
+.bg-src-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.bg-src-row:hover { border-color: var(--color-border, rgba(255, 255, 255, 0.12)); }
+
+/* 选中：描边 + 勾（两处都给，缺一不可） */
+.bg-src-row[data-selected='1'] {
+  border-color: var(--color-primary, #1fc0c5);
+  background: color-mix(in srgb, var(--color-primary, #1fc0c5) 12%, transparent);
+}
+
+.bg-src-tick {
+  flex: 0 0 12px;
+  width: 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--color-primary, #1fc0c5);
+}
+
+.bg-src-swatch {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 32px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: var(--swatch, #2a2a2a);
+}
+
+.bg-src-thumb {
+  flex: 0 0 auto;
+  /* 56×32：再小就分不清是哪张图（用户明确要求放大）；object-fit: cover 由 background-size 等价实现 */
+  width: 56px;
+  height: 32px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background-color: rgba(255, 255, 255, 0.06);
+  background-image: var(--thumb, none);
+  background-size: cover;
+  background-position: center;
+}
+
+.bg-src-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bg-src-foot { display: flex; gap: 6px; margin-top: 4px; }
+
+/* 底栏菜单里的行更紧凑（没有行内操作按钮） */
+.bg-src-row--menu { padding: 3px 6px; }
+
+
+/* ---- 底栏 picker：二级菜单 + 按钮上的当前项预览 ----
+   二级是"侧向弹出"：相对 picker 根定位到菜单右侧、底对齐（底栏在屏幕底部，向上长才对）。 */
+.transport-picker-sub {
+  position: absolute;
+  left: 100%;
+  bottom: 0;
+  margin-left: 4px;
+  min-width: 168px;
+  max-height: 46vh;
+  overflow-y: auto;
+  padding: 4px;
+  z-index: 60;
+  border-radius: 8px;
+  border: 1px solid var(--color-border, #3a3f45);
+  background: var(--color-card, #23272b);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+/* 一级里"当前展开二级"的那一项给个标记，避免用户不知道二级是从哪来的 */
+.transport-picker-item.is-sub {
+  border-left: 2px solid var(--color-primary, #1fc0c5);
+}
+
+.transport-picker-arrow {
+  margin-left: auto;
+  padding-left: 6px;
+  opacity: 0.7;
+  font-size: 11px;
+}
+
+/* 按钮上的当前项预览：纯色给色块、自定义给缩略图（颜色/图地址由 CSS 变量下发） */
+.picker-prev {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  margin-right: 4px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background-color: var(--prev-swatch, transparent);
+  background-image: var(--prev-thumb, none);
+  background-size: cover;
+  background-position: center;
+}
+
+
+/* ---- 背景来源行：单行 + 右侧 ⋯ 菜单 ----
+   行高目标：纯色 ≈38px（色块 32 + 上下 3）、自定义 ≈38px（缩略图 32 + 上下 3）。
+   为什么单行：手机上两行式 5 个颜色就是 320px，列表一长必须滚。 */
+.bg-src-row {
+  min-height: 38px;
+  padding: 3px 4px;
+  flex-wrap: nowrap;
+}
+
+/* ⋯ 按钮：点击区 ≥32×32（手指要能点准），视觉上仍是小字 */
+.bg-src-more {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-muted, #8b949e);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.bg-src-more:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--color-fg, #e6e8ea);
+}
+
+/* 行菜单：贴 ⋯ 弹出的浮动小面板（fixed + JS 算坐标） */
+.bg-src-menu {
+  position: fixed;
+  z-index: 9500;
+  min-width: 112px;
+  padding: 4px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border, #3a3f45);
+  background: var(--color-card, #23272b);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.bg-src-menu-item {
+  display: block;
+  width: 100%;
+  /* 行高 ≥36px：触屏可点 */
+  min-height: 36px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-fg, #e6e8ea);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.bg-src-menu-item:hover { background: rgba(255, 255, 255, 0.08); }
+.bg-src-menu-item--danger { color: #e05a5a; }

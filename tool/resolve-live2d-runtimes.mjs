@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// resolve-live2d-runtimes.mjs — 自动定位 Live2D 运行时库（供 server.mjs 在运行时供给浏览器）
+// resolve-live2d-runtimes.mjs — 自动定位 Live2D 运行时库（供服务端在运行时供给浏览器）
 //
 // 设计目的：
-//   运行时库**不纳入本仓库**（Live2D Cubism Core 受 Live2D Inc. 专有许可约束，见 README 合规说明），
+//   运行时库**不纳入本仓库**（Live2D Cubism Core 受 Live2D Inc. 专有许可约束，不在本项目 MIT 覆盖范围内），
 //   因此需从仓库外部获取。为让「换机器 / 新克隆」也能用，这里做**多候选自动探测**，
 //   与 tool/resolve-runtimes.mjs（Spine 运行时）保持同一套思路与优先级。
 //
@@ -46,8 +46,6 @@ const CANDIDATE_SUBPATHS = [
   'static/lib',
   'js/lib',
   'src/lib',
-  'public/lib',
-  'dist/lib',
   '.',            // 库直接放在项目根
 ];
 
@@ -97,6 +95,26 @@ function searchRoots() {
 }
 
 /**
+ * 未注入 log 时的兜底实现（CLI 直接运行时用）：
+ * 保留**多行**可读输出——CLI 是开发者主动在终端看的，可读性优先；
+ * 服务端则注入 createLogger 的实例，得到"单行 + 时间戳 + LEVEL + tag + 结构化 detail"。
+ * 两类消费者不共用一种格式，这是设计选择，不是妥协。
+ */
+const cliLog = {
+  info: (msg, detail) => {
+    if (detail && Array.isArray(detail.candidates)) {
+      const list = detail.candidates
+        .map((c) => `  PIXI ${c.pixi || '?'}  ${c.req}+${c.opt} 个文件  ${c.dir}`)
+        .join('\n');
+      console.log(`[live2d-runtimes] ${msg}:\n${list}`);
+      return;
+    }
+    console.log(`[live2d-runtimes] ${msg}${detail ? ' ' + JSON.stringify(detail) : ''}`);
+  },
+  warn: (msg, detail) => console.warn(`[live2d-runtimes] ${msg}`, detail || ''),
+};
+
+/**
  * 主入口：按优先级探测 Live2D 运行时库。
  *
  * 选择策略：把**所有候选都收集起来**再按「完整度」择优，而不是"第一个命中就用"。
@@ -108,7 +126,9 @@ function searchRoots() {
  *
  * @returns {{dir: string, files: Object, origin: string, missingOptional: string[], candidates: Array}}
  */
-export function resolveLive2DRuntimes() {
+export function resolveLive2DRuntimes(options = {}) {
+  // 依赖反转：日志由调用方注入（tool 层不 import server 层的 logger）
+  const log = (options && options.log) || cliLog;
   const tried = [];
 
   // 1~3) 显式位置：命中即用（用户主动指定的优先，不做完整度比较）
@@ -158,8 +178,11 @@ export function resolveLive2DRuntimes() {
       || a.dir.length - b.dir.length);
 
     const best = scored[0];
-    const list = scored.map((s) => `  PIXI ${s.pixi || '?'}  ${s.req}+${s.opt} 个文件  ${s.dir}`).join('\n');
-    console.log(`[live2d-runtimes] 候选（按优选顺序）:\n${list}`);
+    // 候选清单结构化成一个数组塞进 detail：服务端得到单行可解析日志，
+    //   CLI 兜底实现（cliLog）会把它还原成多行人类可读格式。
+    log.info('候选（按优选顺序）', {
+      candidates: scored.map((s) => ({ pixi: s.pixi, req: s.req, opt: s.opt, dir: s.dir })),
+    });
     return {
       ...pack(best.dir, best.tag),
       candidates: scored.map((s) => ({ dir: s.dir, req: s.req, opt: s.opt, pixi: s.pixi })),

@@ -13,7 +13,7 @@
  *
  * 用法（Node 内置，无外部依赖）：
  *   node tool/prettier.js --version             # 打印 prettier 版本
- *   node tool/prettier.js src/engine.js         # 格式化文件并打印到 stdout
+ *   node tool/prettier.js src/web/main.js                 # 格式化文件并打印到 stdout
  *   node tool/prettier.js --parser typescript a.ts
  *   cat x.js | node tool/prettier.js --parser babel
  *

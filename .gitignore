@@ -22,10 +22,27 @@ tmp/
 # 由 tool/resolve-runtimes.mjs 在构建时自动探测获取（环境变量 / 项目内 / 工作区共享 / 基线兜底）。
 src/spine-runtimes/
 
-# ---- 刻意排除：运行时诊断数据 ----
+# ---- 刻意排除：运行时诊断数据（只忽略运行产物，不整目录忽略）----
 # data/diag.jsonl 是前端诊断探针经 POST /api/diag 追加写入的运行期日志（8 MB 轮转，可随时重建），
 # 属运行产物不入库；需要取证时直接读本机文件即可。
-data/
+#
+# 为什么不用 `data/` 或 `/data/` 整目录忽略：
+#   ① 不带前导斜杠的 `data/` 会匹配任意层级的 data 目录，把源码目录 `src/server/data/` 一起忽略，
+#      实测导致该目录的改动提交时报 "src/server/data is ignored" 并返回非零；
+#   ② 即便加上前导斜杠（`/data/`），也会盖住**已入库**的 `data/upstream/`（上游数据快照），
+#      使它们的后续修改不被 git add 捕获（`git ls-files -ci --exclude-standard` 可查出来）。
+#   所以只逐项忽略真正属于运行产物的路径。
+/data/diag.jsonl
+/data/diag.jsonl.*
+/data/bug-shots/
+# 服务端解包落盘缓存（17b）：可重建（源包 + 插件版本变了就失效），不入库。
+#   注意逐项写死路径，不用 data/ 或 /data/ 通配 —— 那会连带忽略 src/server/data/ 与已入库的 data/upstream/
+/data/unpacked/
+/data/export/
+# 用户上传的主题背景图（运行时数据）：内容由用户产生、体积不可控，
+#   属部署侧数据而非源码，不入库；换机/备份需单独带走该目录。
+/data/backgrounds/
+/data/logs/
 
 # ---- 刻意排除：部署侧本地配置 .env ----
 # 原因：.env 按约定是"本机部署差异"的载体（顶部栏标题/图标等），且该文件名会被审计规则
@@ -41,17 +58,27 @@ dist/
 
 # ---- 刻意排除：自动生成的资源清单 ----
 # config/models.<rootId>.json 是服务端扫描资源目录后落盘的索引（可随时重建，
-# 类似构建产物），不入库；配置文件 config/resources.json 则要入库。
+# 类似构建产物），不入库。
 config/models.*.json
 config/live2d.*.json
 config/*.tmp
+
+# ---- 刻意排除：用户配置（本机相关，换机器即失效）----
+# config/resources.json 存的是**本机绝对路径**的资源根列表，换设备后不适用，
+# 所以不入库；首次运行由服务端生成空模板，配置方式见 config/resources.example.json。
+config/resources.json
+
+# ---- 刻意排除：名表（上游数据，待重新设计后再定归属）----
+# config/names/<游戏>.json 是从上游抓取的名称/图标映射，体积大且来源随版本变化。
+# 缺失时不影响模型加载与渲染，只是回退显示拼音目录名、没有图标。
+config/names/
 
 # 导入配置时的自动备份（应急恢复用，不入库；轮换后旧的移入 config/.trash/）
 config/.bak-*/
 
 # ---- 注意：以下刻意入库 ----
-#   baseline/index.html  原版基线（4.17MB），是等价性校验基准，且是运行时兜底来源
-#   src/app-shell.html   应用外壳（798KB）
+#   legacy/baseline/index.html  原版基线（4.17MB），是等价性校验基准，且是运行时兜底来源
+#   legacy/source/app-shell.html   应用外壳（798KB）
 #   config/  tool/       配置与工具脚本
 # 游戏提取资源（.skel/.atlas/.png 等）一律不入库 —— 见 README 合规说明
 
@@ -60,8 +87,19 @@ rebuild/
 dist-rebuild/
 
 # ---- P2 解压工作副本（2026-10-14）----
-# src/.app-shell.orig.html 是 src/app-shell.html 的逐字节相同副本（sha256 ae8a5cad…），
+# legacy/source/.app-shell.orig.html 是 legacy/source/app-shell.html 的逐字节相同副本（sha256 ae8a5cad…），
 # 被 tool/rebuild-from-slices.mjs 用作回填基准。为避免 823KB 纯重复入库，不入库；
-# 需要时重建：cp src/app-shell.html src/.app-shell.orig.html
-# （等价信息已由已跟踪的 src/app-shell.html + baseline/index.html 提供）
-src/.app-shell.orig.html
+# 需要时重建：cp legacy/source/app-shell.html legacy/source/.app-shell.orig.html
+# （等价信息已由已跟踪的 legacy/source/app-shell.html + legacy/baseline/index.html 提供）
+legacy/baseline/
+
+# ---- 构建必需的原始字节（不入库：内容源自原版单文件，本地保留即可构建与校验）----
+
+# ---- 运行时产物（启停脚本生成，不入库）----
+runtime/
+
+# 会话插话提出的新功能记录（项目约定不入库）
+任务.md
+
+# 任务列表（工作台状态：当前还有哪些活 + 每项怎么做，不是项目资产）
+任务列表.md

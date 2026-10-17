@@ -1,0 +1,382 @@
+/* 语义色 token：控件外观用到的语义色集中在这里定义（基础调色板在 style.css）。
+   抽成变量是为了换主题/深浅色时只改一处，而不是在十几处裸色值里逐个找。 */
+:root {
+  --color-accent-action: #2b6cb0;      /* 主操作按钮底色 */
+  --color-accent-action-hover: #3178c6;
+  --color-on-accent: #fff;             /* 主色/类型标签上的文字 */
+  --color-type-spine: #2b6cb0;         /* 变体标签：Spine */
+  --color-type-live2d: #6d28d9;        /* 变体标签：Live2D / 资源包 */
+  --color-text-strong: #cfd6dd;        /* 变体行主文本 */
+  --color-text-dim: #9aa;              /* 展开箭头等弱提示 */
+  --color-orig-border: #4a5;           /* 角色行「原名」标签描边 */
+  --color-orig-text: #8a9;             /* 「原名」/计数字样 */
+  --color-icon-bg: #111;               /* 角色头像占位底 */
+  --color-text-muted: #8a94a0;         /* 变体行原名后缀等次级文本 */
+}
+
+/* ============================================================================
+   ModelStage 本实现 · 控件外观（M1）
+   只管"控件长什么样"：品牌、按钮、资源根列表、右栏分组行、底栏分组、错误横幅。
+   布局与几何在 style.css，两个文件由 index.html 一起引入。
+   ========================================================================== */
+
+/* ------------------------------------------------------------ 品牌（顶栏左） */
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.brand-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--color-primary);
+  font-size: 15px;
+  line-height: 1;
+}
+
+/* 内置 SVG（默认形态）：颜色跟随 .brand-icon 的 color */
+.brand-icon svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+/* 服务端下发图片图标时的 <img> */
+.brand-icon.is-image img {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  display: block;
+}
+
+.brand-title {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------------------------------------------------------------- 按钮 */
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.icon-btn {
+  height: 30px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--color-foreground);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.icon-btn:hover {
+  background: var(--color-secondary);
+  border-color: var(--color-border);
+}
+
+/* 图标版顶栏按钮：方形、只放图标，名称走 aria-label/title */
+.icon-btn:has(> svg) {
+  width: 30px;
+  padding: 0;
+  justify-content: center;
+}
+
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 4px;
+}
+
+.btn-icon > svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+.mini-btn.has-icon,
+.transport-group .mini-btn.has-icon {
+  display: inline-flex;
+  align-items: center;
+}
+
+.icon-btn > svg {
+  width: 17px;
+  height: 17px;
+  display: block;
+}
+
+/* 选中/开启态（模型库、菜单、影院这类开关型按钮）：主色描边 + 主色图标 */
+.icon-btn[aria-pressed='true'] {
+  color: var(--color-primary);
+  border-color: color-mix(in srgb, var(--color-primary) 45%, transparent);
+}
+
+.icon-btn[aria-pressed='false'] {
+  color: var(--color-muted-foreground);
+}
+
+.mini-btn {
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-muted);
+  color: var(--color-foreground);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.mini-btn:hover:not(:disabled) {
+  background: var(--color-secondary);
+}
+
+/* 主操作按钮（左栏「选择目录」）：配色*/
+.mini-btn.is-primary {
+  border-color: transparent;
+  background: var(--color-accent-action);
+  color: var(--color-on-accent);
+}
+
+.mini-btn.is-primary:hover:not(:disabled) {
+  background: var(--color-accent-action-hover);
+}
+
+/* ------------------------------------------------------------ 提示文案 */
+
+.muted-hint {
+  margin: 8px 4px;
+  color: var(--color-muted-foreground);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+/* ------------------------------------------------ 角色库：计数 / 搜索 / 三级树 */
+
+.panel-count {
+  flex: none;
+  padding: 6px 12px 0;
+  color: var(--color-muted-foreground);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.panel-search {
+  flex: none;
+  padding: 6px 12px 8px;
+}
+
+.panel-search input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-muted);
+  color: var(--color-foreground);
+  font-size: 12px;
+  outline: none;
+}
+
+.panel-search input:focus {
+  border-color: var(--color-primary);
+}
+
+.roster-list {
+  padding: 2px 0 8px;
+}
+
+/* 树行通用：一行 flex，靠 padding-left 表达层级 */
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.tree-row:hover {
+  background: var(--color-secondary);
+}
+
+.tree-game {
+  padding-top: 6px;
+  padding-bottom: 6px;
+  font-weight: 600;
+}
+
+.tree-char {
+  padding-left: 22px;
+}
+
+.tree-variant {
+  padding-left: 40px;
+  color: var(--color-text-strong);
+}
+
+/* 展开箭头（内联 SVG）：不依赖字体，避免无桌面字体环境渲染成豆腐块 */
+.tree-arrow {
+  flex: 0 0 10px;
+  width: 10px;
+  height: 10px;
+  color: var(--color-text-dim);
+}
+
+.tree-game-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 资源根 id 徽标：区分同名资源根（如碧蓝的三个根） */
+.tree-badge {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  color: var(--color-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.tree-icon {
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+  border-radius: 4px;
+  background: var(--color-icon-bg);
+}
+
+.tree-char-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 角色行的「原名」标签（归一化键，与显示名不同才有信息增量） */
+.tree-orig {
+  flex: 0 0 auto;
+  padding: 0 3px;
+  border: 1px solid var(--color-orig-border);
+  border-radius: 3px;
+  color: var(--color-orig-text);
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.tree-count {
+  flex: 0 0 auto;
+  color: var(--color-orig-text);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+/* 变体行的类型标签：Spine 蓝 / Live2D 与资源包 紫（配色） */
+.tree-type {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: 4px;
+  color: var(--color-on-accent);
+  font-size: 10px;
+}
+
+.tree-type-spine {
+  background: var(--color-accent-action);
+}
+
+.tree-type-live2d,
+.tree-type-bundle {
+  background: var(--color-type-live2d);
+}
+
+.tree-variant-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tree-variant-orig {
+  flex: 0 1 auto;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 选中态：变体行高亮 */
+.tree-variant.is-selected {
+  background: rgba(31, 192, 197, 0.14);
+  box-shadow: inset 2px 0 0 var(--color-primary);
+  color: var(--color-primary);
+}
+
+.tree-hint {
+  padding-left: 22px;
+}
+
+/* --------------------------------------------------------- 底栏三组按钮 */
+
+.transport-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.transport-group:first-child {
+  justify-content: flex-start;
+}
+
+.transport-group:last-child {
+  justify-content: flex-end;
+}
+
+/* ----------------------------------------------------------- 错误横幅 */
+
+.error-banner {
+  margin: 8px 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-danger);
+  border-radius: 6px;
+  background: rgba(224, 108, 117, 0.12);
+  color: var(--color-danger);
+  font-size: 11px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+/* 资产残缺角标（catalog 里 missingTextures 非空的条目）
+   为什么显示而不是隐藏：这些条目点了会渲染失败，用户有权知道"为什么这个不行"，
+   并且有资源包版本时系统会自动改用（状态行会明确提示，不静默降级）。 */
+.tree-variant-warn {
+  color: #e8a33d;
+  margin-left: 4px;
+  font-size: 12px;
+  flex: none;
+}
+.tree-variant.is-incomplete .tree-variant-text {
+  opacity: 0.72;
+}

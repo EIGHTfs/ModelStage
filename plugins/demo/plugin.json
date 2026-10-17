@@ -1,6 +1,0 @@
-{
-  "id": "demo",
-  "name": "示例插件（只注册不解析）",
-  "version": 1,
-  "files": ["index.js"]
-}

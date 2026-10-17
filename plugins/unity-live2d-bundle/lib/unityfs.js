@@ -40,6 +40,26 @@
     UsesAssetBundleEncryption: 0x1400,
   };
 
+  // ⚠️ 已知不支持：BlocksAndDirectoryInfoCombined（0x40）
+  //
+  // 根因（2026-10-22 实测定位，样本 live2d/aijier_3，19.27MB）：
+  //   该样本 dataflags = 0xC2，同时置了 0x40（blocks 与 directoryInfo 合并为一段）
+  //   与 0x80（blocksInfo 在文件尾），压缩类型 2（LZ4），Unity 2018.4.34f1 / version 6。
+  //   其余 18 个样本（live2d/*）均为 Unity 2020.3.48f1 / version 8 / dataflags 0x240
+  //   （comp=0 未压缩、无 0x40、无 0x80），走的是 parse() 已实现的「头部 blocksInfo」路径。
+  //
+  // 为什么显式拒绝而不是"试着解"：
+  //   ARCHIVE 表里 0x40 这一位早已定义，但 parse() 从未实现该布局——它只判 0x80，
+  //   于是按「length - csz」从文件尾取固定长度。combined 布局下该位置取到的是错位数据；
+  //   而 LZ4 块解压只有"输出长度必须等于 expectedSize"这一道弱自洽检查，
+  //   错位数据偶尔能自洽解出（实测解出了 163 字节但 blockCount/nodeCount 是垃圾值），
+  //   于是错误一路带到 block 表读取才炸，报 CONTAINER_PARSE，现场看不出真实原因。
+  //
+  // 正确实现需要权威格式依据（Unity ArchiveStorageData/AssetBundle 的 combined 段布局，
+  //   或 UnityPy 对应解析作对照）。在没有权威参考前不猜实现——猜错的解析比明确报错危险得多：
+  //   它可能解出"看着能跑"的错数据，把 bug 推到渲染层才暴露。
+  //   需要支持时：补 combined 解析 + 用 aijier_3 与正常样本做双向对照自证。
+
   const COMPRESSION = { NONE: 0, LZMA: 1, LZ4: 2, LZ4HC: 3, LZHAM: 4 };
 
   /**
@@ -48,8 +68,11 @@
    * 为什么自己实现：容器允许 LZ4 压缩的数据块，浏览器端没有内置 LZ4。
    * 与 UnityPy 的 lz4.block.decompress 对齐：入参是裸块，输出固定为 expectedSize。
    */
-  function lz4Decompress(src, expectedSize) {
-    const dst = new Uint8Array(expectedSize);
+  function lz4Decompress(src, expectedSize, target, targetOffset = 0) {
+    // target：若调用方已预分配好整段缓冲（多块拼接场景），直接写到它的对应区间，
+    //   省掉"每块各分配一份 + 最后 concat 再复制一份"的第二份内存。
+    //   安全性：LZ4 block 的匹配段只引用**同一块内**已解出的字节，不跨块 ⇒ 写到大缓冲的任意 offset 都成立。
+    const dst = target ? target.subarray(targetOffset, targetOffset + expectedSize) : new Uint8Array(expectedSize);
     let si = 0;
     let di = 0;
     while (si < src.length) {
@@ -83,16 +106,18 @@
   }
 
   /** 按压缩类型解压一段数据（flags 低 6 位） */
-  function decompress(bytes, uncompressedSize, flags, where) {
+  function decompress(bytes, uncompressedSize, flags, where, target, targetOffset = 0) {
     const type = flags & ARCHIVE.CompressionTypeMask;
     if (type === COMPRESSION.NONE) {
       if (bytes.length !== uncompressedSize) {
         throw NS.errors.fail('ULB_ERR_CONTAINER_PARSE', `${where || '数据块'} 声明未压缩但长度不符：实际 ${bytes.length}，声明 ${uncompressedSize}`);
       }
+      // 未压缩块没有"解压"这步，只能拷进目标区间（语义与拼接一致，不再多留一份视图）
+      if (target) { target.set(bytes, targetOffset); return target.subarray(targetOffset, targetOffset + bytes.length); }
       return bytes;
     }
     if (type === COMPRESSION.LZ4 || type === COMPRESSION.LZ4HC) {
-      return lz4Decompress(bytes, uncompressedSize);
+      return lz4Decompress(bytes, uncompressedSize, target, targetOffset);
     }
     const label = type === COMPRESSION.LZMA ? 'LZMA' : type === COMPRESSION.LZHAM ? 'LZHAM' : `未知(${type})`;
     throw NS.errors.fail('ULB_ERR_CONTAINER_PARSE', `${where || '数据块'} 使用 ${label} 压缩，本插件尚未支持该分支（已支持 none / LZ4）`);
@@ -164,27 +189,39 @@
       });
     }
     const blocksInfoContentEnd = bi.absOffset;   // 表**内容**结束位置（不含表尾填充）
-    // 数据区起点：blocksInfo 段按**声明长度**占位（未压缩时声明长度可能比表内容大，
-    //   差值就是表尾对齐填充 —— 本样本 160 - 153 = 7 字节），读完再按标志对齐到 16。
-    //   注意别把「表内容结束」当成「数据开始」：那会整体错位 7 字节，M5 的 sha256 立刻不对。
-    const declaredEnd = start + blocksInfoCompressedSize;
-    if (declaredEnd > r.pos) r.seek(declaredEnd);
+    // 数据区起点（依据 AssetStudio BundleFile.cs ReadBlocksInfoAndDirectory，d158e86）：
+    //   · blocksInfo **内联在头部**（未置 0x80）时，该段按**声明长度** blocksInfoCompressedSize
+    //     占位——未压缩包的声明长度可能比表内容大，差值即表尾对齐填充
+    //     （实测样本 160 - 153 = 7 字节），故需把游标推到 start + compressedSize 才是数据起点。
+    //     别把「表内容结束」当成「数据开始」：那会整体错位 7 字节，moc3 的 sha256 立刻不对。
+    //   · blocksInfo **在文件尾**（置 0x80）时，数据块紧接 header 之后开始；
+    //     上面读 blocksInfo 前已保存 position、读后已 seek 回来，此处**不能再加 declaredEnd**，
+    //     否则会把数据起点整体推后 compressedSize 字节 → 数据块错位 → LZ4 解出垃圾
+    //     （报"LZ4 数据损坏：匹配位置越界"，与真实原因相距极远，极难排查）。
+    //     实测踩坑：live2d/aijier_3（Unity 2018.4 / version 6 / LZ4 / flags 0xC2）正是此情形，
+    //     19 个样本里唯一一个 blocksInfo 在尾的包，旧代码一直没覆盖到。
+    if (!blocksInfoAtEnd) {
+      const declaredEnd = start + blocksInfoCompressedSize;
+      if (declaredEnd > r.pos) r.seek(declaredEnd);
+    }
     if (dataflags & ARCHIVE.BlockInfoNeedPaddingAtStart) r.align(16);
     const dataStart = r.pos;
 
-    // 数据块：按顺序解压后拼接；节点的 offset/size 都相对这份拼接结果
-    const dataParts = [];
+    // 数据块：**预分配整段**，逐块直接解压到对应 offset。
+    //   为什么不再用「每块各解一份 + concat」：那会让峰值 = 解压总量 ×2
+    //   （实测 19MB 包：解压 42.1MB + concat 复制 42.1MB = 84.2MB），而块只有一个时又白留一份。
+    //   节点的 offset/size 相对这份整段缓冲，语义与拼接完全相同。
+    const totalUncompressed = blocks.reduce((a, b) => a + b.uncompressedSize, 0);
+    const data = new Uint8Array(totalUncompressed);
     const blockSpans = [];
     let cursor = 0;
     for (let i = 0; i < blocks.length; i++) {
       const b = blocks[i];
       const raw = r.bytes(b.compressedSize, `block[${i}]`);
-      const out = decompress(raw, b.uncompressedSize, b.flags, `block[${i}]`);
-      blockSpans.push({ start: cursor, end: cursor + out.length });
-      dataParts.push(out);
-      cursor += out.length;
+      decompress(raw, b.uncompressedSize, b.flags, `block[${i}]`, data, cursor);
+      blockSpans.push({ start: cursor, end: cursor + b.uncompressedSize });
+      cursor += b.uncompressedSize;
     }
-    const data = blockCount === 1 ? dataParts[0] : B.concatBytes(dataParts);
 
     return {
       signature,
