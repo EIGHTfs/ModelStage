@@ -230,13 +230,16 @@ async function main() {
   await new Promise((r) => setTimeout(r, WAIT_MS));
 
   // 可选：执行页面动作脚本（穷举点击 + 断言）
+  // 约定：脚本文件内容必须是一个**自求值表达式**（如 `(async () => { … })()`），
+  //   工具原样求值、等待 Promise，把返回值当结果。
+  // 为什么不在这里包一层 async 函数：包了之后脚本只能靠顶层 return 交结果，
+  //   而 `node --check <脚本>` 会因"顶层 await/return"报错；让脚本自带 IIFE 则两边都成立。
   let scriptResult = null;
   let scriptError = null;
   if (SCRIPT_FILE) {
     const code = fs.readFileSync(SCRIPT_FILE, 'utf8');
-    const wrapped = `(async () => { ${code} })()`;
     const r = await send('Runtime.evaluate', {
-      expression: wrapped, awaitPromise: true, returnByValue: true,
+      expression: code, awaitPromise: true, returnByValue: true,
     });
     if (r.result && r.result.exceptionDetails) {
       scriptError = r.result.exceptionDetails.text

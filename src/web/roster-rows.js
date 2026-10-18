@@ -49,18 +49,28 @@ function arrowEl(open) {
 }
 
 /**
- * 一级：资源根行。
- * @param {object} root 资源根（id/name）
+ * 一级：游戏行（按资源根配置的 name 合并后的节点）。
+ * 一个游戏可能由多个资源根供给（碧蓝航线 = 3 个根），所以徽标显示根数量、title 列出具体根 id，
+ * 数据属性 data-root-ids 供自动化断言核对"这些根都在同一个游戏节点下"。
+ * @param {{key: string, name: string, roots: object[]}} game
  * @param {{open: boolean, status: string, charCount: number}} view
  */
-export function renderRootRow(root, view) {
-  const row = rowBase('tree-root', { rootId: root.id });
+export function renderGameRow(game, view) {
+  const rootIds = game.roots.map((r) => r.id);
+  const row = rowBase('tree-game', { gameKey: game.key, rootIds: rootIds.join(',') });
   row.setAttribute('aria-expanded', String(view.open));
   if (view.open) row.classList.add('is-open');
 
   row.append(arrowEl(view.open));
-  row.append(el('span', 'tree-root-name', root.name || root.id));
-  row.append(el('span', 'tree-badge', root.id));
+  row.append(el('span', 'tree-game-name', game.name));
+  // 多根时标注根数（单根不标注，避免噪音）
+  if (rootIds.length > 1) {
+    const badge = el('span', 'tree-badge', `${rootIds.length} 根`);
+    badge.title = rootIds.join(' · ');
+    row.append(badge);
+  } else {
+    row.append(el('span', 'tree-badge', rootIds[0] || ''));
+  }
 
   if (view.status === 'ready') row.append(el('span', 'tree-count', `${view.charCount} 角色`));
   else if (view.status === 'loading') row.append(el('span', 'tree-count', '加载中…'));
@@ -69,12 +79,12 @@ export function renderRootRow(root, view) {
 
 /**
  * 二级：角色行（头像 + 显示名 + 原名标签 + 变体数）。
- * @param {object} root
+ * @param {object} game
  * @param {object} c 角色（title/baseName/iconUrl/variants/npc）
  * @param {boolean} open
  */
-export function renderCharRow(root, c, open) {
-  const row = rowBase('tree-char', { charKey: c.key, rootId: root.id });
+export function renderCharRow(game, c, open) {
+  const row = rowBase('tree-char', { charKey: c.key, gameKey: game.key });
   row.setAttribute('aria-expanded', String(open));
   if (open) row.classList.add('is-open');
 
@@ -101,15 +111,18 @@ export function renderCharRow(root, c, open) {
 
 /**
  * 三级：变体行（类型标签 + 服装名/目录名 + 原名后缀）。
- * @param {object} root
+ * 行上带 data-root-id：证明同一角色节点下确实聚合了来自不同资源根的变体。
+ * @param {object} game
  * @param {object} c
  * @param {{model: object, nm: object|null}} v
  * @param {string|null} selectedId 当前选中的模型 id
  */
-export function renderVariantRow(root, c, v, selectedId) {
+export function renderVariantRow(game, c, v, selectedId) {
   const m = v.model;
   const { text, origName } = variantText(m, v.nm);
-  const row = rowBase('tree-variant', { modelId: m.id, rootId: root.id, charKey: c.key });
+  const row = rowBase('tree-variant', {
+    modelId: m.id, gameKey: game.key, charKey: c.key, rootId: m.rootId || '',
+  });
 
   const isSelected = selectedId === m.id;
   if (isSelected) {

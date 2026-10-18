@@ -83,22 +83,27 @@ bash web.sh start|stop|restart|status     # 默认 8804，上游 8803
 
 ### M2 名册三级树（已完成）
 
-- [x] 一级 = 资源根（**逐个**一行，与 `/api/roots` 完全对应），二级 = 角色，三级 = 变体
-- [x] **逐根懒加载**：启动只拉 `/api/roots`；首次展开某根才请求该根的
+- [x] 一级 = **游戏**（按资源根配置的 name 合并同名根，照 `char-tree.js` 的 buildTree 规则）：
+      碧蓝航线的 3 个根（azurlane / azurlane_spine / azurlane_bundle）合并成 **1 个游戏节点**，
+      节点上标「N 根」（title 列出根 id）。二级 = 角色，三级 = 变体
+- [x] **按游戏懒加载**：启动只拉 `/api/roots`；首次展开某游戏才请求它名下各根的
       `/api/names?root=` + `/api/models?root=`（Live2D 根回落到 `/api/live2d/models`，
-      bundle 根走 `/api/tree` 的 `kind:'bundle'` 条目）；已加载过的根再展开不再发请求
-- [x] 角色归并规则逐条照 `public/char-tree.js`：`charKeyOf`（去 `cutscene_` / `_hx` / `_N`）、
+      bundle 根走 `/api/tree` 的 `kind:'bundle'` 条目）；已加载过的游戏再展开不再发请求
+- [x] **角色跨根归并**：同一游戏下把各根模型并成一个数组再归并，同一角色来自不同根的变体
+      落在**同一个角色节点**下（实测：阿尔比恩 = Live2D `aerbien_3` + Spine `aerbien_4`）
+- [x] 归并规则逐条照 `public/char-tree.js`：`charKeyOf`（去 `cutscene_` / `_hx` / `_N`）、
       `assetCandidates` 逐级放宽查表、命中用英文名归组 + 标题「中文名 英文名」、
-      变体排序立绘在前技能在后、角色排序普通角色在前 NPC 在后
-- [x] 实测归并结果：`bd2` 389 模型 → 109 角色（名表 miss 仅 1）、`azurlane` 119 → 78、
-      `azurlane_spine` 194 → 175、`azurlane_bundle` 19 → 18
-- [x] 搜索：角色名 / 服装名 / 资源名 / 目录名（前端过滤；首次输入时并行补加载各根，之后走内存）
+      变体排序立绘在前技能在后、角色排序普通角色在前 NPC 在后、角色键 `char:游戏名|组名`
+- [x] 实测规模（与旧前端一致）：**2 游戏 / 354 角色 / 721 变体**
+      —— 棕色尘埃2 109 角色 / 389 变体；碧蓝航线 245 角色 / 332 变体（3 根跨根归并后）
+- [x] 搜索：角色名 / 服装名 / 资源名 / 目录名（前端过滤；首次输入时并行补加载各游戏，之后走内存）
 - [x] 选中态：点变体行高亮（`aria-selected` + `.is-selected`），再点别的行自动切换
 - [x] 展开/折叠 + 「收起」按钮（只清空展开状态，面板保留）
-- [x] 状态持久化沿用旧前端键名 `spine-multi-viewer.tree-state.v1`（`games` / `chars` / `activeGame` / `lastByGame`）
+- [x] 状态持久化沿用旧前端键名 `spine-multi-viewer.tree-state.v1`（`games` / `chars` /
+      `activeGame` 存游戏名 / `lastByGame` 按游戏名存上次模型 id）
 - [x] 键盘可达：树行 `tabindex=0`，Enter / 空格等价于点击
 - [x] 未接线控件全部 `disabled` 并标注「待接线（M3/M6）」（顶栏导入/截图导出/菜单/影院模式、左栏选择目录、底栏 8 个）
-- [x] 穷举实操 32 项全过 + 控制台零错误（`tool/check-console.mjs`）
+- [x] 穷举实操 31 项全过 + 控制台零错误（`test/roster-actions.js` + `tool/check-console.mjs`）
 
 未做（后续里程碑）：
 
@@ -106,17 +111,18 @@ bash web.sh start|stop|restart|status     # 默认 8804，上游 8803
 - [ ] 舞台渲染（M4 Spine、M5 Live2D）
 - [ ] 设置导入导出（M7）
 - [ ] 顶栏空闲自动隐藏（旧前端空闲时把 header 上移 48px；视觉已降级，M6 再谈）
-- [ ] `tool/diff-rect.mjs`（已获批但 M2 未用到；M3 控件清单核对时再做）
 
 ## 五、自测方式
 
 ```bash
-# 1) 零错误自证（含四类信号：console.error / 未捕获异常 / 浏览器日志 error / 4xx 与请求失败）
+# 1) 零错误自证（四类信号：console.error / 未捕获异常 / 浏览器日志 error / 4xx 与请求失败）
 node tool/check-console.mjs http://127.0.0.1:8804/
 # 有错退出码 2，可直接进 CI/验收脚本
 
-# 2) 穷举实操 + 断言（脚本在页面里跑，返回值随报告一起打印）
-node tool/check-console.mjs http://127.0.0.1:8804/ --script <动作脚本.js> --json
+# 2) 穷举实操 + 断言（脚本在页面上下文里执行，结果随报告一起打印）
+node tool/check-console.mjs http://127.0.0.1:8804/ --script test/roster-actions.js
+#    动作脚本的形态约定：文件内容是一个自求值 async IIFE，返回值即结果
+#    （这样既能在页面里 await，又能通过 node --check 的语法检查）
 
 # 3) 反代与数据源
 curl -s http://127.0.0.1:8804/api/roots | head -c 200
@@ -124,16 +130,15 @@ curl -s http://127.0.0.1:8804/api/brand
 
 # 4) 页面状态快照（浏览器控制台里读，自动化断言也用这个）
 #    window.__WEB__.rosterSnapshot()
-#    → { roots:[{id,status,source,chars,variants,miss}], expandedRoots, expandedChars, keyword, selected, domRows }
+#    → { games:[{key,name,roots,status,sources,chars,variants,miss}],
+#        expandedGames, expandedChars, keyword, selected, domRows }
 ```
 
-## 六、建议与待决（给 Lead 的裁决项）
+## 六、决策记录（已裁决）
 
-1. **一级节点按"资源根"还是按"游戏名合并"**：旧前端 `char-tree.js` 按 `rootName` 合并同名根
-   （碧蓝的 3 个根会并成 1 个游戏节点 → 全站只 2 个游戏）。M2 按你的验收条目「左栏显示 4 个游戏根」
-   实现为**一根一行**，因此同名根会出现 3 次（用 id 徽标区分）。两种都能一键切换，等你裁决。
-2. **`web.sh restart` 有 bug**（见第二节说明）：脚本内部 `"$0"` 在 `bash web.sh` 调用下是相对名，
-   导致 `web.sh: command not found`。属你的维护范围，我没改。
-3. **搜索会补加载全部根**：输入关键词时为做全局过滤会并行拉齐 4 个根（服务端有清单缓存，实测 <1s）。
-   若你更希望"只搜已展开的根"，改一行即可。
-4. `tool/diff-rect.mjs` 已获批但 M2 未用到（视觉已降级）；建议放到 M3 做"控件清单核对"时一起写。
+1. **一级节点按 name 合并**：与旧前端 `char-tree.js` 一致（2 个游戏节点），角色**跨根归并**。
+   早期一版按一根一行实现（4 个节点），已按裁决改回合并口径。
+2. **搜索补加载全部游戏**：为做全局过滤，首次输入关键词时并行拉齐各游戏（服务端有清单缓存，
+   实测 <1s）。取舍：宁可多一次请求，也要搜得到——只搜已展开的游戏会让人以为列表缺内容。
+3. **`tool/diff-rect.mjs` 不做**：视觉已降级，区域几何改用 `tool/shot-compare.mjs` 或人工核对。
+4. **穷举动作脚本入库在 `test/roster-actions.js`**：M2 的回归脚本，改左栏行为后先跑它。

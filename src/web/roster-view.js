@@ -1,42 +1,47 @@
-// roster-view.js —— 名册视图层：三级树（资源根 → 角色 → 变体）+ 搜索 + 选中态（M2）
+// roster-view.js —— 名册视图层：三级树（游戏 → 角色 → 变体）+ 搜索 + 选中态（M2）
 //
 // 做什么：
-//   1. 一级：每个资源根一行（可折叠）。**首次展开才请求该根的模型清单**（懒加载），
-//      之后再展开/折叠只用内存里的结果，不再发请求；
-//   2. 二级：角色行（可折叠），组内变体在三级；角色与变体都用 roster.js 的归并结果；
-//   3. 搜索：前端过滤（角色名 / 服装名 / 资源名 / 目录名），命中即自动展开到变体层；
-//   4. 选中态：点变体行高亮并记录（M4 渲染用），状态写 localStorage（键名沿用旧前端）；
-//   5. 顶部「收起」只清空展开状态，面板本身保留（面板显隐由顶栏「模型库」按钮控制）。
+//   1. 一级：按资源根配置的 **name 合并**成一个游戏节点（同名根合并，照 public/char-tree.js 的
+//      buildTree 规则）。一个游戏可能由多个资源根供给（碧蓝航线 = azurlane + azurlane_spine +
+//      azurlane_bundle），展开该游戏时才请求这些根的模型清单（懒加载）；
+//   2. 二级：角色。**跨根归并**——同一角色在 Live2D 根与 Spine 根下的模型，按名表归到同一个
+//      角色节点下（不是把各根的行拼起来），规则与 char-tree.js 一致；
+//   3. 三级：变体（模型）。行上带类型标签（Spine / Live2D / 资源包）与来源根 id；
+//   4. 搜索：前端过滤（角色名 / 服装名 / 资源名 / 目录名），命中即自动展开到变体层；
+//   5. 选中态：点变体行高亮并记录（M4 渲染用），状态写 localStorage（键名/结构沿用旧前端）；
+//   6. 顶部「收起」只清空展开状态，面板本身保留（面板显隐由顶栏「模型库」按钮控制）。
 //
 // 状态全部收在 state 里，DOM 只是投影：这样"点一下到底改了什么"可以直接读 state 验证。
 
 import {
   createNameIndex, mergeNameTable, loadRootModels, loadRootNames, buildChars,
 } from './roster.js';
-import { el, renderRootRow, renderCharRow, renderVariantRow } from './roster-rows.js';
+import { el, renderGameRow, renderCharRow, renderVariantRow } from './roster-rows.js';
 import { formatError } from './api.js';
 
 /** localStorage 键名：与旧前端一致，不得改名（M7 要用它做持久化，改名会让用户既有状态失效） */
 const LS_KEY = 'spine-multi-viewer.tree-state.v1';
 
-/** 每个资源根最多渲染的角色行数（旧前端按游戏限额 400，避免 2000+ 角色一次铺满） */
-const RENDER_LIMIT_PER_ROOT = 400;
+/** 每个游戏最多渲染的角色行数（旧前端按游戏限额 400，避免 2000+ 角色一次铺满） */
+const RENDER_LIMIT_PER_GAME = 400;
 
 /**
- * 名册状态：roots 来自 /api/roots；loaded 按根缓存模型加载结果；
- * expandedRoots/expandedChars 是两级展开键；keyword 是搜索词；selected 是当前选中变体。
+ * 名册状态：games 是按 name 合并后的游戏列表；loaded 按资源根缓存加载结果；
+ * gameChars 按游戏缓存跨根归并后的角色；expandedGames/expandedChars 是两级展开键；
+ * keyword 是搜索词；selected 是当前选中变体；activeGame 是最后活跃的游戏名（与旧前端同义）。
  */
 
 /** 创建名册视图并挂到容器上；返回对外 API（供 main.js 与自动化验证使用） */
 export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSelect }) {
   const state = {
-    roots: [],
+    games: [],
     loaded: new Map(),
-    expandedRoots: new Set(),
+    gameChars: new Map(),
+    expandedGames: new Set(),
     expandedChars: new Set(),
     keyword: '',
     selected: null,
-    activeRoot: null,
+    activeGame: null,
   };
   const nameIndex = createNameIndex();
   const namesLoaded = new Set();
@@ -59,16 +64,16 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     }
   }
 
-  /** 写展开态与每个游戏上次选中的变体（键名/结构沿用旧前端） */
+  /** 写展开态与每个游戏上次选中的变体（键名/结构沿用旧前端：activeGame 存游戏名） */
   function saveState() {
     try {
       const s = readSaved();
       const lastByGame = { ...s.lastByGame };
-      if (state.activeRoot && state.selected) lastByGame[state.activeRoot] = state.selected.modelId;
+      if (state.activeGame && state.selected) lastByGame[state.activeGame] = state.selected.modelId;
       localStorage.setItem(LS_KEY, JSON.stringify({
-        games: [...state.expandedRoots],
+        games: [...state.expandedGames],
         chars: [...state.expandedChars],
-        activeGame: state.activeRoot || s.activeGame,
+        activeGame: state.activeGame || s.activeGame,
         lastByGame,
       }));
     } catch {
@@ -79,18 +84,18 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
   // ------------------------------------------------------------ 数据加载
 
   /**
-   * 确保某资源根的模型已加载（首次展开时调用；已加载/加载中则直接返回）。
-   * 为什么按根加载：一个根一次请求（服务端有清单缓存），展开哪个根只付那个根的成本。
+   * 确保某个资源根的模型已加载（已就绪/加载中直接返回）。
+   * 为什么按根加载：一个根一次请求（服务端有清单缓存），只付用到的根的成本。
    * @param {object} root
    */
   async function ensureRootLoaded(root) {
     const cur = state.loaded.get(root.id);
     if (cur && (cur.status === 'ready' || cur.status === 'loading')) return cur;
-    const entry = { status: 'loading', chars: [], source: '', stats: null, error: null };
+    const entry = { status: 'loading', models: [], source: '', error: null };
     state.loaded.set(root.id, entry);
     render();
     try {
-      // 名表按根取一次，合并进全局索引（同名表只并一次，避免重复 object assign）
+      // 名表按根取一次并合并进全局索引（同名表只并一次，避免重复 assign）
       if (!namesLoaded.has(root.id)) {
         namesLoaded.add(root.id);
         const table = await loadRootNames(root.id);
@@ -98,11 +103,9 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
       }
       const { models, source } = await loadRootModels(root);
       for (const m of models) modelById.set(m.id, { model: m, rootId: root.id });
-      const { chars, stats } = buildChars(models, nameIndex);
       entry.status = 'ready';
-      entry.chars = chars;
+      entry.models = models;
       entry.source = source;
-      entry.stats = stats;
     } catch (err) {
       entry.status = 'error';
       entry.error = formatError(err);
@@ -111,9 +114,48 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     return entry;
   }
 
-  /** 搜索需要全局数据：首次输入关键词时把所有根补加载（并行，服务端有缓存） */
+  /** 某游戏的全部根是否都已就绪（有失败也算"可渲染"，错误在游戏节点下提示） */
+  function gameStatus(game) {
+    const entries = game.roots.map((r) => state.loaded.get(r.id));
+    if (entries.some((e) => e && e.status === 'loading')) return 'loading';
+    if (entries.some((e) => !e || e.status === 'idle')) return 'idle';
+    if (entries.every((e) => e && e.status === 'error')) return 'error';
+    return 'ready';
+  }
+
+  /**
+   * 重新归并某游戏的角色（跨根）：把该游戏所有已就绪根的模型并成一个数组再归并。
+   * 为什么在游戏层归并：同一角色可能同时有 Live2D 与 Spine 变体（来自不同根），
+   *   按根各自归并会得到两个同名角色节点，与旧前端行为不一致。
+   * @param {object} game
+   */
+  function rebuildGameChars(game) {
+    const models = [];
+    for (const root of game.roots) {
+      const entry = state.loaded.get(root.id);
+      if (entry && entry.status === 'ready') models.push(...entry.models);
+    }
+    const { chars, stats } = buildChars(models, nameIndex, game.name);
+    state.gameChars.set(game.key, { chars, stats });
+  }
+
+  /**
+   * 确保某游戏的模型已加载：并行加载其所有未就绪的根，然后跨根归并。
+   * @param {object} game
+   */
+  async function ensureGameLoaded(game) {
+    const pending = game.roots.filter((r) => {
+      const e = state.loaded.get(r.id);
+      return !e || e.status === 'idle' || e.status === 'error';
+    });
+    if (pending.length) await Promise.all(pending.map((r) => ensureRootLoaded(r)));
+    rebuildGameChars(game);
+    render();
+  }
+
+  /** 搜索需要全局数据：首次输入关键词时把所有游戏补加载（并行，服务端有缓存） */
   async function ensureAllLoaded() {
-    await Promise.all(state.roots.map((r) => ensureRootLoaded(r)));
+    await Promise.all(state.games.map((g) => ensureGameLoaded(g)));
   }
 
   // ------------------------------------------------------------ 过滤
@@ -133,14 +175,14 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     return c.variants.some((v) => variantSearchText(v).includes(kw));
   }
 
-  /** 某根在搜索下可见的角色（未加载的根不参与过滤） */
-  function visibleChars(root) {
-    const entry = state.loaded.get(root.id);
-    if (!entry || entry.status !== 'ready') return [];
+  /** 某游戏在搜索下可见的角色（未加载的游戏不参与过滤） */
+  function visibleChars(game) {
+    const entry = state.gameChars.get(game.key);
+    if (!entry) return [];
     if (!state.keyword) return entry.chars;
-    const rootHit = String(root.name).toLowerCase().includes(state.keyword)
-      || String(root.id).toLowerCase().includes(state.keyword);
-    return rootHit ? entry.chars : entry.chars.filter(charMatches);
+    const gameHit = String(game.name).toLowerCase().includes(state.keyword)
+      || game.roots.some((r) => String(r.id).toLowerCase().includes(state.keyword));
+    return gameHit ? entry.chars : entry.chars.filter(charMatches);
   }
 
   // ------------------------------------------------------------ 渲染
@@ -153,48 +195,53 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     let totalChars = 0;
     let totalVariants = 0;
     let rendered = 0;
+    let loadedGames = 0;
 
-    for (const root of state.roots) {
-      const entry = state.loaded.get(root.id);
-      const rootOpen = state.expandedRoots.has(root.id) || (searching && visibleChars(root).length > 0);
-      listEl.append(renderRootRow(root, {
-        open: state.expandedRoots.has(root.id),
-        status: entry ? entry.status : 'idle',
-        charCount: entry && entry.chars ? entry.chars.length : 0,
+    for (const game of state.games) {
+      const status = gameStatus(game);
+      if (status === 'ready') loadedGames += 1;
+      const chars = visibleChars(game);
+      const open = state.expandedGames.has(game.key) || (searching && chars.length > 0);
+
+      listEl.append(renderGameRow(game, {
+        open: state.expandedGames.has(game.key),
+        status,
+        charCount: chars.length,
       }));
-      if (!rootOpen) continue;
+      if (!open) continue;
 
-      if (!entry || entry.status === 'loading') {
+      if (status === 'loading') {
         listEl.append(el('p', 'muted-hint tree-hint', '加载中…'));
         continue;
       }
-      if (entry.status === 'error') {
-        listEl.append(el('p', 'error-banner', `加载失败：${entry.error}`));
+      if (status === 'error') {
+        listEl.append(el('p', 'error-banner', `加载失败：${game.roots.map((r) => r.id).join(', ')}`));
         continue;
       }
 
-      const chars = visibleChars(root);
       totalChars += chars.length;
       const selectedId = state.selected ? state.selected.modelId : null;
       for (const c of chars) {
-        if (rendered >= RENDER_LIMIT_PER_ROOT) break;
+        if (rendered >= RENDER_LIMIT_PER_GAME) break;
         rendered += 1;
         const charOpen = state.expandedChars.has(c.key) || searching;
-        listEl.append(renderCharRow(root, c, charOpen));
-        if (!charOpen) continue;
+        listEl.append(renderCharRow(game, c, charOpen));
+        // 变体数按数据统计（不依赖是否展开），与旧前端「N 游戏 / M 角色 / K 变体」口径一致
         totalVariants += c.variants.length;
-        for (const v of c.variants) listEl.append(renderVariantRow(root, c, v, selectedId));
+        if (!charOpen) continue;
+        for (const v of c.variants) listEl.append(renderVariantRow(game, c, v, selectedId));
       }
-      if (!chars.length) listEl.append(el('p', 'muted-hint tree-hint', searching ? '无匹配' : '该资源根没有可加载模型'));
+      if (!chars.length) {
+        listEl.append(el('p', 'muted-hint tree-hint', searching ? '无匹配' : '该游戏没有可加载模型'));
+      }
     }
 
-    // 计数文案：搜索时显示"命中数"，平时显示"已加载的规模"
-    const loadedRoots = [...state.loaded.values()].filter((e) => e.status === 'ready');
-    const allChars = loadedRoots.reduce((n, e) => n + e.chars.length, 0);
-    const allVariants = loadedRoots.reduce((n, e) => n + e.chars.reduce((t, c) => t + c.variants.length, 0), 0);
+    // 计数文案：全量已加载时用旧前端的口径（N 游戏 / M 角色 / K 变体），否则标注已加载多少
+    const allLoaded = loadedGames === state.games.length;
+    const prefix = allLoaded ? `${state.games.length} 游戏` : `${state.games.length} 游戏 / 已加载 ${loadedGames}`;
     countEl.textContent = searching
       ? `搜索「${state.keyword}」：${totalChars} 角色 / ${totalVariants} 变体`
-      : `${state.roots.length} 资源根 / 已加载 ${loadedRoots.length} 根：${allChars} 角色 / ${allVariants} 变体`;
+      : `${prefix}：${totalChars} 角色 / ${totalVariants} 变体`;
 
     // 供自动化断言：把状态投影成可读快照
     document.documentElement.dataset.rosterReady = '1';
@@ -203,26 +250,27 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
 
   /** 状态快照（自动化断言与排查用，避免每次都去数 DOM） */
   function snapshot() {
-    const roots = state.roots.map((r) => {
-      const e = state.loaded.get(r.id);
+    const games = state.games.map((g) => {
+      const chars = state.gameChars.get(g.key);
       return {
-        id: r.id,
-        name: r.name,
-        status: e ? e.status : 'idle',
-        source: e ? e.source : '',
-        chars: e && e.chars ? e.chars.length : 0,
-        variants: e && e.chars ? e.chars.reduce((n, c) => n + c.variants.length, 0) : 0,
-        miss: e && e.stats ? e.stats.miss : 0,
+        key: g.key,
+        name: g.name,
+        roots: g.roots.map((r) => r.id),
+        status: gameStatus(g),
+        sources: g.roots.map((r) => (state.loaded.get(r.id) || {}).source || '').filter(Boolean),
+        chars: chars ? chars.chars.length : 0,
+        variants: chars ? chars.chars.reduce((n, c) => n + c.variants.length, 0) : 0,
+        miss: chars ? chars.stats.miss : 0,
       };
     });
     return {
-      roots,
-      expandedRoots: [...state.expandedRoots],
+      games,
+      expandedGames: [...state.expandedGames],
       expandedChars: [...state.expandedChars],
       keyword: state.keyword,
       selected: state.selected,
       domRows: {
-        roots: listEl.querySelectorAll('[data-root-id].tree-root').length,
+        games: listEl.querySelectorAll('[data-game-key].tree-game').length,
         chars: listEl.querySelectorAll('[data-char-key].tree-char').length,
         variants: listEl.querySelectorAll('[data-model-id]').length,
       },
@@ -231,19 +279,19 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
 
   // ------------------------------------------------------------ 事件
 
-  /** 点一级：折叠/展开资源根（首次展开触发该根的数据加载） */
-  async function onRootClick(rootId) {
-    if (state.expandedRoots.has(rootId)) {
-      state.expandedRoots.delete(rootId);
+  /** 点一级：折叠/展开游戏（首次展开触发该游戏所有根的数据加载） */
+  async function onGameClick(gameKey) {
+    if (state.expandedGames.has(gameKey)) {
+      state.expandedGames.delete(gameKey);
       render();
       saveState();
       return;
     }
-    state.expandedRoots.add(rootId);
-    // 先渲染一次：已加载过的根直接出角色行（ensureRootLoaded 在"已就绪"分支会提前返回，不会渲染）
+    state.expandedGames.add(gameKey);
+    // 先渲染一次：已加载过的游戏直接出角色行（ensureGameLoaded 在无待加载根时不会单独渲染）
     render();
-    const root = state.roots.find((r) => r.id === rootId);
-    if (root) await ensureRootLoaded(root);
+    const game = state.games.find((g) => g.key === gameKey);
+    if (game) await ensureGameLoaded(game);
     saveState();
   }
 
@@ -256,9 +304,10 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
   }
 
   /** 点三级：选中变体（高亮 + 记录状态，M4 用它去渲染） */
-  function onVariantClick(modelId, rootId, charKey) {
-    state.selected = { modelId, rootId, charKey };
-    state.activeRoot = rootId;
+  function onVariantClick(modelId, gameKey, charKey) {
+    const game = state.games.find((g) => g.key === gameKey);
+    state.selected = { modelId, gameKey, gameName: game ? game.name : null, charKey };
+    state.activeGame = game ? game.name : state.activeGame;
     render();
     saveState();
     if (typeof onSelect === 'function') {
@@ -272,23 +321,23 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     /** 按行的类型分派到对应动作（鼠标与键盘共用，避免两套逻辑走偏） */
     function activate(row) {
       if (row.dataset.modelId) {
-        onVariantClick(row.dataset.modelId, row.dataset.rootId, row.dataset.charKey);
+        onVariantClick(row.dataset.modelId, row.dataset.gameKey, row.dataset.charKey);
       } else if (row.dataset.charKey) {
         onCharClick(row.dataset.charKey);
-      } else if (row.dataset.rootId) {
-        onRootClick(row.dataset.rootId);
+      } else if (row.dataset.gameKey) {
+        onGameClick(row.dataset.gameKey);
       }
     }
 
     listEl.addEventListener('click', (e) => {
-      const row = e.target.closest('[data-model-id], [data-char-key], [data-root-id]');
+      const row = e.target.closest('[data-model-id], [data-char-key], [data-game-key]');
       if (row) activate(row);
     });
 
     // 键盘可达：树行带 tabindex="0"，Enter / 空格与点击等价
     listEl.addEventListener('keydown', (e) => {
       if (e.key !== 'Enter' && e.key !== ' ') return;
-      const row = e.target.closest('[data-model-id], [data-char-key], [data-root-id]');
+      const row = e.target.closest('[data-model-id], [data-char-key], [data-game-key]');
       if (!row) return;
       e.preventDefault();
       activate(row);
@@ -296,8 +345,8 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
 
     searchEl.addEventListener('input', () => {
       state.keyword = searchEl.value.trim().toLowerCase();
-      // 搜索要全局数据：首次输入时把所有根补上（之后都走缓存，不再请求）
-      if (state.keyword && state.loaded.size < state.roots.length) {
+      // 搜索要全局数据：首次输入时把所有游戏补上（之后都走缓存，不再请求）
+      if (state.keyword && [...state.gameChars.keys()].length < state.games.length) {
         ensureAllLoaded();
       } else {
         render();
@@ -306,30 +355,42 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
 
     // 「收起」：只清空两级展开状态，面板保留
     collapseBtn.addEventListener('click', () => {
-      state.expandedRoots.clear();
+      state.expandedGames.clear();
       state.expandedChars.clear();
       render();
       saveState();
     });
   }
 
-  /** 初始化：拉资源根列表 → 渲染（不加载任何模型，等用户展开） */
-  async function mount(roots) {
-    state.roots = roots;
+  /**
+   * 初始化：把资源根按 name 合并成游戏 → 渲染（不加载任何模型，等用户展开）
+   * @param {object[]} roots /api/roots 的 roots
+   */
+  function mount(roots) {
+    // 同名根合并成一个游戏节点（照 char-tree.js：name 是归一 key）
+    const byName = new Map();
+    for (const root of roots) {
+      const name = root.name || root.id;
+      if (!byName.has(name)) byName.set(name, { key: `game:${name}`, name, roots: [] });
+      byName.get(name).roots.push(root);
+    }
+    state.games = [...byName.values()];
+
     const saved = readSaved();
-    // 展开状态恢复：只恢复"仍存在的根"，避免历史配置残留导致空节点
-    const ids = new Set(roots.map((r) => r.id));
-    for (const g of saved.games) if (ids.has(g)) state.expandedRoots.add(g);
+    // 展开状态恢复：只恢复仍存在的游戏/角色，避免历史配置残留导致空节点
+    const gameKeys = new Set(state.games.map((g) => g.key));
+    for (const k of saved.games) if (gameKeys.has(k)) state.expandedGames.add(k);
     for (const c of saved.chars) state.expandedChars.add(c);
-    state.activeRoot = saved.activeGame;
+    state.activeGame = saved.activeGame;
+
     bindEvents();
     render();
-    // 恢复展开的根要补加载数据（用户上次就是展开的）
-    for (const id of [...state.expandedRoots]) {
-      const root = roots.find((r) => r.id === id);
-      if (root) ensureRootLoaded(root);
+    // 恢复展开的游戏要补加载数据（用户上次就是展开的）
+    for (const key of [...state.expandedGames]) {
+      const game = state.games.find((g) => g.key === key);
+      if (game) ensureGameLoaded(game);
     }
   }
 
-  return { mount, state, snapshot, render, ensureRootLoaded };
+  return { mount, state, snapshot, render, ensureGameLoaded };
 }

@@ -156,7 +156,7 @@
   background: var(--color-secondary);
 }
 
-.tree-root {
+.tree-game {
   padding-top: 6px;
   padding-bottom: 6px;
   font-weight: 600;
@@ -179,7 +179,7 @@
   color: #9aa;
 }
 
-.tree-root-name {
+.tree-game-name {
   flex: 1;
   min-width: 0;
   overflow: hidden;
