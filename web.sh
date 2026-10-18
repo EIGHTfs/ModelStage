@@ -1,0 +1,76 @@
+#!/bin/bash
+# 新前端（src/web）启停脚本
+# 用法: web.sh [start|stop|restart|status]   (默认 restart；未启动时 restart 相当于 start)
+#
+# 与 server.sh 的关系：
+#   - server.sh 跑旧前端（dist/index.html，默认 8803），PID/日志为 spine-multi-viewer.*
+#   - 本脚本跑重写版前端（src/web，默认 8804），PID/日志为 model-stage-web.*，两者互不干扰
+#   - 新前端通过 dev-server.mjs 把 /api /files /icons /live2d-lib 反代到旧服务（UPSTREAM）
+#
+# 端口与上游都可用环境变量覆盖：
+#   PORT=8804 UPSTREAM=http://127.0.0.1:8803 bash web.sh restart
+
+set -u
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PORT="${PORT:-8804}"
+UPSTREAM="${UPSTREAM:-http://127.0.0.1:8803}"
+PID_FILE="$PROJECT_ROOT/model-stage-web.pid"
+LOG_FILE="$PROJECT_ROOT/model-stage-web.log"
+ENTRY="$PROJECT_ROOT/src/web/dev-server.mjs"
+
+# node 路径按实际环境探测（NAS 重启后 /var/packages 路径可能失效，不能写死）
+probe_bin() {
+  for p in "$(command -v node 2>/dev/null)" /usr/local/bin/node /usr/bin/node \
+           /var/packages/DeepSeekHarness-NAS/target/.local/bin/node; do
+    [ -n "${p:-}" ] && [ -x "$p" ] && { printf '%s' "$p"; return 0; }
+  done
+  return 1
+}
+NODE="$(probe_bin)" || { echo "错误: 找不到 node"; exit 1; }
+
+running_pid() {
+  local pid
+  pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+  [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null && { printf '%s' "$pid"; return 0; }
+  return 1
+}
+
+case "${1:-restart}" in
+  start)
+    if pid="$(running_pid)"; then echo "已在运行 (PID $pid, 端口 $PORT)"; exit 0; fi
+    [ -f "$ENTRY" ] || { echo "错误: 缺少 $ENTRY"; exit 1; }
+    PORT="$PORT" UPSTREAM="$UPSTREAM" nohup "$NODE" "$ENTRY" >"$LOG_FILE" 2>&1 &
+    echo $! > "$PID_FILE"
+    sleep 1.5
+    if pid="$(running_pid)"; then
+      echo "已启动 (PID $pid, 端口 $PORT, 上游 $UPSTREAM, 日志 $LOG_FILE)"
+    else
+      echo "启动失败，日志最后几行："; tail -8 "$LOG_FILE" 2>/dev/null
+      rm -f "$PID_FILE"; exit 1
+    fi
+    ;;
+  stop)
+    if pid="$(running_pid)"; then
+      kill -TERM "$pid" 2>/dev/null && sleep 1
+      kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
+      echo "已停止 (原 PID $pid)"
+    else
+      echo "未运行"
+    fi
+    rm -f "$PID_FILE"
+    ;;
+  restart)
+    "$0" stop; sleep 0.5; "$0" start
+    ;;
+  status)
+    if pid="$(running_pid)"; then
+      echo "运行中 (PID $pid, 端口 $PORT, 上游 $UPSTREAM)"
+      curl -s -o /dev/null -w "  首页 HTTP %{http_code}\n" --max-time 5 "http://127.0.0.1:$PORT/" || true
+    else
+      echo "未运行"
+    fi
+    ;;
+  *)
+    echo "用法: $0 [start|stop|restart|status]"; exit 2
+    ;;
+esac
