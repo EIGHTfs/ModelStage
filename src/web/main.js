@@ -1,4 +1,4 @@
-// main.js —— ModelStage 新前端入口（M3）
+// main.js —— ModelStage 新前端入口（M4）
 //
 // 做什么：
 //   1. 装配各区域 DOM 引用并向 window.__WEB__ 暴露（自动化断言与手工排查都读它）；
@@ -11,10 +11,15 @@
 // 为什么把状态放在 window.__WEB__.state：M7 要做持久化，需要一个显式 store；
 //   现在先立最小形态（不引框架），后续里程碑往里加字段，避免各处散落全局变量。
 
+// 诊断探针必须最先装：后面的模块/渲染出问题时才有取证（API 与旧前端 public/diag.js 一致）
+import { installDiag } from './diag.js';
 import { getJson, formatError } from './api.js';
 import { createRosterView } from './roster-view.js';
 import { mountPanel } from './panel.js';
 import { mountTransport } from './transport.js';
+
+// 页面级第一件事：装诊断探针（幂等，重复调用不会重复包装 console）
+const diag = installDiag();
 
 /** 服务端没配置品牌时的默认品牌名（唯一默认值，别处不重复写） */
 const DEFAULT_BRAND = 'ModelStage';
@@ -31,6 +36,7 @@ const dom = {
   btnLibrary: document.getElementById('btn-library'),
   btnFullscreen: document.getElementById('btn-fullscreen'),
   stageHint: document.getElementById('stage-hint'),
+  stageCanvas: document.getElementById('stage-canvas'),
   panelHead: document.getElementById('panel-head'),
   panelBody: document.getElementById('panel-body'),
   footer: document.getElementById('app-footer'),
@@ -164,7 +170,9 @@ function boot() {
   // 暴露给调试与自动化断言（M2 验收用）
   window.__WEB__ = {
     state,
-    version: 'M3',
+    version: 'M4',
+    /** 诊断探针实例（等价于 window.__DIAG__，便于同一套检查代码复用） */
+    get diag() { return diag; },
     /** 面板/播放条骨架规模（自动化断言用） */
     chrome: { groups: panelInfo.groups, panelControls: panelInfo.controls, transportControls: transportInfo.controls },
     defaultBrand: DEFAULT_BRAND,

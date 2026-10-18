@@ -30,6 +30,12 @@ const upstreamUrl = new URL(UPSTREAM);
 
 // 需要反代到能力层的路径前缀：页面侧全部当同源接口用
 const PROXY_PREFIXES = ['/api/', '/files/', '/icons/', '/live2d-lib/'];
+
+// Spine 运行时：不在 src/web 下（3.2MB、7 个版本、已被 .gitignore 排除），单独一条静态路由。
+// 为什么由本服务托管而不是走 8803：运行时是"前端自己的资源"，且新前端要按模型版本按需加载。
+const RUNTIME_DIR = path.resolve(WEB_ROOT, '..', 'spine-runtimes');
+const RUNTIME_PREFIX = '/spine-runtimes/';
+
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -42,6 +48,38 @@ const MIME = {
   '.webp': 'image/webp',
   '.ico': 'image/x-icon',
 };
+
+/**
+ * 服务 src/spine-runtimes/<文件名>（只允许该目录下的普通文件，防目录穿越）。
+ * @returns {boolean} 是否已处理该请求
+ */
+function serveRuntime(req, res, pathname) {
+  if (!pathname.startsWith(RUNTIME_PREFIX)) return false;
+  const name = decodeURIComponent(pathname.slice(RUNTIME_PREFIX.length));
+  const abs = path.resolve(RUNTIME_DIR, name);
+  // 越界（../ 之类）或不是直接子文件都拒绝
+  if (!abs.startsWith(RUNTIME_DIR + path.sep) || path.dirname(abs) !== RUNTIME_DIR) {
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('403: forbidden');
+    return true;
+  }
+  let stat;
+  try { stat = fs.statSync(abs); } catch { stat = null; }
+  if (!stat || !stat.isFile()) {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end(`404: ${name}`);
+    return true;
+  }
+  res.writeHead(200, {
+    'Content-Type': 'text/javascript; charset=utf-8',
+    'Content-Length': stat.size,
+    // 运行时按版本固定内容，可以缓存；开发期仍禁缓存避免"改了没生效"的错觉
+    'Cache-Control': 'no-store',
+  });
+  if (req.method === 'HEAD') { res.end(); return true; }
+  fs.createReadStream(abs).pipe(res);
+  return true;
+}
 
 /**
  * 把 URL 路径解析到 src/web 内的真实文件；越界或不存在返回 null。
@@ -117,6 +155,8 @@ function proxyToUpstream(req, res) {
 
 const server = http.createServer((req, res) => {
   const pathname = new URL(req.url, `http://localhost:${PORT}`).pathname;
+  // Spine 运行时（src/spine-runtimes/，不在 src/web 下）
+  if ((req.method === 'GET' || req.method === 'HEAD') && serveRuntime(req, res, pathname)) return;
   if (PROXY_PREFIXES.some((p) => pathname.startsWith(p))) {
     return proxyToUpstream(req, res);
   }

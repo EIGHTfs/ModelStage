@@ -15,6 +15,7 @@ src/web/
 ├── components.css    控件外观：品牌、按钮、搜索框、三级树行、右栏分组行、底栏分组、错误横幅
 ├── main.js           入口：品牌、面板开关、资源根加载、名册挂载、错误兜底、window.__WEB__ 调试出口
 ├── api.js            同源 JSON 请求封装（统一错误口径）
+├── diag.js           诊断探针 window.__DIAG__（错误/警告/关键事件 + 落盘 /api/diag）
 ├── roster.js         名册数据层：按根取模型清单 + 名表合并 + 角色归并（规则照 public/char-tree.js）
 ├── roster-view.js    名册视图层：状态、事件、懒加载、搜索过滤、选中态、持久化
 ├── roster-rows.js    三级树的行渲染（纯 DOM 工厂，无状态）
@@ -134,7 +135,38 @@ bash web.sh start|stop|restart|status     # 默认 8804，上游 8803
       底栏 旧 10（可见 8，另 2 个是移动端重复的 上一个/下一个）/ 新 8
 - [x] 穷举实操 20 项全过 + 控制台零错误（`test/panel-actions.js`）
 
-## 五、自测方式
+## 五、诊断（window.__DIAG__）
+
+页面自带诊断探针，**API 与旧前端 `public/diag.js` 完全一致**（同一套检查代码可对两个前端跑）。
+`main.js` 在模块体第一件事就安装它，保证早期错误也能被抓到。
+
+采什么（只收错误/警告/关键事件，**不做每帧采样**）：
+
+- `window.onerror`（含资源加载失败：img/script/link/video/audio，capture 阶段）
+- `unhandledrejection`
+- 包装 `console.error / warn / info`（幂等：重复注入只生效一次；保留原引用；内部日志不自激）
+- 业务主动上报：`__DIAG__.event('stage.load', { … })`
+
+怎么读（浏览器控制台）：
+
+```js
+__DIAG__.__installed          // true = 已安装
+__DIAG__.errors()             // 所有 error 级条目（含 window / rejection / resource.fail）
+__DIAG__.warnings()           // warn 级
+__DIAG__.timeline()           // 一行一条的时间线（便于贴给 AI 看）
+__DIAG__.tail(10)             // 最近 10 条完整条目
+__DIAG__.size()               // { buffered, capacity, pendingFlush, sinceMs }
+__DIAG__.dump()               // 全部缓冲（最多 capacity 条）
+__DIAG__.clear() / flushNow() // 清空 / 立即落盘
+__DIAG__.config               // 当前配置（capacity=500 等）
+```
+
+落盘：批量 `POST /api/diag` → 服务端追加写 **`data/diag.jsonl`**（一行一条 JSON）。
+落盘失败会静默降级为仅内存，不影响页面。查看方式：`wc -l data/diag.jsonl` / `tail -3 data/diag.jsonl`。
+
+面板显示：本阶段不做（等 M6 的「调试日志」开关）。
+
+## 六、自测方式
 
 ```bash
 # 1) 零错误自证（四类信号：console.error / 未捕获异常 / 浏览器日志 error / 4xx 与请求失败）
@@ -157,7 +189,7 @@ curl -s http://127.0.0.1:8804/api/brand
 #        expandedGames, expandedChars, keyword, selected, domRows }
 ```
 
-## 六、决策记录（已裁决）
+## 七、决策记录（已裁决）
 
 1. **一级节点按 name 合并**：与旧前端 `char-tree.js` 一致（2 个游戏节点），角色**跨根归并**。
    早期一版按一根一行实现（4 个节点），已按裁决改回合并口径。
