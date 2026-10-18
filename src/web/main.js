@@ -91,8 +91,23 @@ async function loadBrand() {
   }
 }
 
-/** 左栏显示/隐藏：位移 + 淡出，与旧前端「模型库」按钮的过渡一致 */
-function toggleLeftPanel() {
+/**
+ * 读"启动自动恢复上次模型"开关：GET /api/web-config。
+ * 语义：显式 false 才关闭；true 与 null（未配置）都按恢复处理。
+ * 请求失败也按"恢复"处理——配置不是关键路径，不能因为它读不到就白屏或改变既有行为。
+ * @returns {Promise<boolean>}
+ */
+async function loadWebConfig() {
+  try {
+    const cfg = await getJson('/api/web-config');
+    if (cfg && typeof cfg.autoRestoreLast === 'boolean') return cfg.autoRestoreLast;
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+/** 左栏显示/隐藏：位移 + 淡出，与旧前端「模型库」按钮的过渡一致 */function toggleLeftPanel() {
   state.leftPanelVisible = !state.leftPanelVisible;
   dom.leftPanel.classList.toggle('is-hidden', !state.leftPanelVisible);
   dom.btnLibrary.setAttribute('aria-expanded', String(state.leftPanelVisible));
@@ -150,10 +165,11 @@ function onSelectModel(model) {
     });
 }
 
-/** 拉资源根并把名册三级树挂到左栏 */
+/** 拉资源根并把名册三级树挂到左栏（并按配置决定是否恢复上次选中） */
 async function loadRoots() {
   try {
-    const data = await getJson('/api/roots');
+    // 资源根与恢复开关互不依赖：并行取，任一失败都不影响另一条（开关失败按"恢复"处理）
+    const [data, autoRestore] = await Promise.all([getJson('/api/roots'), loadWebConfig()]);
     const roots = Array.isArray(data?.roots) ? data.roots : [];
     state.roots = roots;
     const roster = createRosterView({
@@ -164,11 +180,21 @@ async function loadRoots() {
       onSelect: onSelectModel,
     });
     state.roster = roster;
-    await roster.mount(roots);
-    // 供自动化断言：资源根 id 序列（与 /api/roots 一致）+ 名册状态快照
+    // 关闭自动恢复时，连"上次展开的节点"也不还原：保持空舞台、空展开
+    await roster.mount(roots, { restoreExpanded: autoRestore });
+    state.autoRestore = autoRestore;
+    state.restore = autoRestore
+      ? await roster.restoreLast()
+      : { restored: false, reason: 'config-off' };
+    // 供自动化断言：资源根 id 序列 + 恢复结果
     document.documentElement.dataset.rootsIds = roots.map((r) => r.id).join(',');
     document.documentElement.dataset.rootsReady = '1';
-    dom.stageHint.textContent = `M2 名册 · ${roots.length} 个资源根 · 舞台渲染在 M4 接入`;
+    document.documentElement.dataset.restore = JSON.stringify(state.restore);
+    if (!state.restore.restored) {
+      dom.stageHint.textContent = autoRestore
+        ? `M2 名册 · ${roots.length} 个资源根 · 暂无上次选中的模型`
+        : `M2 名册 · ${roots.length} 个资源根 · 已按配置关闭自动恢复`;
+    }
   } catch (err) {
     state.rootsError = formatError(err);
     document.documentElement.dataset.rootsReady = 'error';
@@ -210,6 +236,10 @@ function boot() {
     version: 'M4',
     /** 渲染舞台（测试脚本用它取像素、看统计） */
     get stage() { return stage; },
+    /** 启动恢复结果：{restored, reason?, modelId?}（自动化断言用） */
+    get restore() { return state.restore || null; },
+    /** 自动恢复开关的生效值（true=恢复，false=配置关闭） */
+    get autoRestore() { return state.autoRestore; },
     /** 诊断探针实例（等价于 window.__DIAG__，便于同一套检查代码复用） */
     get diag() { return diag; },
     /** 面板/播放条骨架规模（自动化断言用） */

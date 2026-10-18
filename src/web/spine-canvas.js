@@ -76,25 +76,37 @@ function ensureEngine() {
 /** 运行时目录清单（dev-server 扫目录生成；客户端不写死版本列表） */
 function fetchManifest() {
   if (manifestPromise) return manifestPromise;
-  manifestPromise = fetch(RUNTIME_MANIFEST, { cache: 'no-store' })
+  const p = fetch(RUNTIME_MANIFEST, { cache: 'no-store' })
     .then((r) => (r.ok ? r.json() : { versions: [] }))
     .then((j) => (Array.isArray(j.versions) ? j.versions : []))
     .catch(() => []);
-  return manifestPromise;
+  manifestPromise = p;
+  p.then((list) => {
+    // 空结果多为"服务刚起/网络抖动"，缓存它会让后续加载永久拿不到版本 ⇒ 清掉待下次重试
+    if (!list.length && manifestPromise === p) manifestPromise = null;
+  });
+  return p;
 }
 
 /** 本机可用版本：直接采用 dev-server 扫目录生成的清单（不再逐版发 HEAD 探测，
  *  避免并发探测请求在切换/卸载时被中断成 ERR_ABORTED）。 */
 async function availableVersions() {
-  if (availableCache) return availableCache;
-  availableCache = await fetchManifest();
-  return availableCache;
+  if (availableCache && availableCache.length) return availableCache;
+  let list = await fetchManifest();
+  // 服务刚起/抖动时清单可能一时为空：同一次加载内立即重试一次，避免把"瞬时失败"变成"这次一定失败"
+  if (!list.length) {
+    await new Promise((r) => setTimeout(r, 150));
+    list = await fetchManifest();
+  }
+  if (list.length) availableCache = list; // 只缓存非空结果
+  return list;
 }
 
 /** 精确命中优先，否则同 major 的最大 minor，最后退清单里最大的 */
 function pickRuntimeVersion(version, available) {
   const want = majorMinor(version);
-  if (!available.length) return want;
+  if (!available.length) return want || null; // 清单不可用：有版本用版本，没版本交给调用方报错
+  if (!want) return available[available.length - 1]; // 模型缺版本号：用清单里最新的一档
   if (available.includes(want)) return want;
   const major = want.split('.')[0];
   const same = available.filter((v) => v.split('.')[0] === major);
@@ -276,6 +288,7 @@ async function loadIntoStage(st, canvas, arg) {
   const Engine = await ensureEngine();
   const avail = await availableVersions();
   const ver = pickRuntimeVersion(model.version, avail);
+  if (!ver) throw businessError('无法确定该模型的 Spine 版本：元数据缺少 version，且运行时清单不可用');
   await ensureRuntimeSource(ver);
   if (seq !== st.seq) throw businessError('加载已被新的选择取代');
   const res = await fetchModelResources(root, model, ctl.signal);
@@ -316,7 +329,12 @@ export function createSpineStage(opts) {
         status({ phase: 'ready', ...info });
         return info;
       } catch (err) {
-        if (err && err.business) throw err;
+        if (err && err.business) {
+          // 业务错误也要落到状态里（页面提示与遥测都靠 lastError）
+          st.lastError = String(err.message || err);
+          status({ phase: error, error: st.lastError });
+          throw err;
+        }
         if (err && err.name === 'AbortError') throw fail('加载已被新的选择取代', err);
         throw fail(`加载失败：${err && err.message ? err.message : err}`, err);
       }

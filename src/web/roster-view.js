@@ -60,9 +60,11 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
         chars: new Set(Array.isArray(s.chars) ? s.chars : []),
         activeGame: typeof s.activeGame === 'string' ? s.activeGame : null,
         lastByGame: s.lastByGame && typeof s.lastByGame === 'object' ? s.lastByGame : {},
+        // 旧格式：只有单个 lastModelId（更早版本写入的），读出来用于兼容恢复
+        lastModelId: typeof s.lastModelId === 'string' ? s.lastModelId : null,
       };
     } catch {
-      return { games: new Set(), chars: new Set(), activeGame: null, lastByGame: {} };
+      return { games: new Set(), chars: new Set(), activeGame: null, lastByGame: {}, lastModelId: null };
     }
   }
 
@@ -86,34 +88,40 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
   // ------------------------------------------------------------ 数据加载
 
   /**
-   * 确保某个资源根的模型已加载（已就绪/加载中直接返回）。
-   * 为什么按根加载：一个根一次请求（服务端有清单缓存），只付用到的根的成本。
+   * 确保某个资源根的模型已加载。
+   * 并发要点：正在加载中的根必须**可等待**（entry.promise），否则后到的调用方会拿到空数据
+   *   ——启动恢复与"恢复展开态"的加载会并发进来，这一点决定恢复能否命中。
    * @param {object} root
+   * @returns {Promise<object>} 该根的加载状态条目（ready / error）
    */
-  async function ensureRootLoaded(root) {
+  function ensureRootLoaded(root) {
     const cur = state.loaded.get(root.id);
-    if (cur && (cur.status === 'ready' || cur.status === 'loading')) return cur;
-    const entry = { status: 'loading', models: [], source: '', error: null };
+    if (cur && cur.promise) return cur.promise.then(() => cur);
+    if (cur && cur.status === 'ready') return Promise.resolve(cur);
+    const entry = { status: 'loading', models: [], source: '', error: null, promise: null };
+    entry.promise = (async () => {
+      try {
+        // 名表按根取一次并合并进全局索引（同名表只并一次，避免重复 assign）
+        if (!namesLoaded.has(root.id)) {
+          namesLoaded.add(root.id);
+          const table = await loadRootNames(root.id);
+          if (table) mergeNameTable(nameIndex, table);
+        }
+        const { models, source } = await loadRootModels(root);
+        for (const m of models) modelById.set(m.id, { model: m, rootId: root.id });
+        entry.status = 'ready';
+        entry.models = models;
+        entry.source = source;
+      } catch (err) {
+        entry.status = 'error';
+        entry.error = formatError(err);
+      }
+      entry.promise = null;
+      render();
+    })();
     state.loaded.set(root.id, entry);
     render();
-    try {
-      // 名表按根取一次并合并进全局索引（同名表只并一次，避免重复 assign）
-      if (!namesLoaded.has(root.id)) {
-        namesLoaded.add(root.id);
-        const table = await loadRootNames(root.id);
-        if (table) mergeNameTable(nameIndex, table);
-      }
-      const { models, source } = await loadRootModels(root);
-      for (const m of models) modelById.set(m.id, { model: m, rootId: root.id });
-      entry.status = 'ready';
-      entry.models = models;
-      entry.source = source;
-    } catch (err) {
-      entry.status = 'error';
-      entry.error = formatError(err);
-    }
-    render();
-    return entry;
+    return entry.promise.then(() => entry);
   }
 
   /** 某游戏的全部根是否都已就绪（有失败也算"可渲染"，错误在游戏节点下提示） */
@@ -142,10 +150,13 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
   }
 
   /**
-   * 确保某游戏的模型已加载：并行加载其所有未就绪的根，然后跨根归并。
+   * 确保某游戏的模型已加载：先等在飞的根加载完，再补齐未开始的根，最后跨根归并。
    * @param {object} game
    */
   async function ensureGameLoaded(game) {
+    const entries = game.roots.map((r) => state.loaded.get(r.id));
+    const inflight = entries.filter((e) => e && e.promise).map((e) => e.promise);
+    if (inflight.length) await Promise.all(inflight);
     const pending = game.roots.filter((r) => {
       const e = state.loaded.get(r.id);
       return !e || e.status === 'idle' || e.status === 'error';
@@ -368,8 +379,10 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
   /**
    * 初始化：把资源根按 name 合并成游戏 → 渲染（不加载任何模型，等用户展开）
    * @param {object[]} roots /api/roots 的 roots
+   * @param {{restoreExpanded?: boolean}} opts restoreExpanded=false 时不恢复任何展开态（自动恢复被关闭时用）
    */
-  function mount(roots) {
+  function mount(roots, opts) {
+    const restoreExpanded = !opts || opts.restoreExpanded !== false;
     // 同名根合并成一个游戏节点（照 char-tree.js：name 是归一 key）
     const byName = new Map();
     for (const root of roots) {
@@ -380,20 +393,79 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     state.games = [...byName.values()];
 
     const saved = readSaved();
-    // 展开状态恢复：只恢复仍存在的游戏/角色，避免历史配置残留导致空节点
-    const gameKeys = new Set(state.games.map((g) => g.key));
-    for (const k of saved.games) if (gameKeys.has(k)) state.expandedGames.add(k);
-    for (const c of saved.chars) state.expandedChars.add(c);
-    state.activeGame = saved.activeGame;
+    if (restoreExpanded) {
+      // 展开状态恢复：只恢复仍存在的游戏，避免历史配置残留导致空节点
+      const gameKeys = new Set(state.games.map((g) => g.key));
+      for (const k of saved.games) if (gameKeys.has(k)) state.expandedGames.add(k);
+      for (const c of saved.chars) state.expandedChars.add(c);
+      state.activeGame = saved.activeGame;
+    }
 
     bindEvents();
     render();
     // 恢复展开的游戏要补加载数据（用户上次就是展开的）
-    for (const key of [...state.expandedGames]) {
-      const game = state.games.find((g) => g.key === key);
-      if (game) ensureGameLoaded(game);
+    if (restoreExpanded) {
+      for (const key of [...state.expandedGames]) {
+        const game = state.games.find((g) => g.key === key);
+        if (game) ensureGameLoaded(game);
+      }
     }
   }
 
-  return { mount, state, snapshot, render, ensureGameLoaded };
+  /** 从存档里取出"上次选中的变体 id"：优先按活跃游戏取，其次旧格式单个 id，最后取任一非空值 */
+  function targetModelId(saved) {
+    const byGame = saved.lastByGame || {};
+    if (saved.activeGame && byGame[saved.activeGame]) return byGame[saved.activeGame];
+    if (saved.lastModelId) return saved.lastModelId;
+    const first = Object.values(byGame).find((v) => typeof v === 'string' && v);
+    return first || null;
+  }
+
+  /** 在某游戏已加载的角色里找该变体，命中返回 { charKey, variant }（变体对象形如 { model, nm }） */
+  function findVariant(game, modelId) {
+    const entry = state.gameChars.get(game.key);
+    if (!entry) return null;
+    for (const c of entry.chars) {
+      const v = c.variants.find((x) => x.model && x.model.id === modelId);
+      if (v) return { charKey: c.key, variant: v };
+    }
+    return null;
+  }
+
+  /**
+   * 启动恢复：按存档把上次选中的变体重新选中并渲染。
+   * 懒加载顺序：目标变体所属游戏可能还没加载 ⇒ 先按游戏逐个加载再看命中，不预取全部。
+   * 失效兜底：所有游戏都找过仍没有 ⇒ 安静回落空舞台（不展开、不报错、不留半选中状态）。
+   * @returns {Promise<{restored: boolean, modelId?: string, reason?: string}>}
+   */
+  async function restoreLast() {
+    const saved = readSaved();
+    const modelId = targetModelId(saved);
+    if (!modelId) return { restored: false, reason: 'no-saved' };
+
+    // 活跃游戏先试（多数命中在第一个），再按顺序找其余游戏
+    const ordered = [...state.games];
+    const active = ordered.find((g) => g.name === saved.activeGame);
+    if (active) ordered.unshift(...ordered.splice(ordered.indexOf(active), 1));
+
+    for (const game of ordered) {
+      await ensureGameLoaded(game);
+      const hit = findVariant(game, modelId);
+      if (!hit) continue;
+      state.expandedGames.add(game.key);
+      state.expandedChars.add(hit.charKey);
+      state.selected = { modelId, gameKey: game.key, gameName: game.name, charKey: hit.charKey };
+      state.activeGame = game.name;
+      render();
+      saveState(); // 顺带把旧格式迁移成 lastByGame（saveState 只写 lastByGame）
+      if (typeof onSelect === 'function') onSelect(modelById.get(modelId)?.model || null);
+      return { restored: true, modelId, gameKey: game.key, charKey: hit.charKey };
+    }
+    // 存档里的模型已不存在：清掉半状态，保持空舞台
+    state.selected = null;
+    render();
+    return { restored: false, reason: 'missing', modelId };
+  }
+
+  return { mount, state, snapshot, render, ensureGameLoaded, restoreLast };
 }
