@@ -27,19 +27,62 @@ export const PANEL_GROUPS = [
     title: '动作',
     defaultOpen: true,
     controls: [
-      { kind: 'switch', label: '混合模式', id: 'ctl-mix-mode' },
+      { kind: 'switch', label: '混合模式', id: 'ctl-mix-mode', title: '动画切换时是否交叉淡化（与皮肤组同一状态）' },
       { kind: 'dynamic-list', label: '动作列表', note: '选中模型后逐条列出动作（M6 接线）' },
     ],
   },
-  { id: 'skin', title: '皮肤', controls: [PLACEHOLDER('选中模型后列出皮肤')] },
+  {
+    id: 'skin',
+    title: '皮肤',
+    controls: [
+      // 与「动作」组的混合模式是同一状态，两处点任一处都要同步（main.js 统一维护）
+      { kind: 'switch', label: '混合模式', id: 'ctl-skin-mix', title: '动画切换时是否交叉淡化（与动作组同一状态）' },
+      // 皮肤列表：加载模型后按 skeletonData.skins 重建；默认 default
+      { kind: 'chips', label: '皮肤列表', id: 'ctl-skin-list', defaultValue: 'default', options: [{ text: 'default', value: 'default' }] },
+    ],
+  },
   { id: 'play', title: '播放', controls: [PLACEHOLDER('速度 / 循环 / 帧步进')] },
-  { id: 'filter', title: '滤镜', controls: [PLACEHOLDER('滤镜预设')] },
+  {
+    id: 'filter',
+    title: '滤镜',
+    controls: [
+      // id 取自引擎内置预设表（original/bright/soft/mono/warm/cool/fresh/sepia/tealorange/cyber/negative/woodcut）
+      {
+        kind: 'chips',
+        label: '滤镜预设',
+        id: 'ctl-filter-preset',
+        defaultValue: 'original',
+        options: [
+          { text: '原画', value: 'original' },
+          { text: '亮部增强', value: 'bright' },
+          { text: '亮部柔和', value: 'soft' },
+          { text: '黑白', value: 'mono' },
+          { text: '暖色', value: 'warm' },
+          { text: '冷色', value: 'cool' },
+          { text: '日系清新', value: 'fresh' },
+          { text: '棕褐复古', value: 'sepia' },
+          { text: '青橙电影', value: 'tealorange' },
+          { text: '赛博朋克', value: 'cyber' },
+          { text: '负片', value: 'negative' },
+          { text: '版画二值', value: 'woodcut' },
+        ],
+      },
+    ],
+  },
   {
     id: 'pma',
     title: 'PMA 预乘',
     controls: [
-      // 开 = 预乘（premultiplied），关 = 直通（straight）；切换会重传贴图
-      { kind: 'switch', label: 'PMA 预乘', id: 'ctl-pma', defaultOn: true },
+      // 与旧端一致的四档：自动推断 / 强制已预乘 / 强制非预乘 / 上传时转预乘（切换都会重传贴图）
+      {
+        kind: 'segmented',
+        label: 'PMA 预乘',
+        id: 'ctl-pma',
+        options: ['自动', '已预乘', '非预乘', '转预乘'],
+        titles: ['按像素抽样自动推断', '强制按已预乘处理', '强制按非预乘处理（运行时 4.1+ 才原生支持，较早版本会降级为转预乘）', '上传时在 GPU 上转成预乘'],
+        values: ['auto', 'premultiplied', 'straight', 'upload'],
+        defaultValue: 'auto',
+      },
     ],
   },
   {
@@ -50,8 +93,51 @@ export const PANEL_GROUPS = [
       { kind: 'readonly', label: '运行时版本', id: 'ctl-runtime', note: '按模型骨架版本自动选择' },
     ],
   },
-  { id: 'theme', title: '主题背景', controls: [PLACEHOLDER('背景样式与配色')] },
-  { id: 'debug', title: '调试绘制', controls: [PLACEHOLDER('骨骼 / 包围盒 / 网格绘制')] },
+  {
+    id: 'theme',
+    title: '主题背景',
+    controls: [
+      // 主题换的是整站配色（CSS 变量层），背景模式换的是舞台底色，两件独立的事
+      {
+        kind: 'select',
+        label: '主题',
+        id: 'ctl-theme',
+        defaultValue: 'dark-cyan',
+        options: [
+          { text: '深空青', value: 'dark-cyan' },
+          { text: '暖陶暗色', value: 'eye-gray' },
+          { text: '日间纸', value: 'day-paper' },
+          { text: '霓虹夜', value: 'neon-violet' },
+          { text: '云蓝', value: 'cloud-blue' },
+        ],
+      },
+      {
+        kind: 'segmented',
+        label: '背景模式',
+        id: 'ctl-bg-mode',
+        options: ['棋盘格', '纯色', '透明', '自定义'],
+        values: ['checkerboard', 'solid', 'transparent', 'custom'],
+        defaultValue: 'checkerboard',
+        disabledValues: ['custom'],
+        titles: ['棋盘格底纹', '纯色底色', '透明（露出页面底色）', '本地图片背景：需文件选择器，二期接入'],
+      },
+    ],
+  },
+  {
+    id: 'debug',
+    title: '调试绘制',
+    controls: [
+      // 8 个独立开关（可同时开）；键名与引擎 debugDraw 的字段一一对应
+      { kind: 'switch', label: '骨骼', id: 'ctl-debug-bones', debugKey: 'bones' },
+      { kind: 'switch', label: '网格', id: 'ctl-debug-meshes', debugKey: 'meshes' },
+      { kind: 'switch', label: '包围盒', id: 'ctl-debug-boundingBoxes', debugKey: 'boundingBoxes' },
+      { kind: 'switch', label: '路径', id: 'ctl-debug-paths', debugKey: 'paths' },
+      { kind: 'switch', label: '点', id: 'ctl-debug-points', debugKey: 'points' },
+      { kind: 'switch', label: '区域', id: 'ctl-debug-regions', debugKey: 'regions' },
+      { kind: 'switch', label: '裁剪', id: 'ctl-debug-clipping', debugKey: 'clipping' },
+      { kind: 'switch', label: '外壳', id: 'ctl-debug-hulls', debugKey: 'hulls' },
+    ],
+  },
   {
     id: 'settings',
     title: '设置',

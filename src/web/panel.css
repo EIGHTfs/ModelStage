@@ -189,3 +189,94 @@
   color: var(--color-foreground);
   font-size: 11px;
 }
+
+/* 主题：dark-cyan（色值取自旧端 8803 的 --color-* 变量，逐值一致） */
+[data-ui-theme="dark-cyan"] {
+  --color-background: #131416;
+  --color-foreground: #e9ebed;
+  --color-card: #1f2326;
+  --color-primary: #1fc0c5;
+  --color-primary-foreground: #0a0a0c;
+  --color-secondary: #2a2f33;
+  --color-muted: #23272a;
+  --color-muted-foreground: #9ca3af;
+  --color-border: #353a3e;
+}
+
+/* 主题：eye-gray（色值取自旧端 8803 的 --color-* 变量，逐值一致） */
+[data-ui-theme="eye-gray"] {
+  --color-background: #262624;
+  --color-foreground: #f0eee9;
+  --color-card: #30302e;
+  --color-primary: #d97757;
+  --color-primary-foreground: #1f1d1a;
+  --color-secondary: #3a3936;
+  --color-muted: #2e2d2b;
+  --color-muted-foreground: #b0aea5;
+  --color-border: #4a4843;
+}
+
+/* 主题：day-paper（色值取自旧端 8803 的 --color-* 变量，逐值一致） */
+[data-ui-theme="day-paper"] {
+  --color-background: #f4f1ea;
+  --color-foreground: #262420;
+  --color-card: #fbf9f4;
+  --color-primary: #0e8a8f;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #e7e2d7;
+  --color-muted: #ece8de;
+  --color-muted-foreground: #5c574b;
+  --color-border: #d8d2c4;
+}
+
+/* 主题：neon-violet（色值取自旧端 8803 的 --color-* 变量，逐值一致） */
+[data-ui-theme="neon-violet"] {
+  --color-background: #0b0814;
+  --color-foreground: #ece8f7;
+  --color-card: #16111f;
+  --color-primary: #a855f7;
+  --color-primary-foreground: #160a22;
+  --color-secondary: #221a30;
+  --color-muted: #1a1426;
+  --color-muted-foreground: #b0a6cc;
+  --color-border: #352b49;
+}
+
+/* 主题：cloud-blue（色值取自旧端 8803 的 --color-* 变量，逐值一致） */
+[data-ui-theme="cloud-blue"] {
+  --color-background: #eef2f7;
+  --color-foreground: #16202e;
+  --color-card: #fbfcfe;
+  --color-primary: #2563eb;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #e2e8f0;
+  --color-muted: #e6ebf2;
+  --color-muted-foreground: #4f5e78;
+  --color-border: #cbd5e1;
+}
+
+/* 舞台底色：背景模式（旧端只写存储不改画面，这里是新端的真实实现，属有意增强） */
+#stage { --stage-solid: #2a2a2a; }
+#stage[data-bg="solid"] { background: var(--stage-solid); }
+#stage[data-bg="transparent"] { background: transparent; }
+#stage[data-bg="checkerboard"] { background-image: none; }
+
+/* ---- 右栏不可点控件的删除线（跟随 disabled / data-pending 状态自动生效与消失） ----
+   口径：按钮/下拉被禁用 → 它们自己的文字各自划掉（分段组内逐项精确）；
+        开关与下拉没有可见文字，则划掉所在行的 .ctl-label。
+   颜色用弱化色，避免抢视觉。*/
+#right-panel button:disabled,
+#right-panel select:disabled {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--color-muted-foreground);
+}
+
+#right-panel .ctl-row:has(> [role="switch"][disabled]) > .ctl-label,
+#right-panel .ctl-row:has(> [role="switch"][aria-disabled="true"]) > .ctl-label,
+#right-panel .ctl-row:has(> select:disabled) > .ctl-label,
+#right-panel .ctl-row:has(> .ctl-chips > .chip-btn[data-pending]) > .ctl-label {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--color-muted-foreground);
+}

@@ -52,9 +52,12 @@ function renderSegmented(ctl, ctx) {
     const item = typeof opt === 'string' ? { text: opt } : opt;
     const btn = el('button', 'seg-btn', item.text);
     btn.type = 'button';
+    btn.dataset.value = String(ctl.values[i]);
     btn.setAttribute('aria-pressed', String(i === defaultIdx));
-    if (wired) {
-      btn.title = item.title || item.text;
+    const hint = (ctl.titles && ctl.titles[i]) || item.title;
+    const optDisabled = Array.isArray(ctl.disabledValues) && ctl.disabledValues.includes(ctl.values[i]);
+    if (wired && !optDisabled) {
+      btn.title = hint || item.text;
       btn.addEventListener('click', () => {
         for (const other of group.children) other.setAttribute('aria-pressed', 'false');
         btn.setAttribute('aria-pressed', 'true');
@@ -63,7 +66,7 @@ function renderSegmented(ctl, ctx) {
     } else {
       markPending(btn, null);
       btn.disabled = true;
-      btn.title = item.title ? `${item.title}（M6 接线）` : '待接线（M6）';
+      btn.title = optDisabled ? (hint || '待接线（M6）') : (item.title ? `${item.title}（M6 接线）` : '待接线（M6）');
     }
     group.append(btn);
   });
@@ -85,19 +88,20 @@ function renderSegmented(ctl, ctx) {
 function renderSwitch(ctl, ctx) {
   const wired = ctx.isWired(ctl.id);
   const row = el('div', 'ctl-row ctl-row-switch');
+  row.dataset.ctl = ctl.id || ''; // 与分段/下拉一致：外层行可被 [data-ctl] 定位
   row.append(el('span', 'ctl-label', ctl.label));
   const btn = el('button', 'switch-btn');
   btn.id = ctl.id || '';
   btn.type = 'button';
   btn.setAttribute('role', 'switch');
-  let on = !!ctl.defaultOn;
-  btn.setAttribute('aria-checked', String(on));
+  btn.setAttribute('aria-checked', String(!!ctl.defaultOn));
   if (wired) {
     btn.title = ctl.title || ctl.label;
     btn.addEventListener('click', () => {
-      on = !on;
-      btn.setAttribute('aria-checked', String(on));
-      try { ctx.onSetting(ctl.id, on); } catch { /* 接线失败不影响面板自身状态 */ }
+      // 从 DOM 派生下一个状态：外部同步（另一处开关）改过 aria-checked 后，这里仍能正确翻转
+      const next = btn.getAttribute('aria-checked') !== 'true';
+      btn.setAttribute('aria-checked', String(next));
+      try { ctx.onSetting(ctl.id, next); } catch { /* 接线失败不影响面板自身状态 */ }
     });
   } else {
     markPending(btn, null);
@@ -132,9 +136,70 @@ function renderDynamicList(ctl) {
   return box;
 }
 
+/** 下拉（select）：用于主题这类"项较多、单列占位"的选择 */
+function renderSelect(ctl, ctx) {
+  const wired = ctx.isWired(ctl.id);
+  const row = el('div', 'ctl-row');
+  row.dataset.ctl = ctl.id || ''; // 与分段/开关保持一致：外层行也带 data-ctl，便于统一查询
+  row.append(el('span', 'ctl-label', ctl.label));
+  const sel = el('select', 'ctl-select');
+  sel.id = ctl.id || '';
+  sel.dataset.ctlSelect = ctl.id || '';
+  for (const opt of ctl.options) {
+    const o = document.createElement('option');
+    o.value = opt.value;
+    o.textContent = opt.text;
+    sel.append(o);
+  }
+  if (ctl.defaultValue !== undefined) sel.value = ctl.defaultValue;
+  if (wired) {
+    sel.addEventListener('change', () => {
+      try { ctx.onSetting(ctl.id, sel.value); } catch { /* 接线失败保持选择 */ }
+    });
+  } else {
+    markPending(sel, null);
+    sel.disabled = true;
+    sel.title = '待接线（M6）';
+  }
+  row.append(sel);
+  return row;
+}
+
+/** 预设按钮组（chips）：一组同名按钮，每项自带机器值（用于滤镜等"多选一但项很多"的场景） */
+function renderChips(ctl, ctx) {
+  const wired = ctx.isWired(ctl.id);
+  const row = el('div', 'ctl-row ctl-row-chips');
+  row.append(el('span', 'ctl-label', ctl.label));
+  const box = el('div', 'ctl-chips');
+  box.dataset.ctl = ctl.id || '';
+  box.setAttribute('role', 'group');
+  box.setAttribute('aria-label', ctl.label);
+  for (const opt of ctl.options) {
+    const btn = el('button', 'chip-btn', opt.text || opt.value);
+    btn.type = 'button';
+    btn.setAttribute('aria-pressed', String(opt.value === ctl.defaultValue));
+    if (wired) {
+      btn.title = opt.text || opt.value;
+      btn.addEventListener('click', () => {
+        for (const other of box.children) other.setAttribute('aria-pressed', 'false');
+        btn.setAttribute('aria-pressed', 'true');
+        try { ctx.onSetting(ctl.id, opt.value); } catch { /* 接线失败不影响面板状态 */ }
+      });
+    } else {
+      markPending(btn, null);
+      btn.disabled = true;
+      btn.title = '待接线（M6）';
+    }
+    box.append(btn);
+  }
+  row.append(box);
+  return row;
+}
+
 /** 只读行：label + 值（值由接线方写入，用于展示无法切换或纯信息类内容） */
 function renderReadonly(ctl) {
   const row = el('div', 'ctl-row ctl-row-readonly');
+  row.dataset.ctl = ctl.id || '';
   row.append(el('span', 'ctl-label', ctl.label));
   const v = el('span', 'ctl-value', '—');
   v.dataset.readout = ctl.id || '';
@@ -151,6 +216,8 @@ function renderControl(ctl, ctx) {
     case 'actions': return renderActions(ctl);
     case 'dynamic-list': return renderDynamicList(ctl);
     case 'readonly': return renderReadonly(ctl);
+    case 'chips': return renderChips(ctl, ctx);
+    case 'select': return renderSelect(ctl, ctx);
     default: return el('p', 'ctl-note', ctl.note || '');
   }
 }
@@ -210,6 +277,7 @@ export function mountPanel({ headEl, bodyEl, onSetting, wiredIds }) {
   // 面板头：标题 + 「收起菜单」（旧前端在面板右缘有这个按钮；M3 未接线故 disabled）
   const title = el('span', 'panel-title', '控制面板');
   const collapse = markPending(el('button', 'mini-btn', '收起菜单'), 'btn-collapse-menu');
+  collapse.dataset.ctl = 'btn-collapse-menu'; // 与组内控件同口径，便于统一用 [data-ctl] 定位
   collapse.type = 'button';
   collapse.disabled = true;
   collapse.title = '待接线（M6）：收起右侧面板';
@@ -217,10 +285,61 @@ export function mountPanel({ headEl, bodyEl, onSetting, wiredIds }) {
 
   for (const group of PANEL_GROUPS) bodyEl.append(renderGroup(group, ctx));
 
+  // 已接线控件的声明默认值：作为"面板即真相"的唯一来源，交给接线方在启动时下发
+  const defaults = {};
+  for (const group of PANEL_GROUPS) {
+    for (const ctl of group.controls) {
+      if (wiredSet.has(ctl.id) && ctl.defaultValue !== undefined) defaults[ctl.id] = ctl.defaultValue;
+    }
+  }
+
   /** 只读行写入（运行时版本等信息由接线方给） */
   function setReadonly(id, text) {
     const node = bodyEl.querySelector(`[data-readout="${id}"]`);
     if (node) node.textContent = text || '—';
+  }
+
+  /** 动态重建预设按钮组（皮肤列表在换模型后要用新数据重建） */
+  function setOptions(id, options, selected) {
+    const box = bodyEl.querySelector(`[data-ctl="${id}"]`);
+    if (!box || !Array.isArray(options)) return false;
+    box.replaceChildren();
+    for (const opt of options) {
+      const btn = el('button', 'chip-btn', opt.text || opt.value);
+      btn.type = 'button';
+      btn.dataset.value = String(opt.value);
+      btn.setAttribute('aria-pressed', String(opt.value === selected));
+      btn.title = opt.text || opt.value;
+      btn.addEventListener('click', () => {
+        for (const other of box.children) other.setAttribute('aria-pressed', 'false');
+        btn.setAttribute('aria-pressed', 'true');
+        try { ctx.onSetting(id, opt.value); } catch { /* 接线失败保持选择 */ }
+      });
+      box.append(btn);
+    }
+    return true;
+  }
+
+  /** 设置开关显示态（两处共用同一状态的开关要同步） */
+  function setChecked(id, on) {
+    const box = bodyEl.querySelector(`[data-ctl="${id}"]`);
+    const btn = box ? box.querySelector('[role="switch"]') : null;
+    if (btn) btn.setAttribute('aria-checked', String(!!on));
+  }
+
+  /** 回填控件显示值（启动时按存储恢复：主题 / 背景模式等） */
+  function setValue(id, value) {
+    const box = bodyEl.querySelector(`[data-ctl="${id}"]`);
+    if (box) {
+      const opts = [...box.children];
+      const idx = opts.findIndex((b) => b.dataset.value === String(value));
+      if (idx >= 0) {
+        opts.forEach((b, i) => b.setAttribute('aria-pressed', String(i === idx)));
+        return;
+      }
+    }
+    const sel = bodyEl.querySelector(`select[data-ctl-select="${id}"]`);
+    if (sel && [...sel.options].some((o) => o.value === String(value))) sel.value = String(value);
   }
 
   /** 帧率读数（实测值；null 表示暂无数据），由接线方按需刷新 */
@@ -235,5 +354,5 @@ export function mountPanel({ headEl, bodyEl, onSetting, wiredIds }) {
   // 统计口径：面板头 + 组内所有非手风琴控件，供断言核对控件数
   const controls = (headEl.querySelectorAll('button, select, input').length)
     + (bodyEl.querySelectorAll('button:not(.acc-trigger), select, input, [role="switch"]').length);
-  return { groups: PANEL_GROUPS.length, controls, setFps, setReadonly };
+  return { groups: PANEL_GROUPS.length, controls, setFps, setReadonly, setValue, setOptions, setChecked, defaults };
 }

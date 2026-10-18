@@ -24,7 +24,7 @@ const ENGINE_SRC = '/engine.js';
 const ALPHA_THRESHOLD = 8; // alpha 大于它才算"画上了"（背景 clearColor 为全透明）
 const DEFAULT_SETTINGS = {
   pma: 'auto', fit: 'subject', textureFilter: 'linear', speed: 1, loop: true, debug: null,
-  fpsLimit: 60, dprMode: 'auto',
+  fpsLimit: 60, dprMode: 'auto', msaa: 'auto', filter: 'original',
 };
 
 const runtimeSourceCache = new Map(); // ver -> 源码文本
@@ -58,6 +58,8 @@ function readGlobalEngine() {
 
 /** 注入 engine.js（只一次；成败都缓存 Promise） */
 function ensureEngine() {
+  // 注入前必须先装运行时管理器：engine.js 顶层 `let Yd = Is` 在脚本执行瞬间就要读它
+  installRuntimeManager();
   const pre = readGlobalEngine();
   if (pre) return Promise.resolve(pre);
   if (enginePromise) return enginePromise;
@@ -248,12 +250,21 @@ function unloadModel(st) {
 /** 首次进入时创建 engine；canvas 尺寸变化由 engine 的 refreshResolution 处理 */
 function ensureStageEngine(st, Engine, canvas) {
   if (st.engine) return true;
+  // 不写死 antialias：交给 ensureStageEngineWith 按 settings.msaa 决定（默认自动=开）
+  return ensureStageEngineWith(st, Engine, undefined, canvas);
+}
+
+/** 建引擎；antialias 只在此时能生效（换画布重建时传 true） */
+function ensureStageEngineWith(st, Engine, antialias, canvasOverride) {
+  const canvas = canvasOverride || st.canvas;
+  // 未显式指定时按设置走：'auto' = 开抗锯齿（与面板默认一致）
+  const wantAA = typeof antialias === 'boolean' ? antialias : st.settings.msaa === 'auto';
   const engine = new Engine({
     log: (level, msg, scope) => { if (level === 'error') st.lastError = `${scope || 'engine'}: ${msg}`; },
     onLoadComplete: (info) => { st.model = info; },
     onError: (msg) => { st.lastError = String(msg); },
   });
-  if (!engine.init(canvas, { antialias: false, allowParseOnly: false })) return false;
+  if (!engine.init(canvas, { antialias: wantAA, allowParseOnly: false })) return false;
   st.engine = engine;
   applySettings(st);
   return true;
@@ -278,7 +289,7 @@ function startPlayback(st, info, loop) {
 }
 
 /** 加载主流程（编排：选版本 → 注入源码 → 取资源 → 建 engine → 加载 → 起播） */
-async function loadIntoStage(st, canvas, arg) {
+async function loadIntoStage(st, arg) {
   const root = arg && arg.root;
   const model = arg && arg.model;
   if (!root || !model) throw new Error('load 需要 { root, model }');
@@ -298,12 +309,13 @@ async function loadIntoStage(st, canvas, arg) {
   if (seq !== st.seq) throw businessError('加载已被新的选择取代');
   const res = await fetchModelResources(root, model, ctl.signal);
   if (seq !== st.seq) return null;
-  if (!ensureStageEngine(st, Engine, canvas)) throw businessError('当前环境没有可用的 WebGL，无法渲染 Spine');
+  if (!ensureStageEngine(st, Engine, st.canvas)) throw businessError('当前环境没有可用的 WebGL，无法渲染 Spine');
   if (!st.runtimeKeys.includes(ver)) st.runtimeKeys.push(ver);
   st.loads++;
   const info = await st.engine.loadModel(buildDescriptor(model, ver, res));
   if (seq !== st.seq) throw businessError('加载已被新的选择取代');
   if (!info) throw businessError('模型加载失败（引擎未返回结果）');
+  st.lastArg = arg; // 供 MSAA 重建上下文后恢复同一模型
   const playing = startPlayback(st, info, st.settings.loop);
   return { version: ver, animations: playing.animations, motion: playing.motion };
 }
@@ -312,12 +324,178 @@ async function loadIntoStage(st, canvas, arg) {
  * 创建舞台（对外契约见 doc/Spine渲染要点.md §14）。
  * @param {{canvas: HTMLCanvasElement, onStatus?: (s:object)=>void}} opts
  */
+/**
+ * 组装舞台对外 API 的"基础方法"（加载/释放/统计/采样/播放控制）。
+ * 拆出来是为了让 createSpineStage 只做编排（单函数过长会被审计拦截）。
+ * @param {object} st 舞台状态
+ * @param {{status: Function, fail: Function}} ctx 状态回调与失败包装
+ */
+function buildStageApi(st, ctx) {
+  const { status, fail } = ctx;
+const api = {
+  async load(arg) {
+    try {
+      const info = await loadIntoStage(st, arg);
+      status({ phase: 'ready', ...info });
+      return info;
+    } catch (err) {
+      if (err && err.business) {
+        // 业务错误也要落到状态里（页面提示与遥测都靠 lastError）
+        st.lastError = String(err.message || err);
+        status({ phase: 'error', error: st.lastError });
+        throw err;
+      }
+      if (err && err.name === 'AbortError') throw fail('加载已被新的选择取代', err);
+      throw fail(`加载失败：${err && err.message ? err.message : err}`, err);
+    }
+  },
+  unload() { unloadModel(st); status({ phase: 'unload' }); },
+  stats: () => statsOf(st),
+  samplePixels: () => samplePixels(st),
+  applySettings: (patch) => applySettings(st, patch),
+  play() { if (st.engine && st.engine.start) { try { st.engine.start(); } catch { /* 已在播放 */ } } },
+  pause() { if (st.engine && st.engine.stop) { try { st.engine.stop(); } catch { /* 已暂停 */ } } },
+  seek(t) { if (st.engine && st.engine.seek) { try { st.engine.seek(t); } catch { /* 越界忽略 */ } } },
+  setAnimation(name, loop) {
+    if (!st.engine || !name) return false;
+    try { st.engine.setAnimation(name, typeof loop === 'boolean' ? loop : st.settings.loop); return true; } catch { return false; }
+  },
+  resize() {
+    if (!st.engine) return;
+    try { if (st.engine.refreshResolution) st.engine.refreshResolution(); } catch { /* 忽略 */ }
+    try { if (st.engine.resetCamera) st.engine.resetCamera(); } catch { /* 忽略 */ }
+  },
+  dispose() {
+    const e = st.engine;
+    st.engine = null; st.model = null; st.seq++;
+    if (!e) return;
+    try { if (e.dispose) e.dispose(); } catch { /* 忽略 */ }
+    st.disposes++;
+  },
+  // debug 同时给出统计字段（验收脚本从 debug() 读 frames 等）
+  debug: () => ({ ...statsOf(st), engine: st.engine }),
+};
+  return api;
+}
+
+/**
+ * 给舞台 API 挂"可选能力"：PMA 四档、滤镜、皮肤、混合模式、调试绘制、MSAA 重建。
+ * 这些方法依赖模块级工具（applySettings / ensureEngine / loadIntoStage…），与工厂解耦。
+ */
+function attachExtraApi(api, st) {
+// PMA 不走通用 setter：切它必须重传贴图，单列一个方法（见下）
+for (const key of ['fit', 'textureFilter', 'speed', 'loop', 'debug', 'fpsLimit', 'dprMode']) {
+  api[`set${key[0].toUpperCase()}${key.slice(1)}`] = (v) => applySettings(
+    st, { [key]: key === 'fpsLimit' ? Number(v) : v },
+  );
+}
+/**
+ * 切换 PMA 模式：true=预乘、false=直通。
+ * 为什么单列：引擎没有 setPmaMode，切预乘必须重建贴图纹理（rebuildTextures）。
+ */
+/**
+ * 切换 PMA 模式（auto / premultiplied / straight / upload 四档）。
+ * 四档都会重传贴图：auto 需要重新采样像素判断，其余三档要按新口径重上传。
+ * @param {string} mode
+ */
+api.setPma = (mode) => {
+  const m = ['auto', 'premultiplied', 'straight', 'upload'].includes(mode) ? mode : 'auto';
+  applySettings(st, { pma: m });
+  if (st.engine && typeof st.engine.rebuildTextures === 'function') {
+    try { st.engine.rebuildTextures(m); } catch { /* 重建失败保持原贴图 */ }
+  }
+  return m;
+};
+
+/**
+ * 调试绘制开关（8 个独立项，可同时开）。
+ * 每次只传变化的键，引擎内部会合并；状态同步记到 settings.debug 便于断言。
+ * @param {object} patch 形如 { bones: true, meshes: false }
+ */
+/** 当前模型的皮肤名列表（无皮肤时返回 [default]） */
+api.getSkins = () => {
+  if (!st.engine || typeof st.engine.getSkins !== 'function') return ['default'];
+  try {
+    const list = st.engine.getSkins() || [];
+    return list.length ? list : ['default'];
+  } catch {
+    return ['default'];
+  }
+};
+
+/** 切换皮肤（引擎按名称匹配；找不到时保持原皮肤） */
+api.setSkin = (name) => {
+  if (!st.engine || typeof st.engine.setSkins !== 'function') return false;
+  try {
+    st.engine.setSkins([name]);
+    st.settings.skin = name;
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** 混合模式：开 = 动画切换交叉淡化 0.2s，关 = 硬切 0 */
+api.setMixMode = (on) => {
+  const t = on ? 0.2 : 0;
+  st.settings.mixTime = t;
+  if (st.engine && typeof st.engine.setMixTime === 'function') {
+    try { st.engine.setMixTime(t); } catch { /* 版本不支持则只记状态 */ }
+  }
+  return t;
+};
+
+api.setDebug = (patch) => {
+  const next = { ...(st.settings.debug || {}), ...(patch || {}) };
+  st.settings.debug = next;
+  if (st.engine && typeof st.engine.setDebugDraw === 'function') {
+    try { st.engine.setDebugDraw(patch || {}); } catch { /* 版本不支持则只记状态 */ }
+  }
+  return next;
+};
+
+/** 切换滤镜预设（id 见引擎预设表；未知 id 由引擎回落原画） */
+api.setFilter = (id) => {
+  if (!st.engine || typeof st.engine.setFilter !== 'function') return null;
+  try {
+    st.engine.setFilter(id);
+    st.settings.filter = st.engine.getFilter ? st.engine.getFilter() : id;
+    return st.settings.filter;
+  } catch { return null; }
+};
+
+/**
+ * 切换 MSAA：GL 的 antialias 只在建上下文时生效，必须换 canvas 节点重建。
+ * 流程：换节点 → dispose 旧引擎 → init(antialias) → 重新加载最近一次的模型。
+ * @param {boolean} on
+ * @returns {Promise<{antialias:boolean, restoreMs:number, restored:boolean}>}
+ */
+api.rebuildWithAntialias = async (on) => {
+  const arg = st.lastArg;
+  const old = st.canvas;
+  const next = old.cloneNode(false);
+  old.replaceWith(next);
+  st.canvas = next;
+  try { if (st.engine && st.engine.dispose) st.engine.dispose(); } catch { /* 释放失败继续重建 */ }
+  st.engine = null;
+  st.model = null;
+  st.disposes += 1; // 重建也计入释放次数，便于用 loads/disposes 判泄漏
+  st.settings.msaa = on ? 'auto' : 'off';
+  const t0 = performance.now();
+  const Engine = await ensureEngine();
+  const ok = ensureStageEngineWith(st, Engine, on);
+  if (!ok) return { antialias: !!on, restoreMs: 0, restored: false };
+  if (arg) await loadIntoStage(st, arg);
+  return { antialias: !!on, restoreMs: Math.round(performance.now() - t0), restored: !!arg };
+};
+}
+
 export function createSpineStage(opts) {
   const o = opts || {};
   if (!o.canvas) throw new Error('createSpineStage 需要 canvas');
-  const canvas = o.canvas;
   const onStatus = typeof o.onStatus === 'function' ? o.onStatus : () => {};
   const st = {
+    canvas: o.canvas, lastArg: null,
     engine: null, seq: 0, loads: 0, disposes: 0, lastError: null,
     runtimeKeys: [], model: null, frames: 0, settings: { ...DEFAULT_SETTINGS },
   };
@@ -327,66 +505,7 @@ export function createSpineStage(opts) {
     status({ phase: 'error', error: st.lastError });
     return businessError(st.lastError, cause);
   };
-  const api = {
-    async load(arg) {
-      try {
-        const info = await loadIntoStage(st, canvas, arg);
-        status({ phase: 'ready', ...info });
-        return info;
-      } catch (err) {
-        if (err && err.business) {
-          // 业务错误也要落到状态里（页面提示与遥测都靠 lastError）
-          st.lastError = String(err.message || err);
-          status({ phase: error, error: st.lastError });
-          throw err;
-        }
-        if (err && err.name === 'AbortError') throw fail('加载已被新的选择取代', err);
-        throw fail(`加载失败：${err && err.message ? err.message : err}`, err);
-      }
-    },
-    unload() { unloadModel(st); status({ phase: 'unload' }); },
-    stats: () => statsOf(st),
-    samplePixels: () => samplePixels(st),
-    applySettings: (patch) => applySettings(st, patch),
-    play() { if (st.engine && st.engine.start) { try { st.engine.start(); } catch { /* 已在播放 */ } } },
-    pause() { if (st.engine && st.engine.stop) { try { st.engine.stop(); } catch { /* 已暂停 */ } } },
-    seek(t) { if (st.engine && st.engine.seek) { try { st.engine.seek(t); } catch { /* 越界忽略 */ } } },
-    setAnimation(name, loop) {
-      if (!st.engine || !name) return false;
-      try { st.engine.setAnimation(name, typeof loop === 'boolean' ? loop : st.settings.loop); return true; } catch { return false; }
-    },
-    resize() {
-      if (!st.engine) return;
-      try { if (st.engine.refreshResolution) st.engine.refreshResolution(); } catch { /* 忽略 */ }
-      try { if (st.engine.resetCamera) st.engine.resetCamera(); } catch { /* 忽略 */ }
-    },
-    dispose() {
-      const e = st.engine;
-      st.engine = null; st.model = null; st.seq++;
-      if (!e) return;
-      try { if (e.dispose) e.dispose(); } catch { /* 忽略 */ }
-      st.disposes++;
-    },
-    // debug 同时给出统计字段（验收脚本从 debug() 读 frames 等）
-    debug: () => ({ ...statsOf(st), engine: st.engine }),
-  };
-  // PMA 不走通用 setter：切它必须重传贴图，单列一个方法（见下）
-  for (const key of ['fit', 'textureFilter', 'speed', 'loop', 'debug', 'fpsLimit', 'dprMode']) {
-    api[`set${key[0].toUpperCase()}${key.slice(1)}`] = (v) => applySettings(
-      st, { [key]: key === 'fpsLimit' ? Number(v) : v },
-    );
-  }
-  /**
-   * 切换 PMA 模式：true=预乘、false=直通。
-   * 为什么单列：引擎没有 setPmaMode，切预乘必须重建贴图纹理（rebuildTextures）。
-   */
-  api.setPma = (on) => {
-    const mode = on ? 'premultiplied' : 'straight';
-    applySettings(st, { pma: mode });
-    if (st.engine && typeof st.engine.rebuildTextures === 'function') {
-      try { st.engine.rebuildTextures(mode); } catch { /* 重建失败保持原贴图 */ }
-    }
-    return mode;
-  };
+  const api = buildStageApi(st, { status, fail });
+  attachExtraApi(api, st);
   return api;
 }

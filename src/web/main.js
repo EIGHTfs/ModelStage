@@ -111,13 +111,111 @@ async function loadWebConfig() {
  * 面板已接线控件的生效表：key = 控件 id，value = 把该控件的机器值应用到舞台。
  * 未列出的控件在面板里仍是 disabled + data-pending，不会被回调到这里。
  */
+/** 视图设置存储键（与旧端同一键：主题、背景等展示类设置） */
+const VIEW_SETTINGS_KEY = 'spine-viewer-settings-v2';
+
+/** 读视图设置（沿用旧端结构：{uiTheme, background:{mode,color,imageUrl}}） */
+function readViewSettings() {
+  try {
+    const s = JSON.parse(localStorage.getItem(VIEW_SETTINGS_KEY) || '{}');
+    return s && typeof s === 'object' ? s : {};
+  } catch {
+    return {};
+  }
+}
+
+/** 写视图设置：只覆盖自己管的键，其余字段原样保留（与旧端共用同一份） */
+function saveViewSettings(patch) {
+  try {
+    const cur = readViewSettings();
+    const next = { ...cur, ...patch };
+    if (patch.background) next.background = { ...(cur.background || {}), ...patch.background };
+    localStorage.setItem(VIEW_SETTINGS_KEY, JSON.stringify(next));
+  } catch { /* 隐私模式等写不了就忽略：持久化是增强 */ }
+}
+
+/** 主题：只改 CSS 变量所在的选择器属性，颜色全部集中在 panel.css 的主题色板 */
+function applyTheme(id) {
+  const theme = id || 'dark-cyan';
+  document.documentElement.dataset.uiTheme = theme;
+  state.viewTheme = theme;
+  saveViewSettings({ uiTheme: theme });
+}
+
+/** 背景模式：写舞台容器的 data-bg，具体底色由 CSS 决定 */
+function applyBackground(mode) {
+  const stageEl = document.getElementById('stage');
+  if (!stageEl) return;
+  const m = mode || 'checkerboard';
+  stageEl.dataset.bg = m;
+  state.viewBg = m;
+  const cur = readViewSettings();
+  saveViewSettings({
+    background: {
+      mode: m,
+      color: (cur.background && cur.background.color) || '#2a2a2a',
+      imageUrl: (cur.background && cur.background.imageUrl) || '',
+    },
+  });
+}
+
 const PANEL_APPLIERS = {
   'ctl-fps': (v) => stage && stage.setFpsLimit(v),
   'ctl-dpr': (v) => stage && stage.setDprMode(v),
   'ctl-fit': (v) => stage && stage.setFit(v),
   'ctl-filter': (v) => stage && stage.setTextureFilter(v),
+  'ctl-filter-preset': (v) => stage && stage.setFilter(v),
   'ctl-pma': (v) => stage && stage.setPma(v),
+  'ctl-msaa': (v) => applyMsaa(v),
+  'ctl-theme': (v) => applyTheme(v),
+  'ctl-bg-mode': (v) => applyBackground(v),
+  'ctl-mix-mode': (v) => applyMixMode(v),
+  'ctl-skin-mix': (v) => applyMixMode(v),
+  'ctl-skin-list': (v) => stage && stage.setSkin(v),
+  'ctl-debug-bones': (v) => stage && stage.setDebug({ bones: !!v }),
+  'ctl-debug-meshes': (v) => stage && stage.setDebug({ meshes: !!v }),
+  'ctl-debug-boundingBoxes': (v) => stage && stage.setDebug({ boundingBoxes: !!v }),
+  'ctl-debug-paths': (v) => stage && stage.setDebug({ paths: !!v }),
+  'ctl-debug-points': (v) => stage && stage.setDebug({ points: !!v }),
+  'ctl-debug-regions': (v) => stage && stage.setDebug({ regions: !!v }),
+  'ctl-debug-clipping': (v) => stage && stage.setDebug({ clipping: !!v }),
+  'ctl-debug-hulls': (v) => stage && stage.setDebug({ hulls: !!v }),
 };
+
+/** 切换抗锯齿：要换画布重建上下文，先提示"正在重建"避免用户以为卡住 */
+async function applyMsaa(mode) {
+  if (!stage || typeof stage.rebuildWithAntialias !== 'function') return;
+  const on = mode === 'auto';
+  dom.stageHint.textContent = '正在重建渲染上下文（切换抗锯齿）…';
+  try {
+    const r = await stage.rebuildWithAntialias(on);
+    dom.stageHint.textContent = `抗锯齿已${r.antialias ? '开启' : '关闭'} · 重建耗时 ${r.restoreMs} ms`;
+    document.documentElement.dataset.msaa = r.antialias ? 'on' : 'off';
+  } catch (err) {
+    dom.stageHint.textContent = `切换抗锯齿失败：${formatError(err)}`;
+  }
+}
+
+/** 混合模式：两处开关指向同一状态，点任一处都要同步另一处的显示 */
+function applyMixMode(on) {
+  const value = !!(stage && stage.setMixMode ? stage.setMixMode(on) : 0);
+  state.mixMode = !!on;
+  if (state.panel) {
+    state.panel.setChecked('ctl-mix-mode', !!on);
+    state.panel.setChecked('ctl-skin-mix', !!on);
+  }
+  document.documentElement.dataset.mixMode = on ? 'on' : 'off';
+  return value;
+}
+
+/** 加载模型后刷新皮肤列表（换模型必须重建，不能停在上一个模型的皮肤） */
+function refreshSkinList() {
+  if (!state.panel || !stage) return;
+  const skins = stage.getSkins ? stage.getSkins() : ['default'];
+  const current = skins.includes('default') ? 'default' : skins[0];
+  state.panel.setOptions('ctl-skin-list', skins.map((s) => ({ text: s, value: s })), current);
+  document.documentElement.dataset.skinCount = String(skins.length);
+}
 
 /** 面板控件回调：应用生效并记录当前值（断言与后续持久化都用这份快照） */
 function applyPanelSetting(id, value) {
@@ -189,6 +287,7 @@ function onSelectModel(model) {
       dom.stageHint.textContent = `${model.name} · Spine ${info.version} · ${info.animations.length} 动作 · 播放 ${info.motion || '（无动作）'}`;
       // 运行时组只读：显示本次实际使用的运行时版本（引擎按骨架版本自动选，不可手切）
       if (state.panel) state.panel.setReadonly('ctl-runtime', `Spine ${info.version}`);
+      refreshSkinList();
       document.documentElement.dataset.stageReady = '1';
     })
     .catch((err) => {
@@ -266,6 +365,22 @@ function boot() {
   const transportInfo = mountTransport(dom.footer);
   startFpsReadout(panelInfo);
   state.panel = panelInfo; // 让 onSelectModel 能写运行时只读行
+  // 存储优先：主题/背景先按上次的选择恢复，再让"面板默认值"兜底未存过的项
+  const savedView = readViewSettings();
+  applyTheme(savedView.uiTheme || 'dark-cyan');
+  applyBackground((savedView.background && savedView.background.mode) || 'checkerboard');
+  if (panelInfo.setValue) {
+    panelInfo.setValue('ctl-theme', state.viewTheme);
+    panelInfo.setValue('ctl-bg-mode', state.viewBg);
+  }
+  // 面板声明的默认值即唯一真相：启动时统一走一遍生效表，避免"高亮在 A、引擎在 B"
+  // MSAA 例外：它的默认值已由建上下文时的 antialias 生效，启动就重建会白等 2~5 秒
+  const STARTUP_SKIP = new Set(['ctl-msaa', 'ctl-theme', 'ctl-bg-mode']);
+  for (const [id, value] of Object.entries(panelInfo.defaults || {})) {
+    if (STARTUP_SKIP.has(id)) continue;
+    applyPanelSetting(id, value);
+  }
+  state.panelDefaults = { ...(panelInfo.defaults || {}) };
   document.documentElement.dataset.panelReady = '1';
   document.documentElement.dataset.panelControls = String(panelInfo.controls);
   document.documentElement.dataset.transportControls = String(transportInfo.controls);
@@ -287,6 +402,10 @@ function boot() {
     get diag() { return diag; },
     /** 已接线的面板控件 id（断言用：可点集合必须与它一致） */
     panelWired: Object.keys(PANEL_APPLIERS),
+    /** 当前视图设置（主题/背景），断言用 */
+    viewSettings: () => ({ uiTheme: state.viewTheme, background: { mode: state.viewBg } }),
+    /** 已接线控件的声明默认值（断言：引擎实际生效值必须与之一致） */
+    get panelDefaults() { return state.panelDefaults || null; },
     /** 面板/播放条骨架规模（自动化断言用） */
     chrome: { groups: panelInfo.groups, panelControls: panelInfo.controls, transportControls: transportInfo.controls },
     defaultBrand: DEFAULT_BRAND,
