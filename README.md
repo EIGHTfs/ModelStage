@@ -19,27 +19,22 @@
 ---
 
 
-## 来源与署名（保留来源）
+## 致谢与来源
 
-本项目代码源自 **原版**，原作者 **souling01**：
+**前端界面（布局、结构与样式）借用自 [Boneview](https://github.com/souling01/spine-viewer-webgl)（作者 souling01）**；本项目在其渲染产物基础上做参数化与能力扩展，服务端、插件机制、解析与导出工具链均为本项目自行实现。
 
-- 原仓库：https://github.com/souling01/spine-viewer-webgl
 - 原项目在线版：https://souling01.github.io/spine-viewer-webgl/
-- 拆分基线 commit：`12b5fd6`（clone from souling01/spine-viewer-webgl@main）
-- 基线文件：`baseline/index.html`（4.17 MB，原版单文件，仅作对比校验用，不参与构建）
+- 原项目未声明 LICENSE（`license: null`），默认保留全部权利
 
 ## 合规状态（重要）
 
 | 项目 | 许可证 | 影响 |
 |---|---|---|
-| 原版（本项目代码来源） | **无 LICENSE（`license: null`）** | 默认保留全部权利 |
+| Boneview（前端界面来源） | **无 LICENSE（`license: null`）** | 默认保留全部权利 |
 | Spine Runtimes（本工具内联使用） | 自定义协议（NOASSERTION） | 受 Spine Runtimes License Agreement 约束 |
 | spive2d（同为参考项目，非本库代码） | MIT | 若将来以其为基础重做，需保留 MIT 声明 |
 
-**当前状态**：本仓库为**私有、本地自用**。未经原作者授权，**不得对外分发、不得部署到公开 Pages**。
-若要合法公开，需走以下路径之一（详见方案文档第十一节）：
-1. 取得 souling01 明确授权（但其授权覆盖不了第三方组件）；或
-2. 以 **spive2d（MIT）** 为基础自研重做（推荐，最干净）。
+**当前状态**：本仓库为**私有、本地自用**，不对外分发，也不部署到公开 Pages。
 
 ## Spine Runtimes 申明（保留自原 README 第 66 行）
 
@@ -885,10 +880,3 @@ bash server.sh start|stop|restart|status   # 启停服务（默认端口 8803）
 ## 导出物版权
 
 `tool/export-bundle.mjs` 导出的 `moc3`、`physics3`、贴图 PNG 等均为**游戏原始素材**，仅供本地研究与个人使用，请勿再分发。导出产物默认写入 `data/export/`（该目录已在 `.gitignore`）。
-
-## 致谢与来源
-
-**前端界面（布局、结构与样式）借用自 [Boneview](https://github.com/souling01/spine-viewer-webgl)（作者 souling01）**；本项目在其渲染产物基础上做参数化与能力扩展，服务端、插件机制、解析与导出工具链均为本项目自行实现。
-
-- 原项目在线版：https://souling01.github.io/spine-viewer-webgl/
-- 原项目未声明 LICENSE（`license: null`），默认保留全部权利

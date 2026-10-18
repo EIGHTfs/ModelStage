@@ -64,4 +64,6 @@ dist-rebuild/
 # 被 tool/rebuild-from-slices.mjs 用作回填基准。为避免 823KB 纯重复入库，不入库；
 # 需要时重建：cp src/app-shell.html src/.app-shell.orig.html
 # （等价信息已由已跟踪的 src/app-shell.html + baseline/index.html 提供）
-src/.app-shell.orig.html
+baseline/
+
+# ---- 构建必需的原始字节（不入库：内容源自原版单文件，本地保留即可构建与校验）----
