@@ -105,6 +105,25 @@ function resolveStatic(pathname) {
   return abs;
 }
 
+/** 旧引擎（复用其 SpineEngine：运行时隔离执行，PMA/fit/DPR/裁剪语义齐全） */
+const ENGINE_FILE = path.resolve(WEB_ROOT, '..', 'engine.js');
+function serveEngine(req, res) {
+  let body;
+  try {
+    if (!fs.statSync(ENGINE_FILE).isFile()) throw new Error('not a file');
+    body = fs.readFileSync(ENGINE_FILE);
+  } catch {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    return res.end('404: /engine.js');
+  }
+  res.writeHead(200, {
+    'Content-Type': 'text/javascript; charset=utf-8',
+    'Content-Length': body.length,
+    'Cache-Control': 'no-store',
+  });
+  res.end(req.method === 'HEAD' ? undefined : body);
+}
+
 /** 静态响应（开发期禁缓存：改完刷新即见，不出现"改了没生效"的假象） */
 function serveStatic(req, res, pathname) {
   const abs = resolveStatic(pathname);
@@ -156,7 +175,21 @@ function proxyToUpstream(req, res) {
 const server = http.createServer((req, res) => {
   const pathname = new URL(req.url, `http://localhost:${PORT}`).pathname;
   // Spine 运行时（src/spine-runtimes/，不在 src/web 下）
-  if ((req.method === 'GET' || req.method === 'HEAD') && serveRuntime(req, res, pathname)) return;
+  // 运行时目录清单（客户端不写死版本列表，扫 src/spine-runtimes/ 得到）
+  if ((req.method === 'GET' || req.method === 'HEAD') && pathname === '/spine-runtimes/index.json') {
+    let versions = [];
+    try {
+      versions = fs.readdirSync(RUNTIME_DIR)
+        .map((f) => (f.match(/^spine-webgl-(.+).js$/) || [])[1])
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    } catch { versions = []; }
+    const body = Buffer.from(JSON.stringify({ versions }));
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': body.length, 'Cache-Control': 'no-store' });
+    return res.end(req.method === 'HEAD' ? undefined : body);
+  }  if ((req.method === 'GET' || req.method === 'HEAD') && serveRuntime(req, res, pathname)) return;
+  if ((req.method === 'GET' || req.method === 'HEAD') && pathname === '/engine.js') return serveEngine(req, res);
+
   if (PROXY_PREFIXES.some((p) => pathname.startsWith(p))) {
     return proxyToUpstream(req, res);
   }

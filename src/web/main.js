@@ -17,6 +17,7 @@ import { getJson, formatError } from './api.js';
 import { createRosterView } from './roster-view.js';
 import { mountPanel } from './panel.js';
 import { mountTransport } from './transport.js';
+import { createSpineStage } from './spine-canvas.js';
 
 // 页面级第一件事：装诊断探针（幂等，重复调用不会重复包装 console）
 const diag = installDiag();
@@ -41,6 +42,9 @@ const dom = {
   panelBody: document.getElementById('panel-body'),
   footer: document.getElementById('app-footer'),
 };
+
+/** Spine 渲染舞台：boot 时创建（WebGL 不可用时保持 null，UI 只提示不报错） */
+let stage = null;
 
 /** 最小状态容器（M7 会扩展成带持久化的 store） */
 const state = {
@@ -120,7 +124,30 @@ function showRootsError(message) {
 function onSelectModel(model) {
   state.selectedModel = model;
   const name = model ? (model.name || model.id) : '无';
-  dom.stageHint.textContent = `M2 名册 · 已选中 ${name} · 舞台渲染在 M4 接入`;
+  if (!stage) { dom.stageHint.textContent = `已选中 ${name}（渲染器不可用）`; return; }
+  if (!model) { stage.unload(); return; }
+
+  // 只有 Spine 走本路径；Live2D 与资源包由 M5 的插件管线接管
+  const kind = model.kind || 'spine';
+  if (kind !== 'spine') {
+    stage.unload();
+    dom.stageHint.textContent = `已选中 ${name}（${kind === 'live2d' ? 'Live2D' : '资源包'} 渲染在 M5 接入）`;
+    return;
+  }
+
+  dom.stageHint.textContent = `正在加载 ${name}…`;
+  stage.load({ root: model.rootId, model })
+    .then((info) => {
+      dom.stageHint.textContent = `${model.name} · Spine ${info.version} · ${info.animations.length} 动作 · 播放 ${info.motion || '（无动作）'}`;
+      document.documentElement.dataset.stageReady = '1';
+    })
+    .catch((err) => {
+      // 渲染失败属业务错误：显示在舞台提示与 __WEB__ 里，不抛到控制台（验收要求零错误）
+      const msg = formatError(err);
+      state.stageError = msg;
+      dom.stageHint.textContent = `渲染失败：${msg}`;
+      document.documentElement.dataset.stageReady = 'error';
+    });
 }
 
 /** 拉资源根并把名册三级树挂到左栏 */
@@ -158,6 +185,16 @@ function bindEvents() {
 
 function boot() {
   // 面板与播放条是纯静态骨架（不依赖网络）：先挂上，保证首屏五区域都有内容
+  // 舞台渲染器：WebGL 不可用（无头精简环境等）时只提示，不让整页崩
+  try {
+    stage = createSpineStage({ canvas: dom.stageCanvas });
+    document.documentElement.dataset.stageContext = 'webgl';
+  } catch (err) {
+    state.stageError = formatError(err);
+    dom.stageHint.textContent = `渲染器不可用：${state.stageError}`;
+    document.documentElement.dataset.stageContext = 'none';
+  }
+
   const panelInfo = mountPanel({ headEl: dom.panelHead, bodyEl: dom.panelBody });
   const transportInfo = mountTransport(dom.footer);
   document.documentElement.dataset.panelReady = '1';
@@ -171,6 +208,8 @@ function boot() {
   window.__WEB__ = {
     state,
     version: 'M4',
+    /** 渲染舞台（测试脚本用它取像素、看统计） */
+    get stage() { return stage; },
     /** 诊断探针实例（等价于 window.__DIAG__，便于同一套检查代码复用） */
     get diag() { return diag; },
     /** 面板/播放条骨架规模（自动化断言用） */
