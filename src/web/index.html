@@ -42,26 +42,34 @@
     <span id="brand-title" class="brand-title">ModelStage</span>
   </div>
   <nav class="header-actions" aria-label="顶栏操作">
-    <button type="button" class="icon-btn" id="btn-import" title="导入">导入</button>
-    <button type="button" class="icon-btn" id="btn-shot" title="截图导出">截图导出</button>
-    <button type="button" class="icon-btn" id="btn-library" title="模型库">模型库</button>
-    <button type="button" class="icon-btn" id="btn-menu" title="菜单">菜单</button>
-    <button type="button" class="icon-btn" id="btn-cinema" title="影院模式 (H)">影院模式</button>
+    <!-- 未接线的按钮一律 disabled 并标注待接线：不允许"看着能点却没反应" -->
+    <button type="button" class="icon-btn" id="btn-import" disabled title="待接线（M3）：导入模型">导入</button>
+    <button type="button" class="icon-btn" id="btn-shot" disabled title="待接线（M3）：截图导出">截图导出</button>
+    <button type="button" class="icon-btn" id="btn-library" title="模型库（显示/隐藏左栏）">模型库</button>
+    <button type="button" class="icon-btn" id="btn-menu" disabled title="待接线（M3）：右栏菜单">菜单</button>
+    <button type="button" class="icon-btn" id="btn-cinema" disabled title="待接线（M6）：影院模式">影院模式</button>
     <button type="button" class="icon-btn" id="btn-fullscreen" title="全屏">全屏</button>
   </nav>
 </header>
 
-<!-- ============ 左栏（第 2 区域）：资源根 / 名册 ============ -->
-<aside id="left-panel" class="panel panel-left" aria-label="模型库">
+<!-- ============ 左栏（第 2 区域）：角色库三级树 ============ -->
+<aside id="left-panel" class="panel panel-left" aria-label="角色库">
   <div class="panel-head">
-    <span class="panel-title">模型库</span>
+    <span class="panel-title">角色库</span>
     <span class="panel-actions">
-      <button type="button" class="mini-btn" id="btn-add-root" title="浏览本机目录，添加资源根（同名资源根会合并为一个游戏条目）">＋ 资源根</button>
-      <button type="button" class="mini-btn" id="btn-collapse" title="只收起展开的树节点（面板保留；隐藏面板用顶栏「模型库」按钮）">收起</button>
+      <button type="button" class="mini-btn is-primary" id="btn-add-root" disabled
+        title="待接线（M3）：浏览本机目录，添加资源根">选择目录</button>
+      <button type="button" class="mini-btn" id="btn-collapse"
+        title="只收起展开的树节点（面板保留；隐藏面板用顶栏「模型库」按钮）">收起</button>
     </span>
   </div>
-  <!-- M1：资源根平铺列表（M2 换成 游戏→角色→变体 三级树） -->
-  <div id="roots-list" class="panel-body roots-list" role="list" aria-live="polite">
+  <div class="panel-count" id="roster-count">正在读取资源根…</div>
+  <div class="panel-search">
+    <input id="roster-search" type="search" autocomplete="off"
+      placeholder="搜索角色 / 服装 / 变体…" aria-label="搜索角色、服装、变体" />
+  </div>
+  <!-- 三级树：资源根 → 角色 → 变体（首次展开某根才请求该根的模型清单） -->
+  <div id="roster-list" class="panel-body roster-list" role="tree" aria-label="角色库" aria-live="polite">
     <p class="muted-hint">正在读取资源根…</p>
   </div>
 </aside>

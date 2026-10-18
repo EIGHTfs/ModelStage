@@ -12,6 +12,8 @@
 
 set -u
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 自身绝对路径：restart 分支要用它自调用（"$0" 在 `bash web.sh` 下只是相对名，直接执行会 command not found）
+SELF="$PROJECT_ROOT/$(basename "${BASH_SOURCE[0]}")"
 PORT="${PORT:-8804}"
 UPSTREAM="${UPSTREAM:-http://127.0.0.1:8803}"
 PID_FILE="$PROJECT_ROOT/model-stage-web.pid"
@@ -60,7 +62,9 @@ case "${1:-restart}" in
     rm -f "$PID_FILE"
     ;;
   restart)
-    "$0" stop; sleep 0.5; "$0" start
+    # 用绝对路径自调用：`bash web.sh restart` 时 "$0" 只是相对名 "web.sh"，
+    # 直接执行会报 command not found（实测踩到），所以这里统一走 SELF。
+    bash "$SELF" stop; sleep 0.5; bash "$SELF" start
     ;;
   status)
     if pid="$(running_pid)"; then

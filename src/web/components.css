@@ -87,6 +87,17 @@
   background: var(--color-secondary);
 }
 
+/* 主操作按钮（左栏「选择目录」）：配色照旧前端 */
+.mini-btn.is-primary {
+  border-color: transparent;
+  background: #2b6cb0;
+  color: #fff;
+}
+
+.mini-btn.is-primary:hover:not(:disabled) {
+  background: #3178c6;
+}
+
 /* ------------------------------------------------------------ 提示文案 */
 
 .muted-hint {
@@ -96,79 +107,177 @@
   line-height: 1.6;
 }
 
-/* --------------------------------------------------- 资源根列表（M1 平铺） */
+/* ------------------------------------------------ 角色库：计数 / 搜索 / 三级树 */
 
-.roots-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+.panel-count {
+  flex: none;
+  padding: 6px 12px 0;
+  color: var(--color-muted-foreground);
+  font-size: 11px;
+  line-height: 1.4;
 }
 
-.root-row {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 6px 8px;
-  border: 1px solid transparent;
+.panel-search {
+  flex: none;
+  padding: 6px 12px 8px;
+}
+
+.panel-search input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  border: 1px solid var(--color-border);
   border-radius: 6px;
   background: var(--color-muted);
+  color: var(--color-foreground);
+  font-size: 12px;
+  outline: none;
 }
 
-.root-row:hover {
-  border-color: var(--color-border);
-  background: var(--color-secondary);
+.panel-search input:focus {
+  border-color: var(--color-primary);
 }
 
-.root-row-main {
+.roster-list {
+  padding: 2px 0 8px;
+}
+
+/* 树行通用：一行 flex，靠 padding-left 表达层级 */
+.tree-row {
   display: flex;
   align-items: center;
   gap: 6px;
-  min-width: 0;
+  padding: 4px 10px;
+  cursor: pointer;
+  user-select: none;
 }
 
-.root-name {
-  font-size: 12px;
-  font-weight: 500;
-  white-space: nowrap;
+.tree-row:hover {
+  background: var(--color-secondary);
+}
+
+.tree-root {
+  padding-top: 6px;
+  padding-bottom: 6px;
+  font-weight: 600;
+}
+
+.tree-char {
+  padding-left: 22px;
+}
+
+.tree-variant {
+  padding-left: 40px;
+  color: #cfd6dd;
+}
+
+/* 展开箭头（内联 SVG）：不依赖字体，避免无桌面字体环境渲染成豆腐块 */
+.tree-arrow {
+  flex: 0 0 10px;
+  width: 10px;
+  height: 10px;
+  color: #9aa;
+}
+
+.tree-root-name {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
+  white-space: nowrap;
   text-overflow: ellipsis;
 }
 
-.root-id {
-  margin-left: auto;
-  flex: none;
+/* 资源根 id 徽标：区分同名资源根（如碧蓝的三个根） */
+.tree-badge {
+  flex: 0 0 auto;
   padding: 0 5px;
   border: 1px solid var(--color-border);
   border-radius: 4px;
   color: var(--color-primary);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 10px;
+  font-weight: 400;
 }
 
-.root-meta {
-  color: var(--color-muted-foreground);
+.tree-icon {
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+  border-radius: 4px;
+  background: #111;
+}
+
+.tree-char-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 角色行的「原名」标签（归一化键，与显示名不同才有信息增量） */
+.tree-orig {
+  flex: 0 0 auto;
+  padding: 0 3px;
+  border: 1px solid #4a5;
+  border-radius: 3px;
+  color: #8a9;
   font-size: 10px;
+  font-weight: 400;
+}
+
+.tree-count {
+  flex: 0 0 auto;
+  color: #8a9;
+  font-size: 11px;
+  font-weight: 400;
+}
+
+/* 变体行的类型标签：Spine 蓝 / Live2D 与资源包 紫（配色照旧前端） */
+.tree-type {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 10px;
+}
+
+.tree-type-spine {
+  background: #2b6cb0;
+}
+
+.tree-type-live2d,
+.tree-type-bundle {
+  background: #6d28d9;
+}
+
+.tree-variant-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tree-variant-orig {
+  flex: 0 1 auto;
+  color: #8a94a0;
+  font-size: 11px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* 资源根目录不存在（服务端 exists:false）：整行标红，提示要修配置 */
-.root-row.is-missing .root-name {
-  color: var(--color-danger);
+/* 选中态：变体行高亮（与旧前端 .selected-item 同一语义） */
+.tree-variant.is-selected {
+  background: rgba(31, 192, 197, 0.14);
+  box-shadow: inset 2px 0 0 var(--color-primary);
+  color: var(--color-primary);
 }
 
-.root-row.is-missing .root-meta::after {
-  content: " · 目录不存在";
-  color: var(--color-danger);
-}
-
-.roots-foot {
-  margin: 6px 4px 0;
-  padding-top: 6px;
-  border-top: 1px solid var(--color-border);
-  color: var(--color-muted-foreground);
-  font-size: 10px;
+.tree-hint {
+  padding-left: 22px;
 }
 
 /* ------------------------------------------------------ 右栏分组占位（M3） */

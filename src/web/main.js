@@ -1,15 +1,16 @@
-// main.js —— ModelStage 新前端入口（M1）
+// main.js —— ModelStage 新前端入口（M2）
 //
 // 做什么：
 //   1. 装配各区域 DOM 引用并向 window.__WEB__ 暴露（自动化断言与手工排查都读它）；
 //   2. 拉 GET /api/brand 应用品牌（标题 + 图标），未配置时回落到默认品牌名；
 //   3. 接上顶栏「模型库」按钮 = 左栏显示/隐藏切换（与旧前端的面板开关语义一致）；
-//   4. 拉 /api/roots 渲染资源根列表；失败时在左栏显示红色横幅，不抛到控制台。
+//   4. 拉 /api/roots 后把名册三级树挂到左栏（roster-view.js，首次展开某根才请求该根模型）；
+//      失败时在左栏显示红色横幅，不抛到控制台。
 // 为什么把状态放在 window.__WEB__.state：M7 要做持久化，需要一个显式 store；
 //   现在先立最小形态（不引框架），后续里程碑往里加字段，避免各处散落全局变量。
 
 import { getJson, formatError } from './api.js';
-import { renderRoots } from './roots-list.js';
+import { createRosterView } from './roster-view.js';
 
 /** 服务端没配置品牌时的默认品牌名（唯一默认值，别处不重复写） */
 const DEFAULT_BRAND = 'ModelStage';
@@ -17,7 +18,10 @@ const DEFAULT_BRAND = 'ModelStage';
 /** 各区域 DOM 引用：集中取一次，避免函数里反复 querySelector */
 const dom = {
   leftPanel: document.getElementById('left-panel'),
-  rootsList: document.getElementById('roots-list'),
+  rosterList: document.getElementById('roster-list'),
+  rosterCount: document.getElementById('roster-count'),
+  rosterSearch: document.getElementById('roster-search'),
+  btnCollapse: document.getElementById('btn-collapse'),
   brandTitle: document.getElementById('brand-title'),
   brandIcon: document.getElementById('brand-icon'),
   btnLibrary: document.getElementById('btn-library'),
@@ -30,6 +34,7 @@ const state = {
   roots: [],
   rootsError: null,
   leftPanelVisible: true,
+  selectedModel: null,
 };
 
 /**
@@ -95,20 +100,35 @@ function showRootsError(message) {
   banner.className = 'error-banner';
   banner.id = 'roots-error';
   banner.textContent = `读取资源根失败：${message}`;
-  dom.rootsList.replaceChildren(banner);
+  dom.rosterList.replaceChildren(banner);
 }
 
-/** 拉取并渲染资源根列表 */
+/** 选中变体的回调：M2 只记状态（M4 用它去渲染舞台） */
+function onSelectModel(model) {
+  state.selectedModel = model;
+  const name = model ? (model.name || model.id) : '无';
+  dom.stageHint.textContent = `M2 名册 · 已选中 ${name} · 舞台渲染在 M4 接入`;
+}
+
+/** 拉资源根并把名册三级树挂到左栏 */
 async function loadRoots() {
   try {
     const data = await getJson('/api/roots');
     const roots = Array.isArray(data?.roots) ? data.roots : [];
     state.roots = roots;
-    const { ids } = renderRoots(roots, dom.rootsList);
-    // 供自动化断言：页面渲染出的 id 序列（顺序即服务端返回顺序）
-    document.documentElement.dataset.rootsIds = ids.join(',');
+    const roster = createRosterView({
+      listEl: dom.rosterList,
+      countEl: dom.rosterCount,
+      searchEl: dom.rosterSearch,
+      collapseBtn: dom.btnCollapse,
+      onSelect: onSelectModel,
+    });
+    state.roster = roster;
+    await roster.mount(roots);
+    // 供自动化断言：资源根 id 序列（与 /api/roots 一致）+ 名册状态快照
+    document.documentElement.dataset.rootsIds = roots.map((r) => r.id).join(',');
     document.documentElement.dataset.rootsReady = '1';
-    dom.stageHint.textContent = `M1 骨架 · 资源根 ${roots.length} 个 · 舞台渲染在 M4 接入`;
+    dom.stageHint.textContent = `M2 名册 · ${roots.length} 个资源根 · 舞台渲染在 M4 接入`;
   } catch (err) {
     state.rootsError = formatError(err);
     document.documentElement.dataset.rootsReady = 'error';
@@ -116,7 +136,7 @@ async function loadRoots() {
   }
 }
 
-/** 绑定事件（只在有真实行为的按钮上挂；M3 之前其余按钮保持无处理器） */
+/** 绑定事件（只给"有真实行为"的控件挂处理器；其余控件在 HTML 里 disabled） */
 function bindEvents() {
   dom.btnLibrary.addEventListener('click', toggleLeftPanel);
   dom.btnLibrary.setAttribute('aria-expanded', 'true');
@@ -127,8 +147,14 @@ function boot() {
   // 品牌与资源根互不依赖，并行拉取；任一失败都不影响另一条链路
   loadBrand();
   bindEvents();
-  // 暴露给调试与自动化断言（M1 验收用）
-  window.__WEB__ = { state, version: 'M1', defaultBrand: DEFAULT_BRAND };
+  // 暴露给调试与自动化断言（M2 验收用）
+  window.__WEB__ = {
+    state,
+    version: 'M2',
+    defaultBrand: DEFAULT_BRAND,
+    /** 名册状态快照（未挂载时返回 null） */
+    rosterSnapshot: () => (state.roster ? state.roster.snapshot() : null),
+  };
   loadRoots();
 }
 
