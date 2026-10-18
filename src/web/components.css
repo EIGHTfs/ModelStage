@@ -1,3 +1,19 @@
+/* 语义色 token：控件外观用到的语义色集中在这里定义（基础调色板在 style.css）。
+   抽成变量是为了换主题/深浅色时只改一处，而不是在十几处裸色值里逐个找。 */
+:root {
+  --color-accent-action: #2b6cb0;      /* 主操作按钮底色 */
+  --color-accent-action-hover: #3178c6;
+  --color-on-accent: #fff;             /* 主色/类型标签上的文字 */
+  --color-type-spine: #2b6cb0;         /* 变体标签：Spine */
+  --color-type-live2d: #6d28d9;        /* 变体标签：Live2D / 资源包 */
+  --color-text-strong: #cfd6dd;        /* 变体行主文本 */
+  --color-text-dim: #9aa;              /* 展开箭头等弱提示 */
+  --color-orig-border: #4a5;           /* 角色行「原名」标签描边 */
+  --color-orig-text: #8a9;             /* 「原名」/计数字样 */
+  --color-icon-bg: #111;               /* 角色头像占位底 */
+  --color-text-muted: #8a94a0;         /* 变体行原名后缀等次级文本 */
+}
+
 /* ============================================================================
    ModelStage 新前端 · 控件外观（M1）
    只管"控件长什么样"：品牌、按钮、资源根列表、右栏分组行、底栏分组、错误横幅。
@@ -90,12 +106,12 @@
 /* 主操作按钮（左栏「选择目录」）：配色照旧前端 */
 .mini-btn.is-primary {
   border-color: transparent;
-  background: #2b6cb0;
-  color: #fff;
+  background: var(--color-accent-action);
+  color: var(--color-on-accent);
 }
 
 .mini-btn.is-primary:hover:not(:disabled) {
-  background: #3178c6;
+  background: var(--color-accent-action-hover);
 }
 
 /* ------------------------------------------------------------ 提示文案 */
@@ -168,7 +184,7 @@
 
 .tree-variant {
   padding-left: 40px;
-  color: #cfd6dd;
+  color: var(--color-text-strong);
 }
 
 /* 展开箭头（内联 SVG）：不依赖字体，避免无桌面字体环境渲染成豆腐块 */
@@ -176,7 +192,7 @@
   flex: 0 0 10px;
   width: 10px;
   height: 10px;
-  color: #9aa;
+  color: var(--color-text-dim);
 }
 
 .tree-game-name {
@@ -205,7 +221,7 @@
   height: 26px;
   object-fit: contain;
   border-radius: 4px;
-  background: #111;
+  background: var(--color-icon-bg);
 }
 
 .tree-char-title {
@@ -220,16 +236,16 @@
 .tree-orig {
   flex: 0 0 auto;
   padding: 0 3px;
-  border: 1px solid #4a5;
+  border: 1px solid var(--color-orig-border);
   border-radius: 3px;
-  color: #8a9;
+  color: var(--color-orig-text);
   font-size: 10px;
   font-weight: 400;
 }
 
 .tree-count {
   flex: 0 0 auto;
-  color: #8a9;
+  color: var(--color-orig-text);
   font-size: 11px;
   font-weight: 400;
 }
@@ -239,17 +255,17 @@
   flex: 0 0 auto;
   padding: 0 5px;
   border-radius: 4px;
-  color: #fff;
+  color: var(--color-on-accent);
   font-size: 10px;
 }
 
 .tree-type-spine {
-  background: #2b6cb0;
+  background: var(--color-accent-action);
 }
 
 .tree-type-live2d,
 .tree-type-bundle {
-  background: #6d28d9;
+  background: var(--color-type-live2d);
 }
 
 .tree-variant-text {
@@ -262,7 +278,7 @@
 
 .tree-variant-orig {
   flex: 0 1 auto;
-  color: #8a94a0;
+  color: var(--color-text-muted);
   font-size: 11px;
   white-space: nowrap;
   overflow: hidden;

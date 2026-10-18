@@ -73,7 +73,9 @@ export const TRANSPORT_CONTROLS = [
   { kind: 'button', id: 'transport-prev', label: '上一个', title: '上一个' },
   { kind: 'select', id: 'transport-skin', label: '皮肤', value: 'default', options: ['default'] },
   { kind: 'button', id: 'transport-play', label: '播放/暂停', title: '播放/暂停' },
-  { kind: 'select', id: 'transport-motion', label: '动作', value: 'idle', options: ['idle'] },
+  // 动作下拉不预置任何真实动作：选项由模型动作列表填充（meta.motions / skeletonData.animations）。
+  // 这里的单条是**占位文案**（value 为空，不会被当成可播动作），M6 接线时整体替换 options。
+  { kind: 'select', id: 'transport-motion', label: '动作', value: '', options: ['（选中模型后列出动作）'] },
   { kind: 'button', id: 'transport-next', label: '下一个', title: '下一个' },
   { kind: 'button', id: 'transport-reset-view', label: '重置视图', title: '重置视图' },
   { kind: 'button', id: 'transport-bg', label: '背景', title: '背景' },

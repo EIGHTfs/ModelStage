@@ -1,11 +1,8 @@
 // roster-view.js —— 名册视图层：三级树（游戏 → 角色 → 变体）+ 搜索 + 选中态（M2）
 //
 // 做什么：
-//   1. 一级：按资源根配置的 **name 合并**成一个游戏节点（同名根合并，照 public/char-tree.js 的
-//      buildTree 规则）。一个游戏可能由多个资源根供给（碧蓝航线 = azurlane + azurlane_spine +
-//      azurlane_bundle），展开该游戏时才请求这些根的模型清单（懒加载）；
-//   2. 二级：角色。**跨根归并**——同一角色在 Live2D 根与 Spine 根下的模型，按名表归到同一个
-//      角色节点下（不是把各根的行拼起来），规则与 char-tree.js 一致；
+//   1. 一级：按资源根配置的 name 合并成游戏节点（同名根合并，照 public/char-tree.js）；展开该游戏时才请求其各根模型；
+//   2. 二级：角色跨根归并——同一角色在多个根下的模型归到一个角色节点（不是把各根的行拼起来）；
 //   3. 三级：变体（模型）。行上带类型标签（Spine / Live2D / 资源包）与来源根 id；
 //   4. 搜索：前端过滤（角色名 / 服装名 / 资源名 / 目录名），命中即自动展开到变体层；
 //   5. 选中态：点变体行高亮并记录（M4 渲染用），状态写 localStorage（键名/结构沿用旧前端）；
@@ -22,8 +19,13 @@ import { formatError } from './api.js';
 /** localStorage 键名：与旧前端一致，不得改名（M7 要用它做持久化，改名会让用户既有状态失效） */
 const LS_KEY = 'spine-multi-viewer.tree-state.v1';
 
-/** 每个游戏最多渲染的角色行数（旧前端按游戏限额 400，避免 2000+ 角色一次铺满） */
-const RENDER_LIMIT_PER_GAME = 400;
+/** 渲染上限：每个游戏最多渲染多少角色行（避免 2000+ 角色一次铺满）。
+ *  默认值只是兜底，可用 window.__WEB_CONFIG__.renderLimitPerGame 覆盖 */
+const RENDER_LIMIT_DEFAULT = 400;
+function renderLimitPerGame() {
+  const custom = Number(window.__WEB_CONFIG__ && window.__WEB_CONFIG__.renderLimitPerGame);
+  return Number.isFinite(custom) && custom > 0 ? custom : RENDER_LIMIT_DEFAULT;
+}
 
 /**
  * 名册状态：games 是按 name 合并后的游戏列表；loaded 按资源根缓存加载结果；
@@ -220,9 +222,10 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
       }
 
       totalChars += chars.length;
+      const limit = renderLimitPerGame(); // 每次渲染读一次：改配置后刷新即生效
       const selectedId = state.selected ? state.selected.modelId : null;
       for (const c of chars) {
-        if (rendered >= RENDER_LIMIT_PER_GAME) break;
+        if (rendered >= limit) break;
         rendered += 1;
         const charOpen = state.expandedChars.has(c.key) || searching;
         listEl.append(renderCharRow(game, c, charOpen));
