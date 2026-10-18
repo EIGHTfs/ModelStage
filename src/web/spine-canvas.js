@@ -22,7 +22,10 @@ const RUNTIME_BASE = '/spine-runtimes/spine-webgl-';
 const RUNTIME_MANIFEST = '/spine-runtimes/index.json';
 const ENGINE_SRC = '/engine.js';
 const ALPHA_THRESHOLD = 8; // alpha 大于它才算"画上了"（背景 clearColor 为全透明）
-const DEFAULT_SETTINGS = { pma: 'auto', fit: 'subject', textureFilter: 'linear', speed: 1, loop: true, debug: null };
+const DEFAULT_SETTINGS = {
+  pma: 'auto', fit: 'subject', textureFilter: 'linear', speed: 1, loop: true, debug: null,
+  fpsLimit: 60, dprMode: 'auto',
+};
 
 const runtimeSourceCache = new Map(); // ver -> 源码文本
 let enginePromise = null;
@@ -177,6 +180,7 @@ function statsOf(st) {
     runtimeKeys: [...st.runtimeKeys],
     contexts: e && e.gl ? 1 : 0,
     frames: st.frames,
+    fps: e && e.getCurrentFps ? e.getCurrentFps() : null,
     loads: st.loads,
     disposes: st.disposes,
     lastError: st.lastError,
@@ -221,9 +225,10 @@ function applySettings(st, patch) {
   if (!e) return;
   const s = st.settings;
   const call = (fn, ...args) => { try { if (typeof fn === 'function') fn.apply(e, args); } catch { /* 版本不支持则跳过 */ } };
-  if (s.pma) call(e.setPmaMode, s.pma);
   if (s.fit) call(e.setFitMode, s.fit);
   if (s.textureFilter) call(e.setTextureFilter, s.textureFilter);
+  if (typeof s.fpsLimit === 'number') call(e.setFpsLimit, s.fpsLimit);
+  if (s.dprMode !== undefined && s.dprMode !== null) call(e.setDprMode, s.dprMode);
   if (typeof s.speed === 'number') call(e.setSpeed, s.speed);
   if (typeof s.loop === 'boolean') call(e.setLoop, s.loop);
   if (s.debug) call(e.setDebugDraw, s.debug);
@@ -365,8 +370,23 @@ export function createSpineStage(opts) {
     // debug 同时给出统计字段（验收脚本从 debug() 读 frames 等）
     debug: () => ({ ...statsOf(st), engine: st.engine }),
   };
-  for (const key of ['pma', 'fit', 'textureFilter', 'speed', 'loop', 'debug']) {
-    api[`set${key[0].toUpperCase()}${key.slice(1)}`] = (v) => applySettings(st, { [key]: v });
+  // PMA 不走通用 setter：切它必须重传贴图，单列一个方法（见下）
+  for (const key of ['fit', 'textureFilter', 'speed', 'loop', 'debug', 'fpsLimit', 'dprMode']) {
+    api[`set${key[0].toUpperCase()}${key.slice(1)}`] = (v) => applySettings(
+      st, { [key]: key === 'fpsLimit' ? Number(v) : v },
+    );
   }
+  /**
+   * 切换 PMA 模式：true=预乘、false=直通。
+   * 为什么单列：引擎没有 setPmaMode，切预乘必须重建贴图纹理（rebuildTextures）。
+   */
+  api.setPma = (on) => {
+    const mode = on ? 'premultiplied' : 'straight';
+    applySettings(st, { pma: mode });
+    if (st.engine && typeof st.engine.rebuildTextures === 'function') {
+      try { st.engine.rebuildTextures(mode); } catch { /* 重建失败保持原贴图 */ }
+    }
+    return mode;
+  };
   return api;
 }

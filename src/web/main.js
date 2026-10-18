@@ -107,7 +107,40 @@ async function loadWebConfig() {
   }
 }
 
-/** 左栏显示/隐藏：位移 + 淡出，与旧前端「模型库」按钮的过渡一致 */function toggleLeftPanel() {
+/**
+ * 面板已接线控件的生效表：key = 控件 id，value = 把该控件的机器值应用到舞台。
+ * 未列出的控件在面板里仍是 disabled + data-pending，不会被回调到这里。
+ */
+const PANEL_APPLIERS = {
+  'ctl-fps': (v) => stage && stage.setFpsLimit(v),
+  'ctl-dpr': (v) => stage && stage.setDprMode(v),
+  'ctl-fit': (v) => stage && stage.setFit(v),
+  'ctl-filter': (v) => stage && stage.setTextureFilter(v),
+  'ctl-pma': (v) => stage && stage.setPma(v),
+};
+
+/** 面板控件回调：应用生效并记录当前值（断言与后续持久化都用这份快照） */
+function applyPanelSetting(id, value) {
+  const apply = PANEL_APPLIERS[id];
+  if (!apply) return;
+  apply(value);
+  state.panelSettings = { ...(state.panelSettings || {}), [id]: value };
+  document.documentElement.dataset.panelSetting = JSON.stringify(state.panelSettings);
+}
+
+/** 帧率读数：把舞台实测帧率刷到面板上（500ms 一次；无舞台或未就绪时显示 —） */
+function startFpsReadout(panel) {
+  if (!panel || typeof panel.setFps !== 'function') return;
+  const tick = () => {
+    const st = stage && stage.stats ? stage.stats() : null;
+    panel.setFps(st && typeof st.fps === 'number' ? st.fps : null);
+  };
+  tick();
+  setInterval(tick, 500);
+}
+
+/** 左栏显示/隐藏：位移 + 淡出，与旧前端「模型库」按钮的过渡一致 */
+function toggleLeftPanel() {
   state.leftPanelVisible = !state.leftPanelVisible;
   dom.leftPanel.classList.toggle('is-hidden', !state.leftPanelVisible);
   dom.btnLibrary.setAttribute('aria-expanded', String(state.leftPanelVisible));
@@ -154,6 +187,8 @@ function onSelectModel(model) {
   stage.load({ root: model.rootId, model })
     .then((info) => {
       dom.stageHint.textContent = `${model.name} · Spine ${info.version} · ${info.animations.length} 动作 · 播放 ${info.motion || '（无动作）'}`;
+      // 运行时组只读：显示本次实际使用的运行时版本（引擎按骨架版本自动选，不可手切）
+      if (state.panel) state.panel.setReadonly('ctl-runtime', `Spine ${info.version}`);
       document.documentElement.dataset.stageReady = '1';
     })
     .catch((err) => {
@@ -221,8 +256,16 @@ function boot() {
     document.documentElement.dataset.stageContext = 'none';
   }
 
-  const panelInfo = mountPanel({ headEl: dom.panelHead, bodyEl: dom.panelBody });
+  const panelInfo = mountPanel({
+    headEl: dom.panelHead,
+    bodyEl: dom.panelBody,
+    onSetting: applyPanelSetting,
+    // 只有映射表里有的控件才可点：判定口径与"真的会生效"严格一致
+    wiredIds: Object.keys(PANEL_APPLIERS),
+  });
   const transportInfo = mountTransport(dom.footer);
+  startFpsReadout(panelInfo);
+  state.panel = panelInfo; // 让 onSelectModel 能写运行时只读行
   document.documentElement.dataset.panelReady = '1';
   document.documentElement.dataset.panelControls = String(panelInfo.controls);
   document.documentElement.dataset.transportControls = String(transportInfo.controls);
@@ -242,6 +285,8 @@ function boot() {
     get autoRestore() { return state.autoRestore; },
     /** 诊断探针实例（等价于 window.__DIAG__，便于同一套检查代码复用） */
     get diag() { return diag; },
+    /** 已接线的面板控件 id（断言用：可点集合必须与它一致） */
+    panelWired: Object.keys(PANEL_APPLIERS),
     /** 面板/播放条骨架规模（自动化断言用） */
     chrome: { groups: panelInfo.groups, panelControls: panelInfo.controls, transportControls: transportInfo.controls },
     defaultBrand: DEFAULT_BRAND,

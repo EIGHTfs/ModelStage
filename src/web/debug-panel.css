@@ -1,0 +1,212 @@
+/* ============================================================================
+   debug-panel.css —— 调试日志浮层面板样式
+   结构对齐 doc/参考-旧端调试日志面板.html：288px 宽 / 最高 320px / 圆角 12px /
+   卡片底 + 边框 + 阴影；头部 图标+标题+条数+两个图标按钮；列表最高 256px 可滚动；
+   条目 = 级别图标 + 元信息（时间 + [tag]）+ 正文；级别用底色 10% + 文字着色。
+   颜色全部走 token（在 .dbg-panel 作用域内定义，优先级：站点既有 CSS 变量 → 兜底值），
+   换主题时只需要改这一处。
+   ========================================================================== */
+
+.dbg-panel {
+  --dbg-card: var(--color-card, #1f2326);
+  --dbg-border: var(--color-border, #353a3e);
+  --dbg-fg: var(--color-foreground, #e9ebed);
+  --dbg-muted: var(--color-muted-foreground, #9ca3af);
+  --dbg-primary: var(--color-primary, #1fc0c5);
+  --dbg-warn: var(--color-warning, #f59e0b);
+  --dbg-error: var(--color-destructive, #e06c75);
+  --dbg-radius: 12px;
+  --dbg-accent: 10%;
+
+  position: fixed;
+  right: 16px;
+  /* 抬到播放条上方：播放条高 42px + 距底 15px，再留 19px 间隙 */
+  bottom: 76px;
+  z-index: 60;
+  width: 288px;
+  max-height: min(320px, 40vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--dbg-border);
+  border-radius: var(--dbg-radius);
+  background: var(--dbg-card);
+  color: var(--dbg-fg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  transform-origin: right bottom;
+}
+
+/* 关闭调试日志时只是隐藏（实例保留），作者样式里的 display:flex 会盖掉 [hidden]，故显式声明 */
+.dbg-panel[hidden] {
+  display: none;
+}
+
+.dbg-panel.is-collapsed {
+  max-height: none;
+}
+
+/* ---------------------------------------------------------------- 头部 */
+
+.dbg-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--dbg-border);
+}
+
+.dbg-head-left,
+.dbg-head-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dbg-head-right {
+  gap: 4px;
+}
+
+.dbg-head-left .dbg-icon {
+  width: 16px;
+  height: 16px;
+  color: var(--dbg-primary);
+}
+
+.dbg-title {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.dbg-count {
+  font-size: 12px;
+  color: var(--dbg-muted);
+}
+
+/* 图标按钮：24×24（对应参考文件的 size-3.5 图标 + 点击热区） */
+.dbg-btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dbg-muted);
+  cursor: pointer;
+}
+
+.dbg-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--dbg-fg);
+}
+
+.dbg-btn .dbg-icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* 收起后箭头转回手指向上（表示可展开） */
+.dbg-btn.is-collapsed .dbg-icon-chevron {
+  transform: rotate(180deg);
+}
+
+/* ---------------------------------------------------------------- 列表 */
+
+.dbg-list {
+  flex: 1 1 auto;
+  max-height: min(256px, calc(40vh - 64px));
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.dbg-list[hidden] {
+  display: none;
+}
+
+/* 单条：横向 flex、圆角、内边距，级别底色 10% */
+.dbg-row {
+  display: flex;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.dbg-row-info {
+  background: color-mix(in srgb, var(--dbg-primary) var(--dbg-accent), transparent);
+}
+
+.dbg-row-warn {
+  background: color-mix(in srgb, var(--dbg-warn) var(--dbg-accent), transparent);
+}
+
+.dbg-row-error {
+  background: color-mix(in srgb, var(--dbg-error) var(--dbg-accent), transparent);
+}
+
+/* 级别图标：14px、顶部对齐 */
+.dbg-level-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  margin-top: 2px;
+}
+
+.dbg-row-info .dbg-level-icon { color: var(--dbg-primary); }
+.dbg-row-warn .dbg-level-icon { color: var(--dbg-warn); }
+.dbg-row-error .dbg-level-icon { color: var(--dbg-error); }
+
+.dbg-body {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+/* 元信息行：时间（等宽数字）+ [tag]（小写存储，靠 CSS 转大写） */
+.dbg-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--dbg-muted);
+}
+
+.dbg-time {
+  font-variant-numeric: tabular-nums;
+}
+
+.dbg-tag {
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  opacity: 0.8;
+}
+
+/* 正文：按级别着色，长文本换行 */
+.dbg-text {
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.dbg-text-info { color: var(--dbg-primary); }
+.dbg-text-warn { color: var(--dbg-warn); }
+.dbg-text-error { color: var(--dbg-error); }
+
+/* ---------------------------------------------------------------- 空态 */
+
+.dbg-empty {
+  padding: 32px 8px;
+  text-align: center;
+  color: var(--dbg-muted);
+  opacity: 0.6;
+  font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+}

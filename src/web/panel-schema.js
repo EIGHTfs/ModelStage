@@ -34,34 +34,52 @@ export const PANEL_GROUPS = [
   { id: 'skin', title: '皮肤', controls: [PLACEHOLDER('选中模型后列出皮肤')] },
   { id: 'play', title: '播放', controls: [PLACEHOLDER('速度 / 循环 / 帧步进')] },
   { id: 'filter', title: '滤镜', controls: [PLACEHOLDER('滤镜预设')] },
-  { id: 'pma', title: 'PMA 预乘', controls: [PLACEHOLDER('预乘 alpha 处理')] },
-  { id: 'runtime', title: '运行时', controls: [PLACEHOLDER('运行时版本与能力信息')] },
+  {
+    id: 'pma',
+    title: 'PMA 预乘',
+    controls: [
+      // 开 = 预乘（premultiplied），关 = 直通（straight）；切换会重传贴图
+      { kind: 'switch', label: 'PMA 预乘', id: 'ctl-pma', defaultOn: true },
+    ],
+  },
+  {
+    id: 'runtime',
+    title: '运行时',
+    controls: [
+      // 只读：运行时由模型骨架版本决定，引擎不支持手动切换（切了也只会加载失败）
+      { kind: 'readonly', label: '运行时版本', id: 'ctl-runtime', note: '按模型骨架版本自动选择' },
+    ],
+  },
   { id: 'theme', title: '主题背景', controls: [PLACEHOLDER('背景样式与配色')] },
   { id: 'debug', title: '调试绘制', controls: [PLACEHOLDER('骨骼 / 包围盒 / 网格绘制')] },
   {
     id: 'settings',
     title: '设置',
-    defaultOpen: false,
+    defaultOpen: true,
     controls: [
-      { kind: 'segmented', label: '渲染帧率', id: 'ctl-fps', options: ['60 FPS', '30 FPS'] },
-      { kind: 'segmented', label: '渲染像素比（DPR）', id: 'ctl-dpr', options: ['自动', '1', '1.5', '2'] },
+      // values 与 options 一一对应：面板只负责把"点了哪个选项"翻成机器值，再交给接线方
+      { kind: 'segmented', label: '渲染帧率', id: 'ctl-fps', options: ['60 FPS', '30 FPS'], values: [60, 30], defaultValue: 60, readout: true },
+      { kind: 'segmented', label: '渲染像素比（DPR）', id: 'ctl-dpr', options: ['自动', '1', '1.5', '2'], values: ['auto', 1, 1.5, 2], defaultValue: 'auto' },
       {
         kind: 'segmented',
         label: '初始缩放',
         id: 'ctl-fit',
+        values: ['subject', 'all', 'animation'],
+        defaultValue: 'subject',
         options: [
           { text: '主体优先', title: '排除游离特效/背景，以人物主体适配（推荐）' },
           { text: '全部部件', title: '以所有部件的整体包围盒适配' },
           { text: '动画全程', title: '采样全部动画帧，保证播放过程不超出屏幕' },
         ],
       },
-      { kind: 'segmented', label: '纹理过滤', id: 'ctl-filter', options: ['双线性', '最邻近'] },
-      { kind: 'segmented', label: '抗锯齿（MSAA）', id: 'ctl-msaa', options: ['自动', '关闭'] },
+      // 旧端默认是「最邻近」（不是双线性），默认项按旧端对齐
+      { kind: 'segmented', label: '纹理过滤', id: 'ctl-filter', options: ['双线性', '最邻近'], values: ['linear', 'nearest'], defaultValue: 'nearest' },
+      { kind: 'segmented', label: '抗锯齿（MSAA）', id: 'ctl-msaa', options: ['自动', '关闭'], values: ['auto', 'off'], defaultValue: 'auto' },
       // 旧前端这部分 UI 被自家补丁隐藏了（只追加不覆盖），但 M3 口径要求列全，故照列并标注
-      { kind: 'segmented', label: '模型导入模式', id: 'ctl-import-mode', options: ['替换', '追加'] },
-      { kind: 'switch', label: '防卡死保护', id: 'ctl-hang-guard' },
-      { kind: 'switch', label: '显示状态信息', id: 'ctl-show-status' },
-      { kind: 'switch', label: '调试日志', id: 'ctl-debug-log' },
+      { kind: 'segmented', label: '模型导入模式', id: 'ctl-import-mode', options: ['替换', '追加'], values: ['replace', 'append'], defaultValue: 'append' },
+      { kind: 'switch', label: '防卡死保护', id: 'ctl-hang-guard', defaultOn: true },
+      { kind: 'switch', label: '显示状态信息', id: 'ctl-show-status', defaultOn: true },
+      { kind: 'switch', label: '调试日志', id: 'ctl-debug-log', defaultOn: true },
       { kind: 'actions', buttons: ['导出设置', '导入设置', '恢复默认'], id: 'ctl-settings-io' },
     ],
   },
