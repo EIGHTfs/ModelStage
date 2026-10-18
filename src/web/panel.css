@@ -1,0 +1,191 @@
+/* ============================================================================
+   ModelStage 新前端 · 右侧控制面板 + 底部播放条样式（M3）
+   只管这两个区域内部的样子：手风琴、分段按钮、开关、占位说明、播放条控件。
+   区域几何（右栏贴右、播放条居中）仍在 style.css，不在这里重复。
+   配色沿用 style.css 的变量（--color-card / --color-border / --color-primary …）。
+   ========================================================================== */
+
+/* --------------------------------------------------------------- 手风琴 */
+
+.acc {
+  border-bottom: 1px solid rgba(53, 58, 62, 0.5);
+}
+
+.acc-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 6px;
+  color: var(--color-foreground);
+  font-size: 12px;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+
+.acc-trigger:hover {
+  background: var(--color-secondary);
+}
+
+/* 箭头：CSS 画三角（不依赖字体），展开时转向下 */
+.acc-arrow {
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
+  border-top: 1.5px solid currentColor;
+  border-right: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 0.15s ease;
+  opacity: 0.75;
+}
+
+.acc-trigger[aria-expanded='true'] .acc-arrow {
+  transform: rotate(135deg);
+}
+
+.acc-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.acc-body {
+  padding: 2px 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.acc-body[hidden] {
+  display: none;
+}
+
+/* --------------------------------------------------------- 控件公共行 */
+
+.ctl-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ctl-row-switch {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ctl-label {
+  color: var(--color-muted-foreground);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* 分段按钮组：窄面板里自动换行，避免横向溢出 */
+.ctl-seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.seg-btn {
+  flex: 0 1 auto;
+  padding: 3px 7px;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  background: var(--color-muted);
+  color: var(--color-foreground);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* 未接线：视觉上明确"暂不可用"，但仍然可读（不是隐藏） */
+.seg-btn:disabled,
+.switch-btn:disabled,
+.transport-select:disabled,
+#app-footer .mini-btn:disabled,
+#btn-collapse-menu:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* 假开关：一个胶囊 + 圆点（M6 接线后由 aria-checked 驱动位置） */
+.switch-btn {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 16px;
+  padding: 2px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-secondary);
+  display: inline-flex;
+  align-items: center;
+}
+
+.switch-knob {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--color-muted-foreground);
+  transition: transform 0.15s ease;
+}
+
+.switch-btn[aria-checked='true'] {
+  background: var(--color-primary);
+}
+
+.switch-btn[aria-checked='true'] .switch-knob {
+  transform: translateX(14px);
+  background: #0a0a0c;
+}
+
+/* 动作按钮组（导出/导入/恢复默认） */
+.ctl-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* 动态内容占位说明 */
+.ctl-dynamic {
+  border: 1px dashed var(--color-border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.ctl-note {
+  margin: 0;
+  color: var(--color-muted-foreground);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* --------------------------------------------------- 底部播放条内部 */
+
+/* 三段布局：左中右（与旧前端一致），组内按需换行不溢出 */
+#app-footer .transport-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+#app-footer .mini-btn {
+  height: 26px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+#app-footer .transport-select {
+  height: 26px;
+  max-width: 96px;
+  padding: 0 4px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-muted);
+  color: var(--color-foreground);
+  font-size: 11px;
+}

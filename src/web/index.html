@@ -19,6 +19,8 @@
 <link rel="stylesheet" href="./style.css" />
 <!-- 控件外观单独一个文件：拆分只为把单文件控制在 400 行内，职责见两文件头注释 -->
 <link rel="stylesheet" href="./components.css" />
+<!-- 右侧面板与播放条内部样式单独一个文件（M3），避免 components.css 超过 400 行 -->
+<link rel="stylesheet" href="./panel.css" />
 </head>
 <body>
 
@@ -74,45 +76,14 @@
   </div>
 </aside>
 
-<!-- ============ 右栏（第 4 区域）：导演面板 ============ -->
+<!-- ============ 右栏（第 4 区域）：控制面板（M3 骨架，内容由 panel.js 渲染） ============ -->
 <aside id="right-panel" class="panel panel-right" aria-label="控制面板">
-  <div class="panel-head">
-    <span class="panel-title">控制面板</span>
-  </div>
-  <div class="panel-body">
-    <!-- M1 只做区域占位：分组名照旧前端列出，行为在 M3/M6 接线 -->
-    <ul class="section-list">
-      <li class="section-row">动作</li>
-      <li class="section-row">皮肤</li>
-      <li class="section-row">播放</li>
-      <li class="section-row">滤镜</li>
-      <li class="section-row">PMA 预乘</li>
-      <li class="section-row">运行时</li>
-      <li class="section-row">主题背景</li>
-      <li class="section-row">调试绘制</li>
-      <li class="section-row">设置</li>
-    </ul>
-    <p class="muted-hint">M3 补齐控件，M6 接线</p>
-  </div>
+  <div class="panel-head" id="panel-head"></div>
+  <div class="panel-body" id="panel-body"></div>
 </aside>
 
-<!-- ============ 底栏（第 5 区域）：传输条 ============ -->
-<footer id="app-footer" class="app-footer" aria-label="播放控制">
-  <div class="transport-group">
-    <button type="button" class="mini-btn" id="btn-loop" disabled>单动循环</button>
-    <button type="button" class="mini-btn" id="btn-prev" disabled>上一个</button>
-  </div>
-  <div class="transport-group">
-    <button type="button" class="mini-btn" id="btn-skin" disabled>default</button>
-    <button type="button" class="mini-btn" id="btn-play" disabled>播放/暂停</button>
-    <button type="button" class="mini-btn" id="btn-motion" disabled>idle</button>
-  </div>
-  <div class="transport-group">
-    <button type="button" class="mini-btn" id="btn-next" disabled>下一个</button>
-    <button type="button" class="mini-btn" id="btn-reset-view" disabled>重置视图</button>
-    <button type="button" class="mini-btn" id="btn-bg" disabled>背景</button>
-  </div>
-</footer>
+<!-- ============ 底栏（第 5 区域）：播放条（M3 骨架，内容由 transport.js 渲染） ============ -->
+<footer id="app-footer" class="app-footer" aria-label="播放控制"></footer>
 
 <script type="module" src="./main.js"></script>
 </body>

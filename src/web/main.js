@@ -1,16 +1,20 @@
-// main.js —— ModelStage 新前端入口（M2）
+// main.js —— ModelStage 新前端入口（M3）
 //
 // 做什么：
 //   1. 装配各区域 DOM 引用并向 window.__WEB__ 暴露（自动化断言与手工排查都读它）；
 //   2. 拉 GET /api/brand 应用品牌（标题 + 图标），未配置时回落到默认品牌名；
 //   3. 接上顶栏「模型库」按钮 = 左栏显示/隐藏切换（与旧前端的面板开关语义一致）；
-//   4. 拉 /api/roots 后把名册三级树挂到左栏（roster-view.js，首次展开某根才请求该根模型）；
-//      失败时在左栏显示红色横幅，不抛到控制台。
+//   4. 拉 /api/roots 后把名册三级树挂到左栏（roster-view.js，首次展开某游戏才请求该游戏模型）；
+//      失败时在左栏显示红色横幅，不抛到控制台；
+//   5. 挂右侧控制面板与底部播放条的骨架（panel.js / transport.js）——
+//      M3 只做控件齐全、位置就位，组内控件一律 disabled + data-pending（M6 接线）。
 // 为什么把状态放在 window.__WEB__.state：M7 要做持久化，需要一个显式 store；
 //   现在先立最小形态（不引框架），后续里程碑往里加字段，避免各处散落全局变量。
 
 import { getJson, formatError } from './api.js';
 import { createRosterView } from './roster-view.js';
+import { mountPanel } from './panel.js';
+import { mountTransport } from './transport.js';
 
 /** 服务端没配置品牌时的默认品牌名（唯一默认值，别处不重复写） */
 const DEFAULT_BRAND = 'ModelStage';
@@ -27,6 +31,9 @@ const dom = {
   btnLibrary: document.getElementById('btn-library'),
   btnFullscreen: document.getElementById('btn-fullscreen'),
   stageHint: document.getElementById('stage-hint'),
+  panelHead: document.getElementById('panel-head'),
+  panelBody: document.getElementById('panel-body'),
+  footer: document.getElementById('app-footer'),
 };
 
 /** 最小状态容器（M7 会扩展成带持久化的 store） */
@@ -144,13 +151,22 @@ function bindEvents() {
 }
 
 function boot() {
+  // 面板与播放条是纯静态骨架（不依赖网络）：先挂上，保证首屏五区域都有内容
+  const panelInfo = mountPanel({ headEl: dom.panelHead, bodyEl: dom.panelBody });
+  const transportInfo = mountTransport(dom.footer);
+  document.documentElement.dataset.panelReady = '1';
+  document.documentElement.dataset.panelControls = String(panelInfo.controls);
+  document.documentElement.dataset.transportControls = String(transportInfo.controls);
+
   // 品牌与资源根互不依赖，并行拉取；任一失败都不影响另一条链路
   loadBrand();
   bindEvents();
   // 暴露给调试与自动化断言（M2 验收用）
   window.__WEB__ = {
     state,
-    version: 'M2',
+    version: 'M3',
+    /** 面板/播放条骨架规模（自动化断言用） */
+    chrome: { groups: panelInfo.groups, panelControls: panelInfo.controls, transportControls: transportInfo.controls },
     defaultBrand: DEFAULT_BRAND,
     /** 名册状态快照（未挂载时返回 null） */
     rosterSnapshot: () => (state.roster ? state.roster.snapshot() : null),

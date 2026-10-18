@@ -280,23 +280,6 @@
   padding-left: 22px;
 }
 
-/* ------------------------------------------------------ 右栏分组占位（M3） */
-
-.section-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-}
-
-.section-row {
-  padding: 8px 6px;
-  border-bottom: 1px solid rgba(53, 58, 62, 0.5);
-  color: var(--color-foreground);
-  font-size: 12px;
-}
-
 /* --------------------------------------------------------- 底栏三组按钮 */
 
 .transport-group {
