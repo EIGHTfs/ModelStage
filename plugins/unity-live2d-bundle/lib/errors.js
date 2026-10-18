@@ -31,7 +31,6 @@
     CURVE_BINDING_MISMATCH: 'ULB_ERR_CURVE_BINDING_MISMATCH',       // 曲线数与绑定数不一致
     STREAMED_CLIP_INVALID: 'ULB_ERR_STREAMED_CLIP_INVALID',         // StreamedClip 结构异常
     MODEL_BUILD: 'ULB_ERR_MODEL_BUILD',                 // 拼装可渲染模型失败（缺 moc3/贴图等）
-    NO_HOST: 'ULB_ERR_NO_HOST',                         // 宿主能力面缺失（§3.6：fetchFile 不可用且 file.bytes 缺失，可退化）
     EXPORT_NO_SPACE: 'ULB_ERR_EXPORT_NO_SPACE',           // 导出：磁盘剩余不足（预估 ×1.5 仍不够）
     EXPORT_INTERRUPTED: 'ULB_ERR_EXPORT_INTERRUPTED',     // 导出：被 SIGINT/SIGTERM 中断（临时目录已清理）
   };

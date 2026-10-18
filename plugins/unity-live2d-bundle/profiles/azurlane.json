@@ -1,0 +1,26 @@
+{
+  "id": "azurlane",
+  "name": "碧蓝航线",
+  "comment": "碧蓝航线 Unity Live2D 资源包的适配数据。只放**数据性差异**，代码里不写游戏名。注意只有这些字段会被消费：motion.loopPatterns（循环判定）、motion.fadeInTime/fadeOutTime（动作淡入淡出）、motion.groups（动作分组）、hitAreas（点击热区）、model3（覆盖/补充 model3 顶层）；comment/notes/label 仅作说明，不参与判定。",
+  "label": "Live2D包",
+  "notes": [
+    "单文件无扩展名、UnityFS 容器、Unity 2020.3 打包",
+    "包内 moc3 在 MonoBehaviour 的字节数组里（魔数 MOC3 + 前置 u32 长度）",
+    "physics3 以 TextAsset 形式存在，名字形如 <资源名>.physics3",
+    "纹理为 ETC2_RGBA8，数据在 .resS 或对象内联，Unity 存储方向自下而上",
+    "循环规则依据实测：18 个可解析包 / 282 个动作实例 / 34 个去重名。去重名集合为 complete、effect、home、idle、idle1~7、login、mail、main_1~4、mission、mission_complete、touch_body、touch_drag2、touch_head、touch_idle1~10、touch_special、wedding",
+    "touch_idle1~10 是触摸待机族，必须循环；它们不以 idle 开头（旧规则 ^idle 抓不到），故补 _idle 覆盖这 10 个名字",
+    "motion.groups 故意留空：分组粒度=动作名本身（34 个名字 → 34 组）。若要按 idle/touch/main 归组，在这里加 { group, patterns } 规则，但会改变动作列表的分组粒度"
+  ],
+  "motion": {
+    "loopPatterns": ["^idle", "_idle", "^main_", "^complete$", "^mission$", "^home$"],
+    "fadeInTime": 0.5,
+    "fadeOutTime": 0.5,
+    "groups": []
+  },
+  "hitAreas": [
+    { "Id": "TouchBody", "Motion": "touch_body" },
+    { "Id": "TouchHead", "Motion": "touch_head" },
+    { "Id": "TouchSpecial", "Motion": "touch_special" }
+  ]
+}

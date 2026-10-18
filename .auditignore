@@ -1,7 +1,0 @@
-# 审计豁免清单：这里列出的文件照常 git 跟踪/提交，只是不参与审计扫描。
-# 语法与 .gitignore 相同（仓库根相对）；与 .gitignore 独立叠加。
-#
-# /.env.example —— 纯模板文件，所有键值均为空占位，不含任何凭据。
-#   credfile-common 规则按文件名（.env*）命中，会把模板误判成凭据文件；
-#   真正的凭据文件 .env 已由 .gitignore 排除，不会入库。
-/.env.example

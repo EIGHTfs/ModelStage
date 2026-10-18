@@ -1,9 +1,6 @@
 {
   "id": "unity-live2d-bundle",
   "name": "Unity Live2D 资源包",
-  "provides": [
-    "asset-provider"
-  ],
   "label": "Live2D包",
   "version": 1,
   "entry": "index.js",
@@ -11,15 +8,21 @@
     "bundle"
   ],
   "produces": {
-    "kind": "live2d",
-    "entry": "resolve(file)",
-    "schema": "docs/契约/插件.md",
+    "entry": "open(ctx)",
+    "schema": "doc/插件产出schema（prepare）.MD",
     "fields": [
-      "prefix",
-      "files",
-      "entry"
+      "model",
+      "modelMeta",
+      "model3",
+      "urls",
+      "textures",
+      "motions",
+      "curveStats",
+      "paramTable",
+      "container",
+      "serialized"
     ],
-    "note": "resolve(file) 按资产提供者契约 §1.2 返回 { prefix, files, entry }：prefix 形如 vfs://unity-live2d-bundle/<rootId>/<相对目录>/，files 为 relPath→Blob|string 映射，entry 是 files 内的渲染入口键"
+    "note": "open() 返回对象；字段含义、样例与限制见 schema 文档"
   },
   "errorCodes": [
     "ULB_ERR_BAD_ARGS",
@@ -35,7 +38,6 @@
     "ULB_ERR_CURVE_BINDING_MISMATCH",
     "ULB_ERR_STREAMED_CLIP_INVALID",
     "ULB_ERR_MODEL_BUILD",
-    "ULB_ERR_NO_HOST",
     "ULB_ERR_EXPORT_NO_SPACE",
     "ULB_ERR_EXPORT_INTERRUPTED"
   ],
@@ -57,6 +59,6 @@
     "index.js"
   ],
   "assets": [
-    "profiles/unityfs-live2d.json"
+    "profiles/azurlane.json"
   ]
 }

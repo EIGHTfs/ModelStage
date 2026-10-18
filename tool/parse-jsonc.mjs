@@ -78,7 +78,6 @@ export function parseJsonc(text, label = '配置') {
 }
 
 // 直接运行：读文件并打印解析结果，便于排查配置
-// 仅 CLI 自跑时执行（被 import 时此分支不会进入），故不走 logger
 if (process.argv[1] && process.argv[1].endsWith('parse-jsonc.mjs') && process.argv[2]) {
   const fs = await import('node:fs');
   const cfg = parseJsonc(fs.readFileSync(process.argv[2], 'utf8'), process.argv[2]);

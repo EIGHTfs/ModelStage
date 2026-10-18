@@ -9,7 +9,7 @@
 // 规范结构（specVersion 1）：
 //   {
 //     "_meta": {
-//       "spec": "modelstage/character-table",
+//       "spec": "spine-multi-viewer/character-table",
 //       "specVersion": 1,
 //       "game": "棕色尘埃2",              // 展示用游戏名
 //       "source": "上游文件名",
@@ -41,7 +41,7 @@
 
 import fs from 'node:fs';
 
-export const SPEC = 'modelstage/character-table';
+export const SPEC = 'spine-multi-viewer/character-table';
 export const SPEC_VERSION = 1;
 
 /**

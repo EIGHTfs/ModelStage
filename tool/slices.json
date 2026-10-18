@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "generatedBy": "P3b 2026-10-14（依 doc/bundle-map.md 的库边界 + acorn 顶层语句接缝吸附）",
+  "source": "src/.app-shell.orig.html",
+  "moduleBody": [134565, 816818],
+  "note": "区间为字符偏移（左闭右开），相对 src/app-shell.html。每片一个文件；kind=verbatim 表示文件内容与该区间逐字节相同（无头部注释、无改名）；kind=renamed 表示文件带头部注释+可逆改名（engine，见 tool/rebuild-from-slices.mjs 的 renames 表）。装配顺序 = order 升序，必须与偏移严格一致，且首尾相接无缝覆盖 moduleBody。",
+  "slices": [
+    { "order": 1, "id": "runtime-boot", "kind": "verbatim", "file": "src/js/runtime-boot.js", "start": 134565, "end": 136282, "lib": "(打包器前导)", "conf": "精确", "note": "CJS interop 与私有字段助手 de/dn/db/gm；engine 片用到的 de 就在这里" },
+    { "order": 2, "id": "react-jsx-runtime", "kind": "verbatim", "file": "src/js/vendor/react-jsx-runtime.js", "start": 136282, "end": 137006, "lib": "react-jsx-runtime", "conf": "精确", "note": "license 横幅 @136289（片首 +7）" },
+    { "order": 3, "id": "react", "kind": "verbatim", "file": "src/js/vendor/react.js", "start": 137006, "end": 145132, "lib": "react", "conf": "精确", "note": "license 横幅 @137013" },
+    { "order": 4, "id": "scheduler", "kind": "verbatim", "file": "src/js/vendor/scheduler.js", "start": 145132, "end": 149006, "lib": "scheduler", "conf": "精确", "note": "license 横幅 @145139" },
+    { "order": 5, "id": "react-dom", "kind": "verbatim", "file": "src/js/vendor/react-dom.js", "start": 149006, "end": 152847, "lib": "react-dom", "conf": "精确", "note": "license 横幅 @149013" },
+    { "order": 6, "id": "react-dom-client", "kind": "verbatim", "file": "src/js/vendor/react-dom-client.js", "start": 152847, "end": 331154, "lib": "react-dom-client", "conf": "精确", "note": "license 横幅 @152854；主体是 173.6KB 的 CJS 包装函数 [153099, 330859)" },
+    { "order": 7, "id": "zustand", "kind": "verbatim", "file": "src/js/vendor/zustand.js", "start": 331154, "end": 333523, "lib": "zustand", "conf": "精确", "note": "const wb=… createStore + yT/Mb（useSyncExternalStore）" },
+    { "order": 8, "id": "sonner", "kind": "verbatim", "file": "src/js/vendor/sonner.js", "start": 333523, "end": 366680, "lib": "sonner", "conf": "精确", "note": "含注入 :where(html[dir=\"ltr\"])… 的样式字符串 @339671" },
+    { "order": 9, "id": "app-store-utils", "kind": "verbatim", "file": "src/js/app/store-utils.js", "start": 366680, "end": 382146, "lib": "(应用)", "conf": "中间", "note": "模型源判定 pd + 应用 store const Fe=vT(…),qp=S.createContext({})；该 const 语句被 bundler 与应用/Framer 代码合并，故片尾含 Framer 的 qp= 声明（末 23 字符，见 doc 记录）" },
+    { "order": 10, "id": "framer-motion", "kind": "verbatim", "file": "src/js/vendor/framer-motion.js", "start": 382146, "end": 496774, "lib": "framer-motion", "conf": "推定", "note": "无 license 横幅；起点由 382123 后移到语句接缝 382146（+23），避免把 14,775 字符的应用 store 吞进 vendor；终点 496774 是语句接缝（Lucid 横幅紧随其后，归 lucide 片）" },
+    { "order": 11, "id": "lucide-react", "kind": "verbatim", "file": "src/js/vendor/lucide-react.js", "start": 496774, "end": 515981, "lib": "lucide-react", "conf": "精确", "note": "47 个 license 横幅，首个 @496781（片首 +7）" },
+    { "order": 12, "id": "app-constants", "kind": "verbatim", "file": "src/js/app/constants.js", "start": 515981, "end": 521938, "lib": "(应用)", "conf": "精确", "note": "lucide 尾部图标与应用常量同一条 const 语句：bw=_e(\"X\"),…,Sd=[\"3.6\"…],WD={\"/spine-runtimes/…\"}" },
+    { "order": 13, "id": "engine", "kind": "renamed", "file": "src/engine.js", "start": 521938, "end": 589360, "lib": "(引擎)", "conf": "精确", "note": "P2 已抽出：A3 引擎辅助区 + mt 类 + 静态字段/别名；mt→SpineEngine、Xd→SpineEngineAlias（可逆，见 rebuild-from-slices 的 SLICES.renames）" },
+    { "order": 14, "id": "app-zip-worker", "kind": "verbatim", "file": "src/js/app/zip-worker.js", "start": 589360, "end": 595123, "lib": "(应用)", "conf": "精确", "note": "const bk=`…`：内联 ZIP worker 源码字符串（独立 worker 脚本）" },
+    { "order": 15, "id": "app-tools", "kind": "verbatim", "file": "src/js/app/tools.js", "start": 595123, "end": 607391, "lib": "(应用)", "conf": "推定", "note": "let Xa=null,kc=null,aa=!1;function xk(){…} 等运行时缓存/导出工具；终点 607391 是语句接缝（tailwind-merge 的 const xt= 起点）" },
+    { "order": 16, "id": "tailwind-merge", "kind": "verbatim", "file": "src/js/vendor/tailwind-merge.js", "start": 607391, "end": 623920, "lib": "tailwind-merge", "conf": "推定", "note": "无 license 横幅；起点 const xt=n=>{…isThemeGetter…}（语句接缝），终点 623920 = function pn( 起点（语句接缝）" },
+    { "order": 17, "id": "app-ui-shadcn", "kind": "verbatim", "file": "src/js/app/ui-shadcn.js", "start": 623920, "end": 638730, "lib": "(应用)", "conf": "推定", "note": "cn/pn=twMerge+clsx、Button（@624800，data-slot=\"button\"）等 shadcn 基础件" },
+    { "order": 18, "id": "radix-ui", "kind": "verbatim", "file": "src/js/vendor/radix-ui.js", "start": 638730, "end": 720789, "lib": "radix-ui", "conf": "推定", "note": "无 license 横幅；起点 var Lj=Object.defineProperty…（语句接缝），终点 720789 = function EM( 起点（语句接缝）；Symbol.for(\"radix-ui\") @631246 在 app-ui-shadcn 片内（Primitive 归属见 doc 记录）" },
+    { "order": 19, "id": "app-ui", "kind": "verbatim", "file": "src/js/app/ui-app.js", "start": 720789, "end": 739199, "lib": "(应用)", "conf": "推定", "note": "应用 UI 组件（右栏/工具栏/设置面板等，含 radix 封装）：function EM(n){return n?\"open\":\"closed\"}…" },
+    { "order": 20, "id": "app-main-component", "kind": "verbatim", "file": "src/js/app/main-component.js", "start": 739199, "end": 810874, "lib": "(应用)", "conf": "精确", "note": "★ 主应用组件 function AL({bootPhase…})；含事件层 [746389, 748274)（指针/双指/滚轮）" },
+    { "order": 21, "id": "app-demo-models", "kind": "verbatim", "file": "src/js/app/demo-models.js", "start": 810874, "end": 816818, "lib": "(应用)", "conf": "精确", "note": "收尾：function RL(){const{loadSettings:n}=Fe(),…} 与 demo 模型模块 jL/kL" }
+  ]
+}
