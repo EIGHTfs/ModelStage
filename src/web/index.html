@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<!--
+  新前端（M1 骨架）：纯 HTML + 原生 ES 模块 + 手写 CSS。
+  与旧前端并行的对照实现，跑在 8804，旧前端仍在 8803。
+  五个区域的位置逐值对齐旧前端实测几何（1920x1080 量测）：
+    顶栏 header  : top 0, 高 3rem, 全宽, z 40
+    左栏 aside   : left 0, top 3rem, 底 4rem, 宽 19rem, z 30
+    舞台 stage   : 铺满视口（旧版画布即铺满窗口，其余区域浮在它上层）, z 0
+    右栏 aside   : right 0, top 3rem, 底 4rem, 宽 11rem, z 30
+    底栏 footer  : 底部居中浮条, 宽 720px, 高 2.625rem, 距底 15px, z 40
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<!-- 关键：图标用内联 data URI，避免浏览器请求 /favicon.ico 产生 404（控制台零错误的必要条件） -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='13' font-size='13'%3E%E2%9C%A6%3C/text%3E%3C/svg%3E" />
+<title>ModelStage</title>
+<link rel="stylesheet" href="./style.css" />
+<!-- 控件外观单独一个文件：拆分只为把单文件控制在 400 行内，职责见两文件头注释 -->
+<link rel="stylesheet" href="./components.css" />
+</head>
+<body>
+
+<!-- ============ 舞台（第 3 区域）：铺满视口，棋盘格背景 ============ -->
+<main id="stage" class="stage checkerboard" aria-label="舞台">
+  <!-- M1 只放空画布占位；M4 在此挂 PIXI Application 渲染 Spine -->
+  <canvas id="stage-canvas" class="stage-canvas"></canvas>
+  <p id="stage-hint" class="stage-hint">M1 骨架 · 舞台渲染在 M4 接入</p>
+</main>
+
+<!-- ============ 顶栏（第 1 区域） ============ -->
+<header id="app-header" class="app-header">
+  <div class="brand">
+    <!-- 品牌图标用内联 SVG（旧前端为 lucide sparkles）：不依赖系统字体，避免无字体环境渲染成豆腐块 -->
+    <span id="brand-icon" class="brand-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" />
+        <path d="M5 3v4" /><path d="M19 17v4" /><path d="M3 5h4" /><path d="M17 19h4" />
+      </svg>
+    </span>
+    <span id="brand-title" class="brand-title">ModelStage</span>
+  </div>
+  <nav class="header-actions" aria-label="顶栏操作">
+    <button type="button" class="icon-btn" id="btn-import" title="导入">导入</button>
+    <button type="button" class="icon-btn" id="btn-shot" title="截图导出">截图导出</button>
+    <button type="button" class="icon-btn" id="btn-library" title="模型库">模型库</button>
+    <button type="button" class="icon-btn" id="btn-menu" title="菜单">菜单</button>
+    <button type="button" class="icon-btn" id="btn-cinema" title="影院模式 (H)">影院模式</button>
+    <button type="button" class="icon-btn" id="btn-fullscreen" title="全屏">全屏</button>
+  </nav>
+</header>
+
+<!-- ============ 左栏（第 2 区域）：资源根 / 名册 ============ -->
+<aside id="left-panel" class="panel panel-left" aria-label="模型库">
+  <div class="panel-head">
+    <span class="panel-title">模型库</span>
+    <span class="panel-actions">
+      <button type="button" class="mini-btn" id="btn-add-root" title="浏览本机目录，添加资源根（同名资源根会合并为一个游戏条目）">＋ 资源根</button>
+      <button type="button" class="mini-btn" id="btn-collapse" title="只收起展开的树节点（面板保留；隐藏面板用顶栏「模型库」按钮）">收起</button>
+    </span>
+  </div>
+  <!-- M1：资源根平铺列表（M2 换成 游戏→角色→变体 三级树） -->
+  <div id="roots-list" class="panel-body roots-list" role="list" aria-live="polite">
+    <p class="muted-hint">正在读取资源根…</p>
+  </div>
+</aside>
+
+<!-- ============ 右栏（第 4 区域）：导演面板 ============ -->
+<aside id="right-panel" class="panel panel-right" aria-label="控制面板">
+  <div class="panel-head">
+    <span class="panel-title">控制面板</span>
+  </div>
+  <div class="panel-body">
+    <!-- M1 只做区域占位：分组名照旧前端列出，行为在 M3/M6 接线 -->
+    <ul class="section-list">
+      <li class="section-row">动作</li>
+      <li class="section-row">皮肤</li>
+      <li class="section-row">播放</li>
+      <li class="section-row">滤镜</li>
+      <li class="section-row">PMA 预乘</li>
+      <li class="section-row">运行时</li>
+      <li class="section-row">主题背景</li>
+      <li class="section-row">调试绘制</li>
+      <li class="section-row">设置</li>
+    </ul>
+    <p class="muted-hint">M3 补齐控件，M6 接线</p>
+  </div>
+</aside>
+
+<!-- ============ 底栏（第 5 区域）：传输条 ============ -->
+<footer id="app-footer" class="app-footer" aria-label="播放控制">
+  <div class="transport-group">
+    <button type="button" class="mini-btn" id="btn-loop" disabled>单动循环</button>
+    <button type="button" class="mini-btn" id="btn-prev" disabled>上一个</button>
+  </div>
+  <div class="transport-group">
+    <button type="button" class="mini-btn" id="btn-skin" disabled>default</button>
+    <button type="button" class="mini-btn" id="btn-play" disabled>播放/暂停</button>
+    <button type="button" class="mini-btn" id="btn-motion" disabled>idle</button>
+  </div>
+  <div class="transport-group">
+    <button type="button" class="mini-btn" id="btn-next" disabled>下一个</button>
+    <button type="button" class="mini-btn" id="btn-reset-view" disabled>重置视图</button>
+    <button type="button" class="mini-btn" id="btn-bg" disabled>背景</button>
+  </div>
+</footer>
+
+<script type="module" src="./main.js"></script>
+</body>
+</html>

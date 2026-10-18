@@ -1,0 +1,242 @@
+/* ============================================================================
+   ModelStage 新前端 · 布局与基础样式（M1）
+   - 色板逐值取自旧前端 styles.css 的 :root（--color-background / --color-card …），
+     目的是"看起来一样"，不是重新设计。
+   - 五个区域的几何值与旧前端在 1920x1080 下的实测 rect 一致，见 index.html 头注释。
+   - 这个文件只管：变量、基础重置、舞台、五个区域的容器几何。
+     控件外观（按钮、列表、横幅）在 components.css。
+   ========================================================================== */
+
+:root {
+  /* 主色板（取自旧前端 :root） */
+  --color-background: #131416;
+  --color-foreground: #e9ebed;
+  --color-card: #1f2326;
+  --color-primary: #1fc0c5;
+  --color-secondary: #2a2f33;
+  --color-muted: #23272a;
+  --color-muted-foreground: #9ca3af;
+  --color-border: #353a3e;
+  --scroll-thumb: #2e2e38;
+  --scroll-thumb-hover: #3e3e48;
+  --color-danger: #e06c75;
+
+  /* 布局尺寸（与旧前端实测一致） */
+  --header-h: 3rem;      /* 48px */
+  --left-w: 19rem;       /* 304px */
+  --right-w: 11rem;      /* 176px */
+  --footer-h: 2.625rem;  /* 42px */
+  --panel-bottom: 4rem;  /* 侧栏底边留 64px（旧 aside bottom:64px） */
+  --radius: 8px;
+}
+
+/* ---------------------------------------------------------------- 基础 */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  /* 锁滚动：舞台铺满视口，页面永不出现滚动条（含横向） */
+  overflow: hidden;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 字号只设在 body 上：html 保持浏览器默认 16px，
+   否则下面的 rem 尺寸（--header-h 等）会按 13px 折算，整页比旧前端小一圈 */
+body {
+  font-size: 13px;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+/* 滚动条与旧前端一致：细窄、暗色 */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-hover);
+}
+
+/* ------------------------------------------------------------ 舞台（铺满） */
+
+.stage {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+}
+
+/* 棋盘格：色值与格边长取自旧前端 .checkerboard（14px，大屏 24px） */
+.checkerboard {
+  --cb: 14px;
+  background-color: #17191b;
+  background-image:
+    linear-gradient(45deg, #1c1f21 25%, transparent 25%),
+    linear-gradient(-45deg, #1c1f21 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #1c1f21 75%),
+    linear-gradient(-45deg, transparent 75%, #1c1f21 75%);
+  background-size: var(--cb) var(--cb);
+  background-position: 0 0, 0 calc(var(--cb) / 2), calc(var(--cb) / 2) calc(var(--cb) / -2), calc(var(--cb) / -2) 0;
+}
+
+@media (min-width: 1024px) {
+  .checkerboard {
+    --cb: 24px;
+  }
+}
+
+.stage-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.stage-hint {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  margin: 0;
+  padding: 6px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: rgba(31, 35, 38, 0.72);
+  color: var(--color-muted-foreground);
+  font-size: 12px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------ 顶栏（top 0，全宽） */
+
+.app-header {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--header-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 16px;
+  background: var(--color-card);
+  color: var(--color-foreground);
+  z-index: 40;
+}
+
+/* ------------------------------------------------- 侧栏（左/右，浮在舞台上） */
+
+.panel {
+  position: fixed;
+  top: var(--header-h);
+  bottom: var(--panel-bottom);
+  display: flex;
+  flex-direction: column;
+  background: var(--color-card);
+  color: var(--color-foreground);
+  z-index: 30;
+  overflow: hidden;
+  /* 面板显示/隐藏用位移动画（与旧前端一致），不是 display 切换 */
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+
+.panel-left {
+  left: 0;
+  width: var(--left-w);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+.panel-right {
+  right: 0;
+  width: var(--right-w);
+  border-radius: var(--radius) 0 0 var(--radius);
+}
+
+.panel-left.is-hidden {
+  transform: translateX(-100%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.panel-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  height: 41px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.panel-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-muted-foreground);
+}
+
+.panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+/* ------------------------------------------- 底栏（底部居中浮条，与旧版一致） */
+
+.app-footer {
+  position: fixed;
+  left: 50%;
+  bottom: 15px;
+  transform: translateX(-50%);
+  /* 窄屏收窄，避免浮条宽度超过视口造成横向溢出 */
+  width: min(720px, calc(100vw - 2rem));
+  height: var(--footer-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 9px;
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  z-index: 40;
+}

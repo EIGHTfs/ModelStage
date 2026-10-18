@@ -1,0 +1,220 @@
+/* ============================================================================
+   ModelStage 新前端 · 控件外观（M1）
+   只管"控件长什么样"：品牌、按钮、资源根列表、右栏分组行、底栏分组、错误横幅。
+   布局与几何在 style.css，两个文件由 index.html 一起引入。
+   ========================================================================== */
+
+/* ------------------------------------------------------------ 品牌（顶栏左） */
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.brand-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--color-primary);
+  font-size: 15px;
+  line-height: 1;
+}
+
+/* 内置 SVG（默认形态）：颜色跟随 .brand-icon 的 color */
+.brand-icon svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+/* 服务端下发图片图标时的 <img> */
+.brand-icon.is-image img {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  display: block;
+}
+
+.brand-title {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------------------------------------------------------------- 按钮 */
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.icon-btn {
+  height: 30px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--color-foreground);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.icon-btn:hover {
+  background: var(--color-secondary);
+  border-color: var(--color-border);
+}
+
+.mini-btn {
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-muted);
+  color: var(--color-foreground);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.mini-btn:hover:not(:disabled) {
+  background: var(--color-secondary);
+}
+
+/* ------------------------------------------------------------ 提示文案 */
+
+.muted-hint {
+  margin: 8px 4px;
+  color: var(--color-muted-foreground);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+/* --------------------------------------------------- 资源根列表（M1 平铺） */
+
+.roots-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.root-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: var(--color-muted);
+}
+
+.root-row:hover {
+  border-color: var(--color-border);
+  background: var(--color-secondary);
+}
+
+.root-row-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.root-name {
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.root-id {
+  margin-left: auto;
+  flex: none;
+  padding: 0 5px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  color: var(--color-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
+.root-meta {
+  color: var(--color-muted-foreground);
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 资源根目录不存在（服务端 exists:false）：整行标红，提示要修配置 */
+.root-row.is-missing .root-name {
+  color: var(--color-danger);
+}
+
+.root-row.is-missing .root-meta::after {
+  content: " · 目录不存在";
+  color: var(--color-danger);
+}
+
+.roots-foot {
+  margin: 6px 4px 0;
+  padding-top: 6px;
+  border-top: 1px solid var(--color-border);
+  color: var(--color-muted-foreground);
+  font-size: 10px;
+}
+
+/* ------------------------------------------------------ 右栏分组占位（M3） */
+
+.section-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.section-row {
+  padding: 8px 6px;
+  border-bottom: 1px solid rgba(53, 58, 62, 0.5);
+  color: var(--color-foreground);
+  font-size: 12px;
+}
+
+/* --------------------------------------------------------- 底栏三组按钮 */
+
+.transport-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.transport-group:first-child {
+  justify-content: flex-start;
+}
+
+.transport-group:last-child {
+  justify-content: flex-end;
+}
+
+/* ----------------------------------------------------------- 错误横幅 */
+
+.error-banner {
+  margin: 8px 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-danger);
+  border-radius: 6px;
+  background: rgba(224, 108, 117, 0.12);
+  color: var(--color-danger);
+  font-size: 11px;
+  line-height: 1.5;
+  word-break: break-all;
+}
