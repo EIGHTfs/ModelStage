@@ -8,6 +8,7 @@
     "bundle"
   ],
   "produces": {
+    "kind": "live2d",
     "entry": "open(ctx)",
     "schema": "doc/插件产出schema（prepare）.MD",
     "fields": [

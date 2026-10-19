@@ -19,6 +19,7 @@ import { createNames } from './names.mjs';
 import { createTree } from './tree.mjs';
 import { createModelMeta } from './model-meta.mjs';
 import { createBundleProbe } from './bundle-probe.mjs';
+import { createCatalog } from './catalog.mjs';
 import * as probe from './probe.mjs';
 
 /**
@@ -45,5 +46,6 @@ export function createServerData({ root }) {
   const tree = createTree({ config, plugins, probe });
   const modelMeta = createModelMeta({ config, probe, motionRulesFile: paths.motionRulesFile });
   const bundleProbe = createBundleProbe({ config, probe });
-  return { paths, env, config, plugins, probe, models, live2d, names, tree, modelMeta, bundleProbe };
+  const catalog = createCatalog({ config, models, live2d, tree, plugins });
+  return { paths, env, config, plugins, probe, models, live2d, names, tree, modelMeta, bundleProbe, catalog };
 }
