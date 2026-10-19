@@ -8,6 +8,13 @@
     舞台 stage   : 铺满视口（旧版画布即铺满窗口，其余区域浮在它上层）, z 0
     右栏 aside   : right 0, top 3rem, 底 4rem, 宽 11rem, z 30
     底栏 footer  : 底部居中浮条, 宽 720px, 高 2.625rem, 距底 15px, z 40
+
+  外观状态属性（由样式层定义，接线时只需在 <html> 上切换属性值）：
+    data-cinema="on"  影院模式：隐藏顶栏与左右侧栏，只留舞台
+    data-idle="on"    影院模式静止态：底部播放条淡出（配合 data-cinema="on"）
+    data-left="off"   收起左栏（角色库）
+    data-right="off"  收起右栏（控制面板）
+  样式规则见 style.css 末尾「影院模式 / 侧栏收起」一节。
 -->
 <html lang="zh-CN">
 <head>

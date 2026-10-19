@@ -250,3 +250,72 @@ button:disabled {
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
   z-index: 40;
 }
+
+/* ============================================================================
+   影院模式 / 侧栏收起 —— 纯状态类驱动的外观（不含任何 JS）
+
+   状态属性（都挂在 <html> 上，JS 只负责切换值，动画细节全在 CSS）：
+     data-cinema="on"   影院模式：隐藏顶栏与左右侧栏，只留舞台
+     data-idle="on"     与 data-cinema="on" 组合：静止数秒后底部播放条淡出
+     data-left="off"    收起左栏（角色库）
+     data-right="off"   收起右栏（控制面板）
+
+   布局说明：顶栏与左右侧栏都是 position:fixed 的浮层，舞台本来就 inset:0 铺满视口，
+   所以上述状态只做位移/透明度过渡，不触发重排 —— 收起侧栏不会留下空白条。
+   ========================================================================== */
+
+:root {
+  /* 统一进出场时长与缓动：影院/侧栏/播放条共用一套，改一处即全局一致 */
+  --ui-fade: 200ms;
+  --ui-ease: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 顶栏：滑出视口（用 translateY 而不是改 height，避免过渡期间挤压舞台） */
+.app-header {
+  transition: transform var(--ui-fade) var(--ui-ease), opacity var(--ui-fade) var(--ui-ease);
+}
+
+html[data-cinema="on"] .app-header {
+  transform: translateY(-100%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 左右侧栏：影院模式与"单独收起"合并成同一套位移；
+   与既有 .is-hidden（模型库按钮切换的类）结果一致，两者可叠加不冲突。 */
+html[data-cinema="on"] .panel-left,
+html[data-left="off"] .panel-left,
+.panel-left.is-hidden {
+  transform: translateX(-100%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+html[data-cinema="on"] .panel-right,
+html[data-right="off"] .panel-right {
+  transform: translateX(100%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 底部播放条：影院模式下整体淡出；静止态（data-idle）完全隐藏并下沉一点，
+   鼠标移动时由 JS 把 data-idle 切回 off 即可平滑回来。 */
+.app-footer {
+  transition: opacity var(--ui-fade) var(--ui-ease), transform var(--ui-fade) var(--ui-ease);
+}
+
+html[data-cinema="on"][data-idle="on"] .app-footer {
+  opacity: 0;
+  transform: translateX(-50%) translateY(8px);
+  pointer-events: none;
+}
+
+/* 影院模式 + 静止：隐藏鼠标指针，避免光标压在画面里影响观赏 */
+html[data-cinema="on"][data-idle="on"] body {
+  cursor: none;
+}
+
+/* 影院模式下舞台提示退到最弱，不干扰画面 */
+html[data-cinema="on"] .stage-hint {
+  opacity: 0.55;
+}
