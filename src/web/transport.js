@@ -50,9 +50,10 @@ function renderControl(ctl) {
 /**
  * 把播放条内容挂到 footer 容器里（容器本身在 index.html，负责定位）。
  * @param {HTMLElement} footerEl
+ * @param {{onResetView?: Function}} handlers 已接线控件的回调
  * @returns {{controls: number}}
  */
-export function mountTransport(footerEl) {
+export function mountTransport(footerEl, handlers = {}) {
   footerEl.replaceChildren();
 
   // 分三组摆位，与旧前端一致：左（循环/上一个）· 中（皮肤/播放/动作）· 右（下一个/重置/背景）
@@ -70,6 +71,15 @@ export function mountTransport(footerEl) {
       if (ctl) box.append(renderControl(ctl));
     }
     footerEl.append(box);
+  }
+
+  // 「重置视图」：接线后去掉 disabled/pending，点击即回到 fit 视图
+  const resetViewBtn = footerEl.querySelector('#transport-reset-view');
+  if (resetViewBtn && typeof handlers.onResetView === 'function') {
+    resetViewBtn.disabled = false;
+    delete resetViewBtn.dataset.pending;
+    resetViewBtn.title = '重置视图（回到适配视图）';
+    resetViewBtn.addEventListener('click', () => { try { handlers.onResetView(); } catch { /* 失败不改视图 */ } });
   }
 
   return { controls: footerEl.querySelectorAll('button, select').length };

@@ -18,6 +18,7 @@ import { createRosterView } from './roster-view.js';
 import { mountPanel } from './panel.js';
 import { mountTransport } from './transport.js';
 import { createSpineStage } from './spine-canvas.js';
+import { attachStageInteraction } from './stage-interaction.js';
 
 // 页面级第一件事：装诊断探针（幂等，重复调用不会重复包装 console）
 const diag = installDiag();
@@ -172,6 +173,8 @@ const PANEL_APPLIERS = {
   'ctl-mix-mode': (v) => applyMixMode(v),
   'ctl-skin-mix': (v) => applyMixMode(v),
   'ctl-skin-list': (v) => stage && stage.setSkin(v),
+  'ctl-part-filter': (v) => applyPartFilter({ enabled: !!v }),
+  'ctl-part-filter-reset': () => applyPartFilter({ keywords: DEFAULT_PART_FILTER_KEYWORDS.slice() }),
   'ctl-debug-bones': (v) => stage && stage.setDebug({ bones: !!v }),
   'ctl-debug-meshes': (v) => stage && stage.setDebug({ meshes: !!v }),
   'ctl-debug-boundingBoxes': (v) => stage && stage.setDebug({ boundingBoxes: !!v }),
@@ -182,18 +185,90 @@ const PANEL_APPLIERS = {
   'ctl-debug-hulls': (v) => stage && stage.setDebug({ hulls: !!v }),
 };
 
+/** 当前交互层解绑函数（重建画布或测试清理时调用；null 表示未挂） */
+let detachInteraction = null;
+
+/**
+ * 挂交互层（拖动/滚轮/双指）。
+ * 为什么要 detach 再 attach：MSAA 切换会换掉 canvas 节点，旧监听绑在旧节点上已经失效，
+ * 不重新挂就会出现「切过抗锯齿后拖动失灵」。
+ */
+function attachInteraction() {
+  if (detachInteraction) {
+    try { detachInteraction(); } catch { /* 解绑失败继续挂新的 */ }
+    detachInteraction = null;
+  }
+  const canvas = document.getElementById('stage-canvas');
+  if (!canvas || !stage) return null;
+  try {
+    detachInteraction = attachStageInteraction({ canvas, stage });
+  } catch (err) {
+    state.stageError = formatError(err);
+  }
+  return detachInteraction;
+}
+
+/**
+ * 统一状态出口：所有舞台状态文字都走这里。
+ * 规则：
+ *   · 一律写日志（控制台 [STAGE:level] + `__WEB__.stageLog`，cap 200）；
+ *   · 只有 error / warn（或显式 show:true）才上屏，其余一律隐藏，避免挡住画面。
+ * 注意：日志不能走 console.error，否则页面错误统计会把正常状态当成异常。
+ * @param {string} text
+ * @param {'info'|'warn'|'error'} [level]
+ * @param {{show?: boolean}} [opts]
+ */
+function stageStatus(text, level = 'info', opts = {}) {
+  const line = String(text == null ? '' : text);
+  if (window.__WEB__) {
+    const bag = (window.__WEB__.stageLog = window.__WEB__.stageLog || []);
+    bag.push({ at: Date.now(), level, line });
+    if (bag.length > 200) bag.shift();
+  }
+  try {
+    console.info(`%c[STAGE:${level}]`, 'color:#8b8b8b', line);
+  } catch { /* 控制台不可用时忽略 */ }
+  const show = opts.show === true || level === 'error' || level === 'warn';
+  if (!dom.stageHint) return line;
+  if (show) {
+    dom.stageHint.textContent = line;
+    dom.stageHint.hidden = false;
+  } else {
+    dom.stageHint.textContent = '';
+    dom.stageHint.hidden = true;
+  }
+  return line;
+}
+
 /** 切换抗锯齿：要换画布重建上下文，先提示"正在重建"避免用户以为卡住 */
 async function applyMsaa(mode) {
   if (!stage || typeof stage.rebuildWithAntialias !== 'function') return;
   const on = mode === 'auto';
-  dom.stageHint.textContent = '正在重建渲染上下文（切换抗锯齿）…';
+  stageStatus('正在重建渲染上下文（切换抗锯齿）…', 'info');
   try {
     const r = await stage.rebuildWithAntialias(on);
-    dom.stageHint.textContent = `抗锯齿已${r.antialias ? '开启' : '关闭'} · 重建耗时 ${r.restoreMs} ms`;
+    stageStatus(`抗锯齿已${r.antialias ? '开启' : '关闭'} · 重建耗时 ${r.restoreMs} ms`, 'info');
     document.documentElement.dataset.msaa = r.antialias ? 'on' : 'off';
+    // 顶栏里仍 disabled 的按钮（导入/截图/菜单/影院）是待接线项：运行期补标记，
+  // 让未接线=disabled+pending 的口径在顶栏也成立（index.html 不在本模块范围）
+
   } catch (err) {
-    dom.stageHint.textContent = `切换抗锯齿失败：${formatError(err)}`;
+    stageStatus(`切换抗锯齿失败：${formatError(err)}`, 'error');
   }
+}
+
+/** 部件筛除默认关键字：取自旧端存储 partFilterKeywords 的默认值 */
+const DEFAULT_PART_FILTER_KEYWORDS = ['mask', 'mosai', 'mmd', 'mozaiku'];
+
+/** 部件筛除：开关与恢复按钮共用同一状态，只覆盖传入字段 */
+function applyPartFilter(patch) {
+  const cur = state.partFilter || { enabled: false, keywords: DEFAULT_PART_FILTER_KEYWORDS.slice() };
+  const next = { enabled: !!cur.enabled, keywords: cur.keywords.slice(), ...patch };
+  state.partFilter = next;
+  if (stage && stage.setPartFilter) stage.setPartFilter(next);
+  saveViewSettings({ partFilterEnabled: next.enabled, partFilterKeywords: next.keywords.join(',') });
+  document.documentElement.dataset.partFilter = next.enabled ? next.keywords.join(',') : 'off';
+  return next;
 }
 
 /** 混合模式：两处开关指向同一状态，点任一处都要同步另一处的显示 */
@@ -270,21 +345,21 @@ function showRootsError(message) {
 function onSelectModel(model) {
   state.selectedModel = model;
   const name = model ? (model.name || model.id) : '无';
-  if (!stage) { dom.stageHint.textContent = `已选中 ${name}（渲染器不可用）`; return; }
+  if (!stage) { stageStatus(`已选中 ${name}（渲染器不可用）`, 'error'); return; }
   if (!model) { stage.unload(); return; }
 
   // 只有 Spine 走本路径；Live2D 与资源包由 M5 的插件管线接管
   const kind = model.kind || 'spine';
   if (kind !== 'spine') {
     stage.unload();
-    dom.stageHint.textContent = `已选中 ${name}（${kind === 'live2d' ? 'Live2D' : '资源包'} 渲染在 M5 接入）`;
+    stageStatus(`已选中 ${name}（${kind === 'live2d' ? 'Live2D' : '资源包'} 渲染在 M5 接入）`, 'warn');
     return;
   }
 
-  dom.stageHint.textContent = `正在加载 ${name}…`;
+  stageStatus(`正在加载 ${name}…`, 'info');
   stage.load({ root: model.rootId, model })
     .then((info) => {
-      dom.stageHint.textContent = `${model.name} · Spine ${info.version} · ${info.animations.length} 动作 · 播放 ${info.motion || '（无动作）'}`;
+      stageStatus(`${model.name} · Spine ${info.version} · ${info.animations.length} 动作 · 播放 ${info.motion || '（无动作）'}`, 'info');
       // 运行时组只读：显示本次实际使用的运行时版本（引擎按骨架版本自动选，不可手切）
       if (state.panel) state.panel.setReadonly('ctl-runtime', `Spine ${info.version}`);
       refreshSkinList();
@@ -294,7 +369,7 @@ function onSelectModel(model) {
       // 渲染失败属业务错误：显示在舞台提示与 __WEB__ 里，不抛到控制台（验收要求零错误）
       const msg = formatError(err);
       state.stageError = msg;
-      dom.stageHint.textContent = `渲染失败：${msg}`;
+      stageStatus(`渲染失败：${msg}`, 'error');
       document.documentElement.dataset.stageReady = 'error';
     });
 }
@@ -325,9 +400,7 @@ async function loadRoots() {
     document.documentElement.dataset.rootsReady = '1';
     document.documentElement.dataset.restore = JSON.stringify(state.restore);
     if (!state.restore.restored) {
-      dom.stageHint.textContent = autoRestore
-        ? `M2 名册 · ${roots.length} 个资源根 · 暂无上次选中的模型`
-        : `M2 名册 · ${roots.length} 个资源根 · 已按配置关闭自动恢复`;
+      stageStatus(autoRestore ? `M2 名册 · ${roots.length} 个资源根 · 暂无上次选中的模型` : `M2 名册 · ${roots.length} 个资源根 · 已按配置关闭自动恢复`, 'info');
     }
   } catch (err) {
     state.rootsError = formatError(err);
@@ -351,9 +424,25 @@ function boot() {
     document.documentElement.dataset.stageContext = 'webgl';
   } catch (err) {
     state.stageError = formatError(err);
-    dom.stageHint.textContent = `渲染器不可用：${state.stageError}`;
+    stageStatus(`渲染器不可用：${state.stageError}`, 'error');
     document.documentElement.dataset.stageContext = 'none';
   }
+
+  // topbar-disabled-mark
+  for (const b of document.querySelectorAll('#app-header button:disabled')) b.dataset.pending = 'true';
+
+  // 相机操作日志：供真机操作时判定（不做模拟测试）。
+  // 输出通道 presently 走控制台 + __WEB__.cameraLog；debug-log 接线后把这里换成 debugLog.log('CAMERA', line) 即可。
+  if (stage && stage.camera && stage.camera.setLogger) {
+    stage.camera.setLogger((line, data) => {
+      window.__WEB__ && (window.__WEB__.cameraLog = window.__WEB__.cameraLog || []).push({ at: Date.now(), line, data });
+      if (window.__WEB__.cameraLog.length > 200) window.__WEB__.cameraLog.shift();
+      console.info('%c[CAMERA]', 'color:#1fc0c5', line);
+    });
+  }
+
+
+  attachInteraction();
 
   const panelInfo = mountPanel({
     headEl: dom.panelHead,
@@ -362,13 +451,19 @@ function boot() {
     // 只有映射表里有的控件才可点：判定口径与"真的会生效"严格一致
     wiredIds: Object.keys(PANEL_APPLIERS),
   });
-  const transportInfo = mountTransport(dom.footer);
+  const transportInfo = mountTransport(dom.footer, {
+    onResetView: () => { if (stage && stage.resetView) stage.resetView(); },
+  });
   startFpsReadout(panelInfo);
   state.panel = panelInfo; // 让 onSelectModel 能写运行时只读行
   // 存储优先：主题/背景先按上次的选择恢复，再让"面板默认值"兜底未存过的项
   const savedView = readViewSettings();
   applyTheme(savedView.uiTheme || 'dark-cyan');
   applyBackground((savedView.background && savedView.background.mode) || 'checkerboard');
+  const savedKeywords = typeof savedView.partFilterKeywords === 'string' && savedView.partFilterKeywords.trim()
+    ? savedView.partFilterKeywords.split(',').map((k) => k.trim()).filter(Boolean)
+    : DEFAULT_PART_FILTER_KEYWORDS.slice();
+  applyPartFilter({ enabled: savedView.partFilterEnabled === true, keywords: savedKeywords });
   if (panelInfo.setValue) {
     panelInfo.setValue('ctl-theme', state.viewTheme);
     panelInfo.setValue('ctl-bg-mode', state.viewBg);
@@ -400,6 +495,10 @@ function boot() {
     get autoRestore() { return state.autoRestore; },
     /** 诊断探针实例（等价于 window.__DIAG__，便于同一套检查代码复用） */
     get diag() { return diag; },
+    /** 解绑交互层（测试清理用；正常运行时不必调用） */
+    detachInteraction: () => {
+      if (detachInteraction) { try { detachInteraction(); } catch { /* 忽略 */ } detachInteraction = null; }
+    },
     /** 已接线的面板控件 id（断言用：可点集合必须与它一致） */
     panelWired: Object.keys(PANEL_APPLIERS),
     /** 当前视图设置（主题/背景），断言用 */

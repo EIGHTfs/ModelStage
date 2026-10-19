@@ -17,11 +17,24 @@
 // ============================================================================
 
 import { installRuntimeManager } from './spine-runtime-manager.js';
+import { createStageCamera } from './stage-camera.js';
 
 const RUNTIME_BASE = '/spine-runtimes/spine-webgl-';
 const RUNTIME_MANIFEST = '/spine-runtimes/index.json';
 const ENGINE_SRC = '/engine.js';
-const ALPHA_THRESHOLD = 8; // alpha 大于它才算"画上了"（背景 clearColor 为全透明）
+const ALPHA_THRESHOLD = 8;
+
+/**
+ * 相机视图约定（交互层按此实现，勿改）：
+ *   · pan 单位 = 屏幕像素，原点 = 画布中心（即 fit 视图的中心），向右/向下为正；
+ *   · zoom = 相对 fit 的倍数，reset 后为 1.0，取值 0.2~8；
+ *   · 世界单位 ↔ 屏幕像素的换算只在本文件做：屏幕 = 世界差值 × base.zoom × zoom。
+ */
+
+/** 相机视图：缩放范围（相对 fit 的倍数）与取景基准缓存 */
+const VIEW_ZOOM_MIN = 0.2;
+const VIEW_ZOOM_MAX = 8;
+ // alpha 大于它才算"画上了"（背景 clearColor 为全透明）
 const DEFAULT_SETTINGS = {
   pma: 'auto', fit: 'subject', textureFilter: 'linear', speed: 1, loop: true, debug: null,
   fpsLimit: 60, dprMode: 'auto', msaa: 'auto', filter: 'original',
@@ -173,6 +186,68 @@ function buildDescriptor(model, ver, res) {
   };
 }
 
+/** 当前相机对象（部分运行时用 scale 而非 zoom） */
+function cameraOf(state) {
+  return state.engine && state.engine.camera ? state.engine.camera : null;
+}
+
+/** 读相机缩放（统一成"越大越放大"的 zoom 语义） */
+function cameraZoom(cam) {
+  if (!cam) return 1;
+  if (cam.zoom !== undefined) return cam.zoom;
+  if (cam.scale) return 1 / cam.scale;
+  return 1;
+}
+
+/** 写相机缩放（与 cameraZoom 的两种字段对应） */
+function setCameraZoom(cam, zoom) {
+  if (!cam) return;
+  if (cam.zoom !== undefined) cam.zoom = zoom;
+  else if (cam.scale !== undefined) cam.scale = 1 / zoom;
+}
+
+/**
+ * 取"fit 后的缩放"作为视图基准。
+ * 引擎的 baseZoom 就是 fit 结果；只有在拿不到时才退回当前相机 zoom。
+ * （曾经用"调用时的相机 zoom"当基准，导致 reset 之后基准被上一次的缩放污染）
+ */
+
+/**
+ * 记录视图基准：缩放基准取引擎的 userScale（引擎语义「越大越放大」），平移累计归零。
+ * 不在本文件推导相机字段——引擎的 camera.zoom 是 userScale 的倒数，自己算必错。
+ */
+function captureViewBase(state) {
+  const engine = state.engine;
+  // 基准 = 当前 userScale（引擎的 getCameraZoom 是唯一真相；resetCamera 之后取一次即可）
+  state.viewBaseScale = engine && typeof engine.getCameraZoom === 'function' ? engine.getCameraZoom() : 1;
+  state.viewPan = { x: 0, y: 0 };
+}
+/**
+ * 标定「平移输入 1 像素 → 画面位移多少像素」。
+ * 为什么要标定：引擎 applyPan 内部有 `×2` 与 flip 系数，直接原样传会让拖动比手指快一倍多。
+ * 做法：applyPan(±1) 探测相机世界位移，再乘「每世界单位对应多少屏幕像素」，探测后立即复原（净位移 0）。
+ */
+
+/**
+ * 视图快照（对外单位约定）。
+ *   zoom = 相对 fit 的倍数：engine.getCameraZoom() / 基准 userScale；reset 后为 1；
+ *   panX/panY = **屏幕像素**，原点画布中心，向右/向下为正（累计值）。
+ */
+function viewOf(state) {
+  const engine = state.engine;
+  const base = state.viewBaseScale || 1;
+  const cur = engine && typeof engine.getCameraZoom === 'function' ? engine.getCameraZoom() : base;
+  const pan = state.viewPan || { x: 0, y: 0 };
+  return {
+    zoom: +(cur / base).toFixed(4),
+    panX: +pan.x.toFixed(2),
+    panY: +pan.y.toFixed(2),
+    userScale: +cur.toFixed(6),
+    baseUserScale: +base.toFixed(6),
+    available: !!engine,
+  };
+}
+
 /** 只读统计（不暴露 engine 内部对象） */
 function statsOf(st) {
   const e = st.engine;
@@ -188,6 +263,7 @@ function statsOf(st) {
     lastError: st.lastError,
     animations: e && e.getAnimations ? e.getAnimations() : [],
     settings: { ...st.settings },
+    view: viewOf(st),
   };
 }
 
@@ -316,6 +392,7 @@ async function loadIntoStage(st, arg) {
   if (seq !== st.seq) throw businessError('加载已被新的选择取代');
   if (!info) throw businessError('模型加载失败（引擎未返回结果）');
   st.lastArg = arg; // 供 MSAA 重建上下文后恢复同一模型
+  captureViewBase(st); // 新模型 fit 完成：把当前取景记为视图基准
   const playing = startPlayback(st, info, st.settings.loop);
   return { version: ver, animations: playing.animations, motion: playing.motion };
 }
@@ -443,6 +520,59 @@ api.setMixMode = (on) => {
     try { st.engine.setMixTime(t); } catch { /* 版本不支持则只记状态 */ }
   }
   return t;
+};
+
+/**
+ * 部件筛除：传入 { enabled, keywords }。
+ * 引擎侧是 setSlotFilter(keywords) + 每帧 hideFilteredSlots/restoreFilteredSlots；
+ * enabled=false 或关键词为空即清空（等价不过滤）。
+ */
+api.setPartFilter = ({ enabled, keywords }) => {
+  const list = enabled ? (Array.isArray(keywords) ? keywords : []) : [];
+  st.settings.partFilterEnabled = !!enabled;
+  st.settings.partFilterKeywords = Array.isArray(keywords) ? keywords.slice() : [];
+  if (st.engine && typeof st.engine.setSlotFilter === "function") {
+    try { st.engine.setSlotFilter(list); } catch { /* 版本不支持则只记状态 */ }
+  }
+  return { enabled: !!enabled, applied: list.length };
+};
+
+/** 相机统一入口（全部委托引擎原生方法，本文件不做任何坐标换算） */
+st.camera = createStageCamera({ getEngine: () => st.engine });
+api.camera = st.camera;
+
+/** 只读视图读数：zoom 取引擎 userScale 与基准的比值，pan 用入口累计的屏幕位移 */
+api.getView = () => viewOf(st);
+
+/**
+ * 兼容入口（交互层仍调用 setView）。这里**只转发**，不换算：
+ *   · zoom → camera.zoomTo(基准 × 倍数)（倍乘即「相对 fit 的倍数」，clamp 由引擎负责）
+ *   · panX/panY → camera.panBy(增量)，单位是屏幕像素，与旧端一致
+ */
+api.setView = (patch = {}) => {
+  const camera = st.camera;
+  if (!camera) return viewOf(st);
+  if (typeof patch.zoom === 'number' && Number.isFinite(patch.zoom)) {
+    const base = st.viewBaseScale || 1;
+    camera.zoomTo(base * patch.zoom);
+  }
+  if (typeof patch.panX === 'number' || typeof patch.panY === 'number') {
+    const cur = st.viewPan || { x: 0, y: 0 };
+    const nx = typeof patch.panX === 'number' && Number.isFinite(patch.panX) ? patch.panX : cur.x;
+    const ny = typeof patch.panY === 'number' && Number.isFinite(patch.panY) ? patch.panY : cur.y;
+    if (nx !== cur.x || ny !== cur.y) {
+      camera.panBy(nx - cur.x, ny - cur.y);
+      st.viewPan = { x: nx, y: ny };
+    }
+  }
+  return viewOf(st);
+};
+
+/** 视图复位：交给引擎 resetCamera 重新 fit，然后重取基准 */
+api.resetView = () => {
+  if (st.camera) st.camera.reset();
+  captureViewBase(st);
+  return viewOf(st);
 };
 
 api.setDebug = (patch) => {

@@ -41,7 +41,22 @@ export const PANEL_GROUPS = [
       { kind: 'chips', label: '皮肤列表', id: 'ctl-skin-list', defaultValue: 'default', options: [{ text: 'default', value: 'default' }] },
     ],
   },
-  { id: 'play', title: '播放', controls: [PLACEHOLDER('速度 / 循环 / 帧步进')] },
+  {
+    id: 'play',
+    title: '播放',
+    controls: [
+      // 按关键词把部件从渲染中剔除（引擎 setSlotFilter + hideFilteredSlots 已有能力）
+      { kind: 'switch', label: '部件筛除', id: 'ctl-part-filter', title: '按关键词筛除部件（默认关）' },
+      // 关键字默认值取自旧端存储的 partFilterKeywords（mask,mosai,mmd,mozaiku）
+      {
+        kind: 'chips',
+        label: '关键字',
+        id: 'ctl-part-filter-reset',
+        defaultValue: 'reset',
+        options: [{ text: '恢复默认关键字', value: 'reset' }],
+      },
+    ],
+  },
   {
     id: 'filter',
     title: '滤镜',

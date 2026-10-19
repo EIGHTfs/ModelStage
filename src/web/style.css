@@ -121,20 +121,30 @@ button:disabled {
   display: block;
 }
 
+/* 舞台状态提示：放左下角小字，不遮挡画面主体。
+   正常的状态文字一律走日志；这里只用于「失败 / 不可用 / 未接入」这类需要用户看见的情况。 */
 .stage-hint {
   position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
+  left: 12px;
+  bottom: 12px;
+  transform: none;
   margin: 0;
-  padding: 6px 14px;
+  padding: 4px 10px;
+  max-width: calc(100% - 24px);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   background: rgba(31, 35, 38, 0.72);
   color: var(--color-muted-foreground);
-  font-size: 12px;
-  pointer-events: none;
+  font-size: 11px;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+  pointer-events: none;
+}
+
+.stage-hint[hidden] {
+  display: none;
 }
 
 /* ------------------------------------------------------ 顶栏（top 0，全宽） */
