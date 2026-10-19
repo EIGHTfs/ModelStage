@@ -459,7 +459,20 @@ const api = {
  * 给舞台 API 挂"可选能力"：PMA 四档、滤镜、皮肤、混合模式、调试绘制、MSAA 重建。
  * 这些方法依赖模块级工具（applySettings / ensureEngine / loadIntoStage…），与工厂解耦。
  */
+/**
+ * 给舞台 API 挂"可选能力"。按职责拆成四段，便于维护与审计（单函数长度）。
+ * 依赖模块级工具（applySettings / ensureEngine / loadIntoStage…），与工厂解耦。
+ */
 function attachExtraApi(api, st) {
+  attachSettingSetters(api, st);
+  attachAssetApi(api, st);
+  attachViewApi(api, st);
+  attachRenderApi(api, st);
+}
+
+/** 通用 setter（fit/纹理过滤/速度/循环/调试/帧率/DPR）与 PMA 四档 */
+function attachSettingSetters(api, st) {
+
 // PMA 不走通用 setter：切它必须重传贴图，单列一个方法（见下）
 for (const key of ['fit', 'textureFilter', 'speed', 'loop', 'debug', 'fpsLimit', 'dprMode']) {
   api[`set${key[0].toUpperCase()}${key.slice(1)}`] = (v) => applySettings(
@@ -489,6 +502,10 @@ api.setPma = (mode) => {
  * 每次只传变化的键，引擎内部会合并；状态同步记到 settings.debug 便于断言。
  * @param {object} patch 形如 { bones: true, meshes: false }
  */
+}
+
+/** 资产相关：皮肤列表与切换、混合模式、部件筛除 */
+function attachAssetApi(api, st) {
 /** 当前模型的皮肤名列表（无皮肤时返回 [default]） */
 api.getSkins = () => {
   if (!st.engine || typeof st.engine.getSkins !== 'function') return ['default'];
@@ -536,7 +553,10 @@ api.setPartFilter = ({ enabled, keywords }) => {
   }
   return { enabled: !!enabled, applied: list.length };
 };
+}
 
+/** 相机视图入口：只读读数 + 薄转发（不换算） */
+function attachViewApi(api, st) {
 /** 相机统一入口（全部委托引擎原生方法，本文件不做任何坐标换算） */
 st.camera = createStageCamera({ getEngine: () => st.engine });
 api.camera = st.camera;
@@ -574,7 +594,10 @@ api.resetView = () => {
   captureViewBase(st);
   return viewOf(st);
 };
+}
 
+/** 渲染相关：调试绘制、滤镜预设、MSAA 重建 */
+function attachRenderApi(api, st) {
 api.setDebug = (patch) => {
   const next = { ...(st.settings.debug || {}), ...(patch || {}) };
   st.settings.debug = next;

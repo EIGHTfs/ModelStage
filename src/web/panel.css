@@ -280,3 +280,31 @@
   text-decoration-thickness: 1px;
   text-decoration-color: var(--color-muted-foreground);
 }
+
+/* ---- 禁用 / 待接线控件的统一视觉：灰化 + 删除线 + 原因走原生 title ----
+   覆盖三类控件（都归 panel.js 挂状态，本文件只负责呈现）：
+     ① button:disabled            —— 普通按钮、开关（<button role="switch">）、分段按钮
+     ② [role="switch"][aria-disabled="true"] —— 用 aria 表达禁用的开关
+     ③ .chip-btn[data-pending]    —— 分段按钮组里标记待接线的单个按钮
+   原因提示统一用 title 属性（浏览器原生 tooltip）：表现层不复制文案、不写死原因，
+   避免与 panel.js 的文案来源分叉；也不引入脚本或伪元素气泡。
+   只作用于禁用态，可点控件不受影响。 */
+#right-panel {
+  /* 禁用态强度集中在这里，便于整体调深浅（不散落在各处） */
+  --ctl-off-opacity: 0.5;
+  --ctl-off-saturate: 0.55;
+}
+
+/* 灰化 + 不可点光标：三类控件同一口径 */
+#right-panel button:disabled,
+#right-panel select:disabled,
+#right-panel [role="switch"][aria-disabled="true"],
+#right-panel .chip-btn[data-pending="true"] {
+  opacity: var(--ctl-off-opacity);
+  filter: saturate(var(--ctl-off-saturate));
+  cursor: not-allowed;
+  user-select: none;
+}
+
+/* 删除线：有可见文字的控件划自己的文字（分段按钮逐项精确）；
+   开关与下拉没有可见文字，则划掉所在行的 .ctl-label（见上一条规则组）。 */

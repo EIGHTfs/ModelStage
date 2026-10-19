@@ -16,8 +16,10 @@ import { installDiag } from './diag.js';
 import { getJson, formatError } from './api.js';
 import { createRosterView } from './roster-view.js';
 import { mountPanel } from './panel.js';
+import { PANEL_GROUPS, applyCapabilities } from './panel-schema.js';
 import { mountTransport } from './transport.js';
 import { createSpineStage } from './spine-canvas.js';
+import { createRenderer2D } from './renderer-2d.js';
 import { attachStageInteraction } from './stage-interaction.js';
 
 // 页面级第一件事：装诊断探针（幂等，重复调用不会重复包装 console）
@@ -48,11 +50,16 @@ const dom = {
 let stage = null;
 
 /** 最小状态容器（M7 会扩展成带持久化的 store） */
+// 提前建好容器：早期状态日志（如面板能力推导告警）在 boot 末尾赋值前也要能落盘
+window.__WEB__ = window.__WEB__ || {};
+
 const state = {
   roots: [],
   rootsError: null,
   leftPanelVisible: true,
   selectedModel: null,
+  // 当前渲染器：核心不再直接持有相机，统一从它取（现阶段只有 2D 一个实现）
+  currentRenderer: null,
 };
 
 /**
@@ -185,6 +192,29 @@ const PANEL_APPLIERS = {
   'ctl-debug-hulls': (v) => stage && stage.setDebug({ hulls: !!v }),
 };
 
+/**
+ * 切换当前渲染器（预埋）：先让旧渲染器 unmount，再换新。
+ * 现阶段只有 2D 一个实现，这里不会被外部调用；将来 3D 渲染器接入时复用同一入口。
+ * @param {object} next 新渲染器（需带 capabilities / camera / mount / unmount / dispose）
+ */
+function setRenderer(next) {
+  if (state.currentRenderer && state.currentRenderer !== next) {
+    try { state.currentRenderer.unmount(); } catch { /* 旧渲染器卸载失败不影响切换 */ }
+  }
+  state.currentRenderer = next;
+  document.documentElement.dataset.renderer = next && next.id ? next.id : 'none';
+  return next;
+}
+
+/**
+ * 用当前舞台实例建立 2D 渲染器并设为当前。
+ * 舞台不可用时保持 null，调用方靠 `state.currentRenderer?.camera` 做空值保护。
+ */
+function initRenderer() {
+  if (!stage) return null;
+  return setRenderer(createRenderer2D({ stage }));
+}
+
 /** 当前交互层解绑函数（重建画布或测试清理时调用；null 表示未挂） */
 let detachInteraction = null;
 
@@ -271,6 +301,83 @@ function applyPartFilter(patch) {
   return next;
 }
 
+/** 播放/暂停：切换引擎播放并同步按钮按下态与 dataset（进 CAMERA 之外的状态日志） */
+function toggleTransportPlay() {
+  if (!stage) return;
+  const stats = stage.stats();
+  const playing = !!(stats && stats.playing);
+  if (playing) stage.pause(); else stage.play();
+  const next = !playing;
+  if (state.transport) state.transport.setPressed('transport-play', next);
+  document.documentElement.dataset.transportPlaying = next ? 'on' : 'off';
+  stageStatus(`transport 播放${next ? '' : '暂停'}`, 'info');
+}
+
+/** 单动循环：切换 settings.loop（引擎 setLoop 走通用 setter） */
+function toggleTransportLoop() {
+  if (!stage) return;
+  const stats = stage.stats();
+  const cur = !!(stats && stats.settings && stats.settings.loop);
+  const next = !cur;
+  if (typeof stage.setLoop === 'function') stage.setLoop(next);
+  if (state.transport) state.transport.setPressed('transport-loop', next);
+  document.documentElement.dataset.transportLoop = next ? 'on' : 'off';
+  stageStatus(`transport 单动循环 ${next ? '开' : '关'}`, 'info');
+}
+
+/**
+ * 上一个/下一个变体：取「当前根下、同一目录」的兄弟变体循环切换。
+ * 为什么用 API 取：名册树是懒加载的，兄弟列表不在 state 里，直接查 /api/models 最准。
+ */
+async function stepVariant(dir) {
+  const cur = state.selectedModel;
+  if (!cur || !cur.rootId || !cur.directory) { stageStatus('切换变体失败：当前没有可用的兄弟变体', 'warn'); return; }
+  try {
+    const data = await getJson(`/api/models?root=${encodeURIComponent(cur.rootId)}`);
+    const peers = (data.models || []).filter((m) => m.directory === cur.directory);
+    if (peers.length < 2) { stageStatus('切换变体失败：当前角色只有 1 个变体', 'warn'); return; }
+    const at = peers.findIndex((m) => m.id === cur.id || m.name === cur.name);
+    const next = peers[(at + dir + peers.length) % peers.length];
+    document.documentElement.dataset.transportVariant = next.name;
+    stageStatus(`transport 切换变体 → ${next.name}`, 'info');
+    onSelectModel(next);
+  } catch (err) {
+    stageStatus(`切换变体失败：${formatError(err)}`, 'error');
+  }
+}
+
+/** 背景：底栏快捷入口，循环切换 棋盘 → 纯色 → 透明（与主题背景组的 bg-mode 同一状态） */
+function cycleBackground() {
+  const order = ['checkerboard', 'solid', 'transparent'];
+  const cur = state.viewBg || 'checkerboard';
+  const next = order[(order.indexOf(cur) + 1) % order.length];
+  applyBackground(next);
+  if (state.panel && state.panel.setValue) state.panel.setValue('ctl-bg-mode', next);
+  document.documentElement.dataset.transportBg = next;
+  stageStatus(`transport 背景 → ${next}`, 'info');
+}
+
+/** 动作下拉选择：切动画并回填 dataset */
+function applyTransportMotion(name) {
+  if (!stage || !name) return;
+  const ok = stage.setAnimation(name);
+  document.documentElement.dataset.transportMotion = String(name);
+  stageStatus(`transport 动作 → ${name}${ok ? '' : '（引擎拒绝，保持原动作）'}`, ok ? 'info' : 'warn');
+}
+
+/** 模型加载完成后填充播放条：动作下拉 + 循环/播放按下态 */
+function fillTransportOptions(info) {
+  const transport = state.transport;
+  if (!transport) return;
+  const anims = Array.isArray(info && info.animations) ? info.animations : [];
+  if (anims.length) {
+    transport.setOptions('transport-motion', anims.map((a) => ({ text: a, value: a })), info.motion || anims[0]);
+  }
+  const stats = stage ? stage.stats() : null;
+  transport.setPressed('transport-loop', !!(stats && stats.settings && stats.settings.loop));
+  document.documentElement.dataset.transportPlaying = stats && stats.playing ? 'on' : 'off';
+}
+
 /** 混合模式：两处开关指向同一状态，点任一处都要同步另一处的显示 */
 function applyMixMode(on) {
   const value = !!(stage && stage.setMixMode ? stage.setMixMode(on) : 0);
@@ -289,6 +396,7 @@ function refreshSkinList() {
   const skins = stage.getSkins ? stage.getSkins() : ['default'];
   const current = skins.includes('default') ? 'default' : skins[0];
   state.panel.setOptions('ctl-skin-list', skins.map((s) => ({ text: s, value: s })), current);
+  if (state.transport) state.transport.setOptions('transport-skin', skins.map((s) => ({ text: s, value: s })), current);
   document.documentElement.dataset.skinCount = String(skins.length);
 }
 
@@ -363,6 +471,7 @@ function onSelectModel(model) {
       // 运行时组只读：显示本次实际使用的运行时版本（引擎按骨架版本自动选，不可手切）
       if (state.panel) state.panel.setReadonly('ctl-runtime', `Spine ${info.version}`);
       refreshSkinList();
+      fillTransportOptions(info);
       document.documentElement.dataset.stageReady = '1';
     })
     .catch((err) => {
@@ -433,8 +542,9 @@ function boot() {
 
   // 相机操作日志：供真机操作时判定（不做模拟测试）。
   // 输出通道 presently 走控制台 + __WEB__.cameraLog；debug-log 接线后把这里换成 debugLog.log('CAMERA', line) 即可。
-  if (stage && stage.camera && stage.camera.setLogger) {
-    stage.camera.setLogger((line, data) => {
+  const cameraEntry = state.currentRenderer && state.currentRenderer.camera;
+  if (cameraEntry && cameraEntry.setLogger) {
+    cameraEntry.setLogger((line, data) => {
       window.__WEB__ && (window.__WEB__.cameraLog = window.__WEB__.cameraLog || []).push({ at: Date.now(), line, data });
       if (window.__WEB__.cameraLog.length > 200) window.__WEB__.cameraLog.shift();
       console.info('%c[CAMERA]', 'color:#1fc0c5', line);
@@ -442,9 +552,19 @@ function boot() {
   }
 
 
+  initRenderer();
+
   attachInteraction();
 
+  // 面板按当前渲染器能力生成：不支持的项禁用/隐藏（2D 渲染器支持全部现有项，视觉与行为不变）
+  const rendererCapabilities = state.currentRenderer && state.currentRenderer.capabilities;
+  const panelGroups = applyCapabilities(PANEL_GROUPS, rendererCapabilities, {
+    onWarn: (message) => stageStatus(message, 'warn'),
+  });
+  document.documentElement.dataset.panelGroups = String(panelGroups.length);
+
   const panelInfo = mountPanel({
+    groups: panelGroups,
     headEl: dom.panelHead,
     bodyEl: dom.panelBody,
     onSetting: applyPanelSetting,
@@ -452,8 +572,16 @@ function boot() {
     wiredIds: Object.keys(PANEL_APPLIERS),
   });
   const transportInfo = mountTransport(dom.footer, {
-    onResetView: () => { if (stage && stage.resetView) stage.resetView(); },
+    'transport-reset-view': () => { if (stage && stage.resetView) stage.resetView(); },
+    'transport-loop': () => toggleTransportLoop(),
+    'transport-play': () => toggleTransportPlay(),
+    'transport-prev': () => stepVariant(-1),
+    'transport-next': () => stepVariant(1),
+    'transport-bg': () => cycleBackground(),
+    'transport-motion': (name) => applyTransportMotion(name),
+    'transport-skin': (name) => { if (stage && stage.setSkin) stage.setSkin(name); },
   });
+  state.transport = transportInfo;
   startFpsReadout(panelInfo);
   state.panel = panelInfo; // 让 onSelectModel 能写运行时只读行
   // 存储优先：主题/背景先按上次的选择恢复，再让"面板默认值"兜底未存过的项
@@ -484,7 +612,9 @@ function boot() {
   loadBrand();
   bindEvents();
   // 暴露给调试与自动化断言（M2 验收用）
-  window.__WEB__ = {
+  window.__WEB__ = Object.assign(window.__WEB__ || {}, {
+    /** 当前渲染器（只读，便于排查：id / capabilities / camera 是否就绪） */
+    get renderer() { return state.currentRenderer; },
     state,
     version: 'M4',
     /** 渲染舞台（测试脚本用它取像素、看统计） */
@@ -510,7 +640,7 @@ function boot() {
     defaultBrand: DEFAULT_BRAND,
     /** 名册状态快照（未挂载时返回 null） */
     rosterSnapshot: () => (state.roster ? state.roster.snapshot() : null),
-  };
+  });
   loadRoots();
 }
 

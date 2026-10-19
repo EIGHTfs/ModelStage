@@ -263,7 +263,9 @@ function renderGroup(group, ctx) {
  *   onSetting：已接线控件的回传口（面板只把"点了哪个选项"翻成机器值，具体生效由接线方决定）
  * @returns {{groups: number, controls: number, setFps: (fps: number|null) => void}}
  */
-export function mountPanel({ headEl, bodyEl, onSetting, wiredIds }) {
+export function mountPanel({ headEl, bodyEl, onSetting, wiredIds, groups }) {
+  // schema 可由调用方按渲染器能力过滤后传入；缺省用全量 PANEL_GROUPS（保持原有行为）
+  const schema = Array.isArray(groups) && groups.length ? groups : PANEL_GROUPS;
   headEl.replaceChildren();
   bodyEl.replaceChildren();
   // 接线集合来自接线方（main.js 的映射表），与 schema 的 values 解耦：
@@ -283,11 +285,11 @@ export function mountPanel({ headEl, bodyEl, onSetting, wiredIds }) {
   collapse.title = '待接线（M6）：收起右侧面板';
   headEl.append(title, collapse);
 
-  for (const group of PANEL_GROUPS) bodyEl.append(renderGroup(group, ctx));
+  for (const group of schema) bodyEl.append(renderGroup(group, ctx));
 
   // 已接线控件的声明默认值：作为"面板即真相"的唯一来源，交给接线方在启动时下发
   const defaults = {};
-  for (const group of PANEL_GROUPS) {
+  for (const group of schema) {
     for (const ctl of group.controls) {
       if (wiredSet.has(ctl.id) && ctl.defaultValue !== undefined) defaults[ctl.id] = ctl.defaultValue;
     }
@@ -354,5 +356,5 @@ export function mountPanel({ headEl, bodyEl, onSetting, wiredIds }) {
   // 统计口径：面板头 + 组内所有非手风琴控件，供断言核对控件数
   const controls = (headEl.querySelectorAll('button, select, input').length)
     + (bodyEl.querySelectorAll('button:not(.acc-trigger), select, input, [role="switch"]').length);
-  return { groups: PANEL_GROUPS.length, controls, setFps, setReadonly, setValue, setOptions, setChecked, defaults };
+  return { groups: schema.length, controls, setFps, setReadonly, setValue, setOptions, setChecked, defaults };
 }

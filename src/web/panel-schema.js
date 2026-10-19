@@ -27,8 +27,8 @@ export const PANEL_GROUPS = [
     title: '动作',
     defaultOpen: true,
     controls: [
-      { kind: 'switch', label: '混合模式', id: 'ctl-mix-mode', title: '动画切换时是否交叉淡化（与皮肤组同一状态）' },
-      { kind: 'dynamic-list', label: '动作列表', note: '选中模型后逐条列出动作（M6 接线）' },
+      { kind: 'switch', label: '混合模式', id: 'ctl-mix-mode', core: true, title: '动画切换时是否交叉淡化（与皮肤组同一状态）' },
+      { kind: 'dynamic-list', label: '动作列表', core: true, note: '选中模型后逐条列出动作（M6 接线）' },
     ],
   },
   {
@@ -36,9 +36,9 @@ export const PANEL_GROUPS = [
     title: '皮肤',
     controls: [
       // 与「动作」组的混合模式是同一状态，两处点任一处都要同步（main.js 统一维护）
-      { kind: 'switch', label: '混合模式', id: 'ctl-skin-mix', title: '动画切换时是否交叉淡化（与动作组同一状态）' },
+      { kind: 'switch', label: '混合模式', id: 'ctl-skin-mix', core: true, title: '动画切换时是否交叉淡化（与动作组同一状态）' },
       // 皮肤列表：加载模型后按 skeletonData.skins 重建；默认 default
-      { kind: 'chips', label: '皮肤列表', id: 'ctl-skin-list', defaultValue: 'default', options: [{ text: 'default', value: 'default' }] },
+      { kind: 'chips', label: '皮肤列表', id: 'ctl-skin-list', core: true, defaultValue: 'default', options: [{ text: 'default', value: 'default' }] },
     ],
   },
   {
@@ -46,12 +46,12 @@ export const PANEL_GROUPS = [
     title: '播放',
     controls: [
       // 按关键词把部件从渲染中剔除（引擎 setSlotFilter + hideFilteredSlots 已有能力）
-      { kind: 'switch', label: '部件筛除', id: 'ctl-part-filter', title: '按关键词筛除部件（默认关）' },
+      { kind: 'switch', label: '部件筛除', id: 'ctl-part-filter', core: true, title: '按关键词筛除部件（默认关）' },
       // 关键字默认值取自旧端存储的 partFilterKeywords（mask,mosai,mmd,mozaiku）
       {
         kind: 'chips',
         label: '关键字',
-        id: 'ctl-part-filter-reset',
+        id: 'ctl-part-filter-reset', core: true,
         defaultValue: 'reset',
         options: [{ text: '恢复默认关键字', value: 'reset' }],
       },
@@ -65,7 +65,7 @@ export const PANEL_GROUPS = [
       {
         kind: 'chips',
         label: '滤镜预设',
-        id: 'ctl-filter-preset',
+        id: 'ctl-filter-preset', capabilityKey: 'filter',
         defaultValue: 'original',
         options: [
           { text: '原画', value: 'original' },
@@ -92,7 +92,7 @@ export const PANEL_GROUPS = [
       {
         kind: 'segmented',
         label: 'PMA 预乘',
-        id: 'ctl-pma',
+        id: 'ctl-pma', capabilityKey: 'pma',
         options: ['自动', '已预乘', '非预乘', '转预乘'],
         titles: ['按像素抽样自动推断', '强制按已预乘处理', '强制按非预乘处理（运行时 4.1+ 才原生支持，较早版本会降级为转预乘）', '上传时在 GPU 上转成预乘'],
         values: ['auto', 'premultiplied', 'straight', 'upload'],
@@ -105,7 +105,7 @@ export const PANEL_GROUPS = [
     title: '运行时',
     controls: [
       // 只读：运行时由模型骨架版本决定，引擎不支持手动切换（切了也只会加载失败）
-      { kind: 'readonly', label: '运行时版本', id: 'ctl-runtime', note: '按模型骨架版本自动选择' },
+      { kind: 'readonly', label: '运行时版本', id: 'ctl-runtime', core: true, note: '按模型骨架版本自动选择' },
     ],
   },
   {
@@ -116,7 +116,7 @@ export const PANEL_GROUPS = [
       {
         kind: 'select',
         label: '主题',
-        id: 'ctl-theme',
+        id: 'ctl-theme', core: true,
         defaultValue: 'dark-cyan',
         options: [
           { text: '深空青', value: 'dark-cyan' },
@@ -129,7 +129,7 @@ export const PANEL_GROUPS = [
       {
         kind: 'segmented',
         label: '背景模式',
-        id: 'ctl-bg-mode',
+        id: 'ctl-bg-mode', core: true,
         options: ['棋盘格', '纯色', '透明', '自定义'],
         values: ['checkerboard', 'solid', 'transparent', 'custom'],
         defaultValue: 'checkerboard',
@@ -159,12 +159,12 @@ export const PANEL_GROUPS = [
     defaultOpen: true,
     controls: [
       // values 与 options 一一对应：面板只负责把"点了哪个选项"翻成机器值，再交给接线方
-      { kind: 'segmented', label: '渲染帧率', id: 'ctl-fps', options: ['60 FPS', '30 FPS'], values: [60, 30], defaultValue: 60, readout: true },
-      { kind: 'segmented', label: '渲染像素比（DPR）', id: 'ctl-dpr', options: ['自动', '1', '1.5', '2'], values: ['auto', 1, 1.5, 2], defaultValue: 'auto' },
+      { kind: 'segmented', label: '渲染帧率', id: 'ctl-fps', capabilityKey: 'fps', options: ['60 FPS', '30 FPS'], values: [60, 30], defaultValue: 60, readout: true },
+      { kind: 'segmented', label: '渲染像素比（DPR）', id: 'ctl-dpr', capabilityKey: 'dpr', options: ['自动', '1', '1.5', '2'], values: ['auto', 1, 1.5, 2], defaultValue: 'auto' },
       {
         kind: 'segmented',
         label: '初始缩放',
-        id: 'ctl-fit',
+        id: 'ctl-fit', capabilityKey: 'fit',
         values: ['subject', 'all', 'animation'],
         defaultValue: 'subject',
         options: [
@@ -174,14 +174,14 @@ export const PANEL_GROUPS = [
         ],
       },
       // 旧端默认是「最邻近」（不是双线性），默认项按旧端对齐
-      { kind: 'segmented', label: '纹理过滤', id: 'ctl-filter', options: ['双线性', '最邻近'], values: ['linear', 'nearest'], defaultValue: 'nearest' },
-      { kind: 'segmented', label: '抗锯齿（MSAA）', id: 'ctl-msaa', options: ['自动', '关闭'], values: ['auto', 'off'], defaultValue: 'auto' },
+      { kind: 'segmented', label: '纹理过滤', id: 'ctl-filter', capabilityKey: 'filter', options: ['双线性', '最邻近'], values: ['linear', 'nearest'], defaultValue: 'nearest' },
+      { kind: 'segmented', label: '抗锯齿（MSAA）', id: 'ctl-msaa', capabilityKey: 'msaa', options: ['自动', '关闭'], values: ['auto', 'off'], defaultValue: 'auto' },
       // 旧前端这部分 UI 被自家补丁隐藏了（只追加不覆盖），但 M3 口径要求列全，故照列并标注
-      { kind: 'segmented', label: '模型导入模式', id: 'ctl-import-mode', options: ['替换', '追加'], values: ['replace', 'append'], defaultValue: 'append' },
-      { kind: 'switch', label: '防卡死保护', id: 'ctl-hang-guard', defaultOn: true },
-      { kind: 'switch', label: '显示状态信息', id: 'ctl-show-status', defaultOn: true },
-      { kind: 'switch', label: '调试日志', id: 'ctl-debug-log', defaultOn: true },
-      { kind: 'actions', buttons: ['导出设置', '导入设置', '恢复默认'], id: 'ctl-settings-io' },
+      { kind: 'segmented', label: '模型导入模式', id: 'ctl-import-mode', core: true, options: ['替换', '追加'], values: ['replace', 'append'], defaultValue: 'append' },
+      { kind: 'switch', label: '防卡死保护', id: 'ctl-hang-guard', core: true, defaultOn: true },
+      { kind: 'switch', label: '显示状态信息', id: 'ctl-show-status', core: true, defaultOn: true },
+      { kind: 'switch', label: '调试日志', id: 'ctl-debug-log', core: true, defaultOn: true },
+      { kind: 'actions', buttons: ['导出设置', '导入设置', '恢复默认'], id: 'ctl-settings-io', core: true },
     ],
   },
 ];
@@ -199,3 +199,85 @@ export const TRANSPORT_CONTROLS = [
   { kind: 'button', id: 'transport-reset-view', label: '重置视图', title: '重置视图' },
   { kind: 'button', id: 'transport-bg', label: '背景', title: '背景' },
 ];
+
+/**
+ * 按 id 前缀推导能力键（**兜底路径**，只在控件没有显式声明时使用）。
+ * 推导规则：
+ *   · `ctl-debug-<key>` → 调试项 { kind: 'debug', key }（如 ctl-debug-bones → bones）
+ *   · `ctl-<key>`       → 设置项 { kind: 'setting', key }（如 ctl-fps → fps）
+ *   · 其它形态         → null（推导不出来，不猜；调用方按"不支持"处理）
+ * @param {string} id 控件 id
+ * @returns {{kind: string, key: string}|null}
+ */
+export function inferCapabilityKey(id) {
+  if (typeof id !== 'string') return null;
+  const debugMatch = /^ctl-debug-(.+)$/.exec(id);
+  if (debugMatch) return { kind: 'debug', key: debugMatch[1] };
+  const settingMatch = /^ctl-(.+)$/.exec(id);
+  if (settingMatch) return { kind: 'setting', key: settingMatch[1] };
+  return null;
+}
+
+/**
+ * 解析控件对应的能力键：**显式声明永远优先**，推导只是兜底且必须告警。
+ *   · debugKey / capabilityKey 有显式声明 → 直接采用（不做任何推导）；
+ *   · core === true（主题/背景/运行时/IO 等核心项）→ 返回 null，不参与能力过滤；
+ *   · 其余：按 id 推导；成功与失败都发 warn（成功时提示补显式声明）。
+ * @param {object} ctl 控件
+ * @param {(message: string) => void} [onWarn] 告警出口（缺省静默）
+ * @returns {{kind: string, key: string}|null} null 表示核心项
+ */
+export function resolveCapabilityKey(ctl, onWarn) {
+  const warn = typeof onWarn === 'function' ? onWarn : () => {};
+  if (ctl && typeof ctl.debugKey === 'string' && ctl.debugKey) return { kind: 'debug', key: ctl.debugKey };
+  if (ctl && typeof ctl.capabilityKey === 'string' && ctl.capabilityKey) return { kind: 'setting', key: ctl.capabilityKey };
+  if (ctl && ctl.core === true) return null;
+  const id = ctl && ctl.id ? ctl.id : '';
+  const inferred = inferCapabilityKey(id);
+  if (inferred) {
+    warn(`面板控件 ${id} 缺少能力键声明，已按 id 推导为 ${inferred.kind}.${inferred.key}（建议补显式声明）`);
+    return inferred;
+  }
+  warn(`面板控件 ${id || (ctl && ctl.label) || '(无 id)'} 无法确定能力键，按“不支持”处理`);
+  return { kind: 'unsupported', key: '' };
+}
+
+/**
+ * 按渲染器能力过滤面板 schema（纯函数，不改原 schema）。
+ * 规则：
+ *   · 调试项：不在 capabilities.debugDraw 里 ⇒ 整项隐藏；
+ *   · 设置项：不在 capabilities.settings 里 ⇒ disabled + reason；
+ *   · 核心项（core: true）：原样保留；
+ *   · 推导不出能力键：disabled + reason（不猜）并告警；
+ *   · 过滤后为空的分组整组移除。
+ * @param {Array} groups 面板分组
+ * @param {{settings?: string[], debugDraw?: string[]}} capabilities 渲染器能力
+ * @param {{onWarn?: (message: string) => void}} [options] 告警出口
+ * @returns {Array} 过滤后的新分组数组
+ */
+export function applyCapabilities(groups, capabilities, options = {}) {
+  const settings = new Set((capabilities && capabilities.settings) || []);
+  const debugDraw = new Set((capabilities && capabilities.debugDraw) || []);
+  const onWarn = options && typeof options.onWarn === 'function' ? options.onWarn : null;
+  const reason = '当前渲染器不支持';
+  const list = Array.isArray(groups) ? groups : [];
+  return list
+    .map((group) => {
+      const controls = [];
+      for (const ctl of group.controls || []) {
+        const resolved = resolveCapabilityKey(ctl, onWarn);
+        if (!resolved) { controls.push({ ...ctl }); continue; } // 核心项原样保留
+        if (resolved.kind === 'debug') {
+          if (debugDraw.has(resolved.key)) controls.push({ ...ctl });
+          continue; // 不支持 ⇒ 整项隐藏（不是禁用）
+        }
+        if (resolved.kind === 'unsupported') {
+          controls.push({ ...ctl, disabled: true, reason: '无法确定能力键' });
+          continue;
+        }
+        controls.push(settings.has(resolved.key) ? { ...ctl } : { ...ctl, disabled: true, reason });
+      }
+      return { ...group, controls };
+    })
+    .filter((group) => group.controls.length > 0);
+}
