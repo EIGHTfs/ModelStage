@@ -9,9 +9,9 @@
 //   · 不读 process.argv / 不读端口 / 不依赖 http —— 端口与响应由调用方决定；
 //   · 项目根由调用方注入，模块内不写死绝对路径；
 //   · 只读接口返回 { status, body }，写接口（roots/import/diag）暂不在此层（保持单写者）。
-import { createPaths } from './paths.mjs';
-import { createEnv } from './env.mjs';
-import { createConfig } from './config.mjs';
+import { createPaths } from './core/paths.mjs';
+import { createEnv } from './core/env.mjs';
+import { createConfig } from './core/config.mjs';
 import { createPlugins } from './plugins.mjs';
 import { createModels } from './models.mjs';
 import { createLive2d } from './live2d.mjs';

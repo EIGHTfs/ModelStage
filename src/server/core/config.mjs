@@ -4,7 +4,7 @@
 // 写入走 tmp + rename，避免读到写了一半的内容。
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseJsonc } from '../../tool/parse-jsonc.mjs';
+import { parseJsonc } from '../../../tool/parse-jsonc.mjs';
 
 /** @param {{root: string, configFile: string}} p */
 export function createConfig(p) {
