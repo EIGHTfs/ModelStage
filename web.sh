@@ -15,12 +15,23 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # 自身绝对路径：restart 分支要用它自调用（"$0" 在 `bash web.sh` 下只是相对名，直接执行会 command not found）
 SELF="$PROJECT_ROOT/$(basename "${BASH_SOURCE[0]}")"
 PORT="${PORT:-8804}"
-UPSTREAM="${UPSTREAM:-http://127.0.0.1:8803}"
+# 独立模式：STANDALONE=1 时直接用 src/server/serve.mjs（自带 API/静态/文件服务，不反代旧端）；
+# 默认模式：src/web/dev-server.mjs + 把 /api /files /icons /live2d-lib 反代到 8803（与现状完全一致）。
+STANDALONE="${STANDALONE:-0}"
+if [ "$STANDALONE" = "1" ]; then
+  UPSTREAM=""
+else
+  UPSTREAM="${UPSTREAM:-http://127.0.0.1:8803}"
+fi
 RUNTIME_DIR="$PROJECT_ROOT/runtime"
 mkdir -p "$RUNTIME_DIR"
 PID_FILE="$RUNTIME_DIR/model-stage-web.pid"
 LOG_FILE="$RUNTIME_DIR/model-stage-web.log"
-ENTRY="$PROJECT_ROOT/src/web/dev-server.mjs"
+if [ "$STANDALONE" = "1" ]; then
+  ENTRY="$PROJECT_ROOT/src/server/serve.mjs"
+else
+  ENTRY="$PROJECT_ROOT/src/web/dev-server.mjs"
+fi
 
 # node 路径按实际环境探测（NAS 重启后 /var/packages 路径可能失效，不能写死）
 probe_bin() {
@@ -43,11 +54,15 @@ case "${1:-restart}" in
   start)
     if pid="$(running_pid)"; then echo "已在运行 (PID $pid, 端口 $PORT)"; exit 0; fi
     [ -f "$ENTRY" ] || { echo "错误: 缺少 $ENTRY"; exit 1; }
-    PORT="$PORT" UPSTREAM="$UPSTREAM" nohup "$NODE" "$ENTRY" >"$LOG_FILE" 2>&1 &
+    if [ -n "$UPSTREAM" ]; then
+      PORT="$PORT" UPSTREAM="$UPSTREAM" nohup "$NODE" "$ENTRY" >"$LOG_FILE" 2>&1 &
+    else
+      PORT="$PORT" nohup "$NODE" "$ENTRY" >"$LOG_FILE" 2>&1 &
+    fi
     echo $! > "$PID_FILE"
     sleep 1.5
     if pid="$(running_pid)"; then
-      echo "已启动 (PID $pid, 端口 $PORT, 上游 $UPSTREAM, 日志 $LOG_FILE)"
+      echo "已启动 (PID $pid, 端口 $PORT, 模式 $([ "$STANDALONE" = "1" ] && echo 独立 || echo 反代+$UPSTREAM), 日志 $LOG_FILE)"
     else
       echo "启动失败，日志最后几行："; tail -8 "$LOG_FILE" 2>/dev/null
       rm -f "$PID_FILE"; exit 1
@@ -70,7 +85,7 @@ case "${1:-restart}" in
     ;;
   status)
     if pid="$(running_pid)"; then
-      echo "运行中 (PID $pid, 端口 $PORT, 上游 $UPSTREAM)"
+      echo "运行中 (PID $pid, 端口 $PORT, 模式 $([ "$STANDALONE" = "1" ] && echo 独立 || echo 反代+$UPSTREAM))"
       curl -s -o /dev/null -w "  首页 HTTP %{http_code}\n" --max-time 5 "http://127.0.0.1:$PORT/" || true
     else
       echo "未运行"
