@@ -11,7 +11,7 @@
 //
 // 结构：图标 / 时间格式 / 样式注入 / 骨架 / 渲染器 / 编排，各自独立成函数（每函数 ≤50 行）。
 
-import { DEBUG_LEVELS } from './debug-log.js';
+import { DEBUG_LEVELS } from './log.js';
 
 const CSS_FILE = './debug-panel.css';
 const CSS_LINK_ATTR = 'data-debug-panel-css';

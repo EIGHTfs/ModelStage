@@ -18,7 +18,7 @@
 //   · kind==='spine' 但 /api/models 为 0：目录里其实是 Live2D（碧蓝 root=azurlane 实测 119 个），
 //     改取 /api/live2d/models。
 
-import { getJson } from './api.js';
+import { getJson } from '../infra/api.js';
 
 /** 资源名后缀归一化候选（与 char-tree.js 的 ASSET_SUFFIX_PATTERNS 一致） */
 const ASSET_SUFFIX_PATTERNS = [/_hx$/i];

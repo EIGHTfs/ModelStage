@@ -12,9 +12,9 @@
 
 import {
   createNameIndex, mergeNameTable, loadRootModels, loadRootNames, buildChars,
-} from './roster.js';
-import { el, renderGameRow, renderCharRow, renderVariantRow } from './roster-rows.js';
-import { formatError } from './api.js';
+} from './list.js';
+import { el, renderGameRow, renderCharRow, renderVariantRow } from './rows.js';
+import { formatError } from '../infra/api.js';
 
 /** localStorage 键名：与旧前端一致，不得改名（M7 要用它做持久化，改名会让用户既有状态失效） */
 const LS_KEY = 'spine-multi-viewer.tree-state.v1';

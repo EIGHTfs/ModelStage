@@ -6,7 +6,7 @@
 //   2. 职责分离：本文件只管"一行长什么样"，roster-view.js 只管"状态怎么变、事件怎么派"。
 // 约定：每行都带 data-* 标识与 tabindex=0（键盘可达），事件由 roster-view.js 在容器上委托。
 
-import { variantLabel, variantText } from './roster.js';
+import { variantLabel, variantText } from './list.js';
 
 /** 元素工厂：减少重复的 createElement 样板 */
 export function el(tag, className, text) {

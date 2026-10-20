@@ -12,11 +12,11 @@
 //   现在先立最小形态（不引框架），后续里程碑往里加字段，避免各处散落全局变量。
 
 // 诊断探针必须最先装：后面的模块/渲染出问题时才有取证（API 与旧前端 legacy/patches/diag.js 一致）
-import { installDiag } from './diag.js';
-import { getJson, formatError } from './api.js';
-import { createRosterView } from './roster-view.js';
-import { mountPanel } from './panel.js';
-import { PANEL_GROUPS, applyCapabilities } from './panel-schema.js';
+import { installDiag } from './infra/diag.js';
+import { getJson, formatError } from './infra/api.js';
+import { createRosterView } from './roster/view.js';
+import { mountPanel } from './panel/view.js';
+import { PANEL_GROUPS, applyCapabilities } from './panel/schema.js';
 import { mountTransport } from './transport.js';
 import { createSpineStage } from './spine-canvas.js';
 import { createStageSurface } from './stage-surface.js';

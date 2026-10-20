@@ -13,7 +13,7 @@
 //   dynamic-list 动态内容占位（M6 由模型数据填充）
 //   note      纯说明文字
 
-import { PANEL_GROUPS } from './panel-schema.js';
+import { PANEL_GROUPS } from './schema.js';
 
 /** 元素工厂（与名册那边同名的本地小工具，避免跨模块只为建元素而互相依赖） */
 function el(tag, className, text) {
