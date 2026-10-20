@@ -18,11 +18,28 @@
 
 import { installRuntimeManager } from './runtimes.js';
 import { createStageCamera } from '../render/camera/spine.js';
+import { SpineEngine as NextEngine } from '../engine/index.js';
 
 const RUNTIME_BASE = '/spine-runtimes/spine-webgl-';
 const RUNTIME_MANIFEST = '/spine-runtimes/index.json';
 const ENGINE_SRC = '/engine.js';
 const ALPHA_THRESHOLD = 8;
+
+/**
+ * 引擎实现选择：
+ *   · 默认走新引擎（ESM 直连 `engine/index.js`，不再脚本注入）；
+ *   · URL 带 `?legacy-engine=1` 时仍走旧的 `/engine.js` 脚本注入，用于逐项对照与回退。
+ * 为什么保留开关：新引擎是重写实现，出问题时必须能一键切回旧实现定位，避免只能"猜是谁的锅"。
+ */
+const USE_LEGACY_ENGINE = (() => {
+  try { return new URLSearchParams(window.location.search).get('legacy-engine') === '1'; } catch { return false; }
+})();
+
+/** 取当前应使用的引擎构造器（新 = 类；旧 = 脚本注入后从全局读出的类） */
+async function pickEngineCtor() {
+  if (USE_LEGACY_ENGINE) return ensureEngine();
+  return NextEngine;
+}
 
 /**
  * 相机视图约定（交互层按此实现，勿改）：
@@ -377,7 +394,7 @@ async function loadIntoStage(st, arg) {
   // 上一个模型由 engine.loadModel 内部 stop+disposeTexturesAndAtlas 负责释放，这里只记账
   if (st.model) { st.model = null; st.disposes++; }
   installRuntimeManager(); // engine.js 顶层 `let Yd = Is` 需要它先存在
-  const Engine = await ensureEngine();
+  const Engine = await pickEngineCtor();
   const avail = await availableVersions();
   const ver = pickRuntimeVersion(model.version, avail);
   if (!ver) throw businessError('无法确定该模型的 Spine 版本：元数据缺少 version，且运行时清单不可用');
@@ -598,7 +615,7 @@ api.setView = (patch = {}) => {
   api.ensureEngineReady = async () => {
     if (st.engine) return st.engine;
     try {
-      const Engine = await ensureEngine();
+      const Engine = await pickEngineCtor();
       if (!ensureStageEngine(st, Engine, st.canvas)) return null;
       return st.engine;
     } catch {
@@ -652,7 +669,7 @@ api.rebuildWithAntialias = async (on) => {
   st.disposes += 1; // 重建也计入释放次数，便于用 loads/disposes 判泄漏
   st.settings.msaa = on ? 'auto' : 'off';
   const t0 = performance.now();
-  const Engine = await ensureEngine();
+  const Engine = await pickEngineCtor();
   const ok = ensureStageEngineWith(st, Engine, on);
   if (!ok) return { antialias: !!on, restoreMs: 0, restored: false };
   if (arg) await loadIntoStage(st, arg);

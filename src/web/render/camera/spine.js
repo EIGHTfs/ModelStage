@@ -15,6 +15,8 @@
 /**
  * @param {{getEngine: () => any}} options getEngine 每次调用时取当前引擎（MSAA 重建后引擎实例会换）
  */
+import { CAMERA, limitsFor } from './constants.js';
+
 export function createStageCamera({ getEngine } = {}) {
   /** 日志输出函数（由宿主注入，缺省静默） */
   let logger = null;
@@ -42,7 +44,10 @@ export function createStageCamera({ getEngine } = {}) {
       const engine = engineOf();
       if (!engine) return null;
       const before = readScale(engine);
-      try { engine.applyZoom(dir > 0 ? 1 : -1); } catch { return before; }
+      const lim = limitsFor('spine');
+      // 唯一钳制点：先把目标值夹进范围，再交给引擎（引擎本身不再夹）
+      const target = Math.max(lim.min, Math.min(lim.max, (before == null ? 1 : before) * (1 + (dir > 0 ? 1 : -1) * CAMERA.STEP)));
+      try { engine.setCameraZoom(target); } catch { return before; }
       const after = readScale(engine);
       emit(`zoomStep(${dir > 0 ? '+1' : '-1'}) → userScale ${before} → ${after}`, { before, after });
       return after;
@@ -53,7 +58,8 @@ export function createStageCamera({ getEngine } = {}) {
       const engine = engineOf();
       if (!engine || !Number.isFinite(scale)) return null;
       const before = readScale(engine);
-      try { engine.setCameraZoom(scale); } catch { return before; }
+      const lim = limitsFor('spine');
+      try { engine.setCameraZoom(Math.max(lim.min, Math.min(lim.max, scale))); } catch { return before; }
       const after = readScale(engine);
       emit(`zoomTo(${scale}) → userScale ${before} → ${after}`, { before, after });
       return after;
