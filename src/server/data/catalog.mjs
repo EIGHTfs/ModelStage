@@ -129,6 +129,10 @@ export function toSpineEntry(cfg, m) {
     skeletonFile: { name: m.skeletonFile.name, path: m.skeletonFile.path, url: fileUrl(m.skeletonFile.path), size: m.skeletonFile.size },
     atlasFile: { name: m.atlasFile.name, path: m.atlasFile.path, url: fileUrl(m.atlasFile.path), size: m.atlasFile.size },
     textureFiles: (m.textureFiles || []).map((t) => ({ name: t.name, path: t.path, url: fileUrl(t.path), size: t.size })),
+    // 顶层 version / format：渲染器按顶层 version 选运行时（meta.version 是数字，不适合做匹配键），
+    //   缺这两个字段会让运行时选错版本，进而报 "Bone name must not be null"。
+    version: m.version,
+    format: m.format,
     meta: {
       version: toVersionNumber(m.version),
       motions,
