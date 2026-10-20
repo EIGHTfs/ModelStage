@@ -2,7 +2,7 @@
 // build.mjs — 把拆分后的源码重新打包成单个 index.html（还原 原版「双击即用」形态）
 //
 // 输入：
-//   src/app-shell.html        应用外壳（含占位符，798 KB）
+//   legacy/source/app-shell.html        应用外壳（含占位符，798 KB）
 //   src/spine-runtimes/*.js   7 个 Spine 版本运行时源码（可读、可维护）
 // 输出：
 //   dist/index.html           单文件产物，等价于原版基线

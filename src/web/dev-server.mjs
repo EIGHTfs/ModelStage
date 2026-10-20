@@ -105,8 +105,14 @@ function resolveStatic(pathname) {
   return abs;
 }
 
-/** 旧引擎（复用其 SpineEngine：运行时隔离执行，PMA/fit/DPR/裁剪语义齐全） */
-const ENGINE_FILE = path.resolve(WEB_ROOT, '..', 'engine.js');
+/**
+ * 既有引擎（复用其 SpineEngine：运行时隔离执行，PMA/fit/DPR/裁剪语义齐全）。
+ * 位置：src/engine/engine.js —— 引擎只做 Spine（Live2D 由渲染器层的覆盖层实现处理）。
+ * 可用 SPINE_ENGINE_FILE 覆盖（指向别处的引擎副本，便于对照实验）。
+ */
+const ENGINE_FILE = process.env.SPINE_ENGINE_FILE
+  ? path.resolve(process.env.SPINE_ENGINE_FILE)
+  : path.resolve(WEB_ROOT, '..', '..', 'legacy', 'source', 'engine.js');
 function serveEngine(req, res) {
   let body;
   try {

@@ -1,9 +1,9 @@
 # ModelStage · 新前端（`src/web/`）
 
-纯 HTML + 原生 ES 模块 + 手写 CSS 的前端实现，与旧前端（`src/app-shell.html` + `src/js/**` + `public/**`）
+纯 HTML + 原生 ES 模块 + 手写 CSS 的前端实现，与旧前端（`legacy/source/app-shell.html` + `legacy/source/js/**` + `legacy/patches/**`）
 **双栈并行**：旧前端继续跑在 8803 作对照端，新前端跑在 8804，逐块替换、逐块比对。
 
-设计依据：`doc/前端重写路线图.MD`（功能 8 块 / L1 视觉 + L2 结构 + L3 行为三层判据 / M1~M8 里程碑）、
+设计依据：`doc/任务-前端重写路线图.md`（功能 8 块 / L1 视觉 + L2 结构 + L3 行为三层判据 / M1~M8 里程碑）、
 进度看板：`doc/任务-前端重写.md`。
 
 ## 一、目录结构
@@ -16,7 +16,7 @@ src/web/
 ├── main.js           入口：品牌、面板开关、资源根加载、名册挂载、错误兜底、window.__WEB__ 调试出口
 ├── api.js            同源 JSON 请求封装（统一错误口径）
 ├── diag.js           诊断探针 window.__DIAG__（错误/警告/关键事件 + 落盘 /api/diag）
-├── roster.js         名册数据层：按根取模型清单 + 名表合并 + 角色归并（规则照 public/char-tree.js）
+├── roster.js         名册数据层：按根取模型清单 + 名表合并 + 角色归并（规则照 legacy/patches/char-tree.js）
 ├── roster-view.js    名册视图层：状态、事件、懒加载、搜索过滤、选中态、持久化
 ├── roster-rows.js    三级树的行渲染（纯 DOM 工厂，无状态）
 ├── panel-schema.js   右栏 9 组 + 播放条控件的**声明式**定义（M3）
@@ -96,7 +96,7 @@ bash web.sh start|stop|restart|status     # 默认 8804，上游 8803
       bundle 根走 `/api/tree` 的 `kind:'bundle'` 条目）；已加载过的游戏再展开不再发请求
 - [x] **角色跨根归并**：同一游戏下把各根模型并成一个数组再归并，同一角色来自不同根的变体
       落在**同一个角色节点**下（实测：阿尔比恩 = Live2D `aerbien_3` + Spine `aerbien_4`）
-- [x] 归并规则逐条照 `public/char-tree.js`：`charKeyOf`（去 `cutscene_` / `_hx` / `_N`）、
+- [x] 归并规则逐条照 `legacy/patches/char-tree.js`：`charKeyOf`（去 `cutscene_` / `_hx` / `_N`）、
       `assetCandidates` 逐级放宽查表、命中用英文名归组 + 标题「中文名 英文名」、
       变体排序立绘在前技能在后、角色排序普通角色在前 NPC 在后、角色键 `char:游戏名|组名`
 - [x] 实测规模（与旧前端一致）：**2 游戏 / 354 角色 / 721 变体**
@@ -137,7 +137,7 @@ bash web.sh start|stop|restart|status     # 默认 8804，上游 8803
 
 ## 五、诊断（window.__DIAG__）
 
-页面自带诊断探针，**API 与旧前端 `public/diag.js` 完全一致**（同一套检查代码可对两个前端跑）。
+页面自带诊断探针，**API 与旧前端 `legacy/patches/diag.js` 完全一致**（同一套检查代码可对两个前端跑）。
 `main.js` 在模块体第一件事就安装它，保证早期错误也能被抓到。
 
 采什么（只收错误/警告/关键事件，**不做每帧采样**）：

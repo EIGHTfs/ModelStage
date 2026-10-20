@@ -8,7 +8,7 @@
 // 源码来源（按优先级，逐条探测，命中即用）：
 //   ① src/spine-runtimes/<ver>/spine-webgl-<ver>.js   —— 项目内可维护源码（本机当前为空目录）
 //   ② ../spine-runtimes/<ver>/spine-webgl-<ver>.js    —— 工作区共享
-//   ③ baseline/index.html 内联的 __SPINE_RUNTIME_SOURCES__  —— 原始基线（兜底）
+//   ③ legacy/baseline/index.html 内联的 __SPINE_RUNTIME_SOURCES__  —— 原始基线（兜底）
 //   ④ dist/index.html 内联的同一对象                    —— 产物（最后兜底）
 //   ③ 优于 ④：baseline 是原始产物，不随重建 dist 变化。
 //
@@ -85,7 +85,7 @@ export function getRuntimeSource(version) {
     const inline = getInlineSources();
     if (inline[version]) {
       const fromBaseline = extractInlineSources(path.join(ROOT, 'baseline', 'index.html'));
-      hit = { code: inline[version], origin: `inline:${fromBaseline && fromBaseline[version] ? 'baseline/index.html' : 'dist/index.html'}` };
+      hit = { code: inline[version], origin: `inline:${fromBaseline && fromBaseline[version] ? 'legacy/baseline/index.html' : 'dist/index.html'}` };
     }
   }
   sourceCache.set(version, hit);
@@ -114,7 +114,7 @@ const sandboxCache = new Map();   // version → { spine, origin }
 export function loadRuntime(version) {
   if (sandboxCache.has(version)) return sandboxCache.get(version);
   const src = getRuntimeSource(version);
-  if (!src) throw new Error(`没有可用的 Spine ${version} 运行时源码（runtimes 目录与 baseline/dist 内联均未命中）`);
+  if (!src) throw new Error(`没有可用的 Spine ${version} 运行时源码（runtimes 目录与 legacy/baseline/dist 内联均未命中）`);
   const sandbox = {
     console: { log() {}, info() {}, warn() {}, error() {}, debug() {} },
     performance: { now: () => Date.now() },

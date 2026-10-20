@@ -3,7 +3,7 @@
 # 用法: web.sh [start|stop|restart|status]   (默认 restart；未启动时 restart 相当于 start)
 #
 # 与 server.sh 的关系：
-#   - server.sh 跑旧前端（dist/index.html，默认 8803），PID/日志为 spine-multi-viewer.*
+#   - server.sh 跑既有实现前端（dist/index.html，默认 8803），PID/日志为 spine-multi-viewer.*
 #   - 本脚本跑重写版前端（src/web，默认 8804），PID/日志为 model-stage-web.*，两者互不干扰
 #   - 新前端通过 dev-server.mjs 把 /api /files /icons /live2d-lib 反代到旧服务（UPSTREAM）
 #
@@ -16,8 +16,10 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SELF="$PROJECT_ROOT/$(basename "${BASH_SOURCE[0]}")"
 PORT="${PORT:-8804}"
 UPSTREAM="${UPSTREAM:-http://127.0.0.1:8803}"
-PID_FILE="$PROJECT_ROOT/model-stage-web.pid"
-LOG_FILE="$PROJECT_ROOT/model-stage-web.log"
+RUNTIME_DIR="$PROJECT_ROOT/runtime"
+mkdir -p "$RUNTIME_DIR"
+PID_FILE="$RUNTIME_DIR/model-stage-web.pid"
+LOG_FILE="$RUNTIME_DIR/model-stage-web.log"
 ENTRY="$PROJECT_ROOT/src/web/dev-server.mjs"
 
 # node 路径按实际环境探测（NAS 重启后 /var/packages 路径可能失效，不能写死）

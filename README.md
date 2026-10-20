@@ -12,8 +12,8 @@
 
 - 投入优先级：**能力层/接口** > 前端交互细节
 - 能力层 = 服务端 API + 插件机制 + 纯函数解析库（`plugins/*/lib/*.js`）+ 诊断探针；这些与前端框架无关，换框架时零改动
-- 现有 `public/*.js`（角色库树、设置导入导出、本地根等）属**现前端实现**，不构成契约，新前端不必移植
-- 新前端接入所需的接口、契约与已知缺口，见 [doc/功能层接口清单（面向新前端）.MD](doc/功能层接口清单（面向新前端）.MD)
+- 现有 `legacy/patches/*.js`（角色库树、设置导入导出、本地根等）属**现前端实现**，不构成契约，新前端不必移植
+- 新前端接入所需的接口、契约与已知缺口，见 [doc/参考-功能层接口清单.md](doc/参考-功能层接口清单.md)
 - 后续新增功能应优先落在能力层（API / 插件 / 纯函数），前端只做展示与交互
 
 ---
@@ -52,7 +52,7 @@
 
 | 阶段 | 基线 | 现在 |
 |---|---|---|
-| 单文件体积 | 4.17 MB | 外壳 `src/app-shell.html` 仅 **798 KB** |
+| 单文件体积 | 4.17 MB | 外壳 `legacy/source/app-shell.html` 仅 **798 KB** |
 | Spine 运行时 | 内联字符串，不可读 | `src/spine-runtimes/*.js` **7 个独立可读文件**（3.2 MB，带缩进与真实变量名） |
 | 构建 | 无 | `tool/build.mjs` 一键打包回单文件 |
 
@@ -63,51 +63,38 @@
 
 ```
 spine-multi-viewer/
-├── baseline/index.html      原版基线（4.17 MB，只读参考，用于等价性校验 + 运行时兜底来源）
-├── src/
-│   ├── app-shell.html       应用外壳（798 KB，含运行时占位符；应用代码仍为压缩态，待进一步拆）
-│   └── spine-runtimes/      7 个 Spine 运行时源码（**不入库**，见 .gitignore）
-├── public/                  自有前端脚本（经服务端注入到页面）
-│   ├── vendor/              第三方库（localforage.min.js + LICENSE，MIT，构建/注入时内联）
-│   ├── local-roots.js       自动加载本地资源根 + 模型内容懒加载
-│   ├── live2d-stage.js      Live2D 渲染覆盖层（运行时探测 / show() 序号守卫 / 覆盖层与 Spine 画布同几何）
-│   ├── roots-ui.js          界面「＋资源根」按钮（浏览本机目录、添加即自动写配置）
-│   ├── settings-io.js       localStorage 持久化（每游戏「上次」+ 展开态）
-│   └── char-tree.js         左栏三级树（游戏→角色→变体，名表聚合 + 跨格式归并）
-├── doc/                     设计与交接文档
-│   ├── handover.md                    项目交接文档（架构/名表/踩坑/技术债/验证方式）
-│   ├── name-table-v2.md               名表 v2 设计（本地统一索引表：角色 ID + 多语言名 + 头像本地化）
-│   ├── 2026-10-14主站刷新闪烁修复.MD   首屏防闪烁方案（head 注入 CSS，已实施）
-│   ├── 2026-10-14浏览器持久化迁移localForage.MD  浏览器持久化迁移方案
-│   ├── frontend-rebuild.md            前端复刻方案（**实验已中止**，保留作决策记录）
-│   └── 2026-10-14复刻版性能优化与localForage缓存.MD  复刻版缓存方案（随实验中止）
-├── config/
-│   ├── resources.json       资源根配置（JSONC，可写注释；由界面添加时自动生成）
-│   ├── names/               角色名表（统一规范 v1：bd2 / dcg / azurlane）
-│   └── models.<rootId>.json 自动生成的资源清单（**不入库**，可随时重建）
-├── data/upstream/           名表转换器的上游源数据留档（碧蓝 6 + 天命之子 1 个 JSON，见其 README.md）
-├── test/                    验证脚本（node --test 直接跑）
-│   └── check-flash.mjs      首屏防闪烁防回归（CDP 三次硬刷新采样断言）
 ├── server.mjs               本地服务：静态托管 + 资源扫描 + 路由（零依赖）
-├── server.sh                启停脚本（start/stop/restart/status）
-├── tool/
-│   ├── name-table-spec.mjs  名表统一规范 v1（buildNameTable / readKeepZh）
-│   ├── import-name-table.mjs      棕色尘埃2 名表生成
-│   ├── import-name-table-dcg.mjs  天命之子名表生成
-│   ├── import-name-table-azurlane.mjs  碧蓝航线名表生成（跨 Live2D/Spine 聚合）
-│   ├── resolve-runtimes.mjs  Spine 运行时自动探测
-│   ├── resolve-live2d-runtimes.mjs  Live2D 运行时探测（PIXI6 组合优先）
-│   ├── parse-jsonc.mjs      JSONC 注释剥离（零依赖）
-│   ├── extract-dom.mjs      CDP 提取原版渲染 DOM 为组件文件（headless 独立会话，无回传截断）
-│   ├── shot-compare.mjs     双站点无头截图对比（8803 vs 8804，可只截一端）
-│   └── extract-runtimes.mjs / split-app.mjs / build.mjs / verify.mjs
-└── dist/index.html           构建产物（等价于基线；**不入库**）
+├── server.sh / web.sh       两个前端的启停脚本（旧 8803 / 新 8804）
+├── src/                     在演进的新实现
+│   ├── web/                 新前端（纯 HTML + 原生 ES 模块 + 手写 CSS，无构建）
+│   ├── server/              服务端数据层（catalog/tree/models/live2d/plugins…）
+│   └── spine-runtimes/      7 个 Spine 运行时源码（**不入库**，见 .gitignore）
+├── legacy/                  既有实现（只读参考，不再演进）
+│   ├── source/              从产物提取的可读源码（engine.js / app-shell.html / js/**）
+│   ├── baseline/            原版基线（4.17 MB，等价性校验 + 运行时兜底来源）
+│   ├── patches/             注入到旧前端的补丁脚本（local-roots / char-tree / live2d-stage…）
+│   └── extract-tools/       提取与回填工具（build-* / rebuild-from-slices / slices.json）
+├── dist/index.html          旧前端的构建产物（8803 实际服务对象；**不入库**）
+├── runtime/                 运行时产物：*.log / *.pid（**不入库**，由启停脚本创建）
+├── plugins/                 展示类型插件（声明 fileKinds，按能力提供解析）
+├── config/                  资源根配置 + 角色名表 + 自动生成的资源清单（清单不入库）
+├── data/                    上游名表源数据留档、诊断日志等运行数据
+├── doc/                     文档，按前缀分类
+│   ├── 架构-*.md            分层与接口规范（基础能力/插件、模型来源、扩展性）
+│   ├── 任务-*.md            任务看板与验收口径
+│   ├── 参考-*.md|html       实现参考（面板结构、schema、色板、渲染要点）
+│   └── 记录-YYYY-MM-DD-*.md  按日期的执行记录与决策留档
+├── tool/                    运行期工具（探测/校验/截图对比/导入导出）
+└── test/                    验证脚本（*-actions.js 页面动作；*.test.mjs 纯模块单测）
+
+命名约定：文档「分类-主题.md」，历史记录「记录-YYYY-MM-DD-主题.md」；代码小写 kebab；
+测试分两类：`*-actions.js`（浏览器内动作断言）、`*.test.mjs`（node --test 纯模块单测）。
 
 已中止的实验：前端复刻（rebuild/ + dist-rebuild/，2026-10-14 中止）——现场移 .trash/，
-git 已出库（历史保留可回溯），决策记录见 doc/frontend-rebuild.md 头部标注。
+git 已出库（历史保留可回溯），决策记录见 doc/记录-前端重建决策.md 头部标注。
 ```
 
-`public/live2d-stage.js` 的两条几何约定（决定「模型画在哪、多大」）：
+`legacy/patches/live2d-stage.js` 的两条几何约定（决定「模型画在哪、多大」）：
 
 - **覆盖层几何 = Spine 画布 rect**：`syncRect()` 把 Spine 画布的 `getBoundingClientRect()` 逐值写进覆盖层的 `left/top/width/height`（铺满整窗），所以 Live2D 的可视舞台与 Spine 完全一致（同尺寸同位置，背景/棋盘格覆盖范围也一致）。覆盖层是 `pointer-events:none`，因此铺满不会挡住左右侧栏。
 - **渲染器尺寸随覆盖层校准**：`fitAppToOverlay()` 在「PIXI app 创建后」与「每次 `syncRect()` 写完覆盖层尺寸后」把 `renderer.width/height`（除以 resolution）与覆盖层实际 CSS 尺寸对齐，随后把 canvas 的 `style` 拉回 `100%` 并重排模型；`ResizeObserver` 同时观察**覆盖层**与 **Spine 画布**。
@@ -192,7 +179,7 @@ git 已出库（历史保留可回溯），决策记录见 doc/frontend-rebuild.
 
 ## 左栏三级树（游戏 → 角色 → 变体）
 
-原作者左侧边栏对应的 DOM 已被**整体移除**（不是简单隐藏：`public/char-tree.js` 移除节点并持续守护，
+原作者左侧边栏对应的 DOM 已被**整体移除**（不是简单隐藏：`legacy/patches/char-tree.js` 移除节点并持续守护，
 避免 React 重渲染把它放回来），界面改由本项目自己的面板承载。左栏用**三级树**：
 
 - 面板显隐**只由顶栏「模型库」按钮控制**（用与原版一致的滑出 + 淡出过渡：`opacity` + `translateX(-320px)`，不是 `display` 切换）
@@ -295,7 +282,7 @@ git 已出库（历史保留可回溯），决策记录见 doc/frontend-rebuild.
 
 **左栏动态加宽**：按最长条目估算宽度（clamp 18–34rem），只调整浮层自身宽度。
 
-> 实现说明（`public/char-tree.js`）：树面板是挂在 `body` 上的**独立浮层**。
+> 实现说明（`legacy/patches/char-tree.js`）：树面板是挂在 `body` 上的**独立浮层**。
 > 原列表仍在 DOM 中（只是其父级 `.bv-sidebar` 被 `display:none`），点击变体时复用它的
 > `[data-mid]` 元素触发加载——`display:none` 的元素用 `el.click()` 依然能派发事件、
 > 触发 React 的 onClick，从而走通已验证的加载路径（含懒加载拦截）。
@@ -316,7 +303,7 @@ git 已出库（历史保留可回溯），决策记录见 doc/frontend-rebuild.
 
 ## 「选择目录」取代原作者侧栏的「导入」
 
-面板头部的**选择目录**按钮打开本机的服务端目录浏览器（`public/roots-ui.js`），
+面板头部的**选择目录**按钮打开本机的服务端目录浏览器（`legacy/patches/roots-ui.js`），
 选中目录即作为一个资源根加入，随后面板重新拉取模型并刷新三级树。
 
 - 走 `/api/browse` 由**服务端**列目录——资源在 NAS 上，浏览器文件选择器拿不到绝对路径
@@ -337,7 +324,7 @@ git 已出库（历史保留可回溯），决策记录见 doc/frontend-rebuild.
 > 默认值也是 `"replace"`：全新浏览器（无 localStorage）与点过「恢复默认」之后，
 > `loadMode` 都会回到 `"replace"`，所以这个强制不能省。
 >
-> 隐藏 UI 的做法（`public/local-roots.js` 的 `hideImportModeUI()`）：该区块是 React 渲染的
+> 隐藏 UI 的做法（`legacy/patches/local-roots.js` 的 `hideImportModeUI()`）：该区块是 React 渲染的
 > 通用容器（`div.space-y-1.5 > span.text-xs` + 两个按钮），**既无可用的类名特征、
 > CSS 也无法按文本匹配**，故按文本「模型导入模式」定位 `span` 再隐藏其父块；
 > 区块只在右栏打开时才渲染，用 rAF 节流的 MutationObserver 保证它出现后被隐藏。
@@ -483,7 +470,7 @@ git 已出库（历史保留可回溯），决策记录见 doc/frontend-rebuild.
 ## 配置导出 / 导入（改造原版按钮）
 
 右栏设置面板底部的**导出设置 / 导入设置**两个按钮已被本项目接管
-（`public/settings-io.js`，用捕获阶段拦截点击）。
+（`legacy/patches/settings-io.js`，用捕获阶段拦截点击）。
 
 原版这两个按钮只搬 20 项 UI 偏好（存 localStorage），**不含本项目的配置**——
 换台机器或清浏览器就全丢。改造后**一个文件同时带走两部分**：
@@ -538,7 +525,7 @@ Spine 与 Live2D 是两套完全不同的渲染体系，但在本项目里**显�
 - 左栏三级树同时收纳 Spine 与 Live2D 条目，**走同一条分组路径**：查角色名表命中就用角色名归组、
   行标题显示「中文名 英文名」，未命中才退回归一化资源名；展开后按变体列出（Live2D 的换装变体与
   Spine 的立绘/技能并列，标签分别为 `Live2D` / `Spine`）
-- 选中 **Live2D** 条目 → 在 Spine 画布之上**覆盖一层 Live2D 画布**渲染（`public/live2d-stage.js`），
+- 选中 **Live2D** 条目 → 在 Spine 画布之上**覆盖一层 Live2D 画布**渲染（`legacy/patches/live2d-stage.js`），
   同时把 Spine 画布设为 `opacity:0`（视觉隐藏但**保留命中测试**，见下）
 - 选中 **Spine** 条目 → 隐藏 Live2D 覆盖层并恢复 Spine 画布
 - 覆盖层与 Spine 画布**几何完全一致**（`syncRect()` 逐值同步 rect），所以舞台尺寸、背景覆盖范围两者相同
@@ -568,9 +555,9 @@ Live2D 走的是**原版自己的通路**，界面上不额外造一套控件：
   校准到覆盖层实际尺寸，模型按真实包围盒居中（实测 `modelCenter = (960, 540)`、离中心 **0px**、
   渲染器 `1920×1080`）。
 - **表达式**：原版「皮肤」区对应 Live2D 的 expressions（`bridge.setExpressions(names)`）。
-- **改动位置**：引擎侧改动全部写在 `src/engine.js` 的
+- **改动位置**：引擎侧改动全部写在 `legacy/source/engine.js` 的
   `/*<<<MOD id>>>*/ … /*<<<ENDMOD id>>>*/` 标记块内（原文一字未动，剥块后可逐字节还原）；
-  产物构建用 `node tool/build-product.mjs --out /tmp/product.html`，等价性校验用 `node tool/build-byte-equal.mjs`。
+  产物构建用 `node legacy/extract-tools/build-product.mjs --out /tmp/product.html`，等价性校验用 `node legacy/extract-tools/build-byte-equal.mjs`。
 
 > ⚠️ **踩坑记录：覆盖层铺满整窗并不会挡住侧栏**（前提：覆盖层 `pointer-events:none`）。
 > 早期实现担心遮挡，把覆盖层**收窄**到「左栏右侧 ~ 右栏左侧」之间，副作用是 Live2D 的可视舞台
@@ -759,7 +746,7 @@ GET /files/<rootId>/<相对路径>
 
 ```bash
 node tool/extract-runtimes.mjs   # 从基线抽出运行时（产物在 src/spine-runtimes/）
-node tool/split-app.mjs          # 生成应用外壳（产物 src/app-shell.html）
+node tool/split-app.mjs          # 生成应用外壳（产物 legacy/source/app-shell.html）
 node tool/build.mjs              # 打包回单文件 -> dist/index.html
 node tool/verify.mjs             # 校验产物与基线等价
 node tool/resolve-runtimes.mjs   # 查看 Spine 运行时探测结果（排查用）
@@ -786,10 +773,10 @@ bash server.sh start|stop|restart|status   # 启停服务（默认端口 8803）
 > 源码内置默认标题「骨骼动画预览器」与原版 lucide 图标）。这是本项目**首次切片级 MOD**（此前所有改动
 > 都走服务端注入、不落构建切片）。
 >
-> 做法：`src/app-shell.html` 必须始终与 `src/.app-shell.orig.html` **逐字节一致**（校验链的 ⓪ 项），
-> 所以改动只落在**切片**里（`src/js/app/main-component.js`），并在 `tool/mods/app-shell.json` 里声明
+> 做法：`legacy/source/app-shell.html` 必须始终与 `src/.app-shell.orig.html` **逐字节一致**（校验链的 ⓪ 项），
+> 所以改动只落在**切片**里（`legacy/source/js/app/main-component.js`），并在 `tool/mods/app-shell.json` 里声明
 > `{id, file, from, to, netChars}`（本次两处：标题 +51 字符、图标 +283 字符，合计 +334）。
-> 基线模式（`node tool/build-byte-equal.mjs`）会先剥 MOD 块标记、再按清单把「现片段」反替换回「原片段」，
+> 基线模式（`node legacy/extract-tools/build-byte-equal.mjs`）会先剥 MOD 块标记、再按清单把「现片段」反替换回「原片段」，
 > 之后仍要求与原文区间**逐字节相等** —— 门禁强度没有削弱，反而更严：
 > 声明的现片段必须**恰好命中 1 次**、原片段必须**已不存在**、净增字符数必须与声明**完全一致**。
 >
@@ -799,7 +786,7 @@ bash server.sh start|stop|restart|status   # 启停服务（默认端口 8803）
 > 自证（实测）：把切片里一个**非 MOD 字节**改 1 个字符（`截图导出`→`截土导出`）→ 门禁报 5 项失败（分片、
 > 拼接、装配、基线回填全红）；还原（sha256 复核一致）→ 全绿。产物模式同样通过（`dist ≡ 产物（含 MOD）`）。
 >
-> 产物重建：`node tool/rebuild-from-slices.mjs --out <tmp>` 或 `node tool/build-product.mjs --out <tmp>`
+> 产物重建：`node legacy/extract-tools/rebuild-from-slices.mjs --out <tmp>` 或 `node legacy/extract-tools/build-product.mjs --out <tmp>`
 > （两者都**拒绝直接写 dist/**，需自行 `cp` 到 `dist/index.html`）。
 
 ## 进度
@@ -821,7 +808,7 @@ bash server.sh start|stop|restart|status   # 启停服务（默认端口 8803）
 ### 待办
 
 - [ ] **展示类型插件机制（动态加载）** —— 往项目根 `plugins/` 放 js 即给网页增加一种「展示类型」能力，
-      不预解包、不改 `dist` 核心。宿主 `public/plugin-host.js` 暴露 `window.SpineViewerPlugins`
+      不预解包、不改 `dist` 核心。宿主 `legacy/patches/plugin-host.js` 暴露 `window.SpineViewerPlugins`
       （`register` / `list` / `host`），插件以 `{ id, name, label, fileKinds, probe, open }` 声明能力；
       **模块文件按功能命名、不带序号**，加载顺序由 `plugin.json` 的 `files` 数组声明；
       服务端新增 `GET /api/plugins`（扫描项目根 `plugins/`，支持 `plugin.json` 清单）；
@@ -835,7 +822,7 @@ bash server.sh start|stop|restart|status   # 启停服务（默认端口 8803）
       **Unity 集成版**（只有 AnimationClip、无 motion3）另需把动画曲线转 `motion3.json`。
       各游戏差异放 `profiles/<游戏>.json`（数据，不写死游戏名），碧蓝航线为首个 profile；
       渲染复用现有 Live2D 桥与公共管线（原版右栏动作区、双指缩放同源）。
-      方案、模块拆分与验证关卡见 `doc/2026-10-15展示类型插件机制与碧蓝Live2D单文件.MD`。
+      方案、模块拆分与验证关卡见 `doc/记录-2026-10-15-展示类型插件机制.md`。
 - [ ] **前端内置诊断探针（`__DIAG__`）** —— 把「临时注入 console 探针」变成前端内置能力，
       出问题时前端可自证、AI 可直接取证（不依赖浏览器会话）：
       · **采集**：`window.onerror` / `unhandledrejection` / 资源加载失败 / 包装 `console.error|warn|info`
@@ -863,13 +850,13 @@ bash server.sh start|stop|restart|status   # 启停服务（默认端口 8803）
       表情下拉）整体删除，右栏只保留 原版 原生控件（「动作」区直接列出 L2D motions）。
 - [ ] **碧蓝航线 16 个未命名字目录**（Live2D 7 + Spine 9）：上游
       `ship_skin_template.json` 没有这些键（`_ii`/`_new`/罗马数字等后缀变体），
-      界面回退显示拼音目录名，功能不受影响（见 `doc/handover.md` 第 4 节）
+      界面回退显示拼音目录名，功能不受影响（见 `doc/任务-交接.md` 第 4 节）
 - [ ] **模型数据层面的重影（非渲染代码缺陷）**：`aimierbeierding_3` / `aimierbeierding_3_hx`
       这类**带裁剪遮罩（18 个遮罩对象）且含常驻半透明叠加层（110 个默认不透明度 < 1 的绘制对象，
       部件名含 `doubleshadow`）**的模型，渲染出来有半透明覆层，观感即"重影"。
       已用独立的第三方查看器复现同一现象 ⇒ 缺陷在模型数据本身；同一缺陷在本项目里幅度更大，
       候选原因是半透明层的预乘 alpha 合成口径差异（待验证）。
-      结构对照与判定手法见 `doc/2026-10-16重影问题定案与模型特殊性对照.MD`
+      结构对照与判定手法见 `doc/记录-2026-10-16-重影问题定案.md`
 
 完整改造方案见：`../spine-viewers/2026-10-02-原版多文件夹根目录分大类改造方案.MD`
 

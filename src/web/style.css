@@ -319,3 +319,31 @@ html[data-cinema="on"][data-idle="on"] body {
 html[data-cinema="on"] .stage-hint {
   opacity: 0.55;
 }
+
+/* ============================================================================
+   两个渲染面互斥：Live2D 激活时隐藏 Spine 画布
+   —— 两套渲染栈（Spine WebGL / Live2D 覆盖层）同时可见会叠成一个画面（实测出现过），
+      由 #stage 上的 data-stage-mode 声明当前用哪一面，样式只负责"另一面不可见"。
+
+   为什么用 visibility 而不是 display:none：
+     display:none 会把元素从布局里摘掉，画布的 offsetWidth/clientWidth 立即变 0，
+     依赖尺寸的 ResizeObserver 会先收到一次"尺寸归零"再收到"恢复"，导致 Live2D 覆盖层
+     重算画布尺寸时抖动（闪一下/错位）。visibility:hidden 只改变绘制与命中，
+     布局尺寸、观察器通知都保持不变，切回来时无需重新测量。
+   ========================================================================== */
+#stage[data-stage-mode="live2d"] #stage-canvas {
+  visibility: hidden;
+}
+
+/* 切换中：两个渲染面都遮住，只留中性的加载底色（避免切换瞬间出现两幅模型叠加）。
+   由唯一的切换入口把 data-stage-mode 置为 "loading"，切换完成后再落到 spine / live2d。 */
+#stage[data-stage-mode="loading"] #stage-canvas,
+#stage[data-stage-mode="loading"] #live2d-overlay {
+  visibility: hidden;
+}
+
+/* 兜底：显式处于 spine 模式时，Live2D 覆盖层必须不可见（防止卸载遗漏导致叠加）。
+   用 visibility 而不是 display：保留布局尺寸，避免覆盖层尺寸变化触发 ResizeObserver 抖动。 */
+#stage[data-stage-mode="spine"] #live2d-overlay {
+  visibility: hidden;
+}

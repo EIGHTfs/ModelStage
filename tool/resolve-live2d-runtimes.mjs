@@ -46,7 +46,7 @@ const CANDIDATE_SUBPATHS = [
   'static/lib',
   'js/lib',
   'src/lib',
-  'public/lib',
+  'legacy/patches/lib',
   'dist/lib',
   '.',            // 库直接放在项目根
 ];

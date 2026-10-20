@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // split-app.mjs — 从基线 index.html 中剥离内联的 Spine 运行时对象，生成「应用外壳」模板
 //
-// 上游：baseline/index.html（原版 4.17MB 单文件，只读参考）
-// 产物：src/app-shell.html —— 除运行时对象外的全部内容，运行时位置用占位符标记
+// 上游：legacy/baseline/index.html（原版 4.17MB 单文件，只读参考）
+// 产物：legacy/source/app-shell.html —— 除运行时对象外的全部内容，运行时位置用占位符标记
 //
 // 为什么这么做：
 //   原版 把 7 个 Spine 版本运行时以 JSON 转义字符串内联在
@@ -14,7 +14,7 @@
 //   不能改成外链 <script src>——file:// 协议下会被 CORS 拦截，破坏「双击即用」。
 //
 // 用法：node tool/split-app.mjs
-// 安全：只读 baseline/index.html，只写 src/app-shell.html
+// 安全：只读 legacy/baseline/index.html，只写 legacy/source/app-shell.html
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -88,7 +88,7 @@ function main() {
 
   console.log(`基线字节:     ${html.length} (${(html.length / 1048576).toFixed(2)} MB)`);
   console.log(`剥离对象字节: ${objText.length} (${(objText.length / 1048576).toFixed(2)} MB)`);
-  console.log(`外壳字节:     ${shell.length} (${(shell.length / 1024).toFixed(0)} KB) -> src/app-shell.html`);
+  console.log(`外壳字节:     ${shell.length} (${(shell.length / 1024).toFixed(0)} KB) -> legacy/source/app-shell.html`);
   console.log('');
   console.log(`瘦身: ${(html.length / 1048576).toFixed(2)} MB -> ${(shell.length / 1024).toFixed(0)} KB`);
   console.log('占位符:', PLACEHOLDER);

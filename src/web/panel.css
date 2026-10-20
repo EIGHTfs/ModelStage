@@ -255,11 +255,34 @@
   --color-border: #cbd5e1;
 }
 
-/* 舞台底色：背景模式（旧端只写存储不改画面，这里是新端的真实实现，属有意增强） */
+/* 舞台底色：背景模式（旧端只写存储不改画面，这里是新端的真实实现，属有意增强）
+   三种模式互斥：棋盘格画图案、纯色只上色、透明完全不上色；每条都显式清掉另一条的属性。 */
 #stage { --stage-solid: #2a2a2a; }
-#stage[data-bg="solid"] { background: var(--stage-solid); }
-#stage[data-bg="transparent"] { background: transparent; }
-#stage[data-bg="checkerboard"] { background-image: none; }
+
+/* 棋盘格：4 层 45° 渐变拼出 16×16 格；方块色 rgba(255,255,255,0.06)，底色 rgb(23,26,28) */
+#stage[data-bg="checkerboard"] {
+  background-color: rgb(23, 26, 28);
+  background-image:
+    linear-gradient(45deg,  rgba(255,255,255,0.06) 25%, rgba(0,0,0,0) 25%),
+    linear-gradient(-45deg, rgba(255,255,255,0.06) 25%, rgba(0,0,0,0) 25%),
+    linear-gradient(45deg,  rgba(0,0,0,0) 75%, rgba(255,255,255,0.06) 75%),
+    linear-gradient(-45deg, rgba(0,0,0,0) 75%, rgba(255,255,255,0.06) 75%);
+  background-size: 16px 16px, 16px 16px, 16px 16px, 16px 16px;
+  background-position: 0px 0px, 0px 8px, 8px -8px, -8px 0px;
+  background-repeat: repeat, repeat, repeat, repeat;
+}
+
+/* 纯色模式：沿用现有 --stage-solid 变量，清掉棋盘图案 */
+#stage[data-bg="solid"] {
+  background-image: none;
+  background-color: var(--stage-solid, rgb(23, 26, 28));
+}
+
+/* 透明模式：完全不上色 */
+#stage[data-bg="transparent"] {
+  background-image: none;
+  background-color: transparent;
+}
 
 /* ---- 右栏不可点控件的删除线（跟随 disabled / data-pending 状态自动生效与消失） ----
    口径：按钮/下拉被禁用 → 它们自己的文字各自划掉（分段组内逐项精确）；

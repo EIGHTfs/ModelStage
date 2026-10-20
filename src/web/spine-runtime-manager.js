@@ -1,8 +1,8 @@
 // ============================================================================
 // src/web/spine-runtime-manager.js —— Spine 运行时管理器（补 engine.js 缺失的 `Is`）
 //
-// 背景：`src/engine.js` 是"切片"产物，第 42 行 `let Yd = Is;` 依赖旧 app
-//   `src/js/app/constants.js` 里的运行时管理器 `Is`，但切片**没有带上它** ⇒ 直接用会
+// 背景：`legacy/source/engine.js` 是"切片"产物，第 42 行 `let Yd = Is;` 依赖旧 app
+//   `legacy/source/js/app/constants.js` 里的运行时管理器 `Is`，但切片**没有带上它** ⇒ 直接用会
 //   `ReferenceError: Is is not defined`。这里用可读代码补上同名能力。
 //
 // 关键点：**必须隔离执行**。每个 `spine-webgl-<ver>.js` 都是顶层 `var spine = …`；

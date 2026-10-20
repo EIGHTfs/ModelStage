@@ -3,7 +3,7 @@
  * verify-byte-equal.mjs — 重组产物 vs baseline 逐字节等价校验脚本（P0.5 基线验证）
  *
  * 用途：
- *   解压 bundle 过程中，每步回填后需要确认 dist/index.html 与 baseline/index.html
+ *   解压 bundle 过程中，每步回填后需要确认 dist/index.html 与 legacy/baseline/index.html
  *   逐字节一致（sha256 相同）。一致则说明解压/回填过程零改动，可继续下一步；
  *   不一致则说明某步切分/回填有偏移，必须先定位修复再继续。
  *
@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const FILES = [
   { name: 'dist/index.html', path: join(ROOT, 'dist', 'index.html') },
-  { name: 'baseline/index.html', path: join(ROOT, 'baseline', 'index.html') },
+  { name: 'legacy/baseline/index.html', path: join(ROOT, 'baseline', 'index.html') },
 ];
 
 function sha256(buf) {
@@ -47,10 +47,10 @@ if (failed) process.exit(1);
 
 const equal = hashes[0].hash === hashes[1].hash;
 if (equal) {
-  console.log('✅ dist/index.html 与 baseline/index.html 逐字节一致（sha256 相同）');
+  console.log('✅ dist/index.html 与 legacy/baseline/index.html 逐字节一致（sha256 相同）');
 } else {
   console.log('❌ 不一致！');
   console.log(`  dist/index.html     = ${hashes[0].hash}`);
-  console.log(`  baseline/index.html = ${hashes[1].hash}`);
+  console.log(`  legacy/baseline/index.html = ${hashes[1].hash}`);
 }
 process.exit(equal ? 0 : 1);

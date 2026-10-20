@@ -11,7 +11,7 @@
 // 为什么把状态放在 window.__WEB__.state：M7 要做持久化，需要一个显式 store；
 //   现在先立最小形态（不引框架），后续里程碑往里加字段，避免各处散落全局变量。
 
-// 诊断探针必须最先装：后面的模块/渲染出问题时才有取证（API 与旧前端 public/diag.js 一致）
+// 诊断探针必须最先装：后面的模块/渲染出问题时才有取证（API 与旧前端 legacy/patches/diag.js 一致）
 import { installDiag } from './diag.js';
 import { getJson, formatError } from './api.js';
 import { createRosterView } from './roster-view.js';
@@ -19,7 +19,10 @@ import { mountPanel } from './panel.js';
 import { PANEL_GROUPS, applyCapabilities } from './panel-schema.js';
 import { mountTransport } from './transport.js';
 import { createSpineStage } from './spine-canvas.js';
-import { createRenderer2D } from './renderer-2d.js';
+import { createStageSurface } from './stage-surface.js';
+import { createSpineRenderer } from './renderer-spine.js';
+import { createLive2DRenderer } from './renderer-live2d.js';
+import { createLive2DStage } from './live2d-stage.js';
 import { attachStageInteraction } from './stage-interaction.js';
 
 // 页面级第一件事：装诊断探针（幂等，重复调用不会重复包装 console）
@@ -155,7 +158,11 @@ function applyBackground(mode) {
   const stageEl = document.getElementById('stage');
   if (!stageEl) return;
   const m = mode || 'checkerboard';
-  stageEl.dataset.bg = m;
+  // 背景唯一入口：交给 Surface（它会写 data-bg 并通知所有渲染器）
+  try {
+    if (state.surface && typeof state.surface.setBackground === 'function') state.surface.setBackground(m);
+    else stageEl.dataset.bg = m;
+  } catch { stageEl.dataset.bg = m; }
   state.viewBg = m;
   const cur = readViewSettings();
   saveViewSettings({
@@ -210,28 +217,85 @@ function setRenderer(next) {
  * 用当前舞台实例建立 2D 渲染器并设为当前。
  * 舞台不可用时保持 null，调用方靠 `state.currentRenderer?.camera` 做空值保护。
  */
+let live2dStage = null;
+
+/** 建 Live2D 舞台（幂等）：覆盖层挂到 #stage 内，日志统一走 stageStatus */
+function ensureLive2DStage() {
+  if (live2dStage) return live2dStage;
+  live2dStage = createLive2DStage({
+    getOverlayHost: () => document.getElementById('stage'),
+    // 引擎是懒创建的：每次加载时动态取当前实例（MSAA 重建后实例会换）
+    getEngine: () => { try { return stage && stage.debug() ? stage.debug().engine : null; } catch { return null; } },
+    log: (message, level) => stageStatus(message, level === 'error' ? 'error' : level === 'warn' ? 'warn' : 'info'),
+  });
+  window.__WEB__ && (window.__WEB__.live2d = live2dStage);
+  return live2dStage;
+}
+
 function initRenderer() {
-  if (!stage) return null;
-  return setRenderer(createRenderer2D({ stage }));
+  // 渲染面：画布/尺寸/DPR/可见性/帧调度都由 StageSurface 拥有；渲染器只注册进来
+  if (state.surface) return state.currentRenderer;
+  const surface = createStageSurface({ log: (message, level) => stageStatus(message, level === 'error' ? 'error' : level === 'warn' ? 'warn' : 'info') });
+  surface.register(createSpineRenderer({ stage }));
+  surface.register(createLive2DRenderer({ live2d: ensureLive2DStage() }));
+  state.surface = surface;
+  window.__WEB__ && (window.__WEB__.surface = surface);
+  // 只读断言入口（summary/results/disable/enable/run）
+  // 兼容层：对外仍是一个 renderer（camera 按当前面取，mount 走 Surface 的唯一入口）
+  const facade = {
+    id: 'renderer-2d',
+    get capabilities() { return (surface.capabilities && surface.capabilities()) || { settings: ['fps', 'dpr', 'msaa', 'filter', 'pma', 'fit'], debugDraw: ['bones', 'meshes', 'boundingBoxes', 'paths', 'points', 'regions', 'clipping', 'hulls'], camera: 'ortho-2d' }; },
+    get camera() { return surface.activeCamera() || stage.camera; },
+    mount(document) { return surface.activate(document); },
+    unmount() { return surface.disposeActive(); },
+    dispose() { return surface.dispose(); },
+    stageMode() { return surface.stageMode(); },
+  };
+  return setRenderer(facade);
 }
 
 /** 当前交互层解绑函数（重建画布或测试清理时调用；null 表示未挂） */
 let detachInteraction = null;
 
-/**
- * 挂交互层（拖动/滚轮/双指）。
- * 为什么要 detach 再 attach：MSAA 切换会换掉 canvas 节点，旧监听绑在旧节点上已经失效，
- * 不重新挂就会出现「切过抗锯齿后拖动失灵」。
- */
+function cameraProxy() {
+  const pick = () => (state.currentRenderer && state.currentRenderer.camera)
+    || (stage && stage.camera) || null;
+  const forward = (name) => (...args) => {
+    const cam = pick();
+    return cam && typeof cam[name] === 'function' ? cam[name](...args) : null;
+  };
+  return {
+    zoomStep: forward('zoomStep'),
+    zoomTo: forward('zoomTo'),
+    panBy: forward('panBy'),
+    reset: forward('reset'),
+    scale: forward('scale'),
+    note: forward('note'),
+    setLogger: forward('setLogger'),
+  };
+}
+
+/** 交互层用的视图门面：camera 动态取，其余转发舞台（getView/setView/resetView 语义不变） */
+function interactionStage() {
+  return {
+    camera: cameraProxy(),
+    getView: (...args) => (stage && stage.getView ? stage.getView(...args) : null),
+    setView: (...args) => (stage && stage.setView ? stage.setView(...args) : null),
+    resetView: (...args) => (stage && stage.resetView ? stage.resetView(...args) : null),
+  };
+}
+
 function attachInteraction() {
   if (detachInteraction) {
     try { detachInteraction(); } catch { /* 解绑失败继续挂新的 */ }
     detachInteraction = null;
   }
-  const canvas = document.getElementById('stage-canvas');
-  if (!canvas || !stage) return null;
+  // 交互目标是「舞台区域」而不是某块画布：由 StageSurface 给出（画布可见性随渲染面切换，
+  //   绑定到具体画布会在切面后失去命中；#stage 与画布同尺寸同位置，坐标换算不受影响）
+  const target = (state.surface && state.surface.interactionTarget) || null;
+  if (!target || !stage) return null;
   try {
-    detachInteraction = attachStageInteraction({ canvas, stage });
+    detachInteraction = attachStageInteraction({ canvas: target, stage: interactionStage() });
   } catch (err) {
     state.stageError = formatError(err);
   }
@@ -458,16 +522,35 @@ function onSelectModel(model) {
 
   // 只有 Spine 走本路径；Live2D 与资源包由 M5 的插件管线接管
   const kind = model.kind || 'spine';
-  if (kind !== 'spine') {
+  if (kind !== 'spine' && kind !== 'live2d') {
+    // 资源包（bundle）仍未接入：保持明确提示，不做"看着能选却渲不出来"
     stage.unload();
-    stageStatus(`已选中 ${name}（${kind === 'live2d' ? 'Live2D' : '资源包'} 渲染在 M5 接入）`, 'warn');
+    stageStatus(`已选中 ${name}（资源包渲染未接入）`, 'warn');
     return;
   }
 
+  // Live2D 与 Spine 共用同一装载入口：引擎在 loadModel 里认出 kind==="live2d" 后
+
   stageStatus(`正在加载 ${name}…`, 'info');
-  stage.load({ root: model.rootId, model })
+  // 走当前渲染器装载：Live2D 必须由 renderer 分流到覆盖层，
+  //   否则会落到舞台的 Spine 前置流程（取骨架/图集）并 404。
+  const loadDoc = {
+    ...model,
+    kind,
+    rootId: model.rootId,
+    rootName: model.rootName,
+    entry: model.entry || (model.modelUrl ? { url: model.modelUrl } : null),
+  };
+  const loadPromise = state.currentRenderer
+    ? state.currentRenderer.mount(loadDoc)
+    : stage.load({ root: model.rootId, model });
+  loadPromise
     .then((info) => {
-      stageStatus(`${model.name} · Spine ${info.version} · ${info.animations.length} 动作 · 播放 ${info.motion || '（无动作）'}`, 'info');
+      const isL2D = /^Live2D/.test(String(info.version || ''));
+      const anims = Array.isArray(info.animations) ? info.animations : [];
+      const motion = info.motion || anims[0] || '（无动作）';
+      const head = isL2D ? String(info.version) : `Spine ${info.version}`;
+      stageStatus(`${model.name} · ${head} · ${anims.length} 动作 · 播放 ${motion}`, 'info');
       // 运行时组只读：显示本次实际使用的运行时版本（引擎按骨架版本自动选，不可手切）
       if (state.panel) state.panel.setReadonly('ctl-runtime', `Spine ${info.version}`);
       refreshSkinList();

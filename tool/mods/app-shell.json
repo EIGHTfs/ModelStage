@@ -4,7 +4,7 @@
   "mods": [
     {
       "id": "app-brand-title",
-      "file": "src/js/app/main-component.js",
+      "file": "legacy/source/js/app/main-component.js",
       "from": "children:\"Boneview\"",
       "to": "children:(window.__APP_BRAND__&&window.__APP_BRAND__.title)||\"骨骼动画预览器\"",
       "netChars": 51,
@@ -12,7 +12,7 @@
     },
     {
       "id": "app-brand-icon",
-      "file": "src/js/app/main-component.js",
+      "file": "legacy/source/js/app/main-component.js",
       "from": "children:v.jsx(Wx,{className:\"size-5\"})",
       "to": "children:(window.__APP_BRAND__&&window.__APP_BRAND__.icon)?(window.__APP_BRAND__.iconKind===\"image\"?v.jsx(\"img\",{src:window.__APP_BRAND__.icon,alt:window.__APP_BRAND__.title||\"\",className:\"size-5 object-contain\"}):v.jsx(\"span\",{className:\"text-base leading-none\"},window.__APP_BRAND__.icon)):v.jsx(Wx,{className:\"size-5\"})",
       "netChars": 283,

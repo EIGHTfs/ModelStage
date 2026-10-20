@@ -2,13 +2,13 @@
 /**
  * bundle-map.mjs — P1「bundle 地图扫描」（只读侦察脚本，不修改任何文件）
  *
- * 目标（对应 doc/2026-10-14解压原版为可读源码-完整步骤.MD 阶段一 P1.1~P1.3）：
+ * 目标（对应 doc/记录-2026-10-14-解压为可读源码.md 阶段一 P1.1~P1.3）：
  *   1) 用「库特征串」定位第三方库（React / react-dom / framer-motion / radix / lucide /
  *      zustand / sonner / tailwind-merge / tailwindcss 产物）的起止锚点；
  *   2) 用「括号配平」精确定位渲染引擎类 `mt` 的起止（不受压缩代码里字符串/模板/正则干扰）；
  *   3) 精确定位事件层（wn 指针 Map / iu 两指距离 / Rf 滚轮 / _f/au/ru 三个 useCallback）区间；
  *   4) 输出 `window.__SPINE_RUNTIME_SOURCES__` 的**占位符位置**与**读取点位置**
- *      （磁盘产物 src/app-shell.html 里没有赋值语句——赋值只在服务端/构建期注入）；
+ *      （磁盘产物 legacy/source/app-shell.html 里没有赋值语句——赋值只在服务端/构建期注入）；
  *   5) 边界抽查断言：任取 3 个区块，切出的字符串「拼接回原位置」后必须 ≡ 原文
  *      （即：把区块抠掉再按原偏移塞回去，结果逐字节等于原文件）。
  *
@@ -25,7 +25,7 @@
  * 用法：
  *   node tool/bundle-map.mjs                 # 人读报告（Markdown 片段）
  *   node tool/bundle-map.mjs --json          # 结构化 JSON（机器读）
- *   node tool/bundle-map.mjs --file <路径>   # 指定待扫描 HTML（默认 src/app-shell.html）
+ *   node tool/bundle-map.mjs --file <路径>   # 指定待扫描 HTML（默认 legacy/source/app-shell.html）
  *   node tool/bundle-map.mjs --spot          # 只跑「边界抽查」并打印 PASS/FAIL
  *
  * 依赖：仅 Node 内置 fs/path/url，零第三方依赖。
@@ -62,7 +62,7 @@ const all = (needle, limit = 5000) => {
 
 // P2.4：词法掩码 / 括号配平 / 代码位改名已拆到 tool/lib/js-mask.mjs（本文件只引用），
 //   拆出原因：本文件原本 880 行，超过项目「单文件 ≤ 400 行」的提交要求；
-//   且掩码这段与「地图数据 + 报告」职责无关，P2 的 tool/rebuild-from-slices.mjs 也复用同一实现。
+//   且掩码这段与「地图数据 + 报告」职责无关，P2 的 legacy/extract-tools/rebuild-from-slices.mjs 也复用同一实现。
 import { buildCodeMask, balanceCheck, matchBrace } from './lib/js-mask.mjs';
 
 // --- 外壳三层边界（先算出来，掩码只作用于 module 脚本区间）---

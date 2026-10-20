@@ -24,7 +24,7 @@ const BASELINE = path.join(ROOT, 'baseline', 'index.html');
 const BUILT = path.join(ROOT, 'dist', 'index.html');
 
 // 声明式 MOD 清单（tool/mods/app-shell.json）：校验 1 用它把产物侧的 MOD 剥掉后再与基线比。
-//   与 tool/build-byte-equal.mjs 走的是同一份清单、同一套严格校验（tool/lib/mods.mjs），
+//   与 legacy/extract-tools/build-byte-equal.mjs 走的是同一份清单、同一套严格校验（tool/lib/mods.mjs），
 //   不另写第二套实现，避免两份真相源。
 const MODS_MANIFEST = (() => {
   const p = path.join(ROOT, 'tool', 'mods', 'app-shell.json');
@@ -75,7 +75,7 @@ function extractRuntimeObject(html) {
 function main() {
   let fail = 0;
 
-  if (!fs.existsSync(BASELINE)) { console.error('缺少基线 baseline/index.html'); process.exit(1); }
+  if (!fs.existsSync(BASELINE)) { console.error('缺少基线 legacy/baseline/index.html'); process.exit(1); }
   if (!fs.existsSync(BUILT)) { console.error('缺少产物 dist/index.html，请先运行 build.mjs'); process.exit(1); }
 
   const baseBuf = fs.readFileSync(BASELINE);
@@ -84,9 +84,9 @@ function main() {
   // 校验 1：基线 ≡ 产物（剥 MOD）——同类对同类
   //
   // 口径：dist 自 P4 起是「原版 + MOD 产物」（不是基线本身），直接比长度没有意义。
-  //   这里先用与 tool/build-byte-equal.mjs 相同的能力把产物侧的 MOD 剥掉
+  //   这里先用与 legacy/extract-tools/build-byte-equal.mjs 相同的能力把产物侧的 MOD 剥掉
   //   （MOD 块标记 + tool/mods/app-shell.json 清单，同一份清单、同一套严格校验），
-  //   再与 baseline/index.html **逐字节**比对；剥离后若仍有任何差异 → 报错（拦截力不变）。
+  //   再与 legacy/baseline/index.html **逐字节**比对；剥离后若仍有任何差异 → 报错（拦截力不变）。
   console.log('【校验 1】基线 ≡ 产物（剥 MOD）');
   console.log(`  基线: ${baseBuf.length} 字节`);
   console.log(`  产物: ${builtBuf.length} 字节（含 MOD；dist 自 P4 起为「原版 + MOD 产物」）`);

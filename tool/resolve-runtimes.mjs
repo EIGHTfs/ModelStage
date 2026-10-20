@@ -10,7 +10,7 @@
 //   1. 环境变量 SPINE_RUNTIME_DIR     显式指定，最高优先
 //   2. 项目内 src/spine-runtimes/     本地存在但已 gitignore（不入库）
 //   3. 工作区级共享 ../spine-runtimes/ 与同工作区其他项目共享
-//   4. 兜底：从 baseline/index.html 现抽（基线本身内联了运行时，永远可用）
+//   4. 兜底：从 legacy/baseline/index.html 现抽（基线本身内联了运行时，永远可用）
 //
 // 用法（被 build.mjs 调用）：
 //   const { resolveRuntimes } = await import('./resolve-runtimes.mjs');
@@ -103,7 +103,7 @@ export function resolveRuntimes() {
   // 4) 兜底：从基线现抽
   const fromBase = extractFromBaseline();
   if (fromBase) {
-    return { sources: fromBase, origin: '兜底：从 baseline/index.html 现抽' };
+    return { sources: fromBase, origin: '兜底：从 legacy/baseline/index.html 现抽' };
   }
 
   throw new Error(

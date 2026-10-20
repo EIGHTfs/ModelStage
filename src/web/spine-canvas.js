@@ -2,8 +2,8 @@
 // src/web/spine-canvas.js —— 舞台适配层（M4）
 //
 // 定位：**唯一出口**。上层（名册/面板/播放条/持久化）只通过这里的方法与舞台交互；
-//   当前实现复用旧 `src/engine.js` 的 `SpineEngine`（生产已验证），
-//   后续可换成可读版渲染器而不改调用方（契约见 doc/Spine渲染要点.md §14）。
+//   当前实现复用旧 `legacy/source/engine.js` 的 `SpineEngine`（生产已验证），
+//   后续可换成可读版渲染器而不改调用方（契约见 doc/参考-Spine渲染要点.md §14）。
 //
 // 为什么复用 engine.js：
 //   · 自包含（无 import/export），运行时管理器在内，且用 `new Function` 做**隔离执行**
@@ -398,7 +398,7 @@ async function loadIntoStage(st, arg) {
 }
 
 /**
- * 创建舞台（对外契约见 doc/Spine渲染要点.md §14）。
+ * 创建舞台（对外契约见 doc/参考-Spine渲染要点.md §14）。
  * @param {{canvas: HTMLCanvasElement, onStatus?: (s:object)=>void}} opts
  */
 /**
@@ -589,6 +589,23 @@ api.setView = (patch = {}) => {
 };
 
 /** 视图复位：交给引擎 resetCamera 重新 fit，然后重取基准 */
+  /**
+   * 幂等入口：确保引擎实例已创建（只建上下文与相机，不加载模型）。
+   * 谁需要：Live2D 分支要接管引擎的 Live2D 态（l2dActive 依赖 l2dModelId + 引擎实例），
+   *   而引擎是懒创建的 —— 用户先点 Live2D 时还没有实例。
+   * @returns {Promise<object|null>} 引擎实例
+   */
+  api.ensureEngineReady = async () => {
+    if (st.engine) return st.engine;
+    try {
+      const Engine = await ensureEngine();
+      if (!ensureStageEngine(st, Engine, st.canvas)) return null;
+      return st.engine;
+    } catch {
+      return null;
+    }
+  };
+
 api.resetView = () => {
   if (st.camera) st.camera.reset();
   captureViewBase(st);

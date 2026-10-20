@@ -2,8 +2,8 @@
 // mods.mjs — 「源文件里的 MOD 标记块」剥离器（P4a 起）
 //
 // 背景（为什么需要它）：
-//   P3 完成后的 src/** 是**逐字节可回填的原文分片**（tool/slices.json 的区间表 +
-//   tool/build-byte-equal.mjs 的逐字节校验链）。P4 起开始有**有意修改的源码** ——
+//   P3 完成后的 src/** 是**逐字节可回填的原文分片**（legacy/extract-tools/slices.json 的区间表 +
+//   legacy/extract-tools/build-byte-equal.mjs 的逐字节校验链）。P4 起开始有**有意修改的源码** ——
 //   若直接改分片正文，等于覆盖掉原文区间信息，逐字节校验链会永久失效（无法再证明
 //   「解压产物 ≡ 原版」）。故约定：修改以**显式标记块**追加在原文旁边，不改原文一个字：
 //
