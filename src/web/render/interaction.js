@@ -1,4 +1,4 @@
-// stage-interaction.js —— 舞台相机交互（拖动平移 / 滚轮缩放 / 双指捏合）
+// render/interaction.js —— 舞台相机交互（拖动平移 / 滚轮缩放 / 双指捏合）
 //
 // 对齐基准：旧前端（dist/index.html）的事件层，逐条对应：
 //   · 滚轮   t = (deltaY > 0 ? -1 : 1) → engine.applyZoom(t)    一档 ±10%，锚点=视图中心
@@ -7,7 +7,7 @@
 //   · 复位   engine.resetCamera()
 //
 // 本文件**不做任何坐标换算**：缩放档位、像素倍率、flip、Live2D 委托全部由引擎处理。
-// 相机能力统一从 stage.camera 取（见 stage-camera.js）；只有缺失该入口时才回退到
+// 相机能力统一从 stage.camera 取（见 render/camera/spine.js）；只有缺失该入口时才回退到
 // stage.getView/setView（且只做加法累计，仍然不做换算）。
 //
 // 日志：所有相机动作都通过 camera.note() 汇入同一路 CAMERA 日志，真机操作即可逐条核对：

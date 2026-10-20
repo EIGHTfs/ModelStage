@@ -1,4 +1,4 @@
-// live2d-stage.js —— Live2D 渲染（原生 ES 模块，无构建）
+// live2d/stage.js —— Live2D 渲染（原生 ES 模块，无构建）
 //
 // 角色：作为「2D 渲染器」的 Live2D 分支实现，与 Spine 共用同一套相机与交互。
 //   · 覆盖层 canvas 覆盖在 Spine 画布之上（pointer-events:none）⇒ 指针事件仍落到 Spine 画布，
@@ -9,9 +9,9 @@
 //   · 资源入口先经 VirtualFS.resolve()（命中用 Blob URL，未命中回落原 URL）——不 patch PIXI 加载器。
 //
 // 运行时库按需懒加载（顺序不可颠倒），失败时报出具体文件。
-import { CAMERA } from './render/camera/constants.js';
-import { installDiagHud } from './diag-hud.js';
-import { collectLive2DModelCmp } from './debug/model-cmp.js';
+import { CAMERA } from '../render/camera/constants.js';
+import { installDiagHud } from '../debug/diag-hud.js';
+import { collectLive2DModelCmp } from '../debug/model-cmp.js';
 
 /** 覆盖层容器 id（与参考实现区分：这是新前端的独立覆盖层） */
 const OVERLAY_ID = 'live2d-overlay';

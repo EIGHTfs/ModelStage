@@ -1,10 +1,10 @@
-// renderer-spine.js —— Spine 渲染器（注册到 StageSurface 的渲染面实现）
+// render/spine.js —— Spine 渲染器（注册到 StageSurface 的渲染面实现）
 //
 // 契约（StageSurface.renderer）：
 //   { id, capabilities, mount(document, handle) → info, dispose(), isActive(), camera }
 // 边界：不碰 DOM 尺寸、不建 canvas —— 只通过 handle 取画布/尺寸/DPR，用 handle.requestRender 请求渲染。
 
-import { createCamera } from './render/camera/index.js';
+import { createCamera } from './camera/index.js';
 
 /** Spine 渲染器支持的设置项 */
 const SETTINGS = ['fps', 'dpr', 'msaa', 'filter', 'pma', 'fit'];

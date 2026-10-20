@@ -1,5 +1,5 @@
 // ============================================================================
-// src/web/spine-canvas.js —— 舞台适配层（M4）
+// src/web/spine/canvas.js —— 舞台适配层（M4）
 //
 // 定位：**唯一出口**。上层（名册/面板/播放条/持久化）只通过这里的方法与舞台交互；
 //   当前实现复用旧 `legacy/source/engine.js` 的 `SpineEngine`（生产已验证），
@@ -16,8 +16,8 @@
 //   客户端按版本取源码文本塞进 window.__SPINE_RUNTIME_SOURCES__，由 engine 懒执行。
 // ============================================================================
 
-import { installRuntimeManager } from './spine-runtime-manager.js';
-import { createStageCamera } from './stage-camera.js';
+import { installRuntimeManager } from './runtimes.js';
+import { createStageCamera } from '../render/camera/spine.js';
 
 const RUNTIME_BASE = '/spine-runtimes/spine-webgl-';
 const RUNTIME_MANIFEST = '/spine-runtimes/index.json';

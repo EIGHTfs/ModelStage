@@ -1,4 +1,4 @@
-// stage-camera.js —— 相机统一入口（Spine / Live2D 共用，全部委托引擎原生方法）
+// render/camera/spine.js —— 相机统一入口（Spine / Live2D 共用，全部委托引擎原生方法）
 //
 // 设计约束（重要）：
 //   1. 本文件**不做任何坐标换算**：没有 ppw、没有 ×2、没有锚点公式、没有 exp 曲线。

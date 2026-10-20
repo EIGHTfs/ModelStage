@@ -17,13 +17,13 @@ import { getJson, formatError } from './infra/api.js';
 import { createRosterView } from './roster/view.js';
 import { mountPanel } from './panel/view.js';
 import { PANEL_GROUPS, applyCapabilities } from './panel/schema.js';
-import { mountTransport } from './transport.js';
-import { createSpineStage } from './spine-canvas.js';
-import { createStageSurface } from './stage-surface.js';
-import { createSpineRenderer } from './renderer-spine.js';
-import { createLive2DRenderer } from './renderer-live2d.js';
-import { createLive2DStage } from './live2d-stage.js';
-import { attachStageInteraction } from './stage-interaction.js';
+import { mountTransport } from './panel/transport.js';
+import { createSpineStage } from './spine/canvas.js';
+import { createStageSurface } from './render/surface.js';
+import { createSpineRenderer } from './render/spine.js';
+import { createLive2DRenderer } from './render/live2d.js';
+import { createLive2DStage } from './live2d/stage.js';
+import { attachStageInteraction } from './render/interaction.js';
 
 // 页面级第一件事：装诊断探针（幂等，重复调用不会重复包装 console）
 const diag = installDiag();

@@ -1,5 +1,5 @@
 // ============================================================================
-// src/web/spine-runtime-manager.js —— Spine 运行时管理器（补 engine.js 缺失的 `Is`）
+// src/web/spine/runtimes.js —— Spine 运行时管理器（补 engine.js 缺失的 `Is`）
 //
 // 背景：`legacy/source/engine.js` 是"切片"产物，第 42 行 `let Yd = Is;` 依赖旧 app
 //   `legacy/source/js/app/constants.js` 里的运行时管理器 `Is`，但切片**没有带上它** ⇒ 直接用会

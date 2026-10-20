@@ -6,7 +6,7 @@
 //
 // 动态选项：动作/皮肤下拉的选项由模型数据填充（setOptions），渲染时的 options 只是占位文案。
 
-import { TRANSPORT_CONTROLS } from './panel/schema.js';
+import { TRANSPORT_CONTROLS } from './schema.js';
 
 /** 元素工厂 */
 function el(tag, className, text) {

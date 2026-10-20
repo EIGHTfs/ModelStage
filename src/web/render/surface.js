@@ -1,4 +1,4 @@
-// stage-surface.js —— 渲染面（StageSurface）：画布与帧时钟的唯一所有者
+// render/surface.js —— 渲染面（StageSurface）：画布与帧时钟的唯一所有者
 //
 // 职责边界：
 //   · Surface **唯一拥有**：#stage-canvas（Spine 面）、覆盖层容器与它的 canvas（Live2D 面）、

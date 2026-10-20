@@ -1,10 +1,10 @@
-// renderer-live2d.js —— Live2D 渲染器（注册到 StageSurface 的渲染面实现）
+// render/live2d.js —— Live2D 渲染器（注册到 StageSurface 的渲染面实现）
 //
 // 契约（StageSurface.renderer）：
 //   { id, capabilities, mount(document, handle) → info, dispose(), isActive(), camera }
 // 边界：画布与尺寸由 StageSurface 提供（handle），本文件不读 DOM 尺寸、不建画布。
 
-import { createCamera } from './render/camera/index.js';
+import { createCamera } from './camera/index.js';
 
 /**
  * 创建 Live2D 渲染器。
