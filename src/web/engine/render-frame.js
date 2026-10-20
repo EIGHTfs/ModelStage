@@ -9,7 +9,9 @@ export function renderFrame(engine) {
   if (!gl || !skeleton || !renderTarget || !engine.adapters) return;
   gl.clearColor(0, 0, 0, 0);
   gl.clear(gl.COLOR_BUFFER_BIT);
-  const ok = engine.adapters.renderer.draw(renderTarget, skeleton, engine.premultiplied);
+  // 与旧引擎一致：批处理器的 premultiplied 参数由 pmaInfo.blendMode 决定（不是纹理是否预乘）
+  const blendPma = !!(engine.pmaInfo && engine.pmaInfo.blendMode === 'premultiplied');
+  const ok = engine.adapters.renderer.draw(renderTarget, skeleton, blendPma);
   if (!ok && !engine.renderWarned) {
     engine.renderWarned = true;
     engine.log('error', '渲染失败：适配器未能绘制（详见能力告警）', 'renderer');

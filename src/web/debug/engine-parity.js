@@ -19,7 +19,13 @@
   const cat = await (await fetch(`/api/catalog?root=${rootId}`)).json();
   const model = (cat.entries || []).find((x) => x.name === modelName);
   if (!model) return { error: `找不到 ${rootId}/${modelName}` };
-  await stage.load({ root: model.rootId, model });
+  // INV-10：接住"被更新的预期业务错误，避免脚本内 await 抛出成未捕获拒绝
+  let loadError = null;
+  try {
+    await stage.load({ root: model.rootId, model });
+  } catch (e) {
+    loadError = String((e && e.message) || e);
+  }
   for (let i = 0; i < 40 && !stage.stats().model; i += 1) await sleep(150);
   await sleep(600);
 
@@ -43,6 +49,7 @@
   };
   const cam = stage.camera;
   const camera = [camSnap('load')];
+
   for (let i = 1; i <= 3; i += 1) { cam.zoomStep(1); camera.push(camSnap(`zoomStep(+1)#${i}`)); }
   for (let i = 1; i <= 2; i += 1) { cam.zoomStep(-1); camera.push(camSnap(`zoomStep(-1)#${i}`)); }
   cam.panBy(100, 50);
@@ -114,6 +121,7 @@
   }
 
   return {
+    loadError,
     engine: qs.get('legacy-engine') === '1' ? 'legacy' : 'new',
     model: { root: rootId, name: modelName },
     viewport: { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio },

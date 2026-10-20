@@ -387,6 +387,9 @@ async function loadIntoStage(st, arg) {
   const model = arg && arg.model;
   if (!root || !model) throw new Error('load 需要 { root, model }');
   const seq = ++st.seq;
+  // 每次装载开始都清掉上一次的错误：lastError 语义是"最近一次装载的结果状态"，
+  //   成功后若不清，后面每次成功采样都会带着旧的失败原因（实测会污染对照表的每一格）
+  st.lastError = null;
   // 切模型：中止上一个在途加载的请求（被中止属预期，不产生控制台报错）
   if (st.abort) st.abort.abort();
   const ctl = new AbortController();

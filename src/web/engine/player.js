@@ -15,6 +15,9 @@ import { resolveRuntime } from './runtime.js';
 import { buildModel } from './loader.js';
 import { capabilitiesFor } from './runtime-capabilities.js';
 import { createAdapters } from './adapters/index.js';
+import * as appearance from './appearance.js';
+import { getSkins as skinList, setSkins as skinApply, normalizeKeywords } from './skins.js';
+import { engineDefaults, mergeDebugDraw, rendererInfo } from './engine-state.js';
 import * as cameraOps from './camera-adapter.js';
 import { describeModel } from './model-info.js';
 import * as anim from './animation.js';
@@ -27,50 +30,10 @@ import { renderFrame, presentFirstFrame, startLoop, stopLoop } from './render-fr
 export class SpineEngine {
   constructor(callbacks = {}) {
     this.callbacks = callbacks || {};
-    this.canvas = null;
-    this.gl = null;
-    this.mode = 'none';
-    this.spine = null;
-    this.runtimeVersion = null;
-    this.atlas = null;
-    this.textures = [];
-    this.skeletonData = null;
-    this.skeleton = null;
-    this.stateData = null;
-    this.state = null;
-    this.renderer = null;
-    this.rendererKind = 'none';
-    this.fitMode = 'subject';        // 默认与旧引擎一致（主体适配）
-    this.fitWarnedSubject = false;
-    this.camera = null;
-    this.baseZoom = 1;
-    this.userScale = 1;
-    this.logicalW = 0;
-    this.logicalH = 0;
-    this.dprMode = 'auto';
-    this.isSoftware = false;
-    this.rendererStr = '';
-    this.antialias = false;
-    this.isPlaying = false;
-    this.animationId = null;
-    this.lastTime = 0;
-    this.fpsFrames = 0;
-    this.fpsLastTime = 0;
-    this.currentFps = 0;
-    this.fpsLimit = 60;
-    this.speed = 1;
-    this.loop = true;
-    this.mixTime = 0.2;
-    this.filterId = 'original';
-    this.debugDraw = { bones: false, meshes: false, boundingBoxes: false, paths: false, points: false, regions: false, clipping: false, hulls: false };
-    this.slotFilterKeywords = [];
-    this.pendingPresent = false;
-    this.currentModel = null;
-    // 运行时管理器：优先显式注入，否则复用页面已装好的单例（canvas.js 会先 installRuntimeManager）
+    // 运行时上下文与钩子（上下文丢失恢复在 B4b/B6 处理，与现状一致）
+    Object.assign(this, engineDefaults());
     this.runtimeManager = callbacks.runtimeManager
-      || (typeof window !== 'undefined' && window.Is && typeof window.Is.getInstance === 'function'
-        ? window.Is.getInstance()
-        : null);
+      || (typeof window !== 'undefined' && window.Is && typeof window.Is.getInstance === 'function' ? window.Is.getInstance() : null);
   }
 
   /** 统一日志（语义与旧引擎一致：log(level, msg, scope)） */
@@ -115,15 +78,7 @@ export class SpineEngine {
    * @returns {object}
    */
   getRendererInfo() {
-    return {
-      isSoftware: this.isSoftware,
-      rendererStr: this.rendererStr,
-      antialias: this.antialias,
-      dpr: this.getEffectiveDpr(window.devicePixelRatio || 1),
-      runtimeVersion: this.runtimeVersion,
-      capabilities: this.caps ? this.caps.matrix() : null,
-      capabilityWarns: this.caps ? this.caps.warns.slice() : [],
-    };
+    return rendererInfo(this);
   }
 
   /** 相机视口跟随画布 CSS 尺寸 */
@@ -137,6 +92,7 @@ export class SpineEngine {
     const rt = await resolveRuntime(this.runtimeManager, descriptor.version);
     this.spine = rt.spine;
     this.runtimeVersion = rt.version;
+    this.supportsStraightAlpha = rt.supportsStraightAlpha !== false;
     // 能力探测（一次、按版本缓存）：版本号只用于展示，行为全部由探测结果决定
     this.caps = capabilitiesFor(rt.spine, rt.version);
     for (const w of this.caps.warns || []) this.log('warn', `能力缺失 → ${w}`, 'runtime');
@@ -151,21 +107,25 @@ export class SpineEngine {
     this.stop();
     this.disposeContent();
     this.pendingPresent = true;
-    const model = await buildModel({ adapters: this.adapters, descriptor, log: (l, m, s) => this.log(l, m, s) });
-    this.atlas = model.atlas;
-    this.textures = model.textures;
-    this.skeletonData = model.skeletonData;
-    this.skeleton = model.skeleton;
-    this.stateData = model.stateData;
-    this.state = model.state;
-    this.premultiplied = model.premultiplied;
-    // 渲染器与运行时绑定：换了运行时（3.8 → 4.1）必须重建，否则会用旧版本的绘制器画新骨架（静默不出画）
+    const model = await buildModel({
+      adapters: this.adapters,
+      spine: this.spine,
+      gl: this.gl,
+      descriptor,
+      pmaMode: this.pmaMode,
+      textureFilter: this.textureFilter,
+      supportsStraight: this.supportsStraightAlpha,
+      log: (l, m, s) => this.log(l, m, s),
+    });
+    this.bindModel(model);
+    // 渲染器与运行时绑定：换运行时必须重建，否则用旧版本绘制器画新骨架会静默不出画
     if (!this.renderer || this.rendererRuntime !== this.runtimeVersion) {
       this.disposeRenderer();
       this.createRenderer();
       this.rendererRuntime = this.runtimeVersion;
     }
     // fit 前必须先摆好姿态：未 updateWorldTransform 时 getBounds 可能返回空包围盒（4.x 上实测）
+    this.applyAppearance();
     this.poseForFit();
     this.applyFit();
     this.presentFirstFrame();
@@ -194,6 +154,8 @@ export class SpineEngine {
     this.rendererKind = 'none';
     this.camera = null;
     this.rendererRuntime = null;
+    // 默认着色器是渲染器持有的对象，渲染器没了就不能再当成"可还原目标"留着
+    this.filterState = { saved: null, active: null };
   }
 
   /** 建渲染器与相机（版本差异由 loader.buildRenderer 适配） */
@@ -204,6 +166,28 @@ export class SpineEngine {
     this.camera = built.camera;
     this.renderTarget = built; // 适配器 draw() 需要的目标对象
     this.syncCameraViewport();
+    this.applyAppearance();
+  }
+
+  /** 把装载产物挂到引擎上（装载与重建共用） */
+  bindModel(model) {
+    // PMA 结果随模型一起绑定（rebuildTextures 走这里），否则档位显示与实际口径分裂
+    this.pmaInfo = model.pmaInfo || null;
+    this.pmaDetection = model.pmaDetection || null;
+    this.gpuUnpack = !!model.gpuUnpack;
+    this.atlas = model.atlas;
+    this.textures = model.textures || [];
+    this.skeletonData = model.skeletonData;
+    this.skeleton = model.skeleton;
+    this.stateData = model.stateData;
+    this.state = model.state;
+    this.premultiplied = model.premultiplied;
+  }
+
+  /** 应用外观（混合钩子 + 滤镜）；必须在渲染器建好之后调用 */
+  applyAppearance() {
+    appearance.installBlend(this);
+    appearance.applyFilter(this);
   }
 
   /** 装载结果摘要（实现见 model-info.js） */
@@ -322,41 +306,73 @@ export class SpineEngine {
     return anim.snapshot(this);
   }
 
+  /** 皮肤名列表 */
   getSkins() {
-    const skins = (this.skeletonData && this.skeletonData.skins) || [];
-    return skins.map((s) => s.name);
+    return skinList(this);
   }
 
+  /** 应用皮肤（多皮肤会合成临时皮肤，与旧引擎一致） */
   setSkins(list) {
-    if (!this.skeleton || !this.skeletonData || !Array.isArray(list) || !list.length) return;
-    try {
-      const skin = this.skeletonData.findSkin ? this.skeletonData.findSkin(list[0]) : null;
-      if (skin) this.skeleton.setSkin(skin);
-      this.skeleton.setSlotsToSetupPose();
-    } catch { /* 皮肤不存在时保持原样 */ }
+    return skinApply(this, list);
   }
 
+  /** 插槽过滤关键词（B5 接绘制侧隐藏） */
   setSlotFilter(keywords) {
-    this.slotFilterKeywords = (Array.isArray(keywords) ? keywords : []).map((k) => String(k).trim().toLowerCase()).filter(Boolean);
+    this.slotFilterKeywords = normalizeKeywords(keywords);
   }
 
-  setFilter(id) { this.filterId = String(id || 'original'); }
+  /** 切滤镜（非法 id 回落 original）；实现在 appearance.js */
+  setFilter(id) {
+    return appearance.setFilter(this, id);
+  }
+
   getFilter() { return this.filterId; }
 
-  setDebugDraw(patch) {
-    this.debugDraw = { ...this.debugDraw, ...(patch || {}) };
+  /** 纹理过滤（同时重挂已上传纹理的采样参数） */
+  setTextureFilter(mode) {
+    return appearance.setTextureFilter(this, mode);
   }
 
-  /** B4 落地：现在明确告警而不是静默无操作 */
-  rebuildTextures(pmaMode) {
-    this.log('warn', `rebuildTextures(${pmaMode}) 在 B1 尚未实现（B4 补齐），当前保持原纹理`, 'loader');
+  setDebugDraw(patch) {
+    return mergeDebugDraw(this, patch);
+  }
+
+  /** 切 PMA 档位（重建贴图与渲染路径；顺序照抄旧引擎） */
+  async rebuildTextures(pmaMode) {
+    return appearance.rebuildTextures(this, pmaMode);
   }
 
   getRuntimeVersion() { return this.runtimeVersion; }
 
+  /**
+   * 卸载当前骨架（canvas.js 的 unload 走这里）。
+   * 与旧引擎同义：停循环 → 释放贴图与图集 → 清引用 → 清屏（不留上一帧残影）。
+   */
+  clearSkeleton() {
+    this.stop();
+    this.pendingPresent = false;
+    this.disposeContent();
+    this.skeleton = null;
+    this.skeletonData = null;
+    this.state = null;
+    this.stateData = null;
+    this.currentModel = null;
+    this.animationName = '';
+    this.durations = {};
+    this.activeSkins = [];
+    if (this.gl) {
+      try {
+        this.gl.clearColor(0, 0, 0, 0);
+        this.gl.clear(this.gl.COLOR_BUFFER_BIT);
+      } catch { /* 上下文丢失时忽略 */ }
+    }
+  }
+
   /** 释放当前模型内容（不销毁上下文） */
   disposeContent() {
-    stopAndNull(this);
+    this.stop();
+    this.skeleton = null;
+    this.state = null;
     for (const tex of this.textures) {
       if (this.adapters) this.adapters.texture.dispose(tex);
       else { try { tex.dispose(); } catch { /* 忽略 */ } }
@@ -377,11 +393,4 @@ export class SpineEngine {
     this.gl = null;
     this.mode = 'none';
   }
-}
-
-/** 内部小工具：停止并清空动画/骨架引用（拆出来保持方法体简短） */
-function stopAndNull(engine) {
-  engine.stop();
-  engine.skeleton = null;
-  engine.state = null;
 }
