@@ -16,7 +16,7 @@
 // 扫描不在此重复实现：直接复用 models.getModels() 与 live2d.getLive2DModels()。
 import fs from 'node:fs';
 import path from 'node:path';
-import { encodePath } from './probe.mjs';
+import { encodePath } from '../assets/probe.mjs';
 
 /**
  * 路径式文件 URL（Live2D 定义文件内部用相对路径引用，必须用 /files/ 前缀）。

@@ -5,7 +5,7 @@
 //   · bundle 根：按容器魔数识别（无扩展名也能列），可见性由「是否有启用的 bundle 插件」决定。
 import fs from 'node:fs';
 import path from 'node:path';
-import { SPINE_EXT } from './probe.mjs';
+import { SPINE_EXT } from '../assets/probe.mjs';
 
 /** 读目录条目；失败返回 null（由调用方转 500） */
 function readEntries(abs) {

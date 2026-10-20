@@ -12,15 +12,15 @@
 import { createPaths } from './core/paths.mjs';
 import { createEnv } from './core/env.mjs';
 import { createConfig } from './core/config.mjs';
-import { createPlugins } from './plugins.mjs';
-import { createModels } from './models.mjs';
-import { createLive2d } from './live2d.mjs';
-import { createNames } from './names.mjs';
-import { createTree } from './tree.mjs';
-import { createModelMeta } from './model-meta.mjs';
-import { createBundleProbe } from './bundle-probe.mjs';
-import { createCatalog } from './catalog.mjs';
-import * as probe from './probe.mjs';
+import { createPlugins } from './plugins/registry.mjs';
+import { createModels } from './data/models.mjs';
+import { createLive2d } from './data/live2d.mjs';
+import { createNames } from './data/names.mjs';
+import { createTree } from './data/tree.mjs';
+import { createModelMeta } from './data/model-meta.mjs';
+import { createBundleProbe } from './assets/bundle-probe.mjs';
+import { createCatalog } from './data/catalog.mjs';
+import * as probe from './assets/probe.mjs';
 
 /**
  * 装配数据层。

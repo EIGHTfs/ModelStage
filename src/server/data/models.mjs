@@ -6,7 +6,7 @@
 // 路径依赖（清单文件位置）改成显式入参，模块内不持有全局路径。
 import fs from 'node:fs';
 import path from 'node:path';
-import { MIME, encodePath, parseAtlasPages } from './probe.mjs';
+import { MIME, encodePath, parseAtlasPages } from '../assets/probe.mjs';
 
 /** Live2D 清单路径（与 Spine 清单并列，互不干扰） */
 function live2dModelsFile(configFile, rootId) {

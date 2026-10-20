@@ -1,7 +1,8 @@
 # ModelStage · 新前端（`src/web/`）
 
 纯 HTML + 原生 ES 模块 + 手写 CSS 的前端实现，与旧前端（`legacy/source/app-shell.html` + `legacy/source/js/**` + `legacy/patches/**`）
-**双栈并行**：旧前端继续跑在 8803 作对照端，新前端跑在 8804，逐块替换、逐块比对。
+**新端已独立**：新前端跑在 8804，由 `src/server/serve.mjs` 同时提供静态文件、全部接口与模型资源，
+**不再反代 8803**。旧前端 8803 仅作历史对照保留，新端不依赖它。
 
 设计依据：`doc/任务-前端重写路线图.md`（功能 8 块 / L1 视觉 + L2 结构 + L3 行为三层判据 / M1~M8 里程碑）、
 进度看板：`doc/任务-前端重写.md`。
@@ -13,43 +14,75 @@ src/web/
 ├── index.html        五区域骨架：顶栏 / 左栏（角色库）/ 舞台 / 右栏 / 底栏
 ├── style.css         变量 + 基础重置 + 舞台 + 五区域容器几何（尺寸对齐旧前端实测 rect）
 ├── components.css    控件外观：品牌、按钮、搜索框、三级树行、右栏分组行、底栏分组、错误横幅
-├── main.js           入口：品牌、面板开关、资源根加载、名册挂载、错误兜底、window.__WEB__ 调试出口
-├── api.js            同源 JSON 请求封装（统一错误口径）
-├── diag.js           诊断探针 window.__DIAG__（错误/警告/关键事件 + 落盘 /api/diag）
-├── roster.js         名册数据层：按根取模型清单 + 名表合并 + 角色归并（规则照 legacy/patches/char-tree.js）
-├── roster-view.js    名册视图层：状态、事件、懒加载、搜索过滤、选中态、持久化
-├── roster-rows.js    三级树的行渲染（纯 DOM 工厂，无状态）
-├── panel-schema.js   右栏 9 组 + 播放条控件的**声明式**定义（M3）
-├── panel.js          右栏手风琴渲染（组内控件一律 disabled + data-pending）
-├── transport.js      底部播放条渲染（同上）
-├── panel.css         右栏/播放条内部样式（独立成文件，避免 components.css 超 400 行）
-└── dev-server.mjs    零依赖开发服务：静态托管 src/web + 反代 /api 到上游
+├── main.js           入口：品牌、面板开关、资源根加载、名册挂载、渲染器装配、错误兜底、window.__WEB__ 调试出口
+├── transport.js      底部播放条渲染
+├── README.md         本文件（前端源码目录；服务端在 src/server/）
+│
+├── infra/            基础设施（与业务无关，可复用）
+│   ├── api.js        同源 JSON 请求封装（统一错误口径）
+│   ├── vfs.js        内存资源视图（统一登记表 + 字节缓存）
+│   └── diag.js       诊断探针 window.__DIAG__（错误/警告/关键事件 + 落盘 /api/diag）
+│
+├── roster/           左栏名册
+│   ├── list.js       数据层：按根取模型清单 + 名表合并 + 角色归并
+│   ├── view.js       视图层：状态、事件、懒加载、搜索过滤、选中态、持久化
+│   └── rows.js       三级树的行渲染（纯 DOM 工厂，无状态）
+│
+├── panel/            右栏控制面板
+│   ├── schema.js     9 组 + 播放条控件的声明式定义
+│   ├── view.js       手风琴渲染（未接线控件 disabled + data-pending）
+│   └── panel.css     右栏/播放条内部样式
+│
+├── render/           舞台与渲染面
+│   ├── surface.js    渲染面：几何唯一来源、背景模式、渲染器切换与生命周期
+│   ├── spine.js      Spine 渲染器（相机 backend 指向引擎）
+│   ├── live2d.js     Live2D 渲染器（相机 backend 指向桥）
+│   ├── interaction.js 交互层：滚轮/拖动/双指/重置，绑舞台区域而非某块画布
+│   └── camera/
+│       ├── constants.js 缩放范围、步进、边距、主体排除名单（唯一来源）
+│       └── index.js     统一相机（唯一钳制点，backend 只提供 getScale/setScale/pan/resetView）
+│
+├── spine/            Spine 运行时
+│   ├── canvas.js     引擎封装（加载、动画、滤镜、适配、相机转发）
+│   └── runtimes.js   多版本运行时加载与选择
+│
+├── live2d/           Live2D 运行时
+│   └── stage.js      库加载、模型挂载、缩放/平移桥
+│
+└── debug/            调试
+    ├── log.js        环形日志缓冲
+    ├── panel.js      日志面板
+    ├── panel.css     面板样式
+    └── model-cmp.js  模型差异采集（尺寸/包围盒/适配中间值，排障用）
 ```
 
-CSS 拆两个文件、行渲染单独成文件，都是为把单文件控制在 400 行内；职责见各文件头注释。
+拆分原则：单文件控制在 400 行内；同一类职责归一个目录，`main.js` 只做装配，不承载具体实现。
 
-后续里程碑在同目录追加：`panel.js` + `transport.js`（M3 面板与播放条）、`stage.js`（M4 舞台渲染）、
-`store.js`（M7 持久化）。单文件上限 400 行。
+### 目录约定
+
+| 目录 | 放什么 | 不放什么 |
+|---|---|---|
+| `infra/` | 与业务无关的通用能力（请求、存储、诊断） | 任何模型/渲染相关逻辑 |
+| `roster/` `panel/` | 左栏、右栏的视图与数据 | 渲染与相机 |
+| `render/` | 渲染面、渲染器、相机、交互 | 具体模型的加载实现（在 `spine/`、`live2d/`） |
+| `spine/` `live2d/` | 各自运行时的加载与能力封装 | 跨渲染器的公共逻辑 |
+| `debug/` | 日志与排障工具 | 生产路径依赖 |
 
 ## 二、怎么起
 
 ```bash
-# 前提：旧前端已在 8803 运行（提供 /api/* 数据）
-bash server.sh status
-
-# 启动新前端（8804）
+# 启动新前端（8804，独立服务，不依赖旧端）
 cd <项目根>
-PORT=8804 UPSTREAM=http://127.0.0.1:8803 node src/web/dev-server.mjs
+bash web.sh restart
 ```
 
 后台启停用项目根的脚本（**不要用 nohup**，PID/日志由脚本统一管理）：
 
 ```bash
-bash web.sh start|stop|restart|status     # 默认 8804，上游 8803
+bash web.sh start|stop|restart|status     # 默认 8804（独立服务）
 ```
 
-> 注意：`bash web.sh restart` 目前在脚本内部用 `"$0"` 调用自身，`$0` 为相对名 `web.sh` 时会报
-> `web.sh: command not found`；请用 `bash web.sh stop && bash web.sh start` 两步重启（脚本属 Lead 维护范围，未改）。
+> 说明：脚本内部用绝对路径自调用（`SELF`），`bash web.sh restart` 可直接用。
 
 打开：`http://<本机IP>:8804/`
 
@@ -57,11 +90,13 @@ bash web.sh start|stop|restart|status     # 默认 8804，上游 8803
 
 | 变量 | 默认 | 作用 |
 |---|---|---|
-| `PORT` | `8804` | 新前端监听的端口（**不得占用 8803**） |
-| `UPSTREAM` | `http://127.0.0.1:8803` | 能力层上游实例，`/api`、`/files`、`/icons`、`/live2d-lib` 反代到它 |
+| `PORT` | `8804` | 新前端监听的端口 |
 
-> 为什么反代而不是让页面直连上游：`/api/roots` 等接口没有发 CORS 头，跨源 `fetch` 会被浏览器拦；
-> 反代后新前端全程同源，`/api/tree`、`/api/models` 同样可直接用。
+> 历史说明：早期版本用 `UPSTREAM=http://127.0.0.1:8803` 把 `/api` `/files` `/icons` `/live2d-lib` 反代到旧端；
+> 该路径已在「新端自带服务端」之后**整体移除**，现在两个端口互不依赖。
+
+> 为什么现在不需要反代：新端自带服务端，页面与接口同源，`/api/tree`、`/api/models` 直接可用，
+> 也不再受「上游没发 CORS 头」的限制。
 
 ## 三、品牌与标题
 
@@ -83,7 +118,7 @@ bash web.sh start|stop|restart|status     # 默认 8804，上游 8803
       右栏 `[1744,48,176,968]` / 底栏浮条 `[600,1023,720,42]`
 - [x] `style.css` 手写深色主题（背景 `#131416`、卡片 `#1f2326`、主色 `#1fc0c5`、棋盘格舞台）
 - [x] 品牌走 `GET /api/brand`：顶栏标题、`document.title`、图标三处同源；空配置回落 `ModelStage`
-- [x] `dev-server.mjs` 零依赖静态服务 + `/api` 反代；起在 8804，不碰 8803
+- [x] 服务端由 `src/server/serve.mjs` 提供（静态 + 全部接口 + 资源）；起在 8804，不碰 8803
 - [x] 控制台 0 错误、无横向滚动条
 
 ### M2 名册三级树（已完成）
@@ -179,7 +214,7 @@ node tool/check-console.mjs http://127.0.0.1:8804/ --script test/roster-actions.
 #    动作脚本的形态约定：文件内容是一个自求值 async IIFE，返回值即结果
 #    （这样既能在页面里 await，又能通过 node --check 的语法检查）
 
-# 3) 反代与数据源
+# 3) 数据源（本端自带，不依赖旧端）
 curl -s http://127.0.0.1:8804/api/roots | head -c 200
 curl -s http://127.0.0.1:8804/api/brand
 
@@ -197,3 +232,43 @@ curl -s http://127.0.0.1:8804/api/brand
    实测 <1s）。取舍：宁可多一次请求，也要搜得到——只搜已展开的游戏会让人以为列表缺内容。
 3. **`tool/diff-rect.mjs` 不做**：视觉已降级，区域几何改用 `tool/shot-compare.mjs` 或人工核对。
 4. **穷举动作脚本入库在 `test/roster-actions.js`**：M2 的回归脚本，改左栏行为后先跑它。
+
+## 八、渲染面与目录的当前约定
+
+### 8.1 独立服务端
+
+```
+入口：src/server/serve.mjs（web.sh 默认启动它）
+提供：静态文件 + /api/* 全部接口 + /files/* 模型资源 + /engine.js + /live2d-lib/* + /spine-runtimes/*
+不依赖：8803（旧前端仅作对照，可随时停）
+```
+
+验证方式（停掉旧端后仍应全部可用）：
+
+```bash
+bash server.sh stop
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8804/            # 200
+curl -s -o /dev/null -w '%{http_code}\n' 'http://127.0.0.1:8804/api/catalog?root=bd2'  # 200
+bash server.sh start
+```
+
+### 8.2 尺寸与相机的唯一来源
+
+| 事 | 唯一负责人 | 说明 |
+|---|---|---|
+| 舞台几何（CSS 像素） | `render/surface.js` 的 `geometry()` | 渲染器只读取，不得自行测 DOM |
+| 背板像素尺寸（canvas.width / resolution） | 由 `geometry()` 推导后交给渲染器 | 不允许出现第二处 DPR 计算 |
+| 相机（范围、步进、锚点、复位） | `render/camera/index.js` | 唯一钳制点；Spine 与 Live2D 语义一致 |
+| 交互（滚轮/拖动/双指） | `render/interaction.js`，绑定 `surface.interactionTarget` | 绑舞台区域，不绑某块画布 |
+| 背景（棋盘/纯色/透明） | `surface.setBackground()` | 写 `data-bg` 的唯一入口，渲染器不画背景 |
+
+调参只改 `render/camera/constants.js`（`MIN 0.125 / MAX 16 / STEP 0.1 / FIT_MARGIN 0.05`），逻辑里不允许出现同样的裸数字。
+
+### 8.3 目录规则
+
+```
+新增文件先问职责：基础设施 → infra/；某块业务 → 对应目录；渲染与相机 → render/
+文件名不带模块前缀（在目录里已经表达了归属）
+单文件 ≤ 400 行；main.js 只做装配
+搬迁必须分批（每批 ≤5 个文件），每批做语法 + 相对 import 扫描 + 页面实测，再单独提交
+```

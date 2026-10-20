@@ -4,7 +4,7 @@
 // 与数据无关，故不依赖 createServerData；目录根由调用方注入。
 import fs from 'node:fs';
 import path from 'node:path';
-import { MIME } from '../probe.mjs';
+import { MIME } from '../assets/probe.mjs';
 
 /** 把 URL 解析到某个根目录下的真实文件；越界或不存在返回 null */
 export function resolveUnder(baseDir, pathname, prefix) {

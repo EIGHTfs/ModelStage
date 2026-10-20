@@ -4,7 +4,7 @@
 // 并回答「某个 fileKind 当前有没有启用的插件」。
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseJsonc } from '../../tool/parse-jsonc.mjs';
+import { parseJsonc } from '../../../tool/parse-jsonc.mjs';
 
 /** @param {{pluginsDir: string, pluginSwitchFile: string}} p */
 

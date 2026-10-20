@@ -20,8 +20,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServerData } from './index.mjs';
-import { resolveSafe } from './probe.mjs';
-import { browseDir } from './browse.mjs';
+import { resolveSafe } from './assets/probe.mjs';
+import { browseDir } from './assets/browse.mjs';
 import { createStaticRoutes, sendFile } from './http/static.mjs';
 import { createDiag } from './http/diag.mjs';
 
@@ -38,6 +38,9 @@ const diag = createDiag(data.paths);
 
 /** 统一的 JSON 响应（与 server.mjs 的 sendJson 同形：无缩进、no-store） */
 function sendJson(res, status, body) {
+  // 统一守卫：某个 handler 已响应过、但没 return true 让流程继续时，这里直接放弃，
+  //   否则会抛 ERR_HTTP_HEADERS_SENT（曾导致日志刷错 + 进程异常退出）。
+  if (res.headersSent || res.writableEnded) return;
   const text = JSON.stringify(body);
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
@@ -292,13 +295,14 @@ const server = http.createServer((req, res) => {
     if (serveIcon(req, res, p)) return;
     if (serveLive2DLib(req, res, p)) return;
     if (staticRoutes.serveAssets(req, res, p)) return;
+    if (res.headersSent) return;
     if (p.startsWith('/api/')) return sendJson(res, 404, { error: `未知接口: ${p}` });
     if (req.method === 'GET' || req.method === 'HEAD') return staticRoutes.serveStatic(req, res, p);
     return sendText(res, 405, `405: ${req.method} ${p}`);
   } catch (e) {
     console.error('[serve] 处理异常:', e && e.stack ? e.stack : e);
     try {
-      sendJson(res, 500, { error: `服务内部错误: ${e.message}` });
+      if (!res.headersSent) sendJson(res, 500, { error: `服务内部错误: ${e.message}` });
     } catch {
       try { res.writeHead(500); res.end('internal error'); } catch { /* 忽略 */ }
     }

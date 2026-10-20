@@ -8,8 +8,8 @@
 //   因此对外必须给**路径式** URL（/files/<rootId>/<相对路径>）——查询串式会在相对解析时丢掉。
 import fs from 'node:fs';
 import path from 'node:path';
-import { encodePath } from './probe.mjs';
-import { resolveLive2DRuntimes } from '../../tool/resolve-live2d-runtimes.mjs';
+import { encodePath } from '../assets/probe.mjs';
+import { resolveLive2DRuntimes } from '../../../tool/resolve-live2d-runtimes.mjs';
 
 /** Live2D 清单缓存的格式版本（结构变更时 +1，旧缓存自动失效重扫） */
 const LIVE2D_MANIFEST_VERSION = 1;
