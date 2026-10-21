@@ -92,6 +92,12 @@ export function createLive2DRenderer({ live2d } = {}) {
       const h = Math.max(1, Math.floor(cssH * res));
       if (overlayCv.width !== w) overlayCv.width = w;
       if (overlayCv.height !== h) overlayCv.height = h;
+      // 像素尺寸(attr) 与 显示尺寸(style) 必须同时更新：
+      //   只改 attr 时，浏览器会按**残留的旧 CSS 尺寸**显示这张画布
+      //   （PIXI 的 autoDensity 曾写入过一次内联 px），比例不一致就表现为
+      //   模型被拉伸 + 超出部分被裁掉；重新选模型能恢复，正是因为 PIXI 重建 view 时重设了 style。
+      if (overlayCv.style.width !== `${cssW}px`) overlayCv.style.width = `${cssW}px`;
+      if (overlayCv.style.height !== `${cssH}px`) overlayCv.style.height = `${cssH}px`;
     }
     try { if (live2d.syncSize) live2d.syncSize({ size: { width: cssW, height: cssH }, dpr: res }); } catch { /* 忽略 */ }
     return true;
@@ -137,6 +143,9 @@ export function createLive2DRenderer({ live2d } = {}) {
         const h = Math.max(1, Math.floor(cssH * res));
         if (overlayCv.width !== w) overlayCv.width = w;
         if (overlayCv.height !== h) overlayCv.height = h;
+        // 同上：attr 是像素尺寸，style 是显示尺寸，两者必须同时更新
+        if (overlayCv.style.width !== `${cssW}px`) overlayCv.style.width = `${cssW}px`;
+        if (overlayCv.style.height !== `${cssH}px`) overlayCv.style.height = `${cssH}px`;
       }
       if (typeof live2d.syncSize === 'function') {
         try { live2d.syncSize({ size: { width: cssW, height: cssH }, dpr: res }); } catch { /* 忽略 */ }

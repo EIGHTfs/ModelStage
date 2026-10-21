@@ -848,7 +848,22 @@ bash server.sh start|stop|restart|status   # 启停服务（默认端口 8803）
       语义与 Spine 一致：捏开变大。实测 `modelScale 0.16283 → 0.65132`（userScale 1 → 4）。
 - [x] **右栏控件重复**：已消除 —— 自建的 Live2D 紫色控制区块（缩放滑杆 / ± / 重置 / 动作下拉 /
       表情下拉）整体删除，右栏只保留 原版 原生控件（「动作」区直接列出 L2D motions）。
-- [ ] **碧蓝航线 16 个未命名字目录**（Live2D 7 + Spine 9）：上游
+- [ ] **移动端旋转后画布不重建（未修复，2026-10-21 记录）**
+      现象：手机竖屏 ↔ 横屏切换后，Live2D 模型挤在舞台左侧、右侧露出棋盘格；
+      手动重新选择模型即可恢复。Spine 面同样受影响（`#stage-canvas` 不跟随）。
+      已排查并**全部排除**的方向：
+      · 不是缓存（静态资源统一 `Cache-Control: no-store`）
+      · 不是几何测量：诊断显示 `geo 777x1035` 与 `dom 777x1035` **一致**，
+        且 `trigger` 四个源都发过（`ro/resize/orient/vv` 均 > 0）
+      · 不是只改 attr 漏改 style（补 `overlayCv.style` 同步后真机仍无效）
+      · 不是触发时机（`orientationchange` 后延迟一帧、延迟 320ms 重测均无效）
+      · 不是「没重新挂载」：旋转时主动 `activate(st.document)` 重挂后真机仍无效
+      · 轮询自检（500ms 比对 DOM 尺寸）同样无效，已按评审要求移除
+      已知线索（供后续接手）：真机诊断里 `#live2d-overlay` 的
+      `attr 2136x2846`（按 dpr 2.75 算对）与 `client 1164x648`（16:9 旧值）长期不一致，
+      而容器 `#stage` 是 777x1035 —— 说明覆盖层的**显示尺寸**与其像素尺寸脱钩，
+      但为何 `style` 同步、重挂、自检都改不动它，尚未定位。
+      处置：**暂停修复**，相关尝试已整体回退（提交 `revert: 回退旋转相关所有尝试`）。
       `ship_skin_template.json` 没有这些键（`_ii`/`_new`/罗马数字等后缀变体），
       界面回退显示拼音目录名，功能不受影响（见 `data/upstream/README.md`「待重设计」节）
 - [x] **重影（已修复，2026-10-21）**：`aimierbeierding_3` / `aimierbeierding_3_hx` 这类
