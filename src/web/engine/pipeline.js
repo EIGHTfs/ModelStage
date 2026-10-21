@@ -1,6 +1,6 @@
 // engine/pipeline.js —— 贴图装载流水线：解码 → PMA 判定 → 上传 → 建图集
 //
-// 这一段是旧引擎 loadAtlas 的可读版（legacy/source/engine.js 行 284 @32100–34000），顺序与判定条件逐项照抄：
+// 顺序与判定条件：
 //   解码每页 →（auto 档）取像素做检测 → 三分支定 PMA → 决定 GPU/CPU 预乘 → 上传纹理 → 用页名匹配建 atlas
 // 业务层（player / loader）只调本文件，不碰运行时版本差异（版本相关的取类走 runtime-capabilities + adapters）。
 

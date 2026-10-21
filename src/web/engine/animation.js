@@ -1,6 +1,6 @@
 // engine/animation.js —— 动画状态操作（setAnimation / seek / mix / speed / loop / 时长）
 //
-// 语义与旧引擎逐项对齐（legacy/source/engine.js）：
+// 各项语义：
 //   · setAnimation：`state.setAnimation(0, name, loop)`，记录 animName/animDuration；
 //   · seek：夹到 [0, 当前时长] 后写 track.trackTime，推进一次状态；
 //   · setMixTime：0..1，写入 stateData.defaultMix；

@@ -1,6 +1,6 @@
-// engine/pma.js —— PMA 判定与模式映射（语义逐条照抄旧引擎 legacy/source/engine.js）
+// engine/pma.js —— PMA 判定与模式映射
 //
-// 三条判定线索的优先级（旧引擎 rk()，行 104 @5714）：
+// 三条判定线索的优先级：
 //   ① 像素检测（有结论就用它，即使与 atlas 声明冲突也以像素为准）
 //   ② atlas 声明 `pma: true|false`（必须行首）
 //   ③ 文件名线索 -pma / _pma / .pma / -nonpma / _nonpma / -straight

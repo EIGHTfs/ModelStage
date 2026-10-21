@@ -8,7 +8,7 @@
 //   · /live2d-lib/*     Live2D 运行时库（tool/resolve-live2d-runtimes.mjs 探测结果）
 //   · /plugins/*        展示类型插件 js
 //   · /spine-runtimes/* Spine 运行时（含 index.json 版本清单）
-//   · /engine.js        渲染引擎（优先 src/engine/engine.js，缺失回落 legacy 并告警）
+//   · 引擎模块          src/web/engine/**（ESM，随下面的 src/web 静态托管一起发出；无单独的引擎打包产物）
 //   · 其余              静态托管 src/web
 //
 // 写接口（POST /api/roots、/api/config/import、/api/diag）第一版**不实现**，统一返回 501：
@@ -32,7 +32,7 @@ const PLUGINS_DIR = path.join(ROOT, 'plugins');
 const PORT = Number(process.env.PORT) || Number(process.argv[2]) || 8804;
 
 const data = createServerData({ root: ROOT });
-// 静态/资源类路由（/plugins、/spine-runtimes、/engine.js、src/web 静态）单独成模块
+// 静态/资源类路由（/plugins、/spine-runtimes、src/web 静态）单独成模块
 const staticRoutes = createStaticRoutes({ root: ROOT, webRoot: WEB_ROOT, runtimeDir: RUNTIME_DIR, pluginsDir: PLUGINS_DIR });
 const diag = createDiag(data.paths);
 

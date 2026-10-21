@@ -555,7 +555,7 @@ Live2D 走的是**原版自己的通路**，界面上不额外造一套控件：
   校准到覆盖层实际尺寸，模型按真实包围盒居中（实测 `modelCenter = (960, 540)`、离中心 **0px**、
   渲染器 `1920×1080`）。
 - **表达式**：原版「皮肤」区对应 Live2D 的 expressions（`bridge.setExpressions(names)`）。
-- **改动位置**：引擎侧改动全部写在 `legacy/source/engine.js` 的
+- **改动位置（历史做法；该切片已在 B6 删除，下述标记块与构建命令不再是现行路径）**：当时引擎侧改动写在旧引擎切片的
   `/*<<<MOD id>>>*/ … /*<<<ENDMOD id>>>*/` 标记块内（原文一字未动，剥块后可逐字节还原）；
   产物构建用 `node legacy/extract-tools/build-product.mjs --out /tmp/product.html`，等价性校验用 `node legacy/extract-tools/build-byte-equal.mjs`。
 

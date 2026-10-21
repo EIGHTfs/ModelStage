@@ -1,11 +1,10 @@
 // live2d/stage.js —— Live2D 渲染（原生 ES 模块，无构建）
 //
 // 角色：作为「2D 渲染器」的 Live2D 分支实现，与 Spine 共用同一套相机与交互。
-//   · 覆盖层 canvas 覆盖在 Spine 画布之上（pointer-events:none）⇒ 指针事件仍落到 Spine 画布，
-//     由现有交互层驱动引擎；引擎在 Live2D 激活时把相机/动作/表情委托给本文件的 bridge。
-//   · bridge 形状必须与引擎契约一致（legacy/source/engine.js:194/235/236/288/293/298/313/328）：
-//       hide / loadForEngine / playLabel / setExpressions /
-//       resetView / setZoomRatio / pan / isActive
+//   · 覆盖层 canvas 覆盖在 Spine 画布之上（pointer-events:none）⇒ 指针事件落到舞台区域，
+//     由交互层驱动当前渲染器的相机；Live2D 侧的相机动作经本文件的 bridge 落到 PIXI。
+//   · bridge 成员（hide / loadForEngine / playLabel / setExpressions /
+//     resetView / setZoomRatio / pan / isActive）是 Live2D 渲染器的相机 backend 与播放控制的落地接口。
 //   · 资源入口先经 VirtualFS.resolve()（命中用 Blob URL，未命中回落原 URL）——不 patch PIXI 加载器。
 //
 // 运行时库按需懒加载（顺序不可颠倒），失败时报出具体文件。
@@ -411,7 +410,7 @@ export function createLive2DStage({ vfs, getOverlayHost, log } = {}) {
   /** 动作标签全集 */
   function motionLabels() { return [...st.motionMap.keys()]; }
 
-  /** 引擎桥：形状必须与 legacy/source/engine.js 的委托点一一对应 */
+  /** 相机 backend 与播放控制的桥：成员语义见文件头 */
   const bridge = {
     isActive: () => st.active,
     hide,
@@ -419,7 +418,7 @@ export function createLive2DStage({ vfs, getOverlayHost, log } = {}) {
     labels: () => motionLabels(),
     expressions: () => ((st.meta && st.meta.expressions) || []).map((e) => e.name),
     /**
-     * 引擎装载入口（engine.js:235）：复用或加载，返回与 Spine 同形的摘要。
+     * 装载入口：复用或加载，返回与 Spine 同形的摘要。
      * @param {object} model
      * @returns {Promise<{animations: string[], skins: string[], durations: object, version: string}>}
      */
@@ -438,7 +437,7 @@ export function createLive2DStage({ vfs, getOverlayHost, log } = {}) {
         version: `Live2D Cubism ${(model && model.cubism) || 3}`,
       };
     },
-    /** 引擎 setAnimation 委托（engine.js:288）：标签 → (group, index) */
+    /** 动作切换：标签 → (group, index) */
     playLabel(label) {
       const hit = st.motionMap.get(label);
       if (!hit || !st.model) {
@@ -454,7 +453,7 @@ export function createLive2DStage({ vfs, getOverlayHost, log } = {}) {
         return false;
       }
     },
-    /** 引擎 setSkins 委托（engine.js:293）：表情名 → expression 下标 */
+    /** 表情切换：表情名 → expression 下标 */
     setExpressions(names) {
       if (!st.model) return false;
       const list = (names || []).filter(Boolean);
@@ -470,7 +469,7 @@ export function createLive2DStage({ vfs, getOverlayHost, log } = {}) {
         return false;
       }
     },
-    /** 引擎 resetCamera 委托（engine.js:298） */
+    /** 相机复位 */
     resetView() {
       st.zoomRatio = 1;
       st.panX = 0;
@@ -478,14 +477,14 @@ export function createLive2DStage({ vfs, getOverlayHost, log } = {}) {
       applyZoom();
       note('Live2D 视图复位');
     },
-    /** 引擎 applyUserScale 委托（engine.js:313）：值越大模型越大 */
+    /** 相机缩放：值越大模型越大 */
     setZoomRatio(ratio) {
       const v = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Number(ratio) || 1));
       st.zoomRatio = v;
       applyZoom();
       return v;
     },
-    /** 引擎 applyPan 委托（engine.js:328）：屏幕像素增量 */
+    /** 相机平移：屏幕像素增量 */
     pan(dx, dy) {
       st.panX += Number(dx) || 0;
       st.panY += Number(dy) || 0;

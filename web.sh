@@ -5,7 +5,7 @@
 # 与 server.sh 的关系：
 #   - server.sh 跑既有实现前端（dist/index.html，默认 8803），PID/日志为 spine-multi-viewer.*
 #   - 本脚本跑重写版前端（src/web，默认 8804），PID/日志为 model-stage-web.*，两者互不干扰
-#   - 新前端由 src/server/serve.mjs 独立提供（静态 + /api + /files + /icons + /live2d-lib + /engine.js），**不再反代 8803**
+#   - 新前端由 src/server/serve.mjs 独立提供（静态 + /api + /files + /icons + /live2d-lib），**不再反代 8803**
 #
 # 端口与上游都可用环境变量覆盖：
 #   PORT=8804 bash web.sh restart

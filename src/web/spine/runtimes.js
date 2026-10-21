@@ -1,9 +1,10 @@
 // ============================================================================
-// src/web/spine/runtimes.js —— Spine 运行时管理器（补 engine.js 缺失的 `Is`）
+// src/web/spine/runtimes.js —— Spine 运行时管理器（提供 `Is` 能力）
 //
-// 背景：`legacy/source/engine.js` 是"切片"产物，第 42 行 `let Yd = Is;` 依赖旧 app
-//   `legacy/source/js/app/constants.js` 里的运行时管理器 `Is`，但切片**没有带上它** ⇒ 直接用会
-//   `ReferenceError: Is is not defined`。这里用可读代码补上同名能力。
+// 作用：把"按版本取运行时源码 → 隔离执行 → 交出该版本的 spine 命名空间"收敛到一处，
+//   引擎侧只需问它要某个版本，不关心源码从哪来、怎么执行。
+//
+// 为什么需要它：多版本共存要求每个版本的 `var spine` 不互相覆盖（详见下方"必须隔离执行"）。
 //
 // 关键点：**必须隔离执行**。每个 `spine-webgl-<ver>.js` 都是顶层 `var spine = …`；
 //   若用 `<script src>` 加载，后加载的会覆盖 `window.spine`，导致先加载版本的类在运行期
@@ -66,7 +67,7 @@ function evalIsolated(source, version) {
   return spineObj;
 }
 
-/** 运行时管理器（与旧 app 的 `Is` 同名 API，engine.js 只依赖 getInstance/setLogCallback/getRuntimeWithFallback） */
+/** 运行时管理器（提供 getInstance / setLogCallback / getRuntimeWithFallback 三项能力） */
 export class SpineRuntimeManager {
   static getInstance() {
     if (!SpineRuntimeManager._inst) SpineRuntimeManager._inst = new SpineRuntimeManager();
@@ -174,8 +175,8 @@ function defineField(obj, key, value) {
   return value;
 }
 /**
- * 安装到全局：engine.js 顶层 `let Yd = Is;` 会在脚本执行时读 `Is`，
- * 所以必须在注入 engine.js **之前**调用。
+ * 安装到全局：引擎取某个版本的运行时源码时经它取实例，
+ * 所以必须在装载模型**之前**调用。
  */
 export function installRuntimeManager() {
   if (!window.de) window.de = defineField; // engine 切片依赖的 class-field 助手

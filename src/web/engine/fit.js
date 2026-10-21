@@ -1,6 +1,6 @@
 // engine/fit.js —— 适配（fit）三模式：subject（默认）/ all / animation
 //
-// 规则移植自旧引擎（legacy/source/engine.js 的 computeSubjectBounds + resetCamera 的 fit 段）：
+// 三模式的判定规则：
 //   · NON_SUBJECT_RE 剔除背景/特效，CORE_RE 认主体，FIT_MAX_RATIO=1.15 限制"横向过宽"的包围盒；
 //   · subject 结果不可信时回落到整体包围盒；
 //   · animation 模式对每个动作采样若干帧取并集。
