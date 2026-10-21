@@ -1,19 +1,16 @@
 // ============================================================================
-// src/web/spine/canvas.js —— 舞台适配层（M4）
+// src/web/spine/canvas.js —— 舞台适配层（唯一出口）
 //
-// 定位：**唯一出口**。上层（名册/面板/播放条/持久化）只通过这里的方法与舞台交互；
-//   当前实现复用旧 `legacy/source/engine.js` 的 `SpineEngine`（生产已验证），
-//   后续可换成可读版渲染器而不改调用方（契约见 doc/参考-Spine渲染要点.md §14）。
+// 定位：上层（名册/面板/播放条/持久化）只通过这里的方法与舞台交互；
+//   内部分派给 `src/web/engine/` 的可读实现，调用方不随实现变化。
 //
-// 为什么复用 engine.js：
-//   · 自包含（无 import/export），运行时管理器在内，且用 `new Function` 做**隔离执行**
-//     ——`var spine` 在执行体里成局部绑定，这才是多版本共存的正解；
-//     `<script src>` 会覆盖 window.spine，导致 3.8 的 `GLTexture extends spine.Texture`
-//     在 4.1 覆盖后炸 "Class constructor Texture cannot be invoked without 'new'"。
-//   · PMA / DPR / fitMode 三档 / 纹理过滤 / 调试绘制 / 裁剪 语义齐全，面板接线风险≈0。
+// 为什么用 ESM 直连引擎而不是脚本注入：
+//   · 脚本注入（`<script src>`）会覆盖 window.spine，导致 3.8 的 GLTexture 继承 4.1 的
+//     spine.Texture 后炸 "Class constructor Texture cannot be invoked without 'new'"。
+//   · ESM 静态导入天然按模块隔离，多版本运行时共存不需要额外技巧。
 //
-// 运行时来源：dev-server 的 /spine-runtimes/index.json 给出**目录里实际存在的版本**，
-//   客户端按版本取源码文本塞进 window.__SPINE_RUNTIME_SOURCES__，由 engine 懒执行。
+// 运行时来源：`/spine-runtimes/index.json` 给出目录里实际存在的版本，
+//   客户端按版本取源码文本塞进 window.__SPINE_RUNTIME_SOURCES__，由引擎懒执行。
 // ============================================================================
 
 import { installRuntimeManager } from './runtimes.js';
@@ -22,22 +19,10 @@ import { SpineEngine as NextEngine } from '../engine/index.js';
 
 const RUNTIME_BASE = '/spine-runtimes/spine-webgl-';
 const RUNTIME_MANIFEST = '/spine-runtimes/index.json';
-const ENGINE_SRC = '/engine.js';
 const ALPHA_THRESHOLD = 8;
 
-/**
- * 引擎实现选择：
- *   · 默认走新引擎（ESM 直连 `engine/index.js`，不再脚本注入）；
- *   · URL 带 `?legacy-engine=1` 时仍走旧的 `/engine.js` 脚本注入，用于逐项对照与回退。
- * 为什么保留开关：新引擎是重写实现，出问题时必须能一键切回旧实现定位，避免只能"猜是谁的锅"。
- */
-const USE_LEGACY_ENGINE = (() => {
-  try { return new URLSearchParams(window.location.search).get('legacy-engine') === '1'; } catch { return false; }
-})();
-
-/** 取当前应使用的引擎构造器（新 = 类；旧 = 脚本注入后从全局读出的类） */
+/** 取引擎构造器：只有新引擎（可读实现）。旧脚本注入路径已随引擎重写收尾删除。 */
 async function pickEngineCtor() {
-  if (USE_LEGACY_ENGINE) return ensureEngine();
   return NextEngine;
 }
 
@@ -58,7 +43,6 @@ const DEFAULT_SETTINGS = {
 };
 
 const runtimeSourceCache = new Map(); // ver -> 源码文本
-let enginePromise = null;
 let manifestPromise = null;
 let availableCache = null;
 
@@ -85,38 +69,6 @@ function businessError(msg, cause) {
   e.business = true;
   if (cause) e.cause = cause;
   return e;
-}
-
-/**
- * engine.js 把 SpineEngine 声明为脚本级 const（不挂 window）；
- * 必须在全局作用域用 new Function 读，才能拿到该绑定。
- */
-function readGlobalEngine() {
-  const SRC = 'return typeof SpineEngine !== "undefined" ? SpineEngine : '
-    + '(typeof SpineEngineAlias !== "undefined" ? SpineEngineAlias : null);';
-  try { return new Function(SRC)(); } catch { return null; } // dsh-skip-sensitive 运行时隔离执行本地可信源码（src/spine-runtimes/*.js），不接收任何外部输入
-}
-
-/** 注入 engine.js（只一次；成败都缓存 Promise） */
-function ensureEngine() {
-  // 注入前必须先装运行时管理器：engine.js 顶层 `let Yd = Is` 在脚本执行瞬间就要读它
-  installRuntimeManager();
-  const pre = readGlobalEngine();
-  if (pre) return Promise.resolve(pre);
-  if (enginePromise) return enginePromise;
-  enginePromise = new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = ENGINE_SRC;
-    s.async = true;
-    s.onload = () => {
-      const E = readGlobalEngine();
-      if (E) resolve(E);
-      else reject(new Error('engine.js 已加载但读不到全局 SpineEngine 绑定'));
-    };
-    s.onerror = () => reject(new Error(`engine.js 加载失败（${ENGINE_SRC}）`));
-    document.head.appendChild(s);
-  });
-  return enginePromise;
 }
 
 /** 运行时目录清单（dev-server 扫目录生成；客户端不写死版本列表） */
@@ -407,7 +359,8 @@ async function loadIntoStage(st, arg) {
   st.abort = ctl;
   // 上一个模型由 engine.loadModel 内部 stop+disposeTexturesAndAtlas 负责释放，这里只记账
   if (st.model) { st.model = null; st.disposes++; }
-  installRuntimeManager(); // engine.js 顶层 `let Yd = Is` 需要它先存在
+  // 先装运行时管理器：引擎取某个版本的运行时源码时要经它（多版本共存的单一入口）
+  installRuntimeManager();
   const Engine = await pickEngineCtor();
   const avail = await availableVersions();
   const ver = pickRuntimeVersion(model.version, avail);
@@ -490,11 +443,11 @@ const api = {
 
 /**
  * 给舞台 API 挂"可选能力"：PMA 四档、滤镜、皮肤、混合模式、调试绘制、MSAA 重建。
- * 这些方法依赖模块级工具（applySettings / ensureEngine / loadIntoStage…），与工厂解耦。
+ * 这些方法依赖模块级工具（applySettings / loadIntoStage…），与工厂解耦。
  */
 /**
  * 给舞台 API 挂"可选能力"。按职责拆成四段，便于维护与审计（单函数长度）。
- * 依赖模块级工具（applySettings / ensureEngine / loadIntoStage…），与工厂解耦。
+ * 依赖模块级工具（applySettings / loadIntoStage…），与工厂解耦。
  */
 function attachExtraApi(api, st) {
   attachSettingSetters(api, st);
