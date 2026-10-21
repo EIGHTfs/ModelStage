@@ -312,6 +312,5 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[serve] 新端自带服务 on http://0.0.0.0:${PORT}`);
   console.log(`[serve] 静态根 ${WEB_ROOT}`);
-  console.log(`[serve] 引擎 ${staticRoutes.pickEngineFile() || '(缺失)'}`);
   console.log(`[serve] 资源根 ${data.config.readConfig().map((r) => `${r.id}=${r.name}`).join(', ') || '(无)'}`);
 });

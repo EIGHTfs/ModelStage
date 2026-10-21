@@ -1,6 +1,6 @@
 // serve-static.mjs —— 静态资源类路由（从 serve.mjs 拆出，控制单文件规模）
 //
-// 负责：/plugins/*、/spine-runtimes/*（含 index.json 版本清单）、/engine.js、以及 src/web 静态托管。
+// 负责：/plugins/*、/spine-runtimes/*（含 index.json 版本清单）、以及 src/web 静态托管。
 // 与数据无关，故不依赖 createServerData；目录根由调用方注入。
 import fs from 'node:fs';
 import path from 'node:path';
@@ -58,28 +58,7 @@ export function listRuntimeVersions(runtimeDir) {
   }
 }
 
-/**
- * 选引擎文件：候选里第一个存在的；落到 legacy 时告警一次。
- * @param {{root: string, engineCandidates: string[], state: {warned: boolean}}} ctx
- */
-export function pickEngineFile(ctx) {
-  for (const candidate of ctx.engineCandidates) {
-    try {
-      if (fs.statSync(candidate).isFile()) {
-        if (candidate.includes(`${path.sep}legacy${path.sep}`) && !ctx.state.warned) {
-          ctx.state.warned = true;
-          console.warn(`[serve] 未找到 src/engine/engine.js，回落到 ${path.relative(ctx.root, candidate)}（迁移完成后应改走新路径）`);
-        }
-        return candidate;
-      }
-    } catch {
-      /* 继续找下一个候选 */
-    }
-  }
-  return null;
-}
-
-/** /plugins/* 、/spine-runtimes/* 、/engine.js；处理了返回 true */
+/** /plugins/* 、/spine-runtimes/*；处理了返回 true */
 export function serveAssets(ctx, req, res, p) {
   if (p.startsWith('/plugins/')) {
     const abs = resolveUnder(ctx.pluginsDir, p, '/plugins/');
@@ -102,16 +81,6 @@ export function serveAssets(ctx, req, res, p) {
     if (!abs) {
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('404: ' + p);
-      return true;
-    }
-    sendFile(req, res, abs, { 'Content-Type': 'text/javascript; charset=utf-8' });
-    return true;
-  }
-  if (p === '/engine.js') {
-    const abs = pickEngineFile(ctx);
-    if (!abs) {
-      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end('404: /engine.js');
       return true;
     }
     sendFile(req, res, abs, { 'Content-Type': 'text/javascript; charset=utf-8' });
@@ -147,7 +116,7 @@ export function serveStatic(ctx, req, res, p) {
 }
 
 /**
- * 绑定型适配器：目录与引擎候选固定，调用方只需 (req,res,p)。
+ * 绑定型适配器：目录固定，调用方只需 (req,res,p)。
  * @param {{root: string, webRoot: string, runtimeDir: string, pluginsDir: string}} opts
  */
 export function createStaticRoutes(opts) {
@@ -156,16 +125,9 @@ export function createStaticRoutes(opts) {
     webRoot: opts.webRoot,
     runtimeDir: opts.runtimeDir,
     pluginsDir: opts.pluginsDir,
-    engineCandidates: [
-      process.env.SPINE_ENGINE_FILE && path.resolve(process.env.SPINE_ENGINE_FILE),
-      path.join(opts.root, 'src', 'engine', 'engine.js'),
-      path.join(opts.root, 'legacy', 'source', 'engine.js'),
-    ].filter(Boolean),
-    state: { warned: false },
   };
   return {
     serveAssets: (req, res, p) => serveAssets(ctx, req, res, p),
     serveStatic: (req, res, p) => serveStatic(ctx, req, res, p),
-    pickEngineFile: () => pickEngineFile(ctx),
   };
 }
