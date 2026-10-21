@@ -524,13 +524,23 @@ ulbInstall: {
     return out;
   }
 
-  /** 取资源包字节：调用方可直接给 bytes，否则按 rootId/rel 走宿主取文件。 */
+  /**
+   * 取资源包字节（契约 §1.1 取字节两条通道 + §3.6 宿主能力面）：
+   *   ① file.bytes 存在 → 直接用（不产生 I/O）
+   *   ② 不存在 → host.fetchFile(rootId, rel) → Promise<Uint8Array>（§3.6 规定签名，直接返回 Uint8Array）
+   * host 不可用（且无 bytes）→ 抛 ULB_ERR_NO_HOST（可退化，§3.6 缺省/降级列）。
+   */
   async function readBundleBytes(ctx, hostApi) {
     const given = ctx && ctx.bytes;
     if (given) return given;
     if (!ctx || !ctx.rootId || !ctx.rel) throw NS.errors.fail('ULB_ERR_BAD_ARGS', '缺少 rootId/rel，无法读取资源包');
-    const got = await hostApi.fetchFile(ctx.rootId, ctx.rel);
-    return new Uint8Array(got.bytes);
+    // §3.6：host 缺失且 bytes 缺失时，不能降级出字节 → 抛带码错误（可退化）
+    const fetchFile = hostApi && hostApi.fetchFile;
+    if (typeof fetchFile !== 'function') {
+      throw NS.errors.fail('ULB_ERR_NO_HOST', '宿主未提供 fetchFile(rootId, rel) 且 file.bytes 缺失，无法读取资源包');
+    }
+    const bytes = await fetchFile(ctx.rootId, ctx.rel);
+    return bytes;   // §3.6 签名：fetchFile 直接返回 Promise<Uint8Array>
   }
 
   /** 校验容器并取出 CAB（必需）与 resS（可选）两段字节。 */
@@ -691,7 +701,10 @@ ulbInstall: {
    * @returns {Promise<object>} 素材报告 + 可交给 Live2D 舞台的 model
    */
   async function open(ctx) {
-    const hostApi = (ctx && ctx.host) || host.host;
+    // §3.5 兼容层：旧宿主把宿主能力面挂在 host.host（嵌套）；新契约（§3.6）挂在 host 顶层。
+    //   两代都认：先 ctx.host（旧宿主经 ctx 注入）→ host.host（旧嵌套面）→ host（新顶层能力面）。
+    //   readBundleBytes 按 §3.6 对 hostApi.fetchFile 缺省抛 ULB_ERR_NO_HOST（可退化）。
+    const hostApi = (ctx && ctx.host) || host.host || host;
     const bytes = await readBundleBytes(ctx, hostApi);
     const { parsed, cabNode, cabBytes, resSBytes } = parseContainerNodes(bytes, ctx && ctx.name);
     const sf = NS.serialized.parse(cabBytes);
@@ -767,43 +780,54 @@ ulbInstall: {
   }
 
   // 契约：canHandle 必须是纯判定（无副作用、返回布尔）。
-  // 实现：复用 bundle-probe 的容器+对象表判定（与 /api/bundle/probe 同口径，避免两份真相漂移），
-  //   但只取「是不是可读资产包」这个二值结论——旧的 0.6/1.0 置信度区分（有没有 moc3）
-  //   属于"选谁"的判断，契约明确把它推回给宿主，这里一律按 ok 判 true。
-  async function canHandle(file) {
+  // 契约 §3.1 判定边界 + §3.7 异常处理（文档已写死，无需再猜）：
+  //   允许：读 file.bytes 做容器魔数判定（复用 bundle-probe，与 /api/bundle/probe 同口径）
+  //   禁止：任何 I/O、修改外部状态、把异常抛给宿主
+  //   canHandle 内部 try/catch，捕获后 return false（§3.7 明许），catch 分支至少记一条 debug（§3.7）
+  // 三种情形（§3.1 表格）：
+  //   ① 有 bytes 且魔数匹配（UnityFS + CAB-*）→ true
+  //   ② 有 bytes 且魔数不匹配            → false
+  //   ③ 没有 bytes                        → true（保守放行：判 false 会让无扩展名的包永远无法被选中）
+  // 注意：必须同步返回 boolean（§3.1 签名 canHandle(file) → boolean）；
+  //   不能用 async——async 会返回 Promise，而 Promise 恒为真值，宿主按 if (canHandle(file)) 判断时所有文件都被放行，判定失效。
+  function canHandle(file) {
     const ctx = asCtx(file);
+    const bytes = ctx && ctx.bytes ? ctx.bytes : null;
+    if (!bytes) return true;
     try {
-      const bytes = ctx && ctx.bytes ? ctx.bytes : null;
-      if (!bytes) {
-        // 契约 §一：canHandle 必须是纯判定、无副作用（不做 I/O）。
-        // 没给字节时发不了容器探测，只能按名称做保守启发。
-        // 资源根里的 Unity 包**无扩展名**（如 azurlane_bundle/adaerbote_3），所以不能用扩展名白名单
-        // 判 false（会漏掉真包）；宿主既然按 fileKinds=['bundle'] 把文件递过来，容器归属已由宿主筛过，
-        // 这里放行 true，真正读不出的情形由 resolve() 抛可读错误兜底（契约 §5.8 禁止半成品）。
-        // 该猜法与文档缺口的对应关系见 卡点清单.md 第 8 条。
-        return true;
-      }
-      const r = NS.bundleProbe.run(bytes);
-      return r.ok;   // 有容器+CAB 即归本插件；NO_CAB（有 UnityFS 头但无资产节点）判 false
+      return NS.bundleProbe.run(bytes).ok;
     } catch (e) {
+      // §3.7：catch 分支不得静默——至少记一条 debug（host.log 或降级 console）
+      const log = host.log || (console && console.debug ? (m) => console.debug(m) : null);
+      if (log) log('debug', `[unity-live2d-bundle] canHandle 内部异常，按不可读处理：${e.message}`, PLUGIN_ID);
       return false;
     }
   }
 
-  // 契约：resolve 产出 { prefix, files, entry }；失败抛带原因的错误，不返回缺字段半成品。
+  // 契约：resolve 产出 { prefix, files, entry }；失败抛带 code 的错误（§3.4），不返回缺字段半成品（§5.8）。
+  // §1.2：prefix 格式 = `vfs://<providerId>/<rootId>/<相对目录>/`（全局唯一、以 / 结尾、目录不含文件名）。
+  //   “相对目录”取 rel 的 dirname 部分（rel 指向容器文件本身，prefix 以该文件所在目录为命名空间）。
   async function resolve(file) {
     const ctx = asCtx(file);
-    if (!ctx || (!ctx.bytes && (!ctx.rootId || !ctx.rel))) {
-      throw NS.errors.fail('ULB_ERR_BAD_ARGS', 'resolve() 缺少可读资源：需要 file.bytes 或 file.rootId+file.rel');
+    if (!ctx || !ctx.rootId || !ctx.rel) {
+      // §1.1：rootId/rel 为必选；bytes 可选（缺了走宿主取资源通道，见 readBundleBytes）
+      throw NS.errors.fail('ULB_ERR_BAD_ARGS', 'resolve() 缺少必选字段：需要 file.rootId 与 file.rel');
     }
-    const hostApi = (ctx.host) || host.host;
+    // §3.6 宿主能力面：取字节通道② 的唯一合法形态是 host.fetchFile(rootId, rel) → Promise<Uint8Array>。
+    //   hostApi 优先取 ctx.host（旧宿主把能力面挂在 ctx 上），否则取宿主注入面 host 本身
+    //   （新契约下 host 由核心在调用插件前注入，能力面挂在 host 顶层）；缺失时 readBundleBytes 抛 ULB_ERR_NO_HOST。
+    const hostApi = (ctx.host) || host;
     const bytes = await readBundleBytes(ctx, hostApi);
     const { parsed, cabNode, cabBytes, resSBytes } = parseContainerNodes(bytes, ctx && ctx.name);
     const sf = NS.serialized.parse(cabBytes);
     const got = NS.extract.extractAll({ cabBytes, resSBytes, sf });
     const profile = await loadProfile(ctx && ctx.profile);
 
-    const prefix = `unity-live2d-bundle/${String(ctx.rootId || 'root')}/${String(ctx.rel || 'file')}`;
+    // 相对目录 = rel 去掉末尾文件名后的目录段（如 'a/b/c' → 'a/b'；纯文件名 'c' → ''）。
+    // prefix 恒以 / 结尾（§1.2 格式）；rootId 与 relDir 之间保留单斜杠，relDir 为空时避免出现双斜杠。
+    const relDir = String(ctx.rel).replace(/\/+$/, '').split('/').slice(0, -1).join('/');
+    const dirSeg = relDir ? `${relDir}/` : '';
+    const prefix = `vfs://${PLUGIN_ID}/${String(ctx.rootId)}/${dirSeg}`;
     const files = new Map();
     let entry = null;
 
