@@ -34,23 +34,46 @@ function readConfig() {
 }
 
 /**
+ * 读配置里的**全部**资源根（含 enabled:false 的），供写路径使用。
+ *
+ * 为什么写路径不能复用 readConfig()：
+ *   readConfig() 是「运行时生效视图」，会把 enabled:false 的根过滤掉；
+ *   若拿它的结果写回文件，停用的根就会被静默删除（改一次别的根就丢一条配置）。
+ *   写路径必须基于完整列表做增删改，停用与否只是某个字段的值。
+ *
+ * 只做最小形状校验（id + path 必须存在），其余字段原样保留：
+ *   roots[] 还承载 names / icons / kind / profile 等附加配置，写回时不能丢。
+ *
+ * @returns {Array<object>} 完整资源根数组（保持文件中的顺序）
+ */
+function readConfigRaw() {
+  try {
+    const cfg = parseJsonc(fs.readFileSync(CONFIG_FILE, 'utf8'), 'config/resources.json');
+    const roots = Array.isArray(cfg.roots) ? cfg.roots : [];
+    return roots.filter((r) => r && typeof r === 'object' && r.id && r.path);
+  } catch (e) {
+    // 读不出来时抛出而不是返回空数组：写路径拿空列表写回会把整份配置清空
+    throw new Error(`读取 config/resources.json 失败: ${e.message}`);
+  }
+}
+
+/**
  * 写回 config/resources.json（保留原文件注释头部）。
  *
  * 为什么保留注释头：配置文件带 // 注释（JSONC），若整文件用 JSON.stringify 覆盖，
  *   注释会被冲掉；而注释是给"人"看的说明，系统自动生成时也应保留。
- *   做法：截取原文件第一个 '{' 之前的内容作为 header，再拼接新的完整 JSON。
+ *
+ * 头部怎么取（重要）：只取**文件开头的连续注释/空行块**，不能"截到第一个 '{'"。
+ *   因为注释正文里也可能出现花括号（例如 icons 说明写了 `{ dir: 绝对路径 }`），
+ *   按第一个 { 截断会把注释切成半行、且新 JSON 的首行被并进该注释行 —— 整份文件随即解析失败
+ *   （实测：写入成功但回读报 "Unexpected non-whitespace character after JSON"，配置等于写坏）。
  *
  * 原子写入：先写 .tmp 再 rename，避免写到一半中断导致配置损坏。
  *
  * @param {Array} roots 资源根数组
  */
 function writeConfig(roots) {
-  let header = '';
-  if (fs.existsSync(CONFIG_FILE)) {
-    const old = fs.readFileSync(CONFIG_FILE, 'utf8');
-    const brace = old.indexOf('{');
-    if (brace > 0) header = old.slice(0, brace);
-  }
+  let header = readHeader();
   if (!header) {
     header = [
       '// 本地资源根配置 —— 由界面「添加资源根」自动生成，也可手动编辑',
@@ -63,6 +86,34 @@ function writeConfig(roots) {
   const body = JSON.stringify({ roots }, null, 2);
   fs.writeFileSync(CONFIG_FILE + '.tmp', header + body + '\n', 'utf8');
   fs.renameSync(CONFIG_FILE + '.tmp', CONFIG_FILE);
+}
+
+/**
+ * 取配置文件开头的注释块（连续的行首 // 与空行），作为写回时要保留的 header。
+ *
+ * 判据按**行**而不是按字符：从第一行开始，遇到第一行"不是注释也不是空行"就停。
+ *   这样注释里出现的花括号、引号都不会影响截断位置；返回值保证以换行结尾，
+ *   让新 JSON 从独立一行开始。
+ *
+ * @returns {string} 以换行结尾的注释块；文件不存在或无注释块时返回空串
+ */
+function readHeader() {
+  if (!fs.existsSync(CONFIG_FILE)) return '';
+  let old;
+  try {
+    old = fs.readFileSync(CONFIG_FILE, 'utf8');
+  } catch {
+    return '';
+  }
+  const lines = old.split('\n');
+  const keep = [];
+  for (const line of lines) {
+    const t = line.trim();
+    if (t === '' || t.startsWith('//')) keep.push(line);
+    else break;
+  }
+  if (!keep.length) return '';
+  return `${keep.join('\n')}\n`;
 }
 
 /**
@@ -109,6 +160,8 @@ function exportConfigFiles() {
   return out;
 }
 
-  return { readConfig, writeConfig, buildGroups, exportableConfigFiles, exportConfigFiles, CONFIG_FILE };
+  // readConfig     = 运行时生效视图（已滤掉 enabled:false），只读消费方用它
+  // readConfigRaw  = 完整列表（含停用），写路径必须用它，否则会丢配置
+  return { readConfig, readConfigRaw, writeConfig, buildGroups, exportableConfigFiles, exportConfigFiles, CONFIG_FILE };
 }
 

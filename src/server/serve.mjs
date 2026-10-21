@@ -11,8 +11,8 @@
 //   · 引擎模块          src/web/engine/**（ESM，随下面的 src/web 静态托管一起发出；无单独的引擎打包产物）
 //   · 其余              静态托管 src/web
 //
-// 写接口（POST /api/roots、/api/config/import、/api/diag）第一版**不实现**，统一返回 501：
-//   写配置必须先「校验 → 备份 → 写」，未经验证不在新入口开放；旧服务仍可写。
+// 写接口：`POST /api/roots` 已开放（校验 → 备份 → 写 → 失效缓存，见 http/write.mjs）；
+//   `POST /api/config/import` 尚未开放，仍返回 501（同一套管道就绪后再接）。
 //
 // 用法：PORT=8804 node src/server/serve.mjs
 import http from 'node:http';
@@ -24,6 +24,7 @@ import { resolveSafe } from './assets/probe.mjs';
 import { browseDir } from './assets/browse.mjs';
 import { createStaticRoutes, sendFile } from './http/static.mjs';
 import { createDiag } from './http/diag.mjs';
+import { createWriteApi, toRootView } from './http/write.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const WEB_ROOT = path.join(ROOT, 'src', 'web');
@@ -35,6 +36,8 @@ const data = createServerData({ root: ROOT });
 // 静态/资源类路由（/plugins、/spine-runtimes、src/web 静态）单独成模块
 const staticRoutes = createStaticRoutes({ root: ROOT, webRoot: WEB_ROOT, runtimeDir: RUNTIME_DIR, pluginsDir: PLUGINS_DIR });
 const diag = createDiag(data.paths);
+// 写接口（资源根增删改名启停）：读路径与写路径共用同一份 config/models 实例
+const writeApi = createWriteApi({ paths: data.paths, config: data.config, models: data.models });
 
 /** 统一的 JSON 响应（与 server.mjs 的 sendJson 同形：无缩进、no-store） */
 function sendJson(res, status, body) {
@@ -61,14 +64,8 @@ function sendText(res, status, text, type) {
 /** 资源根 / 插件 / 品牌 / 前端配置 */
 function apiBasics(res, p) {
   if (p === '/api/roots') {
-    const list = data.config.readConfig().map((r) => ({
-      id: r.id,
-      name: r.name,
-      path: r.path,
-      kind: r.kind || 'spine',
-      profile: r.profile || null,
-      exists: fs.existsSync(r.path) && fs.statSync(r.path).isDirectory(),
-    }));
+    // 视图映射与写接口共用同一份（http/write.mjs 的 toRootView），避免读写两处口径漂移
+    const list = toRootView(data.config.readConfig());
     return sendJson(res, 200, { roots: list, groups: data.config.buildGroups(list) });
   }
   if (p === '/api/plugins') {
@@ -285,7 +282,16 @@ const server = http.createServer((req, res) => {
     if (p === '/api/diag' && req.method === 'POST') {
       return readBody(req, res, (body) => sendJson(res, 200, diag.appendDiag(body)));
     }
-    if ((p === '/api/roots' || p === '/api/config/import') && req.method === 'POST') {
+    // 资源根写操作（增 / 删 / 改名 / 启停）：校验 → 备份 → 写 → 失效缓存
+    // 具体管道在 http/write.mjs；这里只负责读请求体与发响应。
+    if (p === '/api/roots' && req.method === 'POST') {
+      return readBody(req, res, (body) => {
+        writeApi.writeRoots(body)
+          .then((r) => sendJson(res, r.status, r.body))
+          .catch((e) => sendJson(res, 500, { ok: false, error: `写资源根异常: ${(e && e.message) || e}` }));
+      });
+    }
+    if (p === '/api/config/import' && req.method === 'POST') {
       return rejectWrite(res, p);
     }
     if (apiBasics(res, p)) return;
