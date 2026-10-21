@@ -25,6 +25,17 @@ function getNameTable(root) {
   return t;
 }
 
-  return { getNameTable };
+/**
+ * 清空名表缓存。
+ *
+ * 为什么需要：名表是"文件内容"的缓存，导入配置会整体替换 config/names/*.json；
+ *   不清缓存的话，进程内还留着旧名表，界面会继续显示导入前的角色名，
+ *   直到重启服务才更新（表现为"导入没生效"）。
+ */
+function clearNameCache() {
+  nameTableCache.clear();
+}
+
+  return { getNameTable, clearNameCache };
 }
 

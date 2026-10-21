@@ -252,11 +252,15 @@ export function invalidateModelsCache(configFile, rootId) {
     }
     return;
   }
-  // 全部失效：删除所有 models.*.json 与 live2d.*.json
+  // 全部失效：删除所有 models.<id>.json 与 live2d.<id>.json。
+  //   ⚠️ 必须**要求中间有根 id**，不能只判前缀：`config/live2d.json` 是入库的手工配置
+  //   （Live2D 渲染开关，带注释、留着备查），它同样以 "live2d." 开头 ——
+  //   早期实现按前缀匹配会把它一起删掉（实测发生过一次，等于顺手删用户配置）。
   try {
     const dir = path.dirname(configFile);
     for (const n of fs.readdirSync(dir)) {
-      if ((n.startsWith('models.') || n.startsWith('live2d.')) && n.endsWith('.json')) {
+      const m = /^(?:models|live2d)\.(.+)\.json$/.exec(n);
+      if (m && m[1] && !m[1].includes('/') && !m[1].includes('\\')) {
         fs.unlinkSync(path.join(dir, n));
       }
     }

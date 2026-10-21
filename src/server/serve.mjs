@@ -11,8 +11,8 @@
 //   · 引擎模块          src/web/engine/**（ESM，随下面的 src/web 静态托管一起发出；无单独的引擎打包产物）
 //   · 其余              静态托管 src/web
 //
-// 写接口：`POST /api/roots` 已开放（校验 → 备份 → 写 → 失效缓存，见 http/write.mjs）；
-//   `POST /api/config/import` 尚未开放，仍返回 501（同一套管道就绪后再接）。
+// 写接口：`POST /api/roots`（资源根增删改名启停）与 `POST /api/config/import`（导入配置）
+//   均已开放，共用 http/write.mjs 的管道：校验 → 备份 → 写 → 失效缓存 → 回读自检。
 //
 // 用法：PORT=8804 node src/server/serve.mjs
 import http from 'node:http';
@@ -36,8 +36,10 @@ const data = createServerData({ root: ROOT });
 // 静态/资源类路由（/plugins、/spine-runtimes、src/web 静态）单独成模块
 const staticRoutes = createStaticRoutes({ root: ROOT, webRoot: WEB_ROOT, runtimeDir: RUNTIME_DIR, pluginsDir: PLUGINS_DIR });
 const diag = createDiag(data.paths);
-// 写接口（资源根增删改名启停）：读路径与写路径共用同一份 config/models 实例
-const writeApi = createWriteApi({ paths: data.paths, config: data.config, models: data.models });
+// 写接口（资源根增删改名启停 / 导入配置）：读路径与写路径共用同一份 config/models/names 实例
+const writeApi = createWriteApi({
+  paths: data.paths, config: data.config, models: data.models, names: data.names,
+});
 
 /** 统一的 JSON 响应（与 server.mjs 的 sendJson 同形：无缩进、no-store） */
 function sendJson(res, status, body) {
@@ -245,30 +247,39 @@ function serveLive2DLib(req, res, p) {
 
 // ------------------------------------------------------------------ 写接口
 
-/** 读请求体（上限 2MB，与旧服务一致）；超限直接断开 */
-function readBody(req, res, onBody) {
-  let body = '';
+/**
+ * 读请求体；超限直接断开连接（不截断，避免把半个 JSON 当成完整内容去写盘）。
+ *
+ * ⚠️ 必须**收齐 Buffer 再统一解码**，不能逐 chunk `body += chunk`：
+ *   chunk 是 Buffer，`+=` 会按 utf8 逐段解码；一个多字节字符（中文正好 3 字节）
+ *   被切在两个 chunk 边界上时，两半各自解成 U+FFFD ⇒ 内容被写坏。
+ *   实测：导入 588KB 名表时「喀琅施塔得」被写成「喀琅��塔得」，文件凭空多 3 字节。
+ *
+ * @param {import('node:http').IncomingMessage} req
+ * @param {import('node:http').ServerResponse} res
+ * @param {(body: string) => void} onBody
+ * @param {number} [maxBytes] 上限（字节）：默认 2MB；导入配置传 5MB
+ */
+function readBody(req, res, onBody, maxBytes = 2e6) {
+  const chunks = [];
+  let size = 0;
   req.on('data', (chunk) => {
-    body += chunk;
-    if (body.length > 2e6) req.destroy();
+    size += chunk.length;
+    if (size > maxBytes) {
+      req.destroy();
+      return;
+    }
+    chunks.push(chunk);
   });
   req.on('end', () => {
+    // 空请求体也要回调（由各接口自己判断"缺少字段"并给出明确错误）
+    const body = Buffer.concat(chunks).toString('utf8');
     try {
       onBody(body);
     } catch (e) {
       console.error('[serve] POST 处理异常:', e && e.stack ? e.stack : e);
       sendJson(res, 500, { ok: false, error: String((e && e.message) || e) });
     }
-  });
-}
-
-/** 写接口第一版不开放：501 + 明确说明（避免未验证就动用户配置） */
-function rejectWrite(res, p) {
-  sendJson(res, 501, {
-    ok: false,
-    error: '该实例为新端自带只读服务：写操作（资源根 / 配置导入 / 诊断落盘）暂未开放',
-    path: p,
-    hint: '需要写入时请使用旧服务实例，或等写路径完成「校验 → 备份 → 写」验证后再开放',
   });
 }
 
@@ -292,7 +303,13 @@ const server = http.createServer((req, res) => {
       });
     }
     if (p === '/api/config/import' && req.method === 'POST') {
-      return rejectWrite(res, p);
+      // 导入配置（覆盖 resources.json / names/*.json）：同一套校验 → 备份 → 写 → 回读自检。
+      // 请求体上限放宽到 5MB：名表 JSON 可能较大（与旧端一致）。
+      return readBody(req, res, (body) => {
+        writeApi.writeConfigImport(body)
+          .then((r) => sendJson(res, r.status, r.body))
+          .catch((e) => sendJson(res, 500, { ok: false, error: `导入配置异常: ${(e && e.message) || e}` }));
+      }, 5e6);
     }
     if (apiBasics(res, p)) return;
     if (apiData(res, p, url)) return;

@@ -11,6 +11,7 @@
 //   写路径的任何异常都必须在函数内部变成响应，不能让 http 回调里的未捕获异常打挂进程。
 import fs from 'node:fs';
 import path from 'node:path';
+import { parseJsonc } from '../../../tool/parse-jsonc.mjs';
 
 /** 请求体上限（字符）：roots 配置体量很小，超过就不正常；拒绝而不是截断，避免写出坏配置 */
 const MAX_BODY_CHARS = 1e6;
@@ -18,6 +19,12 @@ const MAX_BODY_CHARS = 1e6;
 const MAX_NAME_CHARS = 60;
 /** 支持的写动作（改这里要同步左栏 UI 与文档） */
 const ROOT_ACTIONS = ['add', 'remove', 'rename', 'toggle'];
+/** 导入请求体上限（字符）：名表可能较大，与旧端一致取 5MB */
+const MAX_IMPORT_CHARS = 5e6;
+/** 备份保留份数：更早的移入 config/.trash/（可恢复），避免反复导入把 config/ 堆满 */
+const BACKUP_KEEP = 5;
+/** 允许导入的文件白名单：只有资源配置与名表 —— 不给"任意写盘"的口子 */
+const IMPORTABLE = [/^resources\.json$/, /^names\/[^/\\]+\.json$/];
 
 /**
  * 时间戳（用于备份目录名）：本地时间 YYYYMMDD-HHmmss，可排序、人可读。
@@ -72,14 +79,78 @@ function idFromPath(dir) {
 }
 
 /**
+ * 校验一批待导入的配置文件（纯函数，不碰磁盘）。
+ *
+ * 校验口径（整体通过才写）：
+ *   · 文件名必须在白名单内（`resources.json` 或 `names/<名>.json`），其余一律拒绝；
+ *   · 内容必须是非空字符串；
+ *   · `resources.json` 要能被 JSONC 解析、`roots` 是数组、每项 id/path 齐全且 id 不重复、
+ *     path 是绝对路径（相对路径会按进程工作目录解析，落到别处）；
+ *   · 名表要能被 JSON.parse 且结果是对象。
+ *
+ * @param {object} files 形如 { 'resources.json': '<文本>', 'names/x.json': '<文本>' }
+ * @returns {string[]} 错误清单；空数组表示通过
+ */
+function validateImportFiles(files) {
+  const errs = [];
+  const entries = Object.entries(files || {});
+  if (!entries.length) {
+    errs.push('导入内容为空');
+    return errs;
+  }
+  for (const [rel, text] of entries) {
+    if (!IMPORTABLE.some((re) => re.test(rel))) {
+      errs.push(`${rel}: 不在允许导入的白名单内（只接受 resources.json 与 names/<名>.json）`);
+      continue;
+    }
+    if (typeof text !== 'string' || !text.trim()) {
+      errs.push(`${rel}: 内容为空或不是字符串`);
+      continue;
+    }
+    if (rel === 'resources.json') {
+      try {
+        const cfg = parseJsonc(text, 'resources.json');
+        if (!Array.isArray(cfg.roots)) {
+          errs.push('resources.json: 缺少 roots 数组');
+          continue;
+        }
+        const seen = new Set();
+        cfg.roots.forEach((r, i) => {
+          if (!r || typeof r !== 'object') {
+            errs.push(`resources.json: roots[${i}] 不是对象`);
+            return;
+          }
+          if (!r.id || typeof r.id !== 'string') errs.push(`resources.json: roots[${i}] 缺少 id`);
+          else if (seen.has(r.id)) errs.push(`resources.json: roots[${i}] id 重复（${r.id}）`);
+          else seen.add(r.id);
+          if (!r.path || typeof r.path !== 'string') errs.push(`resources.json: roots[${i}] 缺少 path`);
+          else if (!path.isAbsolute(r.path)) errs.push(`resources.json: roots[${i}] path 不是绝对路径`);
+        });
+      } catch (e) {
+        errs.push(`resources.json 解析失败: ${e.message}`);
+      }
+    } else {
+      try {
+        const obj = JSON.parse(text);
+        if (!obj || typeof obj !== 'object') errs.push(`${rel}: 解析结果不是对象`);
+      } catch (e) {
+        errs.push(`${rel} 解析失败: ${e.message}`);
+      }
+    }
+  }
+  return errs;
+}
+
+/**
  * 创建写接口。
- * @param {{paths: object, config: object, models: object}} deps
+ * @param {{paths: object, config: object, models: object, names: object}} deps
  *   paths  = core/paths.mjs 的路径表（configDir / configFile / root）
  *   config = core/config.mjs（readConfigRaw / writeConfig / readConfig / buildGroups）
  *   models = data/models.mjs（invalidateModelsCache：不传参 = 失效全部）
- * @returns {{writeRoots: (rawBody: string) => Promise<{status:number, body:object}>}}
+ *   names  = data/names.mjs（clearNameCache：导入替换名表后必须清缓存）
+ * @returns {{writeRoots: Function, writeConfigImport: Function}}
  */
-export function createWriteApi({ paths, config, models }) {
+export function createWriteApi({ paths, config, models, names }) {
   // 串行队列：两个写请求并发时会各自读旧配置再写回，后写的覆盖先写的（丢一次改动）。
   // 排队保证「读-改-写」这一串不交错；前一个失败不影响后一个继续排队。
   let queue = Promise.resolve();
@@ -121,6 +192,63 @@ export function createWriteApi({ paths, config, models }) {
     fs.mkdirSync(path.dirname(dst), { recursive: true });
     fs.copyFileSync(src, dst);
     return path.relative(paths.root, dst).split(path.sep).join('/');
+  }
+
+  /**
+   * 批量备份一批配置文件到同一个 `.bak-<时间戳>/` 目录。
+   *
+   * 为什么"一个导入一个目录"（而不是每文件各建一个）：一次导入可能改多个文件，
+   *   回滚时必须能整体还原到"导入前那一刻"，分散在多个目录里就凑不回同一时点。
+   *   源文件不存在（新建的文件）跳过备份 —— 回滚时删掉即可，没有旧内容可留。
+   *
+   * @param {string[]} rels 相对 config/ 的路径列表
+   * @returns {string} 备份目录的相对项目根路径
+   */
+  function backupMany(rels) {
+    const stamp = stampOf(new Date());
+    let dir = path.join(paths.configDir, `.bak-${stamp}`);
+    let seq = 2;
+    while (fs.existsSync(dir)) {
+      dir = path.join(paths.configDir, `.bak-${stamp}-${seq}`);
+      seq += 1;
+    }
+    fs.mkdirSync(dir, { recursive: true });
+    for (const rel of rels) {
+      const src = path.join(paths.configDir, rel);
+      if (!fs.existsSync(src)) continue;
+      const dst = path.join(dir, rel);
+      fs.mkdirSync(path.dirname(dst), { recursive: true });
+      fs.copyFileSync(src, dst);
+    }
+    return path.relative(paths.root, dir).split(path.sep).join('/');
+  }
+
+  /**
+   * 备份轮换：只保留最近 keep 份，更早的**移入 config/.trash/**（不永久删除，可恢复）。
+   *
+   * 为什么要轮换：反复导入会不断生成备份目录，堆满 config/ 且干扰排查；
+   *   移入 .trash/ 而不是删除，符合"删除操作可恢复"的约定（.trash/ 已在 .gitignore）。
+   *
+   * @param {number} keep 保留份数
+   * @returns {number} 本次移入回收站的份数
+   */
+  function pruneBackups(keep) {
+    const dir = paths.configDir;
+    const trash = path.join(dir, '.trash');
+    const baks = fs.readdirSync(dir).filter((n) => n.startsWith('.bak-')).sort().reverse();
+    const drop = baks.slice(keep);
+    if (!drop.length) return 0;
+    fs.mkdirSync(trash, { recursive: true });
+    for (const n of drop) {
+      let dst = path.join(trash, n);
+      let i = 2;
+      while (fs.existsSync(dst)) {
+        dst = path.join(trash, `${n}-${i}`);
+        i += 1;
+      }
+      fs.renameSync(path.join(dir, n), dst);
+    }
+    return drop.length;
   }
 
   /**
@@ -313,5 +441,132 @@ export function createWriteApi({ paths, config, models }) {
     });
   }
 
-  return { writeRoots };
+  /**
+   * POST /api/config/import —— 导入配置（`resources.json` + `names/*.json`）。
+   *
+   * 与资源根写操作同一条管道（校验 → 备份 → 写 → 失效缓存 → 回读自检），差异只有四点：
+   *   ① 一次可能涉及多个文件，**备份目录只有一个**（同一次导入要能整体回滚到同一时点）；
+   *   ② 校验是**整体拒绝**：任一文件不合法就一个字节都不写，避免配置"半新半旧"；
+   *   ③ 资源根可能全变，所以这里失效**全部**清单缓存；名表文件被替换，还要清名表缓存
+   *      （名表按文件名缓存，不清就会一直显示导入前的角色名，像"导入没生效"）；
+   *   ④ 写完全部文件后做回读自检：每个文件都要能重新解析，且 resources.json 的根数
+   *      与导入内容一致 —— 这才算真的写对（防截断、防被清洗逻辑改条数）。
+   *
+   * @param {string} rawBody 原始请求体文本
+   * @returns {Promise<{status:number, body:object}>}
+   */
+  function writeConfigImport(rawBody) {
+    return enqueue(() => {
+      // ---------- ① 解析 ----------
+      if (typeof rawBody !== 'string') return fail(400, '请求体为空');
+      if (rawBody.length > MAX_IMPORT_CHARS) return fail(413, `请求体超过 ${MAX_IMPORT_CHARS} 字符`);
+      let payload;
+      try {
+        payload = JSON.parse(rawBody || '{}');
+      } catch {
+        return fail(400, '请求体不是合法 JSON');
+      }
+      const files = payload && payload.files;
+      if (!files || typeof files !== 'object' || Array.isArray(files)) {
+        return fail(400, '缺少 files 对象：{ "files": { "resources.json": "<文本>", "names/<名>.json": "<文本>" } }');
+      }
+
+      // ---------- ② 校验（整体通过才继续）----------
+      const details = validateImportFiles(files);
+      if (details.length) return fail(400, '配置校验失败', { details });
+      const entries = Object.entries(files).map(([rel, text]) => ({ rel, text }));
+
+      // ---------- ③ 批量备份（写盘前）----------
+      let backup = null;
+      try {
+        backup = backupMany(entries.map((e) => e.rel));
+      } catch (e) {
+        return fail(500, `备份失败，已取消导入: ${e.message}`);
+      }
+
+      // ---------- ④ 逐文件原子写（先 .tmp 再 rename）----------
+      const written = [];
+      try {
+        for (const { rel, text } of entries) {
+          const full = path.join(paths.configDir, rel);
+          fs.mkdirSync(path.dirname(full), { recursive: true });
+          fs.writeFileSync(`${full}.tmp`, text, 'utf8');
+          fs.renameSync(`${full}.tmp`, full);
+          written.push(rel);
+        }
+      } catch (e) {
+        // 已写成功的文件保持新内容、未写的保持原样；两者都能从同一个备份目录整体还原
+        return fail(500, `写入配置失败（已完成 ${written.length}/${entries.length}，备份可回滚）: ${e.message}`,
+          { backup, written });
+      }
+
+      // ---------- ⑤ 失效缓存（清单全部 + 名表）----------
+      const invalidated = { models: false, names: false, error: null };
+      try {
+        models.invalidateModelsCache();
+        invalidated.models = true;
+      } catch (e) {
+        invalidated.error = String((e && e.message) || e);
+      }
+      try {
+        if (names && typeof names.clearNameCache === 'function') {
+          names.clearNameCache();
+          invalidated.names = true;
+        }
+      } catch (e) {
+        invalidated.error = String((e && e.message) || e);
+      }
+
+      // ---------- ⑥ 回读自检 ----------
+      const readback = { files: {}, rootsCount: null };
+      let selfCheckFailed = null;
+      for (const rel of written) {
+        try {
+          const text = fs.readFileSync(path.join(paths.configDir, rel), 'utf8');
+          if (rel === 'resources.json') {
+            const cfg = parseJsonc(text, 'config/resources.json');
+            readback.rootsCount = Array.isArray(cfg.roots) ? cfg.roots.length : null;
+          } else {
+            JSON.parse(text);
+          }
+          readback.files[rel] = 'ok';
+        } catch (e) {
+          readback.files[rel] = `parse-error: ${e.message}`;
+          selfCheckFailed = `${rel}: ${e.message}`;
+        }
+      }
+      if (!selfCheckFailed && readback.rootsCount != null) {
+        const expect = parseJsonc(files['resources.json'], 'resources.json').roots.length;
+        if (readback.rootsCount !== expect) {
+          selfCheckFailed = `resources.json 根数不一致：导入 ${expect} / 实际 ${readback.rootsCount}`;
+        }
+      }
+      if (selfCheckFailed) {
+        return fail(500, `导入后自检未通过（备份可回滚）: ${selfCheckFailed}`, { backup, written, readback });
+      }
+
+      // ---------- ⑦ 备份轮换（只留最近若干份，更早的移入 config/.trash/）----------
+      let pruned = 0;
+      try {
+        pruned = pruneBackups(BACKUP_KEEP);
+      } catch {
+        /* 轮换失败不影响导入结果 */
+      }
+
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          written,
+          backup,
+          invalidated,
+          readback,
+          pruned,
+          roots: toRootView(config.readConfig()),
+        },
+      };
+    });
+  }
+
+  return { writeRoots, writeConfigImport };
 }
