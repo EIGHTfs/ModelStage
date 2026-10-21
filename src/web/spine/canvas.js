@@ -68,6 +68,17 @@ function majorMinor(v) {
   return m ? `${m[1]}.${m[2]}` : String(v || '');
 }
 
+/**
+ * 被取代的装载错误：业务错误 + aborted 标记。
+ * 为什么单列：调用方必须能区分"装载失败"与"被更新的选择取代"——后者是正常竞态结果，
+ *   不该显示成红色故障，也不该被当成"成功"继续读结果字段（曾经因此抛 TypeError 留下空白画面）。
+ */
+function abortedError(msg = '加载已被新的选择取代', cause) {
+  const e = businessError(msg, cause);
+  e.aborted = true;
+  return e;
+}
+
 /** 业务错误：调用方只更新提示，不抛控制台 */
 function businessError(msg, cause) {
   const e = new Error(msg);
@@ -402,14 +413,14 @@ async function loadIntoStage(st, arg) {
   const ver = pickRuntimeVersion(model.version, avail);
   if (!ver) throw businessError('无法确定该模型的 Spine 版本：元数据缺少 version，且运行时清单不可用');
   await ensureRuntimeSource(ver);
-  if (seq !== st.seq) throw businessError('加载已被新的选择取代');
+  if (seq !== st.seq) throw abortedError();
   const res = await fetchModelResources(root, model, ctl.signal);
-  if (seq !== st.seq) return null;
+  if (seq !== st.seq) throw abortedError();
   if (!ensureStageEngine(st, Engine, st.canvas)) throw businessError('当前环境没有可用的 WebGL，无法渲染 Spine');
   if (!st.runtimeKeys.includes(ver)) st.runtimeKeys.push(ver);
   st.loads++;
   const info = await st.engine.loadModel(buildDescriptor(model, ver, res));
-  if (seq !== st.seq) throw businessError('加载已被新的选择取代');
+  if (seq !== st.seq) throw abortedError();
   if (!info) throw businessError('模型加载失败（引擎未返回结果）');
   st.lastArg = arg; // 供 MSAA 重建上下文后恢复同一模型
   captureViewBase(st); // 新模型 fit 完成：把当前取景记为视图基准
@@ -433,6 +444,8 @@ const api = {
   async load(arg) {
     try {
       const info = await loadIntoStage(st, arg);
+      // 被取代时 loadIntoStage 返回 null：必须显式抛 aborted，不能"静默成功"让调用方读到空结果
+      if (!info) throw abortedError();
       status({ phase: 'ready', ...info });
       return info;
     } catch (err) {
@@ -442,7 +455,7 @@ const api = {
         status({ phase: 'error', error: st.lastError });
         throw err;
       }
-      if (err && err.name === 'AbortError') throw fail('加载已被新的选择取代', err);
+      if (err && err.name === 'AbortError') { st.lastError = '加载已被新的选择取代'; throw abortedError(st.lastError, err); }
       throw fail(`加载失败：${err && err.message ? err.message : err}`, err);
     }
   },
@@ -646,7 +659,12 @@ api.setDebug = (patch) => {
 
 /** 切换滤镜预设（id 见引擎预设表；未知 id 由引擎回落原画） */
 api.setFilter = (id) => {
-  if (!st.engine || typeof st.engine.setFilter !== 'function') return null;
+  if (!st.engine || typeof st.engine.setFilter !== 'function') {
+    // 与 applySettings 同一约定：引擎还没建时也要把设置记进快照，
+    //   装载时由引擎按 settings.filter 应用 —— 否则启动阶段下发会静默丢失
+    st.settings.filter = id;
+    return id;
+  }
   try {
     st.engine.setFilter(id);
     st.settings.filter = st.engine.getFilter ? st.engine.getFilter() : id;

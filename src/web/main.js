@@ -16,7 +16,7 @@ import { installDiag } from './infra/diag.js';
 import { getJson, formatError } from './infra/api.js';
 import { createRosterView } from './roster/view.js';
 import { mountPanel } from './panel/view.js';
-import { PANEL_GROUPS, applyCapabilities } from './panel/schema.js';
+import { PANEL_GROUPS, applyCapabilities, settingKeyOf, selfCheck } from './panel/schema.js';
 import { mountTransport } from './panel/transport.js';
 import { createSpineStage } from './spine/canvas.js';
 import { createStageSurface } from './render/surface.js';
@@ -174,14 +174,11 @@ function applyBackground(mode) {
   });
 }
 
-const PANEL_APPLIERS = {
-  'ctl-fps': (v) => stage && stage.setFpsLimit(v),
-  'ctl-dpr': (v) => stage && stage.setDprMode(v),
-  'ctl-fit': (v) => stage && stage.setFit(v),
-  'ctl-filter': (v) => stage && stage.setTextureFilter(v),
-  'ctl-filter-preset': (v) => stage && stage.setFilter(v),
-  'ctl-pma': (v) => stage && stage.setPma(v),
-  'ctl-msaa': (v) => applyMsaa(v),
+/**
+ * 外壳自己处理的控件（与渲染器无关）：主题/背景走 CSS 与 Surface，混合模式与皮肤列表走舞台既有状态，
+ * 部件筛除是显示层策略。其余设置一律经 renderer.setSetting 下发（契约 INV-01：不得出现 stage.setXxx）。
+ */
+const SHELL_APPLIERS = {
   'ctl-theme': (v) => applyTheme(v),
   'ctl-bg-mode': (v) => applyBackground(v),
   'ctl-mix-mode': (v) => applyMixMode(v),
@@ -189,15 +186,18 @@ const PANEL_APPLIERS = {
   'ctl-skin-list': (v) => stage && stage.setSkin(v),
   'ctl-part-filter': (v) => applyPartFilter({ enabled: !!v }),
   'ctl-part-filter-reset': () => applyPartFilter({ keywords: DEFAULT_PART_FILTER_KEYWORDS.slice() }),
-  'ctl-debug-bones': (v) => stage && stage.setDebug({ bones: !!v }),
-  'ctl-debug-meshes': (v) => stage && stage.setDebug({ meshes: !!v }),
-  'ctl-debug-boundingBoxes': (v) => stage && stage.setDebug({ boundingBoxes: !!v }),
-  'ctl-debug-paths': (v) => stage && stage.setDebug({ paths: !!v }),
-  'ctl-debug-points': (v) => stage && stage.setDebug({ points: !!v }),
-  'ctl-debug-regions': (v) => stage && stage.setDebug({ regions: !!v }),
-  'ctl-debug-clipping': (v) => stage && stage.setDebug({ clipping: !!v }),
-  'ctl-debug-hulls': (v) => stage && stage.setDebug({ hulls: !!v }),
 };
+
+/** 可点控件全集 = 外壳项 + 声明了能力键的项（能力过滤决定其中哪些真的可点） */
+const WIRED_IDS = (() => {
+  const ids = new Set(Object.keys(SHELL_APPLIERS));
+  for (const group of PANEL_GROUPS) {
+    for (const ctl of group.controls || []) {
+      if (ctl && ctl.id && settingKeyOf(ctl.id)) ids.add(ctl.id);
+    }
+  }
+  return [...ids];
+})();
 
 /**
  * 切换当前渲染器（预埋）：先让旧渲染器 unmount，再换新。
@@ -236,7 +236,7 @@ function initRenderer() {
   // 渲染面：画布/尺寸/DPR/可见性/帧调度都由 StageSurface 拥有；渲染器只注册进来
   if (state.surface) return state.currentRenderer;
   const surface = createStageSurface({ log: (message, level) => stageStatus(message, level === 'error' ? 'error' : level === 'warn' ? 'warn' : 'info') });
-  surface.register(createSpineRenderer({ stage }));
+  surface.register(createSpineRenderer({ stage, onMsaa: applyMsaa }));
   surface.register(createLive2DRenderer({ live2d: ensureLive2DStage() }));
   state.surface = surface;
   window.__WEB__ && (window.__WEB__.surface = surface);
@@ -244,7 +244,17 @@ function initRenderer() {
   // 兼容层：对外仍是一个 renderer（camera 按当前面取，mount 走 Surface 的唯一入口）
   const facade = {
     id: 'renderer-2d',
-    get capabilities() { return (surface.capabilities && surface.capabilities()) || { settings: ['fps', 'dpr', 'msaa', 'filter', 'pma', 'fit'], debugDraw: ['bones', 'meshes', 'boundingBoxes', 'paths', 'points', 'regions', 'clipping', 'hulls'], camera: 'ortho-2d' }; },
+    // 能力一律取当前激活渲染器的声明（不再硬编码兜底，否则"默认全支持"的缺陷会静默存在）
+    get capabilities() { return surface.capabilities ? surface.capabilities() : null; },
+    setSetting: (key, value) => {
+      const r = surface.activeRenderer ? surface.activeRenderer() : null;
+      if (!r || typeof r.setSetting !== 'function') return false;
+      try { return r.setSetting(key, value) === true; } catch { return false; }
+    },
+    getSetting: (key) => {
+      const r = surface.activeRenderer ? surface.activeRenderer() : null;
+      try { return r && r.getSetting ? r.getSetting(key) : null; } catch { return null; }
+    },
     get camera() { return surface.activeCamera() || stage.camera; },
     mount(document) { return surface.activate(document); },
     unmount() { return surface.disposeActive(); },
@@ -464,13 +474,76 @@ function refreshSkinList() {
   document.documentElement.dataset.skinCount = String(skins.length);
 }
 
-/** 面板控件回调：应用生效并记录当前值（断言与后续持久化都用这份快照） */
+/** 面板控件回调：外壳项直接处理，其余一律经 renderer.setSetting（回显用生效值） */
 function applyPanelSetting(id, value) {
-  const apply = PANEL_APPLIERS[id];
-  if (!apply) return;
-  apply(value);
-  state.panelSettings = { ...(state.panelSettings || {}), [id]: value };
+  const shell = SHELL_APPLIERS[id];
+  if (shell) {
+    shell(value);
+    state.panelSettings = { ...(state.panelSettings || {}), [id]: value };
+    document.documentElement.dataset.panelSetting = JSON.stringify(state.panelSettings);
+    return;
+  }
+  const cap = settingKeyOf(id);
+  const renderer = state.currentRenderer;
+  const key = cap ? (cap.kind === 'debug' ? `debug:${cap.capabilityKey}` : cap.settingKey) : null;
+  if (!key || !renderer || typeof renderer.setSetting !== 'function') {
+    stageStatus(`当前渲染器不支持该项设置：${id}`, 'warn');
+    return;
+  }
+  let ok = false;
+  try { ok = renderer.setSetting(key, value) === true; } catch { ok = false; }
+  // 生效值回显（不是请求值）：契约 INV-08
+  let applied = null;
+  try { applied = renderer.getSetting ? renderer.getSetting(key) : null; } catch { applied = null; }
+  if (!ok) {
+    stageStatus(`渲染器不支持设置 ${key}（已回退到生效值 ${String(applied)}）`, 'warn');
+    if (state.panel && applied !== null) state.panel.setValue(id, applied);
+    return;
+  }
+  state.panelSettings = { ...(state.panelSettings || {}), [id]: applied === null ? value : applied };
   document.documentElement.dataset.panelSetting = JSON.stringify(state.panelSettings);
+}
+
+/** 面板三态快照（断言用：可用项 / 禁用项 / 隐藏项） */
+function panelSnapshot() {
+  const on = [];
+  const off = [];
+  for (const node of document.querySelectorAll('#right-panel [data-ctl]')) {
+    const id = node.dataset.ctl;
+    const control = node.matches('select') ? node : node.querySelector('button, select');
+    if (!control || control.classList.contains('acc-trigger')) continue;
+    (control.disabled ? off : on).push(id);
+  }
+  const present = [...document.querySelectorAll('#right-panel [data-ctl]')].map((n) => n.dataset.ctl);
+  const hidden = [...WIRED_IDS, ...PANEL_GROUPS.flatMap((g) => (g.controls || []).map((c) => c.id)).filter(Boolean)]
+    .filter((id) => !present.includes(id));
+  return { enabled: [...new Set(on)], disabled: [...new Set(off)], hidden: [...new Set(hidden)] };
+}
+
+/** 按当前渲染器能力重建面板三态，并跑一次能力自检（契约 §四、§五） */
+function rebuildPanelFor(renderer) {
+  const groups = applyCapabilities(PANEL_GROUPS, renderer && renderer.capabilities, {
+    onWarn: (message) => stageStatus(message, 'warn'),
+  });
+  document.documentElement.dataset.panelGroups = String(groups.length);
+  const info = mountPanel({
+    groups,
+    headEl: dom.panelHead,
+    bodyEl: dom.panelBody,
+    onSetting: applyPanelSetting,
+    wiredIds: WIRED_IDS,
+  });
+  state.panel = info;
+  startFpsReadout(info);
+  refreshSkinList();
+  state.panelSnapshot = panelSnapshot();
+  const check = selfCheck(renderer || {});
+  state.panelSelfCheck = check;
+  document.documentElement.dataset.selfCheck = check.passed ? 'pass' : 'fail';
+  if (!check.passed) {
+    stageStatus(`能力自检未通过：${check.violations.map((v) => `${v.key}（${v.actual}）`).join('、')}`, 'error');
+  }
+  return check;
 }
 
 /** 帧率读数：把舞台实测帧率刷到面板上（500ms 一次；无舞台或未就绪时显示 —） */
@@ -546,6 +619,9 @@ function onSelectModel(model) {
     : stage.load({ root: model.rootId, model });
   loadPromise
     .then((info) => {
+      // null = 本次请求被排队/被更新的选择取代（Surface 的 last-wins 语义）：
+      //   不能当成功读结果字段，否则出现"旧面已释放 + 新面没装"的空白 + TypeError
+      if (!info) return; // 被排队/被取代：由真正生效的那次装载负责状态文案
       const isL2D = /^Live2D/.test(String(info.version || ''));
       const anims = Array.isArray(info.animations) ? info.animations : [];
       const motion = info.motion || anims[0] || '（无动作）';
@@ -558,6 +634,8 @@ function onSelectModel(model) {
       document.documentElement.dataset.stageReady = '1';
     })
     .catch((err) => {
+      // 被取代属正常竞态结果（不是故障）：只记一条 info，不显示红色错误
+      if (err && err.aborted) return; // 被取代是正常竞态结果，不报故障（真生效的那次会写状态）
       // 渲染失败属业务错误：显示在舞台提示与 __WEB__ 里，不抛到控制台（验收要求零错误）
       const msg = formatError(err);
       state.stageError = msg;
@@ -639,21 +717,12 @@ function boot() {
 
   attachInteraction();
 
-  // 面板按当前渲染器能力生成：不支持的项禁用/隐藏（2D 渲染器支持全部现有项，视觉与行为不变）
-  const rendererCapabilities = state.currentRenderer && state.currentRenderer.capabilities;
-  const panelGroups = applyCapabilities(PANEL_GROUPS, rendererCapabilities, {
-    onWarn: (message) => stageStatus(message, 'warn'),
-  });
-  document.documentElement.dataset.panelGroups = String(panelGroups.length);
+  // 面板三态由当前渲染器能力决定；切换渲染器时必须重算 + 重跑自检（契约 INV-05）
+  rebuildPanelFor(state.currentRenderer);
+  if (state.surface && typeof state.surface.onRendererChange === 'function') {
+    state.surface.onRendererChange(() => { rebuildPanelFor(state.currentRenderer); });
+  }
 
-  const panelInfo = mountPanel({
-    groups: panelGroups,
-    headEl: dom.panelHead,
-    bodyEl: dom.panelBody,
-    onSetting: applyPanelSetting,
-    // 只有映射表里有的控件才可点：判定口径与"真的会生效"严格一致
-    wiredIds: Object.keys(PANEL_APPLIERS),
-  });
   const transportInfo = mountTransport(dom.footer, {
     'transport-reset-view': () => { if (stage && stage.resetView) stage.resetView(); },
     'transport-loop': () => toggleTransportLoop(),
@@ -665,8 +734,6 @@ function boot() {
     'transport-skin': (name) => { if (stage && stage.setSkin) stage.setSkin(name); },
   });
   state.transport = transportInfo;
-  startFpsReadout(panelInfo);
-  state.panel = panelInfo; // 让 onSelectModel 能写运行时只读行
   // 存储优先：主题/背景先按上次的选择恢复，再让"面板默认值"兜底未存过的项
   const savedView = readViewSettings();
   applyTheme(savedView.uiTheme || 'dark-cyan');
@@ -675,20 +742,20 @@ function boot() {
     ? savedView.partFilterKeywords.split(',').map((k) => k.trim()).filter(Boolean)
     : DEFAULT_PART_FILTER_KEYWORDS.slice();
   applyPartFilter({ enabled: savedView.partFilterEnabled === true, keywords: savedKeywords });
-  if (panelInfo.setValue) {
-    panelInfo.setValue('ctl-theme', state.viewTheme);
-    panelInfo.setValue('ctl-bg-mode', state.viewBg);
+  if (state.panel && state.panel.setValue) {
+    state.panel.setValue('ctl-theme', state.viewTheme);
+    state.panel.setValue('ctl-bg-mode', state.viewBg);
   }
   // 面板声明的默认值即唯一真相：启动时统一走一遍生效表，避免"高亮在 A、引擎在 B"
   // MSAA 例外：它的默认值已由建上下文时的 antialias 生效，启动就重建会白等 2~5 秒
   const STARTUP_SKIP = new Set(['ctl-msaa', 'ctl-theme', 'ctl-bg-mode']);
-  for (const [id, value] of Object.entries(panelInfo.defaults || {})) {
+  for (const [id, value] of Object.entries((state.panel && state.panel.defaults) || {})) {
     if (STARTUP_SKIP.has(id)) continue;
     applyPanelSetting(id, value);
   }
-  state.panelDefaults = { ...(panelInfo.defaults || {}) };
+  state.panelDefaults = { ...((state.panel && state.panel.defaults) || {}) };
   document.documentElement.dataset.panelReady = '1';
-  document.documentElement.dataset.panelControls = String(panelInfo.controls);
+  document.documentElement.dataset.panelControls = String((state.panel && state.panel.controls) || 0);
   document.documentElement.dataset.transportControls = String(transportInfo.controls);
 
   // 品牌与资源根互不依赖，并行拉取；任一失败都不影响另一条链路
@@ -698,6 +765,15 @@ function boot() {
   window.__WEB__ = Object.assign(window.__WEB__ || {}, {
     /** 当前渲染器（只读，便于排查：id / capabilities / camera 是否就绪） */
     get renderer() { return state.currentRenderer; },
+    /** 能力自检（契约 §四）：随时可重跑，violations 非空即缺陷 */
+    panelSelfCheck: () => {
+      const check = selfCheck(state.currentRenderer || {});
+      state.panelSelfCheck = check;
+      document.documentElement.dataset.selfCheck = check.passed ? 'pass' : 'fail';
+      return check;
+    },
+    /** 面板三态快照（禁用/可用/隐藏），切换渲染器前后各取一次做对比 */
+    panelSnapshot: () => panelSnapshot(),
     state,
     version: 'M4',
     /** 渲染舞台（测试脚本用它取像素、看统计） */
@@ -713,13 +789,17 @@ function boot() {
       if (detachInteraction) { try { detachInteraction(); } catch { /* 忽略 */ } detachInteraction = null; }
     },
     /** 已接线的面板控件 id（断言用：可点集合必须与它一致） */
-    panelWired: Object.keys(PANEL_APPLIERS),
+    panelWired: WIRED_IDS,
     /** 当前视图设置（主题/背景），断言用 */
     viewSettings: () => ({ uiTheme: state.viewTheme, background: { mode: state.viewBg } }),
     /** 已接线控件的声明默认值（断言：引擎实际生效值必须与之一致） */
     get panelDefaults() { return state.panelDefaults || null; },
     /** 面板/播放条骨架规模（自动化断言用） */
-    chrome: { groups: panelInfo.groups, panelControls: panelInfo.controls, transportControls: transportInfo.controls },
+    chrome: {
+      groups: (state.panel && state.panel.groups) || 0,
+      panelControls: (state.panel && state.panel.controls) || 0,
+      transportControls: transportInfo.controls,
+    },
     defaultBrand: DEFAULT_BRAND,
     /** 名册状态快照（未挂载时返回 null） */
     rosterSnapshot: () => (state.roster ? state.roster.snapshot() : null),

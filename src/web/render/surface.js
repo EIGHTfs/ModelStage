@@ -10,6 +10,8 @@
 //
 // 为什么这么分：新增渲染面（3D）时只加一个 register()，不必再改画布/尺寸/可见性逻辑。
 
+import { createSwitcher } from './surface-switch.js';
+
 /** 覆盖层容器 id（Live2D 面用） */
 
 const OVERLAY_ID = 'live2d-overlay';
@@ -32,6 +34,8 @@ export function createStageSurface({ root, log } = {}) {
 
   const renderers = new Map();
   const resizeCbs = new Set();
+  /** 切换完成后要通知的订阅者（面板据此重算三态） */
+  const switchCbs = new Set();
 
   const st = {
     /** 当前渲染器 id（null = 未激活） */
@@ -40,6 +44,7 @@ export function createStageSurface({ root, log } = {}) {
     document: null,
     /** 切换串行锁 */
     swapping: false,
+    pending: null,        // 切换进行中收到的最新请求（last-wins，完成后立即消费）
     /** 尺寸与 DPR */
     size: { width: 0, height: 0 },
     backgroundMode: 'checkerboard', // 背景唯一权威（写 data-bg 的唯一入口）
@@ -309,37 +314,23 @@ export function createStageSurface({ root, log } = {}) {
    * @param {{kind?: 'spine'|'live2d', id?: string, rendererId?: string}} document
    * @returns {Promise<any>} 装载结果（并发被丢弃时返回 null）
    */
-  async function activate(document) {
-    if (st.swapping) {
-      note('切换进行中，忽略本次请求');
-      return null;
-    }
-    st.swapping = true;
-    const previous = st.activeId;
-    try {
-      setMode('loading');           // ① 先遮住：任何方向都不可能叠加
-      await disposeActive();        // ② 统一卸载（幂等）
-      const kind = document && document.kind === 'live2d' ? 'live2d' : 'spine';
-      const rendererId = (document && document.rendererId) || kind;
-      const entry = renderers.get(rendererId);
-      if (!entry) throw new Error(`没有注册渲染器：${rendererId}`);
-      measure();
-      const info = await entry.mount(document, handle(rendererId)); // ③ 装载
-      st.activeId = rendererId;
-      st.document = document || null;
-      setMode(kind);                // ④ 切面（全项目唯一写入点）
-      requestRender();
-      noteSwitch(`activated:${rendererId}`);
-      return info;
-    } catch (err) {
-      // ⑤ 失败回滚：回到上一个面（没有就回到 spine），并如实记日志
-      setMode(previous === 'live2d' ? 'live2d' : 'spine');
-      st.activeId = previous;
-      noteSwitch(`activate-failed:${(document && document.kind) || '?'}`);
-      throw err;
-    } finally {
-      st.swapping = false;
-    }
+  // 切换状态机（last-wins 排队 + 失败回滚）拆到 surface-switch.js，本文件只提供回调
+  const switcher = createSwitcher({
+    renderers,
+    state: st,
+    setMode,
+    disposeActive,
+    handle,
+    measure,
+    requestRender,
+    note,
+    noteSwitch,
+    onSwitched: (activeId) => { for (const cb of switchCbs) { try { cb(activeId, stageMode()); } catch { /* 订阅者异常不影响切换 */ } } },
+  });
+
+  /** 切换到一份文档（唯一入口，语义见 surface-switch.js） */
+  function activate(document) {
+    return switcher.activate(document);
   }
 
   /** 当前渲染器的相机（交互层通过它拿到 camera.*，不关心是哪一面） */
@@ -495,5 +486,26 @@ export function createStageSurface({ root, log } = {}) {
      */
     get interactionTarget() { return rootEl(); },
     renderers: () => [...renderers.keys()],
+    /** 订阅渲染面切换（回调收到新的激活 id 与 stageMode） */
+    onRendererChange: (cb) => (typeof cb === 'function' ? (switchCbs.add(cb), () => switchCbs.delete(cb)) : () => {}),
+    /**
+     * 当前生效的能力集合。
+     * 取"激活中的渲染器"；还没装载任何内容时用**首个注册者**（默认面），
+     *   因为能力是静态声明，与是否已装载模型无关；一个渲染器都没有才返回 null（面板走回落）。
+     */
+    capabilities() {
+      const entry = renderers.get(st.activeId) || renderers.values().next().value;
+      return entry && entry.capabilities ? entry.capabilities : null;
+    },
+    /**
+     * 当前激活渲染器（供外壳把设置下发给它，不自己持有舞台引用）。
+     * 还没装载任何东西时退回**首个注册者**（默认面）：设置快照要在启动阶段就落到引擎，
+     *   等装载时再补会出现"面板显示 A、引擎在 B"的漂移（与上面 capabilities() 同一口径）。
+     */
+    activeRenderer() {
+      return renderers.get(st.activeId) || renderers.values().next().value || null;
+    },
+    /** 按 id 取渲染器 */
+    renderer: (id) => renderers.get(id) || null,
   };
 }

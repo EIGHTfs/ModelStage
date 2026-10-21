@@ -17,6 +17,16 @@
  * @typedef {{id: string, title: string, defaultOpen?: boolean, controls: Control[]}} Group
  */
 
+/**
+ * 与渲染器无关的控件（无能力信息时唯一允许出现的项）。
+ * 为什么需要：面板回落策略是「无能力信息 ⇒ 只显示通用项」，而不是"默认全支持"
+ *   —— 默认全支持会让"声明了但没实现"的缺陷静默存在（见 doc/契约/面板能力契约.md §五）。
+ */
+export const RENDERER_INDEPENDENT = [
+  'ctl-theme', 'ctl-bg-mode', 'ctl-bg-color', 'ctl-bg-image',
+  'ctl-hang-guard', 'ctl-show-status', 'ctl-debug-log', 'ctl-settings-io',
+];
+
 /** 占位说明（M3 不接线；M6 会把动态内容填进这些分组） */
 const PLACEHOLDER = (what) => ({ kind: 'note', note: `${what}（M6 接线）` });
 
@@ -65,7 +75,7 @@ export const PANEL_GROUPS = [
       {
         kind: 'chips',
         label: '滤镜预设',
-        id: 'ctl-filter-preset', capabilityKey: 'filter',
+        id: 'ctl-filter-preset', capabilityKey: 'presetFilter',
         defaultValue: 'original',
         options: [
           { text: '原画', value: 'original' },
@@ -174,7 +184,7 @@ export const PANEL_GROUPS = [
         ],
       },
       // 旧端默认是「最邻近」（不是双线性），默认项按旧端对齐
-      { kind: 'segmented', label: '纹理过滤', id: 'ctl-filter', capabilityKey: 'filter', options: ['双线性', '最邻近'], values: ['linear', 'nearest'], defaultValue: 'nearest' },
+      { kind: 'segmented', label: '纹理过滤', id: 'ctl-filter', capabilityKey: 'textureFilter', options: ['双线性', '最邻近'], values: ['linear', 'nearest'], defaultValue: 'nearest' },
       { kind: 'segmented', label: '抗锯齿（MSAA）', id: 'ctl-msaa', capabilityKey: 'msaa', options: ['自动', '关闭'], values: ['auto', 'off'], defaultValue: 'auto' },
       // 旧前端这部分 UI 被自家补丁隐藏了（只追加不覆盖），但 M3 口径要求列全，故照列并标注
       { kind: 'segmented', label: '模型导入模式', id: 'ctl-import-mode', core: true, options: ['替换', '追加'], values: ['replace', 'append'], defaultValue: 'append' },
@@ -256,15 +266,25 @@ export function resolveCapabilityKey(ctl, onWarn) {
  * @returns {Array} 过滤后的新分组数组
  */
 export function applyCapabilities(groups, capabilities, options = {}) {
+  const hasCaps = !!(capabilities && Array.isArray(capabilities.settings));
   const settings = new Set((capabilities && capabilities.settings) || []);
   const debugDraw = new Set((capabilities && capabilities.debugDraw) || []);
   const onWarn = options && typeof options.onWarn === 'function' ? options.onWarn : null;
   const reason = '当前渲染器不支持';
   const list = Array.isArray(groups) ? groups : [];
+  const independent = new Set(RENDERER_INDEPENDENT);
   return list
     .map((group) => {
       const controls = [];
       for (const ctl of group.controls || []) {
+        // 回落策略（契约 §五）：拿不到能力信息 ⇒ 按「无渲染器」处理，只保留与渲染器无关的项。
+        //   判据用显式清单而不是 core 标记：皮肤/部件筛除这类也标了 core，但它们依赖渲染器。
+        //   旧行为是"默认全支持"，会让"声明了却没实现"的缺陷静默存在。
+        if (!hasCaps) {
+          if (ctl && ctl.id && independent.has(ctl.id)) controls.push({ ...ctl });
+          else if (!ctl || !ctl.id) controls.push({ ...ctl }); // 无 id 的纯展示项（说明/列表占位）保留
+          continue;
+        }
         const resolved = resolveCapabilityKey(ctl, onWarn);
         if (!resolved) { controls.push({ ...ctl }); continue; } // 核心项原样保留
         if (resolved.kind === 'debug') {
@@ -280,4 +300,83 @@ export function applyCapabilities(groups, capabilities, options = {}) {
       return { ...group, controls };
     })
     .filter((group) => group.controls.length > 0);
+}
+
+/**
+ * 由控件 id 反查它需要的能力键与"该能力对应哪个设置键"。
+ * 面板只按 capabilityKey 判定可用性，按 settingKey 下发值给渲染器（二者一般同名，
+ *   例外是 debug 类：能力键是 debugDraw 的一项，没有 settingKey）。
+ * @param {string} id 控件 id（如 ctl-fps / ctl-debug-bones）
+ * @returns {{kind: string, capabilityKey: string, settingKey: string|null}|null}
+ */
+export function settingKeyOf(id) {
+  const ctl = CONTROL_INDEX.get(id);
+  if (!ctl) return null;
+  const resolved = resolveCapabilityKey(ctl, null);
+  if (!resolved || resolved.kind === 'unsupported') return null;
+  if (resolved.kind === 'debug') return { kind: 'debug', capabilityKey: resolved.key, settingKey: null };
+  return { kind: 'setting', capabilityKey: resolved.key, settingKey: resolved.key };
+}
+
+/** 控件索引（id → 控件定义），供反查能力键与默认值 */
+const CONTROL_INDEX = (() => {
+  const map = new Map();
+  for (const group of PANEL_GROUPS) {
+    for (const ctl of group.controls || []) {
+      if (ctl && ctl.id) map.set(ctl.id, ctl);
+    }
+  }
+  return map;
+})();
+
+/**
+ * 能力自检（面板能力契约 §四）：声明了就必须能落地。
+ * 对 capabilities 的每一项调 renderer.setSetting / renderer.getSetting：
+ *   · setSetting 返回非 true 或抛异常 ⇒ 违规「声明支持但未实现」
+ *   · getSetting 返回 null           ⇒ 违规「无法回显生效值」
+ * debugDraw 的项走 setSetting('debug:<key>')，同样要求返回 true。
+ * @param {{capabilities?: {settings?: string[], debugDraw?: string[]},
+ *          setSetting?: Function, getSetting?: Function}} renderer
+ * @returns {{passed: boolean, checked: number, violations: Array<{key: string, expect: string, actual: string}>}}
+ */
+export function selfCheck(renderer) {
+  const violations = [];
+  const caps = (renderer && renderer.capabilities) || {};
+  const settings = Array.isArray(caps.settings) ? caps.settings : [];
+  const debugDraw = Array.isArray(caps.debugDraw) ? caps.debugDraw : [];
+  const canSet = renderer && typeof renderer.setSetting === 'function';
+  const canGet = renderer && typeof renderer.getSetting === 'function';
+  /** 取一项的当前生效值（拿不到则退回控件声明的默认值） */
+  const probeValue = (key) => {
+    let cur = null;
+    try { cur = canGet ? renderer.getSetting(key) : null; } catch { cur = null; }
+    if (cur !== null && cur !== undefined) return cur;
+    const ctl = CONTROL_INDEX.get(`ctl-${key}`) || findControlByCapability(key);
+    if (!ctl) return null;
+    return ctl.defaultValue !== undefined ? ctl.defaultValue : (ctl.defaultOn !== undefined ? ctl.defaultOn : null);
+  };
+  const applyAndCheck = (key, label) => {
+    if (!canSet) { violations.push({ key: label, expect: '渲染器实现 setSetting', actual: '缺失' }); return; }
+    const value = probeValue(key);
+    let ok = false;
+    try { ok = renderer.setSetting(key, value) === true; }
+    catch (e) { violations.push({ key: label, expect: 'setSetting 不抛异常', actual: `抛异常：${String((e && e.message) || e)}` }); return; }
+    if (!ok) { violations.push({ key: label, expect: 'setSetting 返回 true', actual: '返回 false（声明支持但未实现）' }); return; }
+    let got = null;
+    try { got = canGet ? renderer.getSetting(key) : null; } catch { got = null; }
+    if (got === null || got === undefined) violations.push({ key: label, expect: 'getSetting 回显生效值', actual: String(got) });
+  };
+  // 用"同值回灌"而不是写入新值：自检不能改变用户现场（fit 会重置取景、msaa 会重建上下文）
+  for (const key of settings) applyAndCheck(key, key);
+  for (const key of debugDraw) applyAndCheck(`debug:${key}`, `debug:${key}`);
+  return { passed: violations.length === 0, checked: settings.length + debugDraw.length, violations };
+}
+
+/** 按能力键找控件（用于取默认值；同一能力可能有多个控件，取第一个带默认值的） */
+function findControlByCapability(key) {
+  for (const ctl of CONTROL_INDEX.values()) {
+    const resolved = resolveCapabilityKey(ctl, null);
+    if (resolved && resolved.kind === 'setting' && resolved.key === key) return ctl;
+  }
+  return null;
 }

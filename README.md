@@ -91,7 +91,7 @@ spine-multi-viewer/
 测试分两类：`*-actions.js`（浏览器内动作断言）、`*.test.mjs`（node --test 纯模块单测）。
 
 已中止的实验：前端复刻（rebuild/ + dist-rebuild/，2026-10-14 中止）——现场移 .trash/，
-git 已出库（历史保留可回溯），决策记录见 doc/记录-前端重建决策.md 头部标注。
+git 已出库（历史保留可回溯）。
 ```
 
 `legacy/patches/live2d-stage.js` 的两条几何约定（决定「模型画在哪、多大」）：
@@ -822,7 +822,7 @@ bash server.sh start|stop|restart|status   # 启停服务（默认端口 8803）
       **Unity 集成版**（只有 AnimationClip、无 motion3）另需把动画曲线转 `motion3.json`。
       各游戏差异放 `profiles/<游戏>.json`（数据，不写死游戏名），碧蓝航线为首个 profile；
       渲染复用现有 Live2D 桥与公共管线（原版右栏动作区、双指缩放同源）。
-      方案、模块拆分与验证关卡见 `doc/记录-2026-10-15-展示类型插件机制.md`。
+      方案、模块拆分与验证关卡见 `doc/契约/插件契约.md`。
 - [ ] **前端内置诊断探针（`__DIAG__`）** —— 把「临时注入 console 探针」变成前端内置能力，
       出问题时前端可自证、AI 可直接取证（不依赖浏览器会话）：
       · **采集**：`window.onerror` / `unhandledrejection` / 资源加载失败 / 包装 `console.error|warn|info`
@@ -850,13 +850,12 @@ bash server.sh start|stop|restart|status   # 启停服务（默认端口 8803）
       表情下拉）整体删除，右栏只保留 原版 原生控件（「动作」区直接列出 L2D motions）。
 - [ ] **碧蓝航线 16 个未命名字目录**（Live2D 7 + Spine 9）：上游
       `ship_skin_template.json` 没有这些键（`_ii`/`_new`/罗马数字等后缀变体），
-      界面回退显示拼音目录名，功能不受影响（见 `doc/任务-交接.md` 第 4 节）
+      界面回退显示拼音目录名，功能不受影响（见 `data/upstream/README.md`「待重设计」节）
 - [ ] **模型数据层面的重影（非渲染代码缺陷）**：`aimierbeierding_3` / `aimierbeierding_3_hx`
       这类**带裁剪遮罩（18 个遮罩对象）且含常驻半透明叠加层（110 个默认不透明度 < 1 的绘制对象，
       部件名含 `doubleshadow`）**的模型，渲染出来有半透明覆层，观感即"重影"。
       已用独立的第三方查看器复现同一现象 ⇒ 缺陷在模型数据本身；同一缺陷在本项目里幅度更大，
       候选原因是半透明层的预乘 alpha 合成口径差异（待验证）。
-      结构对照与判定手法见 `doc/记录-2026-10-16-重影问题定案.md`
 
 完整改造方案见：`../spine-viewers/2026-10-02-原版多文件夹根目录分大类改造方案.MD`
 

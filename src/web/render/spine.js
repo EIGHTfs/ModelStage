@@ -7,15 +7,29 @@
 import { createCamera } from './camera/index.js';
 
 /** Spine 渲染器支持的设置项 */
-const SETTINGS = ['fps', 'dpr', 'msaa', 'filter', 'pma', 'fit'];
+const SETTINGS = ['fps', 'dpr', 'msaa', 'textureFilter', 'presetFilter', 'pma', 'fit'];
 /** Spine 渲染器支持的调试绘制项 */
 const DEBUG_DRAW = ['bones', 'meshes', 'boundingBoxes', 'paths', 'points', 'regions', 'clipping', 'hulls'];
+
+/**
+ * 能力键 → 舞台方法名。
+ * 为什么这样分：舞台（spine/canvas.js）已有一批经过验收的 setter，渲染 + 转发"，
+ *   不自己解释设置语义；面板因此可以完全不知道舞台的存在（契约 INV-01）。
+ */
+const STAGE_SETTERS = {
+  fps: 'setFpsLimit',
+  dpr: 'setDprMode',
+  textureFilter: 'setTextureFilter',
+  presetFilter: 'setFilter',
+  pma: 'setPma',
+  fit: 'setFit',
+};
 
 /**
  * 创建 Spine 渲染器。
  * @param {{stage: object}} options stage 为舞台（提供 load/unload/dispose/stats/camera）
  */
-export function createSpineRenderer({ stage } = {}) {
+export function createSpineRenderer({ stage, onMsaa } = {}) {
   if (!stage || typeof stage.load !== 'function') {
     throw new Error('createSpineRenderer: 需要提供 load 能力的 stage');
   }
@@ -78,6 +92,50 @@ export function createSpineRenderer({ stage } = {}) {
       const adapted = entryUrl ? { ...doc, modelUrl: entryUrl } : doc;
       const rootId = adapted.rootId || (adapted.root && adapted.root.id) || null;
       return stage.load({ root: rootId, model: adapted });
+    },
+    /**
+     * 应用一项设置（面板唯一入口，契约 renderer/v1）。
+     * 未知键返回 false 不抛；支持的键全部委托舞台既有 setter（行为与现在完全一致）。
+     * @param {string} key 能力键（fps/dpr/msaa/textureFilter/presetFilter/pma/fit 或 debug:<项>）
+     * @param {any} value
+     * @returns {boolean}
+     */
+    setSetting(key, value) {
+      // 同值短路：生效值没变就不重复应用（msaa 会重建上下文、pma 会重传纹理、fit 会重置取景，
+      //   无谓的重复执行既拖慢也破坏现场；能力自检因此可以安全地"同值回灌"）
+      const cur = this.getSetting(key);
+      if (cur !== null && cur !== undefined && String(cur) === String(value)) return true;
+      const dbg = /^debug:(.+)$/.exec(String(key || ''));
+      if (dbg) {
+        if (!DEBUG_DRAW.includes(dbg[1]) || typeof stage.setDebug !== 'function') return false;
+        try { stage.setDebug({ [dbg[1]]: !!value }); return true; } catch { return false; }
+      }
+      if (key === 'msaa') {
+        // 抗锯齿要重建上下文，属外壳职责（applyMsaa）；渲染器只提供入口，不自己重建
+        if (typeof onMsaa !== 'function') return false;
+        try { onMsaa(value); return true; } catch { return false; }
+      }
+      const setter = STAGE_SETTERS[key];
+      if (!setter || typeof stage[setter] !== 'function') return false;
+      try {
+        stage[setter](value);
+        // 以"回显的生效值"为准判定成功：舞台 setter 的返回值口径不一（有的返回 null 表示未生效），
+        //   而设置快照是唯一的真相来源，读它最可靠
+        const applied = this.getSetting(key);
+        if (applied === null || applied === undefined) return false;
+        return String(applied) === String(value) || key === 'msaa';
+      } catch { return false; }
+    },
+
+    /** 回显实际生效值（读舞台 settings，不是请求值） */
+    getSetting(key) {
+      const dbg = /^debug:(.+)$/.exec(String(key || ''));
+      const st = (() => { try { return stage.stats().settings; } catch { return null; } })();
+      if (!st) return null;
+      if (dbg) return !!(st.debug && st.debug[dbg[1]]);
+      const map = { fps: 'fpsLimit', dpr: 'dprMode', msaa: 'msaa', textureFilter: 'textureFilter', presetFilter: 'filter', pma: 'pma', fit: 'fit' };
+      const k = map[key];
+      return k && st[k] !== undefined ? st[k] : null;
     },
     /**
      * 尺寸变化：把 CSS 尺寸交给引擎，由引擎按自己的 getEffectiveDpr 决定像素尺寸。

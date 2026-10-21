@@ -31,6 +31,26 @@ function markPending(node, id) {
 }
 
 /**
+ * 标成一个不可点控件，并区分两种原因：
+ *   · 能力不支持（schema 过滤给的 reason）→ 如实写原因，不打"待接线"标记（那是开发中项的语义）
+ *   · 未接线 → 保持原有 data-pending + 「待接线（M6）」
+ * @param {HTMLElement} node
+ * @param {object} ctl 控件定义
+ * @param {{disabledReason?: Function}} ctx
+ */
+function markDisabled(node, ctl, ctx) {
+  node.disabled = true;
+  const reason = ctx && ctx.disabledReason ? ctx.disabledReason(ctl.id) : null;
+  if (reason) {
+    node.title = `${reason}：${ctl.label || ''}`.trim();
+    node.dataset.disabledReason = reason; // 便于断言与排查
+    return;
+  }
+  markPending(node, null);
+  node.title = '待接线（M6）';
+}
+
+/**
  * 分段按钮组：一个 label + 若干选项按钮。
  * 接线口径：控件带 `values` 才算已接线——按钮可点、默认项按 defaultValue 高亮、点击回传机器值；
  *   不带的保持 disabled + data-pending（不许"看着能点却没反应"）。
@@ -63,10 +83,13 @@ function renderSegmented(ctl, ctx) {
         btn.setAttribute('aria-pressed', 'true');
         try { ctx.onSetting(ctl.id, ctl.values[i]); } catch { /* 接线失败不影响面板自身状态 */ }
       });
-    } else {
-      markPending(btn, null);
+    } else if (optDisabled) {
+      // 单个取值被禁（如"自定义背景"这类尚未接线的选项）：属开发中项，保持 pending 口径
       btn.disabled = true;
-      btn.title = optDisabled ? (hint || '待接线（M6）') : (item.title ? `${item.title}（M6 接线）` : '待接线（M6）');
+      markPending(btn, null);
+      btn.title = hint || '待接线（M6）';
+    } else {
+      markDisabled(btn, ctl, ctx);
     }
     group.append(btn);
   });
@@ -104,9 +127,7 @@ function renderSwitch(ctl, ctx) {
       try { ctx.onSetting(ctl.id, next); } catch { /* 接线失败不影响面板自身状态 */ }
     });
   } else {
-    markPending(btn, null);
-    btn.disabled = true;
-    btn.title = '待接线（M6）';
+    markDisabled(btn, ctl, ctx);
   }
   btn.append(el('span', 'switch-knob'));
   row.append(btn);
@@ -157,9 +178,7 @@ function renderSelect(ctl, ctx) {
       try { ctx.onSetting(ctl.id, sel.value); } catch { /* 接线失败保持选择 */ }
     });
   } else {
-    markPending(sel, null);
-    sel.disabled = true;
-    sel.title = '待接线（M6）';
+    markDisabled(sel, ctl, ctx);
   }
   row.append(sel);
   return row;
@@ -186,9 +205,7 @@ function renderChips(ctl, ctx) {
         try { ctx.onSetting(ctl.id, opt.value); } catch { /* 接线失败不影响面板状态 */ }
       });
     } else {
-      markPending(btn, null);
-      btn.disabled = true;
-      btn.title = '待接线（M6）';
+      markDisabled(btn, ctl, ctx);
     }
     box.append(btn);
   }
@@ -271,9 +288,18 @@ export function mountPanel({ headEl, bodyEl, onSetting, wiredIds, groups }) {
   // 接线集合来自接线方（main.js 的映射表），与 schema 的 values 解耦：
   // 这样"schema 加了取值域但还没接生效"的控件会保持 disabled，不会出现点了没反应。
   const wiredSet = new Set(Array.isArray(wiredIds) ? wiredIds : []);
+  // 能力过滤结果（schema.applyCapabilities 写在控件上）：disabled 的控件一律不可点并给 reason
+  const disabledMap = new Map();
+  for (const group of schema) {
+    for (const ctl of group.controls || []) {
+      if (ctl && ctl.id && ctl.disabled) disabledMap.set(ctl.id, ctl.reason || '当前渲染器不支持');
+    }
+  }
   const ctx = {
     onSetting: typeof onSetting === 'function' ? onSetting : () => {},
-    isWired: (id) => !!id && wiredSet.has(id),
+    isWired: (id) => !!id && wiredSet.has(id) && !disabledMap.has(id),
+    /** 能力层禁用原因（有值 ⇒ 该控件按"当前渲染器不支持"禁用） */
+    disabledReason: (id) => disabledMap.get(id) || null,
   };
 
   // 面板头：标题 + 「收起菜单」（旧前端在面板右缘有这个按钮；M3 未接线故 disabled）

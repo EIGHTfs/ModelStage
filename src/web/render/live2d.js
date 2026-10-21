@@ -12,6 +12,25 @@ import { createCamera } from './camera/index.js';
  */
 export function createLive2DRenderer({ live2d } = {}) {
   if (!live2d) throw new Error('createLive2DRenderer: 需要 live2d 实现');
+  /** 当前生效的纹理过滤与限帧（回显用） */
+  let filterMode = 'linear';
+  let fpsLimit = 60;
+  /**
+   * 收集舞台上全部 PIXI 纹理（实测挂点是 model.textures 数组，模型对象没有 _texture）。
+   * @param {object} app PIXI.Application
+   * @returns {Array<object>}
+   */
+  function texturesOf(app) {
+    const out = [];
+    const walk = (node, depth) => {
+      if (!node || depth > 4) return;
+      if (Array.isArray(node.textures)) for (const t of node.textures) if (t) out.push(t);
+      if (node.texture) out.push(node.texture);
+      for (const child of node.children || []) walk(child, depth + 1);
+    };
+    try { walk(app.stage, 0); } catch { /* 忽略 */ }
+    return out;
+  }
   // 相机统一入口：档位/范围/复位语义与 Spine 完全一致，差异只在 backend
   const camera = createCamera({
     kind: 'live2d',
@@ -32,7 +51,10 @@ export function createLive2DRenderer({ live2d } = {}) {
     id: 'live2d',
     capabilities: {
       // Live2D 不支持 Spine 的插槽/网格类设置项：只声明确实生效的
-      settings: ['filter'],
+      // 只声明确实生效的两项：纹理过滤（PIXI scaleMode）与限帧（ticker.maxFPS）。
+      // msaa / pma / fit / dpr 不声明：前者需重建 PIXI app，中间两项是 Spine 专有语义，
+      //   DPR 由 StageSurface 统一下发（渲染器不自己决定像素比）。
+      settings: ['textureFilter', 'fps'],
       debugDraw: [],
       camera: 'ortho-2d',
     },
@@ -72,6 +94,59 @@ export function createLive2DRenderer({ live2d } = {}) {
     },
     /** DPR 变化：与引擎保持同口径（Live2D 自身不决定像素比） */
     setDpr() { /* 由 resize() 统一按引擎口径同步 */ },
+
+    /**
+     * 应用一项设置（契约 renderer/v1）。未知键返回 false 不抛。
+     * @param {string} key textureFilter | fps
+     * @param {any} value
+     * @returns {boolean}
+     */
+    setSetting(key, value) {
+      const cur = this.getSetting(key);
+      if (cur !== null && cur !== undefined && String(cur) === String(value)) return true;
+      const app = live2d.getApp ? live2d.getApp() : null;
+      if (!app) return false;
+      try {
+        if (key === 'textureFilter') {
+          const nearest = String(value) === 'nearest';
+          // PIXI.SCALE_MODES 由运行时库提供；取不到就判不支持（不猜常量值）
+          const modes = window.PIXI && window.PIXI.SCALE_MODES;
+          if (!modes) return false;
+          const mode = nearest ? modes.NEAREST : modes.LINEAR;
+          let touched = 0;
+          for (const tex of texturesOf(app)) {
+            const bt = tex && tex.baseTexture;
+            if (!bt) continue;
+            try {
+              bt.scaleMode = mode;
+              bt.update(); // 让已上传的纹理按新采样方式重传，否则改了属性也不生效
+              touched += 1;
+            } catch { /* 单张失败继续其它 */ }
+          }
+          if (!touched) return false;
+          filterMode = nearest ? 'nearest' : 'linear';
+          return true;
+        }
+        if (key === 'fps') {
+          const n = Math.max(1, Math.min(120, Number(value) || 60));
+          if (!app.ticker) return false;
+          app.ticker.maxFPS = n;   // 0 = 不限帧，故这里只接受 ≥1 的值
+          fpsLimit = n;
+          return true;
+        }
+      } catch { return false; }
+      return false;
+    },
+
+    /** 回显实际生效值（不是请求值） */
+    getSetting(key) {
+      if (key === 'textureFilter') return filterMode;
+      if (key === 'fps') {
+        const app = live2d.getApp ? live2d.getApp() : null;
+        return app && app.ticker && app.ticker.maxFPS ? app.ticker.maxFPS : fpsLimit;
+      }
+      return null;
+    },
 /** 幂等卸载（覆盖层的隐藏由 StageSurface 负责） */
     dispose() {
       try { if (typeof live2d.dispose === 'function') live2d.dispose(); } catch { /* 忽略 */ }
