@@ -3,6 +3,8 @@
 // 帧调度选择：**渲染器自建 rAF（方案 A）**，与现状一致；
 //   StageSurface 只负责尺寸与背景，不接管渲染帧（统一调度属 B6 收尾，需同时改 surface 与 canvas.js）。
 
+import { hideFilteredSlots, restoreFilteredSlots } from './skins.js';
+
 /** 绘制一帧 */
 export function renderFrame(engine) {
   const { gl, skeleton, renderTarget } = engine;
@@ -11,7 +13,16 @@ export function renderFrame(engine) {
   gl.clear(gl.COLOR_BUFFER_BIT);
   // 与旧引擎一致：批处理器的 premultiplied 参数由 pmaInfo.blendMode 决定（不是纹理是否预乘）
   const blendPma = !!(engine.pmaInfo && engine.pmaInfo.blendMode === 'premultiplied');
-  const ok = engine.adapters.renderer.draw(renderTarget, skeleton, blendPma);
+  // 部件过滤要在绘制前摘件、绘制后挂回（finally 保证异常路径也不缺件）
+  hideFilteredSlots(engine);
+  let ok = false;
+  try {
+    ok = engine.adapters.renderer.draw(renderTarget, skeleton, blendPma);
+    // 调试层叠在主绘制之上（全关时 drawDebug 自身直接返回，不碰 GL）
+    engine.adapters.renderer.drawDebug(renderTarget, skeleton, engine.debugDraw, blendPma);
+  } finally {
+    restoreFilteredSlots(engine);
+  }
   if (!ok && !engine.renderWarned) {
     engine.renderWarned = true;
     engine.log('error', '渲染失败：适配器未能绘制（详见能力告警）', 'renderer');

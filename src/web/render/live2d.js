@@ -46,15 +46,65 @@ export function createLive2DRenderer({ live2d } = {}) {
     },
   });
   let handleRef = null;
+  // DPR 档位：'auto' = 跟随 Surface 下发的 res；'1'/'1.5'/'2' = 用户指定
+  let dprWanted = 'auto';
+
+  /** 几何唯一来源：Surface 句柄（渲染器不自行测量 DOM） */
+  function geometryOf() {
+    try { return handleRef && handleRef.geometry ? handleRef.geometry() : null; } catch { return null; }
+  }
+
+  /**
+   * 当前生效 DPR。
+   * auto 用 Surface 下发的 res（像素比口径由引擎侧决定，渲染器不自己读 devicePixelRatio）；
+   * 显式档直接采用 —— 这正是"用户在面板选了 2 就必须是 2"的落点。
+   * @param {number} [fallback] 几何取不到时的兜底值
+   */
+  function effectiveRes(fallback) {
+    const g = geometryOf();
+    const base = Math.max(1, (g && (g.res || g.dpr)) || fallback || 1);
+    if (dprWanted === 'auto') return base;
+    const n = parseFloat(dprWanted);
+    return Number.isFinite(n) && n > 0 ? n : base;
+  }
+
+  /**
+   * 按当前 DPR 重排覆盖层画布与 PIXI 后缓冲。
+   * 两处尺寸必须同源（画布宽高 = css × res，renderer.resolution = res），
+   *   否则 PIXI 会把画面按错误比例拉伸，表现为"角色变大/模糊"。
+   * @returns {boolean} 是否成功落到 PIXI
+   */
+  function applyResolution() {
+    const g = geometryOf();
+    const cssW = Math.max(1, Math.round((g && g.cssW) || 0));
+    const cssH = Math.max(1, Math.round((g && g.cssH) || 0));
+    if (!cssW || !cssH) return false;
+    const res = effectiveRes();
+    const app = (() => { try { return live2d.getApp ? live2d.getApp() : null; } catch { return null; } })();
+    if (!app || !app.renderer) return false;
+    try {
+      app.renderer.resolution = res;
+      app.renderer.resize(cssW, cssH);
+    } catch { return false; }
+    const overlayCv = (() => { try { return document.getElementById('live2d-overlay-canvas'); } catch { return null; } })();
+    if (overlayCv) {
+      const w = Math.max(1, Math.floor(cssW * res));
+      const h = Math.max(1, Math.floor(cssH * res));
+      if (overlayCv.width !== w) overlayCv.width = w;
+      if (overlayCv.height !== h) overlayCv.height = h;
+    }
+    try { if (live2d.syncSize) live2d.syncSize({ size: { width: cssW, height: cssH }, dpr: res }); } catch { /* 忽略 */ }
+    return true;
+  }
 
   return {
     id: 'live2d',
     capabilities: {
       // Live2D 不支持 Spine 的插槽/网格类设置项：只声明确实生效的
-      // 只声明确实生效的两项：纹理过滤（PIXI scaleMode）与限帧（ticker.maxFPS）。
-      // msaa / pma / fit / dpr 不声明：前者需重建 PIXI app，中间两项是 Spine 专有语义，
-      //   DPR 由 StageSurface 统一下发（渲染器不自己决定像素比）。
-      settings: ['textureFilter', 'fps'],
+      // 只声明确实生效的三项：纹理过滤（PIXI scaleMode）、限帧（ticker.maxFPS）、
+      //   DPR（PIXI renderer.resolution + 覆盖层画布同源放大）。
+      // msaa / pma / fit 不声明：msaa 要重建 PIXI app（运行期做不到），pma/fit 是 Spine 专有语义。
+      settings: ['textureFilter', 'fps', 'dpr'],
       debugDraw: [],
       camera: 'ortho-2d',
     },
@@ -79,7 +129,7 @@ export function createLive2DRenderer({ live2d } = {}) {
       const g = (() => { try { return handleRef && handleRef.geometry ? handleRef.geometry() : null; } catch { return null; } })();
       const cssW = Math.max(1, Math.round((g && g.cssW) || (box && box.cssW) || 0));
       const cssH = Math.max(1, Math.round((g && g.cssH) || (box && box.cssH) || 0));
-      const res = Math.max(1, (g && g.res) || (box && box.dpr) || 1);
+      const res = effectiveRes(box && box.dpr);
       if (!cssW || !cssH) return;
       const overlayCv = (() => { try { return document.getElementById('live2d-overlay-canvas'); } catch { return null; } })();
       if (overlayCv) {
@@ -104,6 +154,19 @@ export function createLive2DRenderer({ live2d } = {}) {
     setSetting(key, value) {
       const cur = this.getSetting(key);
       if (cur !== null && cur !== undefined && String(cur) === String(value)) return true;
+      if (key === 'dpr') {
+        // 先记档位：即使当前没挂载也接受（下次 mount/resize 生效），这样能力自检不会误报不支持
+        const v = String(value);
+        if (v === 'auto') dprWanted = 'auto';
+        else {
+          const n = parseFloat(v);
+          if (!Number.isFinite(n) || n <= 0) return false;
+          dprWanted = String(n);
+        }
+        const appDpr = live2d.getApp ? live2d.getApp() : null;
+        if (!appDpr) return true;
+        return applyResolution();
+      }
       const app = live2d.getApp ? live2d.getApp() : null;
       if (!app) return false;
       try {
@@ -140,6 +203,12 @@ export function createLive2DRenderer({ live2d } = {}) {
 
     /** 回显实际生效值（不是请求值） */
     getSetting(key) {
+      if (key === 'dpr') {
+        // 回显"实际生效值"：已挂载时读 PIXI 真实分辨率，未挂载时按档位与几何推算
+        const app = (() => { try { return live2d.getApp ? live2d.getApp() : null; } catch { return null; } })();
+        if (app && app.renderer && app.renderer.resolution) return app.renderer.resolution;
+        return effectiveRes();
+      }
       if (key === 'textureFilter') return filterMode;
       if (key === 'fps') {
         const app = live2d.getApp ? live2d.getApp() : null;

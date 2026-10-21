@@ -16,7 +16,7 @@ import { buildModel } from './loader.js';
 import { capabilitiesFor } from './runtime-capabilities.js';
 import { createAdapters } from './adapters/index.js';
 import * as appearance from './appearance.js';
-import { getSkins as skinList, setSkins as skinApply, normalizeKeywords } from './skins.js';
+import { getSkins as skinList, setSkins as skinApply, normalizeKeywords, countFilterableSlots } from './skins.js';
 import { engineDefaults, mergeDebugDraw, rendererInfo } from './engine-state.js';
 import * as cameraOps from './camera-adapter.js';
 import { describeModel } from './model-info.js';
@@ -316,10 +316,11 @@ export class SpineEngine {
     return skinApply(this, list);
   }
 
-  /** 插槽过滤关键词（B5 接绘制侧隐藏） */
-  setSlotFilter(keywords) {
-    this.slotFilterKeywords = normalizeKeywords(keywords);
-  }
+  /** 插槽过滤关键词（绘制侧由 render-frame 的 hide/restore 落地） */
+  setSlotFilter(keywords) { this.slotFilterKeywords = normalizeKeywords(keywords); }
+
+  /** 只读：这批关键词会命中多少个"当前有附件的槽"（区分"没匹配"与"隐藏成功"） */
+  countFilterableSlots(keywords) { return countFilterableSlots(this, keywords); }
 
   /** 切滤镜（非法 id 回落 original）；实现在 appearance.js */
   setFilter(id) {

@@ -8,8 +8,11 @@ import { createCamera } from './camera/index.js';
 
 /** Spine 渲染器支持的设置项 */
 const SETTINGS = ['fps', 'dpr', 'msaa', 'textureFilter', 'presetFilter', 'pma', 'fit'];
-/** Spine 渲染器支持的调试绘制项 */
-const DEBUG_DRAW = ['bones', 'meshes', 'boundingBoxes', 'paths', 'points', 'regions', 'clipping', 'hulls'];
+/** Spine 渲染器支持的调试绘制项
+ *  注：不含 points —— 3.8/4.1/4.2/4.3 的 SkeletonDebugRenderer 均无 drawPoints（实测 grep 全为 0），
+ *  该项永远画不出来，按「声明即必须可实现」不列入能力声明；运行时若探测到缺失项，
+ *  由引擎 getRendererInfo().debugUnsupported 上报。 */
+const DEBUG_DRAW = ['bones', 'meshes', 'boundingBoxes', 'paths', 'regions', 'clipping', 'hulls'];
 
 /**
  * 能力键 → 舞台方法名。

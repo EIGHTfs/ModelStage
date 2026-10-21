@@ -152,12 +152,13 @@ export const PANEL_GROUPS = [
     id: 'debug',
     title: '调试绘制',
     controls: [
-      // 8 个独立开关（可同时开）；键名与引擎 debugDraw 的字段一一对应
+      // 7 个独立开关（可同时开）；键名与引擎 debugDraw 的字段一一对应
+      // 注：不含「点(points)」——各版本 Spine 运行时的 SkeletonDebugRenderer 都没有 drawPoints，
+      //     该项永远画不出来，列入声明会让面板出现一个永远无效的开关
       { kind: 'switch', label: '骨骼', id: 'ctl-debug-bones', debugKey: 'bones' },
       { kind: 'switch', label: '网格', id: 'ctl-debug-meshes', debugKey: 'meshes' },
       { kind: 'switch', label: '包围盒', id: 'ctl-debug-boundingBoxes', debugKey: 'boundingBoxes' },
       { kind: 'switch', label: '路径', id: 'ctl-debug-paths', debugKey: 'paths' },
-      { kind: 'switch', label: '点', id: 'ctl-debug-points', debugKey: 'points' },
       { kind: 'switch', label: '区域', id: 'ctl-debug-regions', debugKey: 'regions' },
       { kind: 'switch', label: '裁剪', id: 'ctl-debug-clipping', debugKey: 'clipping' },
       { kind: 'switch', label: '外壳', id: 'ctl-debug-hulls', debugKey: 'hulls' },

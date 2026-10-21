@@ -550,13 +550,19 @@ api.getSkins = () => {
   }
 };
 
-/** 切换皮肤（引擎按名称匹配；找不到时保持原皮肤） */
+/**
+ * 切换皮肤（引擎按名称匹配；找不到时保持原皮肤）。
+ * 成功与否必须取引擎返回值：否则面板会记下一个并不存在的皮肤名，
+ *   表现为"设置里显示 skin_X、画面还是 default"，且下次重建贴图时又按错名字去设一遍。
+ * @param {string} name
+ * @returns {boolean} 是否真的切过去了
+ */
 api.setSkin = (name) => {
   if (!st.engine || typeof st.engine.setSkins !== 'function') return false;
   try {
-    st.engine.setSkins([name]);
-    st.settings.skin = name;
-    return true;
+    const ok = st.engine.setSkins([name]) !== false;
+    if (ok) st.settings.skin = name;
+    return ok;
   } catch {
     return false;
   }
@@ -584,7 +590,13 @@ api.setPartFilter = ({ enabled, keywords }) => {
   if (st.engine && typeof st.engine.setSlotFilter === "function") {
     try { st.engine.setSlotFilter(list); } catch { /* 版本不支持则只记状态 */ }
   }
-  return { enabled: !!enabled, applied: list.length };
+  // matched = 当前骨架里"真会被摘掉"的槽数（只读扫一遍，不改骨架）。
+  //   与 applied 分开：applied 是关键词条数，若把它当"隐藏了几件"会把"关键词没命中"误读成"隐藏成功"。
+  let matched = 0;
+  if (st.engine && typeof st.engine.countFilterableSlots === 'function') {
+    try { matched = st.engine.countFilterableSlots(list); } catch { matched = 0; }
+  }
+  return { enabled: !!enabled, applied: list.length, matched };
 };
 }
 

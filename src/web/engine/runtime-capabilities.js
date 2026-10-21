@@ -64,6 +64,8 @@ export function detectCapabilities(spine, version) {
   const AtlasAttachmentLoader = pickMember(spine, 'AtlasAttachmentLoader');
   const Vector2 = pickMember(spine, 'Vector2');
   const Skin = pickMember(spine, 'Skin');
+  // 调试绘制渲染器：3.x/4.x 都叫 SkeletonDebugRenderer（个别版本叫 DebugRenderer），没有就只能不画
+  const SkeletonDebugRenderer = pickMember(spine, 'SkeletonDebugRenderer') || pickMember(spine, 'DebugRenderer');
 
   // 纹理：3.x 的 GLTexture 有 bind()/setFilters()；4.x 也有，但若换成 Texture 基类则没有
   const textureHasBind = say(!missing.has('textureBind') && (hasProtoMethod(GLTexture, 'bind') || hasProtoMethod(Texture, 'bind')),
@@ -107,6 +109,8 @@ export function detectCapabilities(spine, version) {
       orthoCtor: OrthoCamera,
       orthoArity,
       batcherCtor: PolygonBatcher,
+      // 调试绘制（bones/meshes/... 八类）：没有构造器时该能力整体不可用，由调用方降级
+      debugCtor: SkeletonDebugRenderer,
     },
     skeleton: { jsonCtor: SkeletonJson, binaryCtor: SkeletonBinary, attachmentLoaderCtor: AtlasAttachmentLoader, vector2: Vector2 },
     skinCtor: Skin,
@@ -124,6 +128,7 @@ export function detectCapabilities(spine, version) {
         skeletonJson: !!this.skeleton.jsonCtor,
         skeletonBinary: !!this.skeleton.binaryCtor,
         orthoCamera: !!this.renderer.orthoCtor,
+        skeletonDebug: !!this.renderer.debugCtor,
         ops: { ...this.skeletonOps },
       };
     },

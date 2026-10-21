@@ -50,6 +50,8 @@ export function engineDefaults() {
     filterState: { saved: null, active: null },
     activeSkins: [],
     slotFilterKeywords: [],
+    // 绘制期间被临时摘掉的插槽附件（画完立刻挂回；不销毁，保证可恢复）
+    slotHiddenBackup: [],
     debugDraw: { bones: false, meshes: false, boundingBoxes: false, paths: false, points: false, regions: false, clipping: false, hulls: false },
     // —— 动画
     animationName: '',
@@ -98,6 +100,15 @@ export function rendererInfo(engine) {
     isSoftware: engine.isSoftware,
     rendererStr: engine.rendererStr,
     antialias: engine.antialias,
+    // 运行时画不出来的调试绘制项（如 3.8/4.1 都没有 drawPoints）：如实暴露，别让面板假装能用。
+    //   走确定性探测（探测调试渲染器实例上有没有对应属性），不依赖"是否已经画过帧"
+    debugUnsupported: (() => {
+      try {
+        const rd = engine.adapters && engine.adapters.renderer;
+        const sup = rd && typeof rd.debugSupport === 'function' ? rd.debugSupport(engine.renderTarget) : null;
+        return sup && Array.isArray(sup.missing) ? sup.missing : [];
+      } catch { return []; }
+    })(),
     dpr: engine.getEffectiveDpr(window.devicePixelRatio || 1),
     runtimeVersion: engine.runtimeVersion,        // 仅展示，不参与行为
     capabilities: engine.caps ? engine.caps.matrix() : null,
