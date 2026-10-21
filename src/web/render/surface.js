@@ -113,8 +113,21 @@ export function createStageSurface({ root, log } = {}) {
     const el = rootEl();
     if (!el) return st.size;
     const rect = el.getBoundingClientRect();
-    const width = Math.max(1, Math.round(rect.width || el.clientWidth || 0));
-    const height = Math.max(1, Math.round(rect.height || el.clientHeight || 0));
+    let width = Math.max(1, Math.round(rect.width || el.clientWidth || 0));
+    let height = Math.max(1, Math.round(rect.height || el.clientHeight || 0));
+    // 移动端旋转后 layout viewport 可能滞后：根容器是 position:fixed + inset:0，
+    //   实测横屏时它的 rect 仍是竖屏尺寸（777x1035），与真实视口方向相反 ——
+    //   这会让画布与模型按旧方向布局，表现为"模型只在某个矩形内可见、拖动超出不显示"。
+    //   此时以 innerWidth/innerHeight 为准（它跟随真实视口更新）。
+    //   只在「方向相反」时替换：同方向下的细微差异仍以容器为准（容器可能带内边距等）。
+    if (typeof window !== 'undefined') {
+      const iw = Math.round(window.innerWidth || 0);
+      const ih = Math.round(window.innerHeight || 0);
+      if (iw > 0 && ih > 0 && (width > height) !== (iw > ih)) {
+        width = iw;
+        height = ih;
+      }
+    }
     const changed = width !== st.size.width || height !== st.size.height;
     st.size = { width, height };
     const box = { cssW: width, cssH: height, dpr: st.dpr };
