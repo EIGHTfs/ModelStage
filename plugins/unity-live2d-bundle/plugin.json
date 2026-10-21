@@ -1,6 +1,9 @@
 {
   "id": "unity-live2d-bundle",
   "name": "Unity Live2D 资源包",
+  "provides": [
+    "asset-provider"
+  ],
   "label": "Live2D包",
   "version": 1,
   "entry": "index.js",
@@ -9,7 +12,8 @@
   ],
   "produces": {
     "kind": "live2d",
-    "entry": "open(ctx)",
+    "entry": "resolve(file)",
+    "legacyEntry": "open(ctx)",
     "schema": "doc/插件产出schema（prepare）.MD",
     "fields": [
       "model",
@@ -23,7 +27,7 @@
       "container",
       "serialized"
     ],
-    "note": "open() 返回对象；字段含义、样例与限制见 schema 文档"
+    "note": "目标契约 resolve(file) 返回 { prefix, files, entry }；迁移期保留 open(ctx) 兼容旧宿主"
   },
   "errorCodes": [
     "ULB_ERR_BAD_ARGS",

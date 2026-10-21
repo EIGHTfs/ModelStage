@@ -407,46 +407,81 @@ ulbInstall: {
    *
    * 产出的形状与现有 Live2D 模型一致（id/name/kind/cubism/modelUrl/motions/expressions/textureFiles），
    *   因此可以直接交给现有舞台 show()，复用原版右栏动作区与公共事件层——不新增渲染或事件代码。
+   *
+   * 迁移期新增的 `relative` 模式（契约 canHandle/resolve 用）：
+   *   不创建 Blob URL，model3 直接引用「相对键」（files 表里的 relPath），返回 { files, entry }。
+   *   这样核心拿到 files 后可按 prefix 注册 VirtualFS，渲染层按 entry 装载，不再依赖 Blob URL 直通。
+   *   需求意图：契约要求 resolve() 产出 prefix+files+entry，且插件不自行 register VirtualFS；
+   *   相对键的 model3 让 files 表自洽（不引用表外 URL），同时保留旧 open() 的 Blob URL 路径不变。
    */
-  async function buildRenderableModel(extracted, ctx, profile) {
+  async function buildRenderableModel(extracted, ctx, profile, opts) {
+    const relative = !!(opts && opts.relative);
+    const files = new Map();      // 相对键 → Blob|string（仅 relative 模式填充）
     const urls = [];
-    const blobUrl = (bytes, mime) => {
+    // 键名规则：moc3 用固定键 'moc3.moc3'，纹理 'textures/<原纹理名>.png'，physics3 'physics3.json'，
+    //   动作 'motions/<动作名>.motion3.json'。键内不用游戏名/路径，只按素材角色命名（契约 §5.6 不写死游戏名）。
+    const KEY_MOC3 = 'moc3.moc3';
+    const KEY_PHYSICS = 'physics3.json';
+    const keyTexture = (n) => `textures/${n}.png`;
+    const keyMotion = (n) => `motions/${n}.motion3.json`;
+    const model3Key = 'model3.json';
+
+    const blobUrl = (keyOrBytes, mime) => {
+      // relative 模式：keyOrBytes 是 {bytes, key}；旧模式：直接给 bytes
+      let bytes;
+      let key = null;
+      if (relative) { key = keyOrBytes.key; bytes = keyOrBytes.bytes; }
+      else { bytes = keyOrBytes; }
+      if (relative && key) files.set(key, new Blob([bytes], { type: mime || 'application/octet-stream' }));
+      if (relative) return key;     // relative 模式返回「键」而非 URL（model3 引用它，核心按 prefix 解析）
       const u = URL.createObjectURL(new Blob([bytes], { type: mime || 'application/octet-stream' }));
       urls.push(u);
       return u;
     };
 
-    const mocUrl = blobUrl(extracted.moc3, 'application/octet-stream');
+    const mocRef = blobUrl(relative ? { bytes: extracted.moc3, key: KEY_MOC3 } : extracted.moc3, 'application/octet-stream');
     // 纹理：逐张压缩编码（不并发），编完立刻释放 RGBA 缓冲 —— 峰值内存比"两张 67MB 级 PNG 同时生成"低得多。
-    const textureUrls = [];
+    const textureRefs = [];
     for (const t of extracted.textures) {
       if (!t.rgba) continue;
       const png = await NS.png.encodePngAsync(t.rgba, t.width, t.height);
       t.pngBytes = png.length;
-      textureUrls.push(blobUrl(png, 'image/png'));
+      const tKey = keyTexture(t.name);
+      textureRefs.push(blobUrl(relative ? { bytes: png, key: tKey } : png, 'image/png'));
       t.rgba = null;   // 释放 4096²×4 ≈ 64MB 级缓冲（模型不再需要它）
     }
-    const physicsUrl = extracted.physics3 ? blobUrl(extracted.physics3, 'application/json') : null;
+    const physicsRef = extracted.physics3
+      ? blobUrl(relative ? { bytes: extracted.physics3, key: KEY_PHYSICS } : extracted.physics3, 'application/json')
+      : null;
 
-    // 动作：每个 motion3.json 一个 Blob URL，并按 profile 规则分组（组内顺序 = 名字序，稳定可复现）
+    // 动作：每个 motion3.json 一个引用，并按 profile 规则分组（组内顺序 = 名字序，稳定可复现）
     const motionDefs = [];
     for (const m of extracted.motions) {
       const json = m.json;
-      const url = blobUrl(new TextEncoder().encode(JSON.stringify(json)), 'application/json');
-      motionDefs.push({ name: m.name, url, group: NS.model3.motionGroupOf(m.name, profile), loop: !!json.Meta.Loop, meta: json.Meta });
+      const mKey = keyMotion(m.name);
+      const ref = blobUrl(
+        relative ? { bytes: new TextEncoder().encode(JSON.stringify(json)), key: mKey }
+                 : new TextEncoder().encode(JSON.stringify(json)),
+        'application/json',
+      );
+      motionDefs.push({ name: m.name, url: ref, group: NS.model3.motionGroupOf(m.name, profile), loop: !!json.Meta.Loop, meta: json.Meta });
     }
     motionDefs.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
 
     const paramNames = extracted.paramNames || [];
     const model3 = NS.model3.buildModel3({
-      mocUrl,
-      textureUrls,
-      physicsUrl,
+      mocUrl: mocRef,
+      textureUrls: textureRefs,
+      physicsUrl: physicsRef,
       motions: motionDefs,
       paramNames,
       profile,
     });
-    const model3Url = blobUrl(new TextEncoder().encode(JSON.stringify(model3)), 'application/json');
+    const model3Ref = blobUrl(
+      relative ? { bytes: new TextEncoder().encode(JSON.stringify(model3)), key: model3Key }
+               : new TextEncoder().encode(JSON.stringify(model3)),
+      'application/json',
+    );
 
     // 舞台需要 motions 形状：{ 组: [{ name }] }（它按 (组, 下标) 播放，故顺序必须与 model3 一致）
     const motions = {};
@@ -456,16 +491,16 @@ ulbInstall: {
     }
 
     const id = `bundle:${ctx.rootId}:${ctx.rel}`;
-    return {
+    const out = {
       model: {
         id,
         name: ctx.name,
         kind: 'live2d',
         cubism: 4,
-        modelUrl: model3Url,
+        modelUrl: model3Ref,
         motions,
         expressions: [],
-        textureFiles: textureUrls,
+        textureFiles: textureRefs,
         bundleProfile: profile.id || null,
         bundleSource: { rootId: ctx.rootId, rel: ctx.rel, size: ctx.size },
         // 能力层元数据：画布尺寸与 rest pose 包围盒（口径见 collectCoreModelMeta 注释）
@@ -485,6 +520,8 @@ ulbInstall: {
       motionDefs,
       urls,
     };
+    if (relative) out.files = files;   // 契约 resolve() 需要的文件表（相对键 → Blob）
+    return out;
   }
 
   /** 取资源包字节：调用方可直接给 bytes，否则按 rootId/rel 走宿主取文件。 */
@@ -706,12 +743,133 @@ ulbInstall: {
     return report;
   }
 
+  // ------------------------------------------------------------------
+  // 契约目标接口（资产提供者契约 §一）：canHandle(file) → boolean / resolve(file) → { prefix, files, entry }
+  //
+  // 需求意图：宿主按新契约只认这两个成员；同时旧 open/probe 保留在注册对象里做兼容层，
+  //   让尚未迁移的核心继续可用——删掉它们会破坏现有页面渲染路径（验收要求"保留现有能力"）。
+  //
+  // resolve 与 open 的分工（避免重复解码纹理）：
+  //   · open() 保持原行为：Blob URL + 可渲染 model（旧宿主路径），内部已做 PNG 编码。
+  //   · resolve() 走「原生文件表」路径：两种包型都直接把包内素材按相对键填进 files，
+  //     Unity 集成版重建一份「相对路径版」model3（引用 files 内的键，不含 Blob URL），entry 指向它。
+  //   这样 files 的值是真实的 Blob/字符串（契约要求 Map<relPath, Blob|string>），
+  //     核心拿到后按 prefix 注册 VirtualFS，渲染层按 entry 装载——不依赖插件自持 Blob URL。
+  //
+  // 前缀规则：`unity-live2d-bundle/<rootId>/<rel>`（契约要求含插件 id 与资源根，保证唯一；
+  //   rel 里可能含多级目录，原样保留，不做转义——VirtualFS 按前缀做命名空间即可）。
+  // ------------------------------------------------------------------
+
+  /** 把 file（宿主传入的上下文）规整成旧 ctx 形状，缺字段给保守默认（不改语义）。 */
+  function asCtx(file) {
+    if (!file || typeof file !== 'object') return null;
+    return file;
+  }
+
+  // 契约：canHandle 必须是纯判定（无副作用、返回布尔）。
+  // 实现：复用 bundle-probe 的容器+对象表判定（与 /api/bundle/probe 同口径，避免两份真相漂移），
+  //   但只取「是不是可读资产包」这个二值结论——旧的 0.6/1.0 置信度区分（有没有 moc3）
+  //   属于"选谁"的判断，契约明确把它推回给宿主，这里一律按 ok 判 true。
+  async function canHandle(file) {
+    const ctx = asCtx(file);
+    try {
+      const bytes = ctx && ctx.bytes ? ctx.bytes : null;
+      if (!bytes) {
+        // 契约 §一：canHandle 必须是纯判定、无副作用（不做 I/O）。
+        // 没给字节时发不了容器探测，只能按名称做保守启发。
+        // 资源根里的 Unity 包**无扩展名**（如 azurlane_bundle/adaerbote_3），所以不能用扩展名白名单
+        // 判 false（会漏掉真包）；宿主既然按 fileKinds=['bundle'] 把文件递过来，容器归属已由宿主筛过，
+        // 这里放行 true，真正读不出的情形由 resolve() 抛可读错误兜底（契约 §5.8 禁止半成品）。
+        // 该猜法与文档缺口的对应关系见 卡点清单.md 第 8 条。
+        return true;
+      }
+      const r = NS.bundleProbe.run(bytes);
+      return r.ok;   // 有容器+CAB 即归本插件；NO_CAB（有 UnityFS 头但无资产节点）判 false
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // 契约：resolve 产出 { prefix, files, entry }；失败抛带原因的错误，不返回缺字段半成品。
+  async function resolve(file) {
+    const ctx = asCtx(file);
+    if (!ctx || (!ctx.bytes && (!ctx.rootId || !ctx.rel))) {
+      throw NS.errors.fail('ULB_ERR_BAD_ARGS', 'resolve() 缺少可读资源：需要 file.bytes 或 file.rootId+file.rel');
+    }
+    const hostApi = (ctx.host) || host.host;
+    const bytes = await readBundleBytes(ctx, hostApi);
+    const { parsed, cabNode, cabBytes, resSBytes } = parseContainerNodes(bytes, ctx && ctx.name);
+    const sf = NS.serialized.parse(cabBytes);
+    const got = NS.extract.extractAll({ cabBytes, resSBytes, sf });
+    const profile = await loadProfile(ctx && ctx.profile);
+
+    const prefix = `unity-live2d-bundle/${String(ctx.rootId || 'root')}/${String(ctx.rel || 'file')}`;
+    const files = new Map();
+    let entry = null;
+
+    if (got.nativeFiles.some((f) => /\.model3\.json$/i.test(f.name))) {
+      // 包型① 原生 Cubism 文件集：包内自带 model3/motion3/physics3，直接以原文件成表，不重建。
+      //   entry = 包内 model3；纹理与 mocs 由包内 model3 的 FileReferences 相对引用，
+      //   这些相对路径与包内文件同根，核心注册 prefix 后可直接解析。
+      const textures = decodeTextures(got, resSBytes);
+      for (const f of got.nativeFiles) {
+        files.set(f.name, new Blob([f.bytes], { type: /\.json$/i.test(f.name) ? 'application/json' : 'application/octet-stream' }));
+        if (/\.model3\.json$/i.test(f.name)) entry = f.name;
+      }
+      // 原生 Cubism 文件集：包内可能自带 .png/.moc3 等原始文件（TextAsset 形态），直接进表；
+      //   若包内没有 PNG 纹理、但有 Unity 压缩纹理（Texture2D 对象），才走解码→PNG 编码路径。
+      //   键名与原文件名一致，保证包内 model3.json 的 FileReferences 相对引用能直接解析到。
+      let hasPngTexture = false;
+      for (const f of got.nativeFiles) {
+        if (/\.png$/i.test(f.name)) {
+          files.set(f.name, new Blob([f.bytes], { type: 'image/png' }));
+          hasPngTexture = true;
+        }
+      }
+      if (!hasPngTexture) {
+        for (const t of textures) {
+          if (!t.rgba) continue;
+          const png = await NS.png.encodePngAsync(t.rgba, t.width, t.height);
+          files.set(`${t.name}.png`, new Blob([png], { type: 'image/png' }));
+          t.rgba = null;
+        }
+      }
+      if (!entry) throw NS.errors.fail('ULB_ERR_MODEL_BUILD', '原生文件集里找不到 model3.json 入口');
+      return { prefix, files, entry };
+    }
+
+    // 包型② Unity 集成版：没有 model3，重建「相对路径版」（引用 files 内的键，不写 Blob URL）。
+    const textures = decodeTextures(got, resSBytes);
+    const { converted, candidates, paramTable } = await convertClipMotions(got, sf, profile);
+    const extracted = {
+      moc3: got.moc3,
+      physics3: got.physics3,
+      textures,
+      motions: converted.motions,
+      paramNames: candidates,
+      meta: paramTable ? paramTable.meta : null,
+    };
+    const built = await buildRenderableModel(extracted, ctx, profile, { relative: true });
+    if (!built.files || built.files.size === 0) throw NS.errors.fail('ULB_ERR_EXTRACT', 'Unity 集成版没有可产出的素材文件');
+    // built.files 已含 model3.json（相对键）；moc3 键固定为 'moc3.moc3'
+    files = built.files;
+    entry = 'model3.json';
+    return { prefix, files, entry };
+  }
+
+  // 契约 §一：plugin.json 的 provides=["asset-provider"] 让宿主把本插件登记进资产提供者注册表；
+  //   注册对象上 kind 是产出内容类型（live2d），与 fileKinds 的容器类型 bundle 正交。
   host.register({
     id: PLUGIN_ID,
     name: 'Unity Live2D 资源包',
     label: 'Live2D包',
-    fileKinds: ['bundle'],
+    // 契约 §三 的注册面：canHandle/resolve 是新宿主认的成员。
+    canHandle,
+    resolve,
+    kind: 'live2d',
+    // 兼容层（旧宿主仍在用 probe/open；删除会破坏现有渲染路径，验收要求保留现有能力）
     probe,
     open,
+    fileKinds: ['bundle'],
   });
 }
