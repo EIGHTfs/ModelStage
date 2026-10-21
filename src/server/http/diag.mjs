@@ -16,6 +16,11 @@ const MAX_LINE_CHARS = 8000;
  * @param {{dataDir: string, diagFile: string}} paths
  */
 export function createDiag(paths) {
+  // 服务端侧的环形缓冲（GET /api/diag 读它，与面板内容同源）。
+  // 按会话 id 分组：页面重载会换 sid，旧条目不会混进"当前这一轮"的统计。
+  const sessions = new Map();   // sid -> { recent, counts, lastAt }
+  const SESSION_MAX = 4;        // 只留最近几个会话，避免长期运行内存增长
+
   /**
    * 追加一批诊断条目。
    * @param {string} body 原始请求体
@@ -35,6 +40,8 @@ export function createDiag(paths) {
     try {
       if (!fs.existsSync(paths.dataDir)) fs.mkdirSync(paths.dataDir, { recursive: true });
       rotateIfNeeded(paths.diagFile);
+      const sid = String((payload && payload.sid) || 'anonymous');
+      remember(getSession(sessions, sid), take);
       const lines = take.map(serialize).filter(Boolean);
       if (lines.length) fs.appendFileSync(paths.diagFile, lines.join('\n') + '\n', 'utf8');
       return { ok: true, written: lines.length, dropped: entries.length - take.length };
@@ -44,7 +51,81 @@ export function createDiag(paths) {
     }
   }
 
-  return { appendDiag };
+  /**
+   * 读取最近的诊断条目（只读：不接受调用方指定文件/路径）。
+   * 返回结构与面板一致：{ t, level, src, event, data }，外加 total 与级别分布。
+   * @param {{limit?: number}} [options]
+   * @returns {{ok: true, total: number, counts: object, entries: object[]}}
+   */
+  function readDiag(options = {}) {
+    const limit = Math.min(Math.max(Number(options.limit) || CAPACITY, 1), CAPACITY);
+    const picked = pickSession(sessions, options.sid);
+    if (!picked) return { ok: true, sid: options.sid || null, total: 0, counts: { info: 0, warn: 0, error: 0, debug: 0 }, entries: [] };
+    return {
+      ok: true,
+      sid: picked.sid,
+      total: picked.recent.length,
+      counts: { ...picked.counts },
+      entries: picked.recent.slice(-limit).map(shapeEntry),
+    };
+  }
+
+  return { appendDiag, readDiag };
+}
+
+/** 服务端环形缓冲容量（与前端 diag 默认容量一致） */
+const CAPACITY = 500;
+
+/** 取（或建）一个会话的缓冲；超过上限时淘汰最久未活动的会话 */
+function getSession(sessions, sid) {
+  let s = sessions.get(sid);
+  if (!s) {
+    s = { sid, recent: [], counts: { info: 0, warn: 0, error: 0, debug: 0 }, lastAt: Date.now() };
+    sessions.set(sid, s);
+    if (sessions.size > SESSION_MAX) {
+      let oldestKey = null;
+      let oldestAt = Infinity;
+      for (const [key, val] of sessions) if (val.lastAt < oldestAt) { oldestAt = val.lastAt; oldestKey = key; }
+      if (oldestKey) sessions.delete(oldestKey);
+    }
+  }
+  s.lastAt = Date.now();
+  return s;
+}
+
+/** 选会话：指定 sid 优先；没指定就取最近活跃的那个 */
+function pickSession(sessions, sid) {
+  if (sid) return sessions.get(String(sid)) || null;
+  let best = null;
+  for (const val of sessions.values()) if (!best || val.lastAt > best.lastAt) best = val;
+  return best;
+}
+
+/** 入环形缓冲 + 累计级别分布（容量满丢最旧；分布只统计当前缓冲内的条目） */
+function remember(session, entries) {
+  const { recent, counts } = session;
+  for (const raw of entries) {
+    const level = raw && typeof raw.level === 'string' ? raw.level : 'info';
+    recent.push({ level, src: raw && raw.src, event: raw && raw.event, data: raw && raw.data, t: raw && raw.t });
+    if (counts[level] === undefined) counts[level] = 0;
+    counts[level] += 1;
+    if (recent.length > CAPACITY) {
+      const dropped = recent.shift();
+      const key = dropped && dropped.level;
+      if (key && counts[key] !== undefined) counts[key] = Math.max(0, counts[key] - 1);
+    }
+  }
+}
+
+/** 单条对外形状（稳定字段：t/level/src/event/data） */
+function shapeEntry(e) {
+  return {
+    t: e && e.t ? String(e.t) : null,
+    level: (e && e.level) || 'info',
+    src: (e && e.src) || null,
+    event: (e && e.event) || null,
+    data: e && e.data !== undefined ? e.data : null,
+  };
 }
 
 /** 超过上限就把当前文件挪成 .1（只保留一代）；轮转失败不阻断本次写入 */

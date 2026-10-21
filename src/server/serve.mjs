@@ -290,6 +290,12 @@ const server = http.createServer((req, res) => {
   const p = url.pathname;
   try {
     // 写接口优先拦下（方法敏感，先判）；诊断落盘是只写 data/ 的旁路，按旧规则真实实现
+    // 只读：取最近的诊断条目（页面自己记录的那份，供外部/AI 直接读现场）
+    if (p === '/api/diag' && req.method === 'GET') {
+      const limit = Number(url.searchParams.get('limit')) || undefined;
+      const sid = url.searchParams.get('sid') || undefined;
+      return sendJson(res, 200, diag.readDiag({ limit, sid }));
+    }
     if (p === '/api/diag' && req.method === 'POST') {
       return readBody(req, res, (body) => sendJson(res, 200, diag.appendDiag(body)));
     }

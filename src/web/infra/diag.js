@@ -44,6 +44,10 @@ function createState(override) {
     flushTimer: null,
     internal: false,      // 防自激：探针内部产生的 console 调用不再被采集
     lastInteraction: 0,
+    sinks: new Set(),      // 订阅者（面板等）：push 时同步分发
+    // 会话 id：页面每次加载都不同。服务端按它分组，GET /api/diag?sid=… 只回本会话，
+    // 这样"API 条数 == 面板条数"不会被上一轮的旧条目污染。
+    sid: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
   };
 }
 
@@ -134,7 +138,19 @@ function push(st, level, src, event, data, extra) {
   // 极端情况下丢最旧，避免 pending 无限增长（服务端不可用时尤其重要）
   if (st.pending.length > 400) st.pending.splice(0, st.pending.length - 400);
   scheduleFlush(st);
+  notifySinks(st, e);
   return e;
+}
+
+/**
+ * 把条目分发给订阅者（面板转发用）。
+ * 为什么要 try 逐个兜住：订阅者是 UI 代码，出错不能反过来影响采集。
+ * 传出去的是**浅拷贝**：订阅者改了字段不会污染环形缓冲。
+ */
+function notifySinks(st, entry) {
+  for (const fn of st.sinks) {
+    try { fn({ ...entry }); } catch { /* 单个订阅者异常不影响其它订阅者 */ }
+  }
 }
 
 /** 合并 1.5s 内的条目成一批，避免每条一个请求 */
@@ -152,7 +168,7 @@ function flush(st) {
     fetch('/api/diag', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ entries: batch }),
+      body: JSON.stringify({ entries: batch, sid: st.sid }),
       keepalive: true,
     }).catch(() => {}).finally(() => { st.internal = false; });
   } catch {
@@ -232,6 +248,116 @@ function wrapConsole(st) {
   } catch { /* 某些环境 console 只读：放弃包装，其余采集照旧 */ }
 }
 
+// ---------------------------------------------------------------- 脱敏
+
+/** 敏感 query 键：命中就把值替换成 ***（导出、落盘、面板、API 同源处理） */
+const SENSITIVE_KEYS = /^(token|access_token|refresh_token|id_token|api_?key|apikey|secret|password|passwd|pwd|auth|authorization|session|sessionid|sid|code|sign|signature|sig)$/i;
+
+/**
+ * URL 脱敏：去掉 user:pass@ 与敏感 query 值，保留路径与其余参数。
+ * 为什么要做：日志会进面板、进 API、进磁盘；把 token 抄进去等于把凭据留在截图里。
+ * @param {string} raw
+ * @returns {string}
+ */
+export function sanitizeUrl(raw) {
+  const text = String(raw == null ? '' : raw);
+  if (!text) return text;
+  let out = text;
+  try {
+    const u = new URL(text, typeof location !== 'undefined' ? location.href : 'http://x/');
+    if (u.username || u.password) { u.username = '***'; u.password = ''; }
+    for (const key of [...u.searchParams.keys()]) {
+      if (SENSITIVE_KEYS.test(key)) u.searchParams.set(key, '***');
+    }
+    out = u.toString();
+    // 相对地址保持相对（避免把 http://host 前缀写进日志）
+    if (/^https?:\/\//i.test(text) === false && out.startsWith(u.origin)) out = out.slice(u.origin.length) || '/';
+  } catch {
+    out = text.replace(/([?&][^=&]*(?:token|key|secret|password|code|sign)[^=&]*=)[^&]*/gi, '$1***');
+  }
+  return out;
+}
+
+/** 请求体脱敏：只保留键名，值一律 ***（请求体里最可能藏凭据） */
+function sanitizeBodyKeys(body) {
+  if (!body || typeof body !== 'object') return null;
+  try {
+    const out = {};
+    for (const k of Object.keys(body).slice(0, 20)) out[k] = SENSITIVE_KEYS.test(k) ? '***' : '[omitted]';
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------- 采集：网络
+
+/** 诊断自身的上报请求不能被采集（否则失败时会自我放大） */
+const SELF_URL_RE = /^\/api\/diag(?:[?#]|$)/;
+
+/** 记一条网络失败（状态码或异常） */
+function pushNet(st, method, url, status, err) {
+  const safe = sanitizeUrl(url);
+  if (status >= 400) {
+    push(st, 'warn', 'net', 'http.error', { method, status, url: safe });
+  } else if (err) {
+    push(st, 'error', 'net', 'net.fail', { method, url: safe, error: String(err && err.message || err).slice(0, 200) });
+  }
+}
+
+/** 采集网络失败：包装 fetch 与 XHR（只记 ≥400 与请求失败，不记成功请求） */
+function captureNetwork(st) {
+  if (typeof window === 'undefined') return;
+  // fetch：保留原引用，异常/状态码都记一条
+  if (typeof window.fetch === 'function' && !window.fetch.__diagWrapped) {
+    const origin = window.fetch;
+    const wrapped = function diagFetch(input, init) {
+      const method = String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+      const url = typeof input === 'string' ? input : String((input && input.url) || '');
+      return origin.apply(this, arguments).then((res) => {
+        try {
+          if (!st.internal && !SELF_URL_RE.test(url) && res && res.status >= 400) {
+            pushNet(st, method, url, res.status, null);
+          }
+        } catch { /* 忽略 */ }
+        return res;
+      }, (err) => {
+        try { if (!SELF_URL_RE.test(url)) pushNet(st, method, url, 0, err); } catch { /* 忽略 */ }
+        throw err;
+      });
+    };
+    wrapped.__diagWrapped = true;
+    try { window.fetch = wrapped; } catch { /* 只读环境放弃 */ }
+  }
+  // XHR：只挂 loadend（status 0 表示网络层失败）
+  const XHR = window.XMLHttpRequest;
+  if (XHR && XHR.prototype && !XHR.prototype.__diagWrapped) {
+    const open = XHR.prototype.open;
+    const send = XHR.prototype.send;
+    try {
+      XHR.prototype.open = function diagOpen(method, url) {
+        try { this.__diagMeta = { method: String(method || 'GET').toUpperCase(), url: String(url || '') }; } catch { /* 忽略 */ }
+        return open.apply(this, arguments);
+      };
+      XHR.prototype.send = function diagSend() {
+        try {
+          const meta = this.__diagMeta;
+          if (meta && !SELF_URL_RE.test(meta.url)) {
+            this.addEventListener('loadend', () => {
+              try {
+                const stt = Number(this.status) || 0;
+                if (stt >= 400 || stt === 0) pushNet(st, meta.method, meta.url, stt, stt === 0 ? new Error('network error') : null);
+              } catch { /* 忽略 */ }
+            });
+          }
+        } catch { /* 忽略 */ }
+        return send.apply(this, arguments);
+      };
+      XHR.prototype.__diagWrapped = true;
+    } catch { /* 只读环境放弃 */ }
+  }
+}
+
 // ---------------------------------------------------------------- 采集：交互
 
 /** 交互低频采样：只记"发生了什么"，不记每帧（滚轮/按下各按阈值节流） */
@@ -261,11 +387,25 @@ function captureInteractions(st) {
 function createApi(st) {
   return {
     __installed: true,
+    /** 本页会话 id（GET /api/diag?sid=… 用它取"当前这一轮"的条目） */
+    get sid() { return st.sid; },
     config: st.config,
     /** 业务主动上报事件（如 model.mount / stage.load） */
     event(event, data, extra) {
       return push(st, (extra && extra.level) || 'info', (extra && extra.src) || 'app', event, data, extra);
     },
+    /**
+     * 注册订阅者：每产生一条事件就同步收到（面板转发用）。
+     * 同一函数重复注册只生效一次（Set 语义）；返回取消订阅函数。
+     * @param {(entry: object) => void} fn
+     * @returns {() => void}
+     */
+    addSink(fn) {
+      if (typeof fn !== 'function') return () => {};
+      st.sinks.add(fn);
+      return () => { st.sinks.delete(fn); };
+    },
+    removeSink(fn) { return st.sinks.delete(fn); },
     dump() { return st.buf.slice(); },
     errors() { return st.buf.filter((e) => e.level === 'error'); },
     warnings() { return st.buf.filter((e) => e.level === 'warn'); },
@@ -297,6 +437,7 @@ export function installDiag(override) {
   captureWindowErrors(st);
   wrapConsole(st);
   captureInteractions(st);
+  captureNetwork(st);
 
   const api = createApi(st);
   window.__DIAG__ = api;

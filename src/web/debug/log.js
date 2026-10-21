@@ -2,6 +2,12 @@
 //
 // 职责：环形缓冲、分级、订阅、开关。面板（debug-panel.js）只消费这里产出的条目。
 //
+// 单一真相源（doc/任务-调试日志接入.md）：
+//   条目**只从 diag 进来** —— log() 不再直接写缓冲，而是把事件交给 window.__DIAG__，
+//   由面板注册的 sink 回调 addExternal() 写回缓冲。这样"应用事件 / 运行时异常 / 网络失败"
+//   走的是同一条管道：把 sink 注册注释掉，三类会一起消失（可反向验证"真的接通了"）。
+//   没有 diag（独立使用本模块/单测）时退回直接写缓冲，行为与旧版一致。
+//
 // 契约（doc/任务-前端重写.md 第二十二节）：
 //   const log = createDebugLog({ capacity: 500 });
 //   log.log(tag, message, { level = 'info', data } = {});
@@ -26,6 +32,44 @@ export const DEBUG_TAGS = Object.freeze([
 
 /** 允许的级别 */
 export const DEBUG_LEVELS = Object.freeze(['info', 'warn', 'error']);
+
+/**
+ * 条目来源（面板据此加前缀，区分"应用自己说的"和"探针抓到的"）：
+ *   app       应用事件（加载/切换/设置变更）
+ *   error     运行时异常（window.onerror / unhandledrejection / console.error）
+ *   net       网络失败（HTTP ≥400 / 请求失败）
+ *   resource  资源加载失败
+ *   其它      探针内部来源（diag/stage/console/motion…）原样透传
+ */
+export const DEBUG_SOURCES = Object.freeze(['app', 'error', 'net', 'resource', 'diag', 'stage', 'console', 'motion', 'window']);
+
+/** 来源归一：未知来源归到 app，避免面板出现奇怪前缀 */
+function normalizeSource(src) {
+  const v = String(src || '').toLowerCase();
+  return DEBUG_SOURCES.includes(v) ? v : (v ? v : 'app');
+}
+
+/** 敏感键：data 里这些键的值一律打码（与 infra/diag.js 的 URL 脱敏同一套口径） */
+const SENSITIVE_KEY_RE = /^(token|access_token|refresh_token|id_token|api_?key|apikey|secret|password|passwd|pwd|auth|authorization|session|sessionid|sid|code|sign|signature|sig)$/i;
+
+/** data 脱敏：敏感键打码；像 URL 的字符串去掉 query 里的凭据 */
+function sanitizeData(data) {
+  if (data === null || data === undefined) return null;
+  try {
+    if (typeof data === 'string') return data.replace(/([?&][^=&]*(?:token|key|secret|password|code|sign)[^=&]*=)[^&]*/gi, '$1***');
+    if (typeof data !== 'object') return data;
+    const out = Array.isArray(data) ? [] : {};
+    for (const k of Object.keys(data).slice(0, 40)) {
+      const v = data[k];
+      out[k] = SENSITIVE_KEY_RE.test(k) ? '***' : (typeof v === 'string' && /^[a-z]+:\/\//i.test(v)
+        ? v.replace(/([?&][^=&]*(?:token|key|secret|password|code|sign)[^=&]*=)[^&]*/gi, '$1***')
+        : v);
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
 
 /** 单条正文上限（字符）与默认容量 */
 const MESSAGE_MAX = 300;
@@ -122,19 +166,55 @@ export function createDebugLog(options = {}) {
   // 默认开启（旧端开关初始为开）；显式传 { enabled: false } 可关闭
   let enabled = options.enabled === undefined ? true : !!options.enabled;
 
-  /** 记一条日志；关闭时立即返回 undefined */
-  function log(tag, message, opts = {}) {
-    if (!enabled) return undefined;
+  /** 组装一条内部条目（唯一构造点，保证字段齐全） */
+  function makeEntry(fields) {
+    return {
+      ts: Number(fields.ts) || Date.now(),
+      level: DEBUG_LEVELS.includes(fields.level) ? fields.level : 'info',
+      tag: String(fields.tag || '').toUpperCase(),
+      message: String(fields.message || ''),
+      src: normalizeSource(fields.src),
+      event: String(fields.event || fields.tag || ''),
+      data: sanitizeData(fields.data),
+    };
+  }
+
+  /** 写缓冲并广播（**唯一入口**，不转发 —— 转发是 log() 的事，避免自激） */
+  function addExternal(fields) {
     try {
-      const entry = {
-        ts: Date.now(),
-        level: DEBUG_LEVELS.includes(opts.level) ? opts.level : 'info',
-        tag: String(tag || '').toUpperCase(),
-        message: buildMessage(message, opts.data),
-      };
+      const entry = makeEntry(fields || {});
       buffer.add(entry);
       bus.emit(entry);
       return entry;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * 记一条日志；关闭时立即返回 undefined。
+   *
+   * 有 window.__DIAG__ 时**只交给探针**（由面板 sink 回调 addExternal 写回缓冲），
+   * 这样三类事件共享同一条管道；没有探针（独立使用/单测）时直接写缓冲。
+   */
+  function log(tag, message, opts = {}) {
+    if (!enabled) return undefined;
+    try {
+      const fields = {
+        ts: Date.now(),
+        level: opts.level,
+        tag,
+        message: buildMessage(message, opts.data),
+        src: opts.src,
+        event: opts.event || tag,
+        data: opts.data === undefined ? null : opts.data,
+      };
+      const diag = typeof window !== 'undefined' ? window.__DIAG__ : null;
+      if (diag && typeof diag.event === 'function') {
+        diag.event(fields.event, fields.data, { level: fields.level, src: fields.src || 'app', tag: fields.tag });
+        return fields; // 缓冲由 sink 写回；这里只回报"已上报"
+      }
+      return addExternal(fields);
     } catch {
       return undefined; // 日志绝不能影响业务
     }
@@ -142,7 +222,20 @@ export function createDebugLog(options = {}) {
 
   return {
     log,
+    /** 外部写入（sink 专用）：不转发，避免"转发→写缓冲→再转发"的自激 */
+    addExternal,
     entries: () => buffer.snapshot(),
+    /**
+     * 稳定导出结构（供 API/自动化断言）：{ t, level, src, event, data }。
+     * 与面板同一份缓冲，所以"API 条数 == 面板条数"是结构保证，不靠对账。
+     */
+    dump: () => buffer.snapshot().map((e) => ({
+      t: new Date(e.ts).toISOString(),
+      level: e.level,
+      src: e.src,
+      event: e.event,
+      data: e.data,
+    })),
     subscribe: (fn) => bus.subscribe(fn),
     clear() {
       buffer.reset();

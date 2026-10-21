@@ -86,9 +86,21 @@ function createHeader() {
   btnCollapse.setAttribute('aria-label', '收起日志面板');
   btnCollapse.append(icon('chevron'));
 
-  right.append(btnClear, btnCollapse);
+  // 级别过滤：默认"全部"，选中后只显示该级别（面板里"看得见什么"由用户决定）
+  const filter = doc.createElement('select');
+  filter.className = 'dbg-filter';
+  filter.title = '按级别过滤';
+  filter.setAttribute('aria-label', '按级别过滤日志');
+  for (const [value, label] of [['all', '全部'], ['error', '错误'], ['warn', '警告'], ['info', '信息']]) {
+    const opt = doc.createElement('option');
+    opt.value = value;
+    opt.textContent = label;
+    filter.append(opt);
+  }
+
+  right.append(filter, btnClear, btnCollapse);
   head.append(left, right);
-  return { head, countEl, btnClear, btnCollapse };
+  return { head, countEl, btnClear, btnCollapse, filter };
 }
 
 /** 建完整骨架 */
@@ -115,6 +127,8 @@ function renderEntry(entry, { isCollapsed }) {
   const meta = el('div', 'dbg-meta');
   meta.append(el('span', 'dbg-time', formatTime(entry.ts)));
   // tag 在 DOM 里保持小写，显示靠 CSS text-transform: uppercase（与旧端一致）
+  // 来源（app/error/net/…）：一眼看出这条是"应用自己说的"还是"探针抓到的"
+  meta.append(el('span', `dbg-src dbg-src-${String(entry.src || 'app').toLowerCase()}`, String(entry.src || 'app')));
   meta.append(el('span', 'dbg-tag', `[${String(entry.tag || '').toLowerCase()}]`));
   body.append(meta, el('div', `dbg-text dbg-text-${level}`, entry.message));
   row.append(body);
@@ -138,9 +152,15 @@ function createRenderer({ log, list, countEl, state }) {
     countEl.textContent = `${n} 条`;
   }
 
-  /** 全量重绘（初始化 / 清空后 / 样式就绪后） */
+  /** 当前过滤级别（all 表示不过滤） */
+  function levelPass(record) {
+    const want = state.level || 'all';
+    return want === 'all' || record.level === want;
+  }
+
+  /** 全量重绘（初始化 / 清空后 / 切换过滤 / 样式就绪后） */
   function renderAll() {
-    const records = log.entries();
+    const records = log.entries().filter(levelPass);
     list.replaceChildren();
     if (!records.length) list.append(el('div', 'dbg-empty', '暂无日志'));
     else for (const record of records) list.append(renderEntry(record, state));
@@ -148,15 +168,34 @@ function createRenderer({ log, list, countEl, state }) {
     scrollToBottom();
   }
 
-  /** 追加一条（避免每次新条目都整表重绘） */
-  function appendEntry(entry) {
-    if (list.querySelector('.dbg-empty')) list.replaceChildren();
-    list.append(renderEntry(entry, state));
-    updateCount(list.childElementCount);
-    scrollToBottom();
+  /**
+   * 批量刷新：高频错误下每帧最多重绘一次。
+   * 为什么不在 subscribe 里直接 append：一次网络风暴可能几十条同时到，
+   *   逐条 append + 滚动会把主线程钉住（面板本来就不该拖慢页面）。
+   */
+  let pending = [];
+  let scheduled = false;
+  function scheduleRender(entry) {
+    if (entry === null) { pending = []; renderAll(); return; }
+    pending.push(entry);
+    if (scheduled) return;
+    scheduled = true;
+    const run = () => {
+      scheduled = false;
+      const batch = pending;
+      pending = [];
+      if (!batch.length) return;
+      const hasEmpty = !!list.querySelector('.dbg-empty');
+      if (hasEmpty) list.replaceChildren();
+      for (const record of batch) if (levelPass(record)) list.append(renderEntry(record, state));
+      updateCount(list.childElementCount);
+      scrollToBottom();
+    };
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+    else setTimeout(run, 16);
   }
 
-  return { renderAll, appendEntry, scrollToBottom };
+  return { renderAll, appendEntry: scheduleRender, scrollToBottom };
 }
 
 /**
@@ -215,6 +254,49 @@ function wireControls({ shell, view, log, state }) {
   return { onClear, onCollapse, unsubscribe };
 }
 
+/** diag 条目的正文：event + 数据摘要（截断与 log.js 的 300 字规则一致） */
+function diagMessage(entry) {
+  const head = String(entry.event || entry.src || 'event');
+  const data = entry.data;
+  let tail = '';
+  try {
+    if (data !== null && data !== undefined) tail = typeof data === 'string' ? data : JSON.stringify(data);
+  } catch {
+    tail = '[unserializable]';
+  }
+  const full = tail ? `${head} · ${tail}` : head;
+  return full.length > 300 ? `${full.slice(0, 290)}…` : full;
+}
+
+/**
+ * 注册 diag sink：把探针事件转写进调试日志缓冲。
+ *
+ * 为什么放在面板这一侧：log 实例与面板是一起装配的（panel/shell-controls.js），
+ *   面板知道"该往哪个 log 写"；diag 只需要提供 addSink 通道，不必知道 UI。
+ * 防自激：addExternal 只写缓冲 + 广播，不再回头调 __DIAG__.event，所以不会递归。
+ *
+ * @param {object} log createDebugLog() 实例
+ * @returns {() => void} 取消订阅
+ */
+function registerDiagSink(log) {
+  const diagApi = typeof window !== 'undefined' ? window.__DIAG__ : null;
+  if (!diagApi || typeof diagApi.addSink !== 'function') return () => {};
+  if (typeof log.addExternal !== 'function') return () => {};
+  return diagApi.addSink((entry) => {
+    try {
+      log.addExternal({
+        ts: Date.parse(entry.t) || Date.now(),
+        level: entry.level,
+        tag: entry.tag || entry.event || entry.src,
+        message: diagMessage(entry),
+        src: entry.src,
+        event: entry.event,
+        data: entry.data,
+      });
+    } catch { /* 转写失败不影响探针 */ }
+  });
+}
+
 /**
  * 挂载调试日志面板。
  * @param {{log: {entries: Function, subscribe: Function, clear: Function}, container?: HTMLElement}} params
@@ -226,7 +308,7 @@ export function mountDebugPanel({ log, container } = {}) {
   }
   const doc = (container || document.body).ownerDocument || document;
   const linkEl = ensureStylesheet(doc);
-  const state = { collapsed: false };
+  const state = { collapsed: false, level: 'all' };
   const shell = createShell(doc);
   const view = createRenderer({ log, list: shell.list, countEl: shell.countEl, state });
   const wired = wireControls({ shell, view, log, state });
@@ -239,6 +321,18 @@ export function mountDebugPanel({ log, container } = {}) {
     }, { once: true });
   }
 
+  // ---------------------------------------------------------------- diag → 面板（唯一数据源）
+  // 三类事件（应用 / 运行时异常 / 网络）都从 __DIAG__ 的 sink 进来：
+  //   注释掉这一段，面板会一条都不再产生 —— 这正是"接通了"的反向证明。
+  const sinkOff = registerDiagSink(log);
+
+  // 级别过滤：切换后整表重绘（数据在缓冲里，重绘成本低）
+  const onFilter = () => {
+    state.level = shell.filter.value || 'all';
+    view.renderAll();
+  };
+  shell.filter.addEventListener('change', onFilter);
+
   view.renderAll();
 
   return {
@@ -248,6 +342,8 @@ export function mountDebugPanel({ log, container } = {}) {
       try { unwatchVisibility(); } catch { /* 忽略 */ }
       shell.btnClear.removeEventListener('click', wired.onClear);
       shell.btnCollapse.removeEventListener('click', wired.onCollapse);
+      try { sinkOff(); } catch { /* 忽略 */ }
+      shell.filter.removeEventListener('change', onFilter);
       shell.root.remove();
       if (linkEl && linkEl.parentNode) linkEl.remove();
     },

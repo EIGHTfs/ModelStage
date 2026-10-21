@@ -201,6 +201,39 @@
 .dbg-text-warn { color: var(--dbg-warn); }
 .dbg-text-error { color: var(--dbg-error); }
 
+/* ---------------------------------------------------------------- 来源徽标 / 级别过滤 */
+
+/* 来源：应用(app) / 异常(error) / 网络(net) / 资源(resource) / 其它原样 */
+.dbg-src {
+  display: inline-block;
+  min-width: 44px;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 10px;
+  line-height: 14px;
+  text-align: center;
+  text-transform: lowercase;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--dbg-muted);
+}
+.dbg-src-app { background: rgba(120, 200, 255, 0.16); color: #9fd4ff; }
+.dbg-src-error { background: rgba(255, 120, 120, 0.18); color: #ff9d9d; }
+.dbg-src-net { background: rgba(255, 200, 90, 0.18); color: #ffd08a; }
+.dbg-src-resource { background: rgba(200, 150, 255, 0.18); color: #d3b3ff; }
+
+/* 级别过滤：与头部按钮同高，避免撑开面板 */
+.dbg-filter {
+  height: 20px;
+  margin-right: 4px;
+  padding: 0 2px;
+  font-size: 11px;
+  color: var(--dbg-fg);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
 /* ---------------------------------------------------------------- 空态 */
 
 .dbg-empty {
