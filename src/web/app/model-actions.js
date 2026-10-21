@@ -6,6 +6,7 @@
 import { dom, stage, state } from './context.js';
 import { stageStatus } from './status.js';
 import { formatError, getJson } from '../infra/api.js';
+import { createRootManager } from './root-manager.js';
 
 async function loadWebConfig() {
   try {
@@ -95,7 +96,12 @@ function onSelectModel(model) {
     });
 }
 /** 拉资源根并把名册三级树挂到左栏（并按配置决定是否恢复上次选中） */
-async function loadRoots() {
+/**
+ * 装载资源根与名册。
+ * @param {{skipRestore?: boolean}} [opts] skipRestore=true 时只刷新树，不重新恢复上次模型
+ *   （资源根增删改后走这条：用户正在看的内容不该因为改配置被重载一遍）
+ */
+async function loadRoots(opts = {}) {
   try {
     // 资源根与恢复开关互不依赖：并行取，任一失败都不影响另一条（开关失败按"恢复"处理）
     const [data, autoRestore] = await Promise.all([getJson('/api/roots'), loadWebConfig()]);
@@ -112,9 +118,37 @@ async function loadRoots() {
     // 关闭自动恢复时，连"上次展开的节点"也不还原：保持空舞台、空展开
     await roster.mount(roots, { restoreExpanded: autoRestore });
     state.autoRestore = autoRestore;
-    state.restore = autoRestore
+    state.restore = (autoRestore && !opts.skipRestore)
       ? await roster.restoreLast()
-      : { restored: false, reason: 'config-off' };
+      : { restored: false, reason: opts.skipRestore ? 'roots-changed' : 'config-off' };
+    // 资源根管理（F4）：首次建实例并渲染；之后每次刷新都用最新列表重画
+    if (!state.rootManager) {
+      state.rootManager = createRootManager({
+        els: {
+          list: dom.rootList, form: dom.rootAddForm, pathInput: dom.rootAddPath,
+          nameInput: dom.rootAddName, msg: dom.rootMsg, count: dom.rootCount,
+          toggleBtn: dom.btnRootToggle, body: dom.rootManagerBody,
+        },
+        formatError,
+        onChanged: () => { loadRoots({ skipRestore: true }); },
+      });
+      window.__WEB__ && (window.__WEB__.rootManager = state.rootManager);
+    }
+    // 只在首次用 GET 的列表渲染：GET 只返回启用项，之后任何刷新都不能拿它覆盖
+    //   "含停用项"的完整列表（停用的根会从管理区凭空消失，用户就再也启用不回来）
+    if (!state.rootManagerRendered) {
+      state.rootManager.render(roots);
+      state.rootManagerRendered = true;
+    }
+    // 已有根当作"路径提示"：绝大多数新增都发生在已有根的同级目录
+    if (dom.rootPathHints) {
+      dom.rootPathHints.replaceChildren();
+      for (const r of roots) {
+        const opt = document.createElement('option');
+        opt.value = r.path || '';
+        dom.rootPathHints.append(opt);
+      }
+    }
     // 供自动化断言：资源根 id 序列 + 恢复结果
     document.documentElement.dataset.rootsIds = roots.map((r) => r.id).join(',');
     document.documentElement.dataset.rootsReady = '1';

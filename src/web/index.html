@@ -64,13 +64,32 @@
   <div class="panel-head">
     <span class="panel-title">角色库</span>
     <span class="panel-actions">
-      <button type="button" class="mini-btn is-primary" id="btn-add-root" disabled data-pending="true"
-        title="待接线（F4）：浏览本机目录，添加资源根（等 POST /api/roots 就绪）">选择目录</button>
       <button type="button" class="mini-btn" id="btn-collapse"
         title="只收起展开的树节点（面板保留；隐藏面板用顶栏「模型库」按钮）">收起</button>
     </span>
   </div>
   <div class="panel-count" id="roster-count">正在读取资源根…</div>
+  <!-- 资源根管理（F4）：新增 / 改名 / 启停 / 删除。列表默认收起，点「管理」展开。
+       为什么是输入服务端绝对路径：模型由**服务端**扫描自己文件系统加载，浏览器的目录选择器
+       只能给出客户端句柄，变不成服务端可读路径。 -->
+  <div id="root-manager" class="panel-search">
+    <form id="root-add-form" style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px;">
+      <input id="root-add-path" type="text" autocomplete="off" list="root-path-hints"
+        placeholder="服务端绝对路径，如 /volume1/…/spines" aria-label="资源根目录（服务端绝对路径）" />
+      <input id="root-add-name" type="text" autocomplete="off" placeholder="显示名（可空）" aria-label="资源根显示名" />
+      <button type="submit" class="mini-btn is-primary" id="btn-add-root"
+        title="把这个目录登记为资源根">选择目录</button>
+    </form>
+    <datalist id="root-path-hints"></datalist>
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <span class="muted-hint">资源根 <span id="root-count">0</span> 个</span>
+      <button type="button" class="mini-btn" id="btn-root-toggle" aria-expanded="false" title="展开资源根管理">管理</button>
+    </div>
+    <div id="root-manager-body" hidden>
+      <div id="root-list" aria-label="资源根列表"></div>
+      <p id="root-msg" class="muted-hint" role="status" aria-live="polite"></p>
+    </div>
+  </div>
   <div class="panel-search">
     <input id="roster-search" type="search" autocomplete="off"
       placeholder="搜索角色 / 服装 / 变体…" aria-label="搜索角色、服装、变体" />

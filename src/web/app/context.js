@@ -31,6 +31,16 @@ export const dom = {
   panelHead: document.getElementById('panel-head'),
   panelBody: document.getElementById('panel-body'),
   footer: document.getElementById('app-footer'),
+  // 资源根管理（F4）
+  rootAddForm: document.getElementById('root-add-form'),
+  rootAddPath: document.getElementById('root-add-path'),
+  rootAddName: document.getElementById('root-add-name'),
+  rootPathHints: document.getElementById('root-path-hints'),
+  rootList: document.getElementById('root-list'),
+  rootMsg: document.getElementById('root-msg'),
+  rootCount: document.getElementById('root-count'),
+  btnRootToggle: document.getElementById('btn-root-toggle'),
+  rootManagerBody: document.getElementById('root-manager-body'),
 };
 
 /** Spine 渲染舞台：boot 时创建（WebGL 不可用时保持 null，UI 只提示不报错） */
