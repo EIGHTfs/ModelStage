@@ -13,7 +13,7 @@
 
 import { DEBUG_LEVELS } from './log.js';
 
-const CSS_FILE = './debug-panel.css';
+const CSS_FILE = './panel.css';
 const CSS_LINK_ATTR = 'data-debug-panel-css';
 
 /** 元素工厂 */

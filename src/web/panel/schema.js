@@ -187,12 +187,21 @@ export const PANEL_GROUPS = [
       // 旧端默认是「最邻近」（不是双线性），默认项按旧端对齐
       { kind: 'segmented', label: '纹理过滤', id: 'ctl-filter', capabilityKey: 'textureFilter', options: ['双线性', '最邻近'], values: ['linear', 'nearest'], defaultValue: 'nearest' },
       { kind: 'segmented', label: '抗锯齿（MSAA）', id: 'ctl-msaa', capabilityKey: 'msaa', options: ['自动', '关闭'], values: ['auto', 'off'], defaultValue: 'auto' },
-      // 旧前端这部分 UI 被自家补丁隐藏了（只追加不覆盖），但 M3 口径要求列全，故照列并标注
-      { kind: 'segmented', label: '模型导入模式', id: 'ctl-import-mode', core: true, options: ['替换', '追加'], values: ['replace', 'append'], defaultValue: 'append' },
+      // 注：不设「模型导入模式（替换/追加）」——本项目的模型来源是资源根目录扫描，
+      //     不存在"往当前场景导入单个模型"这条路径，留着会是一个点了没意义的入口
       { kind: 'switch', label: '防卡死保护', id: 'ctl-hang-guard', core: true, defaultOn: true },
       { kind: 'switch', label: '显示状态信息', id: 'ctl-show-status', core: true, defaultOn: true },
       { kind: 'switch', label: '调试日志', id: 'ctl-debug-log', core: true, defaultOn: true },
-      { kind: 'actions', buttons: ['导出设置', '导入设置', '恢复默认'], id: 'ctl-settings-io', core: true },
+      {
+        kind: 'actions',
+        id: 'ctl-settings-io',
+        core: true,
+        buttons: [
+          { text: '导出设置', title: '把当前面板设置导出成 JSON 文件' },
+          { text: '导入设置', title: '从 JSON 文件导入设置', disabledReason: '导入不可用：后端 POST /api/config/import 尚未实现（501）' },
+          { text: '恢复默认', title: '清空本地保存的设置、面板回到声明默认值并复位视图' },
+        ],
+      },
     ],
   },
 ];

@@ -14,9 +14,6 @@
 // 诊断探针必须最先装：后面的模块/渲染出问题时才有取证（API 与旧前端 legacy/patches/diag.js 一致）
 import { installDiag } from './infra/diag.js';
 import { getJson, formatError } from './infra/api.js';
-import { createRosterView } from './roster/view.js';
-import { mountPanel } from './panel/view.js';
-import { PANEL_GROUPS, applyCapabilities, settingKeyOf, selfCheck } from './panel/schema.js';
 import { mountTransport } from './panel/transport.js';
 import { createSpineStage } from './spine/canvas.js';
 import { createStageSurface } from './render/surface.js';
@@ -24,46 +21,21 @@ import { createSpineRenderer } from './render/spine.js';
 import { createLive2DRenderer } from './render/live2d.js';
 import { createLive2DStage } from './live2d/stage.js';
 import { attachStageInteraction } from './render/interaction.js';
+import { dom, setStage, stage, state } from './app/context.js';
+import { stageStatus } from './app/status.js';
+import { VIEW_SETTINGS_KEY, applyBackground, applyTheme, readViewSettings, saveViewSettings } from './app/view-settings.js';
+import { DEFAULT_PART_FILTER_KEYWORDS, applyPartFilter } from './app/part-filter.js';
+import { WIRED_IDS, applyPanelSetting, panelSnapshot, rebuildPanelFor, runPanelSelfCheck } from './panel/panel-settings.js';
+import { loadRoots } from './app/model-actions.js';
+import {
+  applyTransportMotion, cycleBackground, stepVariant, toggleTransportLoop, toggleTransportPlay,
+} from './app/transport-actions.js';
 
 // 页面级第一件事：装诊断探针（幂等，重复调用不会重复包装 console）
 const diag = installDiag();
 
 /** 服务端没配置品牌时的默认品牌名（唯一默认值，别处不重复写） */
 const DEFAULT_BRAND = 'ModelStage';
-
-/** 各区域 DOM 引用：集中取一次，避免函数里反复 querySelector */
-const dom = {
-  leftPanel: document.getElementById('left-panel'),
-  rosterList: document.getElementById('roster-list'),
-  rosterCount: document.getElementById('roster-count'),
-  rosterSearch: document.getElementById('roster-search'),
-  btnCollapse: document.getElementById('btn-collapse'),
-  brandTitle: document.getElementById('brand-title'),
-  brandIcon: document.getElementById('brand-icon'),
-  btnLibrary: document.getElementById('btn-library'),
-  btnFullscreen: document.getElementById('btn-fullscreen'),
-  stageHint: document.getElementById('stage-hint'),
-  stageCanvas: document.getElementById('stage-canvas'),
-  panelHead: document.getElementById('panel-head'),
-  panelBody: document.getElementById('panel-body'),
-  footer: document.getElementById('app-footer'),
-};
-
-/** Spine 渲染舞台：boot 时创建（WebGL 不可用时保持 null，UI 只提示不报错） */
-let stage = null;
-
-/** 最小状态容器（M7 会扩展成带持久化的 store） */
-// 提前建好容器：早期状态日志（如面板能力推导告警）在 boot 末尾赋值前也要能落盘
-window.__WEB__ = window.__WEB__ || {};
-
-const state = {
-  roots: [],
-  rootsError: null,
-  leftPanelVisible: true,
-  selectedModel: null,
-  // 当前渲染器：核心不再直接持有相机，统一从它取（现阶段只有 2D 一个实现）
-  currentRenderer: null,
-};
 
 /**
  * 应用品牌：标题与图标一律来自 GET /api/brand（服务端读项目配置下发），不在前端写死。
@@ -108,97 +80,11 @@ async function loadBrand() {
  * 请求失败也按"恢复"处理——配置不是关键路径，不能因为它读不到就白屏或改变既有行为。
  * @returns {Promise<boolean>}
  */
-async function loadWebConfig() {
-  try {
-    const cfg = await getJson('/api/web-config');
-    if (cfg && typeof cfg.autoRestoreLast === 'boolean') return cfg.autoRestoreLast;
-    return true;
-  } catch {
-    return true;
-  }
-}
 
 /**
  * 面板已接线控件的生效表：key = 控件 id，value = 把该控件的机器值应用到舞台。
  * 未列出的控件在面板里仍是 disabled + data-pending，不会被回调到这里。
  */
-/** 视图设置存储键（与旧端同一键：主题、背景等展示类设置） */
-const VIEW_SETTINGS_KEY = 'spine-viewer-settings-v2';
-
-/** 读视图设置（沿用旧端结构：{uiTheme, background:{mode,color,imageUrl}}） */
-function readViewSettings() {
-  try {
-    const s = JSON.parse(localStorage.getItem(VIEW_SETTINGS_KEY) || '{}');
-    return s && typeof s === 'object' ? s : {};
-  } catch {
-    return {};
-  }
-}
-
-/** 写视图设置：只覆盖自己管的键，其余字段原样保留（与旧端共用同一份） */
-function saveViewSettings(patch) {
-  try {
-    const cur = readViewSettings();
-    const next = { ...cur, ...patch };
-    if (patch.background) next.background = { ...(cur.background || {}), ...patch.background };
-    localStorage.setItem(VIEW_SETTINGS_KEY, JSON.stringify(next));
-  } catch { /* 隐私模式等写不了就忽略：持久化是增强 */ }
-}
-
-/** 主题：只改 CSS 变量所在的选择器属性，颜色全部集中在 panel.css 的主题色板 */
-function applyTheme(id) {
-  const theme = id || 'dark-cyan';
-  document.documentElement.dataset.uiTheme = theme;
-  state.viewTheme = theme;
-  saveViewSettings({ uiTheme: theme });
-}
-
-/** 背景模式：写舞台容器的 data-bg，具体底色由 CSS 决定 */
-function applyBackground(mode) {
-  const stageEl = document.getElementById('stage');
-  if (!stageEl) return;
-  const m = mode || 'checkerboard';
-  // 背景唯一入口：交给 Surface（它会写 data-bg 并通知所有渲染器）
-  try {
-    if (state.surface && typeof state.surface.setBackground === 'function') state.surface.setBackground(m);
-    else stageEl.dataset.bg = m;
-  } catch { stageEl.dataset.bg = m; }
-  state.viewBg = m;
-  const cur = readViewSettings();
-  saveViewSettings({
-    background: {
-      mode: m,
-      color: (cur.background && cur.background.color) || '#2a2a2a',
-      imageUrl: (cur.background && cur.background.imageUrl) || '',
-    },
-  });
-}
-
-/**
- * 外壳自己处理的控件（与渲染器无关）：主题/背景走 CSS 与 Surface，混合模式与皮肤列表走舞台既有状态，
- * 部件筛除是显示层策略。其余设置一律经 renderer.setSetting 下发（契约 INV-01：不得出现 stage.setXxx）。
- */
-const SHELL_APPLIERS = {
-  'ctl-theme': (v) => applyTheme(v),
-  'ctl-bg-mode': (v) => applyBackground(v),
-  'ctl-mix-mode': (v) => applyMixMode(v),
-  'ctl-skin-mix': (v) => applyMixMode(v),
-  'ctl-skin-list': (v) => stage && stage.setSkin(v),
-  'ctl-part-filter': (v) => applyPartFilter({ enabled: !!v }),
-  'ctl-part-filter-reset': () => applyPartFilter({ keywords: DEFAULT_PART_FILTER_KEYWORDS.slice() }),
-};
-
-/** 可点控件全集 = 外壳项 + 声明了能力键的项（能力过滤决定其中哪些真的可点） */
-const WIRED_IDS = (() => {
-  const ids = new Set(Object.keys(SHELL_APPLIERS));
-  for (const group of PANEL_GROUPS) {
-    for (const ctl of group.controls || []) {
-      if (ctl && ctl.id && settingKeyOf(ctl.id)) ids.add(ctl.id);
-    }
-  }
-  return [...ids];
-})();
-
 /**
  * 切换当前渲染器（预埋）：先让旧渲染器 unmount，再换新。
  * 现阶段只有 2D 一个实现，这里不会被外部调用；将来 3D 渲染器接入时复用同一入口。
@@ -312,37 +198,6 @@ function attachInteraction() {
   return detachInteraction;
 }
 
-/**
- * 统一状态出口：所有舞台状态文字都走这里。
- * 规则：
- *   · 一律写日志（控制台 [STAGE:level] + `__WEB__.stageLog`，cap 200）；
- *   · 只有 error / warn（或显式 show:true）才上屏，其余一律隐藏，避免挡住画面。
- * 注意：日志不能走 console.error，否则页面错误统计会把正常状态当成异常。
- * @param {string} text
- * @param {'info'|'warn'|'error'} [level]
- * @param {{show?: boolean}} [opts]
- */
-function stageStatus(text, level = 'info', opts = {}) {
-  const line = String(text == null ? '' : text);
-  if (window.__WEB__) {
-    const bag = (window.__WEB__.stageLog = window.__WEB__.stageLog || []);
-    bag.push({ at: Date.now(), level, line });
-    if (bag.length > 200) bag.shift();
-  }
-  try {
-    console.info(`%c[STAGE:${level}]`, 'color:#8b8b8b', line);
-  } catch { /* 控制台不可用时忽略 */ }
-  const show = opts.show === true || level === 'error' || level === 'warn';
-  if (!dom.stageHint) return line;
-  if (show) {
-    dom.stageHint.textContent = line;
-    dom.stageHint.hidden = false;
-  } else {
-    dom.stageHint.textContent = '';
-    dom.stageHint.hidden = true;
-  }
-  return line;
-}
 
 /** 切换抗锯齿：要换画布重建上下文，先提示"正在重建"避免用户以为卡住 */
 async function applyMsaa(mode) {
@@ -361,201 +216,25 @@ async function applyMsaa(mode) {
   }
 }
 
-/** 部件筛除默认关键字：取自旧端存储 partFilterKeywords 的默认值 */
-const DEFAULT_PART_FILTER_KEYWORDS = ['mask', 'mosai', 'mmd', 'mozaiku'];
 
-/** 部件筛除：开关与恢复按钮共用同一状态，只覆盖传入字段 */
-function applyPartFilter(patch) {
-  const cur = state.partFilter || { enabled: false, keywords: DEFAULT_PART_FILTER_KEYWORDS.slice() };
-  const next = { enabled: !!cur.enabled, keywords: cur.keywords.slice(), ...patch };
-  state.partFilter = next;
-  if (stage && stage.setPartFilter) stage.setPartFilter(next);
-  saveViewSettings({ partFilterEnabled: next.enabled, partFilterKeywords: next.keywords.join(',') });
-  document.documentElement.dataset.partFilter = next.enabled ? next.keywords.join(',') : 'off';
-  return next;
-}
 
-/** 播放/暂停：切换引擎播放并同步按钮按下态与 dataset（进 CAMERA 之外的状态日志） */
-function toggleTransportPlay() {
-  if (!stage) return;
-  const stats = stage.stats();
-  const playing = !!(stats && stats.playing);
-  if (playing) stage.pause(); else stage.play();
-  const next = !playing;
-  if (state.transport) state.transport.setPressed('transport-play', next);
-  document.documentElement.dataset.transportPlaying = next ? 'on' : 'off';
-  stageStatus(`transport 播放${next ? '' : '暂停'}`, 'info');
-}
 
-/** 单动循环：切换 settings.loop（引擎 setLoop 走通用 setter） */
-function toggleTransportLoop() {
-  if (!stage) return;
-  const stats = stage.stats();
-  const cur = !!(stats && stats.settings && stats.settings.loop);
-  const next = !cur;
-  if (typeof stage.setLoop === 'function') stage.setLoop(next);
-  if (state.transport) state.transport.setPressed('transport-loop', next);
-  document.documentElement.dataset.transportLoop = next ? 'on' : 'off';
-  stageStatus(`transport 单动循环 ${next ? '开' : '关'}`, 'info');
-}
 
-/**
- * 上一个/下一个变体：取「当前根下、同一目录」的兄弟变体循环切换。
- * 为什么用 API 取：名册树是懒加载的，兄弟列表不在 state 里，直接查 /api/models 最准。
- */
-async function stepVariant(dir) {
-  const cur = state.selectedModel;
-  if (!cur || !cur.rootId || !cur.directory) { stageStatus('切换变体失败：当前没有可用的兄弟变体', 'warn'); return; }
-  try {
-    const data = await getJson(`/api/models?root=${encodeURIComponent(cur.rootId)}`);
-    const peers = (data.models || []).filter((m) => m.directory === cur.directory);
-    if (peers.length < 2) { stageStatus('切换变体失败：当前角色只有 1 个变体', 'warn'); return; }
-    const at = peers.findIndex((m) => m.id === cur.id || m.name === cur.name);
-    const next = peers[(at + dir + peers.length) % peers.length];
-    document.documentElement.dataset.transportVariant = next.name;
-    stageStatus(`transport 切换变体 → ${next.name}`, 'info');
-    onSelectModel(next);
-  } catch (err) {
-    stageStatus(`切换变体失败：${formatError(err)}`, 'error');
-  }
-}
 
-/** 背景：底栏快捷入口，循环切换 棋盘 → 纯色 → 透明（与主题背景组的 bg-mode 同一状态） */
-function cycleBackground() {
-  const order = ['checkerboard', 'solid', 'transparent'];
-  const cur = state.viewBg || 'checkerboard';
-  const next = order[(order.indexOf(cur) + 1) % order.length];
-  applyBackground(next);
-  if (state.panel && state.panel.setValue) state.panel.setValue('ctl-bg-mode', next);
-  document.documentElement.dataset.transportBg = next;
-  stageStatus(`transport 背景 → ${next}`, 'info');
-}
 
-/** 动作下拉选择：切动画并回填 dataset */
-function applyTransportMotion(name) {
-  if (!stage || !name) return;
-  const ok = stage.setAnimation(name);
-  document.documentElement.dataset.transportMotion = String(name);
-  stageStatus(`transport 动作 → ${name}${ok ? '' : '（引擎拒绝，保持原动作）'}`, ok ? 'info' : 'warn');
-}
 
-/** 模型加载完成后填充播放条：动作下拉 + 循环/播放按下态 */
-function fillTransportOptions(info) {
-  const transport = state.transport;
-  if (!transport) return;
-  const anims = Array.isArray(info && info.animations) ? info.animations : [];
-  if (anims.length) {
-    transport.setOptions('transport-motion', anims.map((a) => ({ text: a, value: a })), info.motion || anims[0]);
-  }
-  const stats = stage ? stage.stats() : null;
-  transport.setPressed('transport-loop', !!(stats && stats.settings && stats.settings.loop));
-  document.documentElement.dataset.transportPlaying = stats && stats.playing ? 'on' : 'off';
-}
 
-/** 混合模式：两处开关指向同一状态，点任一处都要同步另一处的显示 */
-function applyMixMode(on) {
-  const value = !!(stage && stage.setMixMode ? stage.setMixMode(on) : 0);
-  state.mixMode = !!on;
-  if (state.panel) {
-    state.panel.setChecked('ctl-mix-mode', !!on);
-    state.panel.setChecked('ctl-skin-mix', !!on);
-  }
-  document.documentElement.dataset.mixMode = on ? 'on' : 'off';
-  return value;
-}
 
-/** 加载模型后刷新皮肤列表（换模型必须重建，不能停在上一个模型的皮肤） */
-function refreshSkinList() {
-  if (!state.panel || !stage) return;
-  const skins = stage.getSkins ? stage.getSkins() : ['default'];
-  const current = skins.includes('default') ? 'default' : skins[0];
-  state.panel.setOptions('ctl-skin-list', skins.map((s) => ({ text: s, value: s })), current);
-  if (state.transport) state.transport.setOptions('transport-skin', skins.map((s) => ({ text: s, value: s })), current);
-  document.documentElement.dataset.skinCount = String(skins.length);
-}
 
-/** 面板控件回调：外壳项直接处理，其余一律经 renderer.setSetting（回显用生效值） */
-function applyPanelSetting(id, value) {
-  const shell = SHELL_APPLIERS[id];
-  if (shell) {
-    shell(value);
-    state.panelSettings = { ...(state.panelSettings || {}), [id]: value };
-    document.documentElement.dataset.panelSetting = JSON.stringify(state.panelSettings);
-    return;
-  }
-  const cap = settingKeyOf(id);
-  const renderer = state.currentRenderer;
-  const key = cap ? (cap.kind === 'debug' ? `debug:${cap.capabilityKey}` : cap.settingKey) : null;
-  if (!key || !renderer || typeof renderer.setSetting !== 'function') {
-    stageStatus(`当前渲染器不支持该项设置：${id}`, 'warn');
-    return;
-  }
-  let ok = false;
-  try { ok = renderer.setSetting(key, value) === true; } catch { ok = false; }
-  // 生效值回显（不是请求值）：契约 INV-08
-  let applied = null;
-  try { applied = renderer.getSetting ? renderer.getSetting(key) : null; } catch { applied = null; }
-  if (!ok) {
-    stageStatus(`渲染器不支持设置 ${key}（已回退到生效值 ${String(applied)}）`, 'warn');
-    if (state.panel && applied !== null) state.panel.setValue(id, applied);
-    return;
-  }
-  state.panelSettings = { ...(state.panelSettings || {}), [id]: applied === null ? value : applied };
-  document.documentElement.dataset.panelSetting = JSON.stringify(state.panelSettings);
-}
 
-/** 面板三态快照（断言用：可用项 / 禁用项 / 隐藏项） */
-function panelSnapshot() {
-  const on = [];
-  const off = [];
-  for (const node of document.querySelectorAll('#right-panel [data-ctl]')) {
-    const id = node.dataset.ctl;
-    const control = node.matches('select') ? node : node.querySelector('button, select');
-    if (!control || control.classList.contains('acc-trigger')) continue;
-    (control.disabled ? off : on).push(id);
-  }
-  const present = [...document.querySelectorAll('#right-panel [data-ctl]')].map((n) => n.dataset.ctl);
-  const hidden = [...WIRED_IDS, ...PANEL_GROUPS.flatMap((g) => (g.controls || []).map((c) => c.id)).filter(Boolean)]
-    .filter((id) => !present.includes(id));
-  return { enabled: [...new Set(on)], disabled: [...new Set(off)], hidden: [...new Set(hidden)] };
-}
 
-/** 按当前渲染器能力重建面板三态，并跑一次能力自检（契约 §四、§五） */
-function rebuildPanelFor(renderer) {
-  const groups = applyCapabilities(PANEL_GROUPS, renderer && renderer.capabilities, {
-    onWarn: (message) => stageStatus(message, 'warn'),
-  });
-  document.documentElement.dataset.panelGroups = String(groups.length);
-  const info = mountPanel({
-    groups,
-    headEl: dom.panelHead,
-    bodyEl: dom.panelBody,
-    onSetting: applyPanelSetting,
-    wiredIds: WIRED_IDS,
-  });
-  state.panel = info;
-  startFpsReadout(info);
-  refreshSkinList();
-  state.panelSnapshot = panelSnapshot();
-  const check = selfCheck(renderer || {});
-  state.panelSelfCheck = check;
-  document.documentElement.dataset.selfCheck = check.passed ? 'pass' : 'fail';
-  if (!check.passed) {
-    stageStatus(`能力自检未通过：${check.violations.map((v) => `${v.key}（${v.actual}）`).join('、')}`, 'error');
-  }
-  return check;
-}
 
-/** 帧率读数：把舞台实测帧率刷到面板上（500ms 一次；无舞台或未就绪时显示 —） */
-function startFpsReadout(panel) {
-  if (!panel || typeof panel.setFps !== 'function') return;
-  const tick = () => {
-    const st = stage && stage.stats ? stage.stats() : null;
-    panel.setFps(st && typeof st.fps === 'number' ? st.fps : null);
-  };
-  tick();
-  setInterval(tick, 500);
-}
+
+
+
+
+
+
 
 /** 左栏显示/隐藏：位移 + 淡出，与旧前端「模型库」按钮的过渡一致 */
 function toggleLeftPanel() {
@@ -577,107 +256,8 @@ async function toggleFullscreen() {
   }
 }
 
-/** 在左栏顶部插一条错误横幅（替代抛异常到控制台） */
-function showRootsError(message) {
-  const banner = document.createElement('p');
-  banner.className = 'error-banner';
-  banner.id = 'roots-error';
-  banner.textContent = `读取资源根失败：${message}`;
-  dom.rosterList.replaceChildren(banner);
-}
 
-/** 选中变体的回调：M2 只记状态（M4 用它去渲染舞台） */
-function onSelectModel(model) {
-  state.selectedModel = model;
-  const name = model ? (model.name || model.id) : '无';
-  if (!stage) { stageStatus(`已选中 ${name}（渲染器不可用）`, 'error'); return; }
-  if (!model) { stage.unload(); return; }
 
-  // 只有 Spine 走本路径；Live2D 与资源包由 M5 的插件管线接管
-  const kind = model.kind || 'spine';
-  if (kind !== 'spine' && kind !== 'live2d') {
-    // 资源包（bundle）仍未接入：保持明确提示，不做"看着能选却渲不出来"
-    stage.unload();
-    stageStatus(`已选中 ${name}（资源包渲染未接入）`, 'warn');
-    return;
-  }
-
-  // Live2D 与 Spine 共用同一装载入口：引擎在 loadModel 里认出 kind==="live2d" 后
-
-  stageStatus(`正在加载 ${name}…`, 'info');
-  // 走当前渲染器装载：Live2D 必须由 renderer 分流到覆盖层，
-  //   否则会落到舞台的 Spine 前置流程（取骨架/图集）并 404。
-  const loadDoc = {
-    ...model,
-    kind,
-    rootId: model.rootId,
-    rootName: model.rootName,
-    entry: model.entry || (model.modelUrl ? { url: model.modelUrl } : null),
-  };
-  const loadPromise = state.currentRenderer
-    ? state.currentRenderer.mount(loadDoc)
-    : stage.load({ root: model.rootId, model });
-  loadPromise
-    .then((info) => {
-      // null = 本次请求被排队/被更新的选择取代（Surface 的 last-wins 语义）：
-      //   不能当成功读结果字段，否则出现"旧面已释放 + 新面没装"的空白 + TypeError
-      if (!info) return; // 被排队/被取代：由真正生效的那次装载负责状态文案
-      const isL2D = /^Live2D/.test(String(info.version || ''));
-      const anims = Array.isArray(info.animations) ? info.animations : [];
-      const motion = info.motion || anims[0] || '（无动作）';
-      const head = isL2D ? String(info.version) : `Spine ${info.version}`;
-      stageStatus(`${model.name} · ${head} · ${anims.length} 动作 · 播放 ${motion}`, 'info');
-      // 运行时组只读：显示本次实际使用的运行时版本（引擎按骨架版本自动选，不可手切）
-      if (state.panel) state.panel.setReadonly('ctl-runtime', `Spine ${info.version}`);
-      refreshSkinList();
-      fillTransportOptions(info);
-      document.documentElement.dataset.stageReady = '1';
-    })
-    .catch((err) => {
-      // 被取代属正常竞态结果（不是故障）：只记一条 info，不显示红色错误
-      if (err && err.aborted) return; // 被取代是正常竞态结果，不报故障（真生效的那次会写状态）
-      // 渲染失败属业务错误：显示在舞台提示与 __WEB__ 里，不抛到控制台（验收要求零错误）
-      const msg = formatError(err);
-      state.stageError = msg;
-      stageStatus(`渲染失败：${msg}`, 'error');
-      document.documentElement.dataset.stageReady = 'error';
-    });
-}
-
-/** 拉资源根并把名册三级树挂到左栏（并按配置决定是否恢复上次选中） */
-async function loadRoots() {
-  try {
-    // 资源根与恢复开关互不依赖：并行取，任一失败都不影响另一条（开关失败按"恢复"处理）
-    const [data, autoRestore] = await Promise.all([getJson('/api/roots'), loadWebConfig()]);
-    const roots = Array.isArray(data?.roots) ? data.roots : [];
-    state.roots = roots;
-    const roster = createRosterView({
-      listEl: dom.rosterList,
-      countEl: dom.rosterCount,
-      searchEl: dom.rosterSearch,
-      collapseBtn: dom.btnCollapse,
-      onSelect: onSelectModel,
-    });
-    state.roster = roster;
-    // 关闭自动恢复时，连"上次展开的节点"也不还原：保持空舞台、空展开
-    await roster.mount(roots, { restoreExpanded: autoRestore });
-    state.autoRestore = autoRestore;
-    state.restore = autoRestore
-      ? await roster.restoreLast()
-      : { restored: false, reason: 'config-off' };
-    // 供自动化断言：资源根 id 序列 + 恢复结果
-    document.documentElement.dataset.rootsIds = roots.map((r) => r.id).join(',');
-    document.documentElement.dataset.rootsReady = '1';
-    document.documentElement.dataset.restore = JSON.stringify(state.restore);
-    if (!state.restore.restored) {
-      stageStatus(autoRestore ? `M2 名册 · ${roots.length} 个资源根 · 暂无上次选中的模型` : `M2 名册 · ${roots.length} 个资源根 · 已按配置关闭自动恢复`, 'info');
-    }
-  } catch (err) {
-    state.rootsError = formatError(err);
-    document.documentElement.dataset.rootsReady = 'error';
-    showRootsError(state.rootsError);
-  }
-}
 
 /** 绑定事件（只给"有真实行为"的控件挂处理器；其余控件在 HTML 里 disabled） */
 function bindEvents() {
@@ -690,7 +270,7 @@ function boot() {
   // 面板与播放条是纯静态骨架（不依赖网络）：先挂上，保证首屏五区域都有内容
   // 舞台渲染器：WebGL 不可用（无头精简环境等）时只提示，不让整页崩
   try {
-    stage = createSpineStage({ canvas: dom.stageCanvas });
+    setStage(createSpineStage({ canvas: dom.stageCanvas }));
     document.documentElement.dataset.stageContext = 'webgl';
   } catch (err) {
     state.stageError = formatError(err);
@@ -766,12 +346,7 @@ function boot() {
     /** 当前渲染器（只读，便于排查：id / capabilities / camera 是否就绪） */
     get renderer() { return state.currentRenderer; },
     /** 能力自检（契约 §四）：随时可重跑，violations 非空即缺陷 */
-    panelSelfCheck: () => {
-      const check = selfCheck(state.currentRenderer || {});
-      state.panelSelfCheck = check;
-      document.documentElement.dataset.selfCheck = check.passed ? 'pass' : 'fail';
-      return check;
-    },
+    panelSelfCheck: () => runPanelSelfCheck(),
     /** 面板三态快照（禁用/可用/隐藏），切换渲染器前后各取一次做对比 */
     panelSnapshot: () => panelSnapshot(),
     state,

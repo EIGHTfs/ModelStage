@@ -135,14 +135,21 @@ function renderSwitch(ctl, ctx) {
 }
 
 /** 动作按钮组：导出设置 / 导入设置 / 恢复默认 */
-function renderActions(ctl) {
+function renderActions(ctl, ctx) {
   const row = el('div', 'ctl-actions');
   row.dataset.ctl = ctl.id || '';
-  for (const label of ctl.buttons) {
-    const btn = markPending(el('button', 'mini-btn', label), null);
+  const wired = !!(ctx && typeof ctx.isWired === 'function' && ctx.isWired(ctl.id));
+  const blocked = ctx && typeof ctx.disabledReason === 'function' ? ctx.disabledReason(ctl.id) : null;
+  for (const item of ctl.buttons) {
+    const def = typeof item === 'string' ? { text: item } : item;
+    const btn = el('button', 'mini-btn', def.text);
     btn.type = 'button';
-    btn.disabled = true;
-    btn.title = '待接线（M6）';
+    btn.dataset.action = def.text;
+    const reason = def.disabledReason || blocked; // 单按钮不可用时如实写原因，不冒充"待接线"
+    if (reason) { btn.disabled = true; btn.title = reason; btn.dataset.disabledReason = reason; } else if (wired) {
+      btn.title = def.title || def.text;
+      btn.addEventListener('click', () => { try { ctx.onSetting(ctl.id, def.text); } catch { /* 接线失败不影响面板状态 */ } });
+    } else { markPending(btn, null); btn.disabled = true; btn.title = '待接线（M6）'; }
     row.append(btn);
   }
   return row;
@@ -230,7 +237,7 @@ function renderControl(ctl, ctx) {
   switch (ctl.kind) {
     case 'segmented': return renderSegmented(ctl, ctx);
     case 'switch': return renderSwitch(ctl, ctx);
-    case 'actions': return renderActions(ctl);
+    case 'actions': return renderActions(ctl, ctx);
     case 'dynamic-list': return renderDynamicList(ctl);
     case 'readonly': return renderReadonly(ctl);
     case 'chips': return renderChips(ctl, ctx);
@@ -318,6 +325,8 @@ export function mountPanel({ headEl, bodyEl, onSetting, wiredIds, groups }) {
   for (const group of schema) {
     for (const ctl of group.controls) {
       if (wiredSet.has(ctl.id) && ctl.defaultValue !== undefined) defaults[ctl.id] = ctl.defaultValue;
+      // 开关类没有取值域：默认态用 defaultOn 声明，同样由接线方启动时下发一次
+      else if (wiredSet.has(ctl.id) && ctl.kind === 'switch' && ctl.defaultOn !== undefined) defaults[ctl.id] = !!ctl.defaultOn;
     }
   }
 
