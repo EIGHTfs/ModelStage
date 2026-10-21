@@ -142,8 +142,33 @@ bash web.sh start|stop|restart|status     # 默认 8804（独立服务）
 - [x] 状态持久化沿用旧前端键名 `spine-multi-viewer.tree-state.v1`（`games` / `chars` /
       `activeGame` 存游戏名 / `lastByGame` 按游戏名存上次模型 id）
 - [x] 键盘可达：树行 `tabindex=0`，Enter / 空格等价于点击
-- [x] 未接线控件全部 `disabled` 并标注「待接线（M3/M6）」（顶栏导入/截图导出/菜单/影院模式、左栏选择目录、底栏 8 个）
+- [x] 未接线控件全部 `disabled` 并标注「待接线（M3/M6）」（顶栏截图导出/影院模式已接线、导入与菜单已删除、左栏选择目录仍待接线；
+      底栏 8 个全部接线）—— 明细见下节「表现侧接线记录（F1/F2）」
 - [x] 穷举实操 31 项全过 + 控制台零错误（`test/roster-actions.js` + `tool/check-console.mjs`）
+
+## 表现侧接线记录（F1 / F2）
+
+原则：**能点的按钮必须真的生效**；做不了就在声明里说清原因，不留"看着能点却没反应"的控件。
+
+### F1 四个外壳控件（右栏「设置」组）
+
+| 控件 | 点了之后发生什么 | 判据（自动化） |
+|---|---|---|
+| 显示状态信息 | 关：舞台顶部状态行清空并隐藏，**日志照旧进 `__WEB__.stageLog` 与控制台**；开：状态行恢复 | `data-show-status` = on/off；`#stage-hint.hidden`；日志条数增长 |
+| 调试日志 | 关：右下角调试日志浮层隐藏（已采内容保留，开回来还能看）；开：显示 | `data-debug-log`；`#debug-panel-host.hidden`；`log.entries()` 条数 |
+| 防卡死保护 | 开：每 1s 采样舞台帧数，连续 3 次不增长（且有模型在渲染）判为停滞 → 写 warn + `pause()→play()` 自愈一次；关：定时器停 | `__WEB__.hangGuard{ticks,stalls,recoveries}`；停滞时日志出现「渲染停滞」 |
+| 导出设置 / 导入设置 / 恢复默认 | 导出：前端生成 JSON 并触发下载（内容同步留 `__WEB__.settingsExport`）；恢复默认：清本地存储 → 按面板声明默认值重放 → 视图复位；**导入：后端 `POST /api/config/import` 仍是 501，按钮如实禁用并注明原因** | `__WEB__.settingsExport.text` 可解析；`data-settings-restored`；导入按钮 `data-disabled-reason` |
+
+### F2 顶栏按钮
+
+| 按钮 | 点了之后发生什么 | 判据（自动化） |
+|---|---|---|
+| 截图导出 | 从舞台画布 `gl.readPixels`（WebGL 缓冲不保留，`toDataURL` 可能拿到空图）→ 翻转成 2D 画布 → 叠加可见的 Live2D 覆盖层 → `toBlob` 触发下载；文件名 `modelstage-<模型名>-<YYYYMMDD-HHMMSS>.png` | `__WEB__.screenshotExport{filename,bytes,width,height,nonEmpty}`；`data-screenshot` |
+| 影院模式 | 切 `<html data-cinema="on">`：顶栏与左右栏滑出、舞台铺满；静止 3s 播放条与光标淡出，鼠标一动回来；Esc 退出 | `data-cinema`；顶栏 `bottom≤0`、左栏 `x<0`、右栏 `x≥视口宽`，再点复位 |
+| 菜单 | **按钮已删除**：没有可放的内容（本项目的操作都在顶栏与右栏面板里，无下拉菜单概念），留空菜单等于骗点击 | `#btn-menu` 不存在 |
+| 导入模型 | **按钮已删除**：本项目按资源根目录扫描加载模型（`/api/roots` + 名册树），没有"导入单个模型"这条路径；旧前端的导入也没在这条链路上 | `#btn-import` 不存在 |
+
+截图导出在无头环境只能验到"blob 生成 + 文件名字段正确"（约 1.7MB / 1920×1080 / 非空像素 75 万），**真实落盘需人工确认**。
 
 未做（后续里程碑）：
 

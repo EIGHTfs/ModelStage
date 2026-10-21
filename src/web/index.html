@@ -51,12 +51,10 @@
     <span id="brand-title" class="brand-title">ModelStage</span>
   </div>
   <nav class="header-actions" aria-label="顶栏操作">
-    <!-- 未接线的按钮一律 disabled 并标注待接线：不允许"看着能点却没反应" -->
-    <button type="button" class="icon-btn" id="btn-import" disabled title="待接线（M3）：导入模型">导入</button>
-    <button type="button" class="icon-btn" id="btn-shot" disabled title="待接线（M3）：截图导出">截图导出</button>
+    <!-- 顶栏按钮：能点的都必须真的生效（不留"看着能点却没反应"）；删掉的两个见 README 的 F2 记录 -->
+    <button type="button" class="icon-btn" id="btn-shot" title="截图导出（PNG，文件名带模型名与时间戳）">截图导出</button>
     <button type="button" class="icon-btn" id="btn-library" title="模型库（显示/隐藏左栏）">模型库</button>
-    <button type="button" class="icon-btn" id="btn-menu" disabled title="待接线（M3）：右栏菜单">菜单</button>
-    <button type="button" class="icon-btn" id="btn-cinema" disabled title="待接线（M6）：影院模式">影院模式</button>
+    <button type="button" class="icon-btn" id="btn-cinema" aria-pressed="false" title="影院模式（隐藏顶栏与左右栏，Esc 退出）">影院模式</button>
     <button type="button" class="icon-btn" id="btn-fullscreen" title="全屏">全屏</button>
   </nav>
 </header>
@@ -66,8 +64,8 @@
   <div class="panel-head">
     <span class="panel-title">角色库</span>
     <span class="panel-actions">
-      <button type="button" class="mini-btn is-primary" id="btn-add-root" disabled
-        title="待接线（M3）：浏览本机目录，添加资源根">选择目录</button>
+      <button type="button" class="mini-btn is-primary" id="btn-add-root" disabled data-pending="true"
+        title="待接线（F4）：浏览本机目录，添加资源根（等 POST /api/roots 就绪）">选择目录</button>
       <button type="button" class="mini-btn" id="btn-collapse"
         title="只收起展开的树节点（面板保留；隐藏面板用顶栏「模型库」按钮）">收起</button>
     </span>

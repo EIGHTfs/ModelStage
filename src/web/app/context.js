@@ -23,6 +23,8 @@ export const dom = {
   brandTitle: document.getElementById('brand-title'),
   brandIcon: document.getElementById('brand-icon'),
   btnLibrary: document.getElementById('btn-library'),
+  btnShot: document.getElementById('btn-shot'),
+  btnCinema: document.getElementById('btn-cinema'),
   btnFullscreen: document.getElementById('btn-fullscreen'),
   stageHint: document.getElementById('stage-hint'),
   stageCanvas: document.getElementById('stage-canvas'),

@@ -27,6 +27,7 @@ import { VIEW_SETTINGS_KEY, applyBackground, applyTheme, readViewSettings, saveV
 import { DEFAULT_PART_FILTER_KEYWORDS, applyPartFilter } from './app/part-filter.js';
 import { WIRED_IDS, applyPanelSetting, panelSnapshot, rebuildPanelFor, runPanelSelfCheck } from './panel/panel-settings.js';
 import { loadRoots } from './app/model-actions.js';
+import { bindCinemaKeys, exportScreenshot, toggleCinema } from './app/topbar-actions.js';
 import {
   applyTransportMotion, cycleBackground, stepVariant, toggleTransportLoop, toggleTransportPlay,
 } from './app/transport-actions.js';
@@ -264,6 +265,10 @@ function bindEvents() {
   dom.btnLibrary.addEventListener('click', toggleLeftPanel);
   dom.btnLibrary.setAttribute('aria-expanded', 'true');
   dom.btnFullscreen.addEventListener('click', toggleFullscreen);
+  // 顶栏两个真动作：截图导出（canvas→blob→下载）与影院模式（切 data-cinema，显隐在 CSS）
+  if (dom.btnShot) dom.btnShot.addEventListener('click', () => exportScreenshot());
+  if (dom.btnCinema) dom.btnCinema.addEventListener('click', () => toggleCinema());
+  bindCinemaKeys();
 }
 
 function boot() {
