@@ -92,12 +92,6 @@ export function createLive2DRenderer({ live2d } = {}) {
       const h = Math.max(1, Math.floor(cssH * res));
       if (overlayCv.width !== w) overlayCv.width = w;
       if (overlayCv.height !== h) overlayCv.height = h;
-      // CSS 显示尺寸必须与容器几何一致。
-      //   attr(width/height) = 像素尺寸（cssW×res）；style = 页面上的显示尺寸（cssW）。
-      //   只改 attr 不改 style 时，画布会按**旧的 CSS 尺寸**被拉伸/裁切 ——
-      //   真机旋转后 overlay 的 client 停在旧的 16:9 比例、而容器已变成竖屏，就是这个原因。
-      overlayCv.style.width = `${cssW}px`;
-      overlayCv.style.height = `${cssH}px`;
     }
     try { if (live2d.syncSize) live2d.syncSize({ size: { width: cssW, height: cssH }, dpr: res }); } catch { /* 忽略 */ }
     return true;
@@ -143,9 +137,6 @@ export function createLive2DRenderer({ live2d } = {}) {
         const h = Math.max(1, Math.floor(cssH * res));
         if (overlayCv.width !== w) overlayCv.width = w;
         if (overlayCv.height !== h) overlayCv.height = h;
-        // 同上：attr 是像素尺寸，style 才是页面显示尺寸；两者必须同时更新
-        overlayCv.style.width = `${cssW}px`;
-        overlayCv.style.height = `${cssH}px`;
       }
       if (typeof live2d.syncSize === 'function') {
         try { live2d.syncSize({ size: { width: cssW, height: cssH }, dpr: res }); } catch { /* 忽略 */ }

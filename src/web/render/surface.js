@@ -19,13 +19,6 @@ const OVERLAY_ID = 'live2d-overlay';
 const OVERLAY_CANVAS_ID = 'live2d-overlay-canvas';
 
 /**
- * 旋转后重新挂载的延迟（毫秒）。
- * 手机旋转是一次约 200–300ms 的布局动画：orientationchange 在动画开始时触发，
- *   此刻量到的仍是旧尺寸，所以必须等动画结束再动作。
- */
-const ROTATE_RELOAD_DELAY_MS = 320;
-
-/**
  * 创建渲染面。
  * @param {{
  *   root?: HTMLElement | (() => HTMLElement|null),
@@ -65,18 +58,6 @@ export function createStageSurface({ root, log } = {}) {
     rafId: 0,
     /** 待渲染标记 */
     dirty: false,
-    /**
-     * 尺寸触发源的命中计数（诊断用）。
-     * 真机旋转后画布没重建时，看这一组数就能分清三种情况：
-     * 诊断用途：真机旋转后读 stats() 即可判断卡在哪一层：
-     *   · 全是 0            → 事件/观察者根本没发（触发源缺失）
-     *   · 有计数但 size 没变 → 发了，但 DOM 尺寸确实没变（布局侧问题）
-     *   · 有计数且 size 变了 → 尺寸链路通了，问题在下游（渲染器/画布）
-     */
-    trigger: { resize: 0, orientationchange: 0, visualViewport: 0, resizeObserver: 0 },
-    /** 最后一次 measure 的时刻、最后一次"尺寸真的变了"的时刻（performance.now，便于判断冻结多久） */
-    lastMeasureAt: 0,
-    lastChangeAt: 0,
   };
 
   /** 统一日志出口 */
@@ -129,9 +110,6 @@ export function createStageSurface({ root, log } = {}) {
    *   像素网格变了而 gl.viewport / camera.viewportWidth 没变 ⇒ 画面整体缩放偏移（BUG-2）。
    */
   function measure() {
-    // 每次量尺寸都顺手确保监听已就位：observer 若因"根容器当时不在 DOM"没建成，这里补建
-    // （函数声明会提升，调用顺序上不必担心定义在后面）
-    watchResize();
     const el = rootEl();
     if (!el) return st.size;
     const rect = el.getBoundingClientRect();
@@ -139,10 +117,8 @@ export function createStageSurface({ root, log } = {}) {
     const height = Math.max(1, Math.round(rect.height || el.clientHeight || 0));
     const changed = width !== st.size.width || height !== st.size.height;
     st.size = { width, height };
-    st.lastMeasureAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const box = { cssW: width, cssH: height, dpr: st.dpr };
     if (changed) {
-      st.lastChangeAt = st.lastMeasureAt;
       notifyResize(box);
       for (const cb of resizeCbs) {
         try { cb({ ...box }); } catch { /* 回调异常不影响其它订阅者 */ }
@@ -206,79 +182,14 @@ export function createStageSurface({ root, log } = {}) {
     return () => resizeCbs.delete(cb);
   }
 
-  /**
-   * 尺寸监听：ResizeObserver 是主触发源，另配三类兜底事件。
-   *
-   * 为什么必须有兜底（手机旋转错位的成因）：
-   *   早期只靠 ResizeObserver 单一触发，且它只在 `activate()` 时创建一次。一旦那一刻
-   *   `rootEl()` 还没进 DOM，`watchResize()` 直接 return —— observer 永远不会再建，
-   *   此后所有尺寸变化都收不到；而 `geometry()` 优先读 `st.size` 缓存，也不会自救，
-   *   于是几何永久停在旧值。实测（视口 777x1035 → 1035x777，ResizeObserver 置空）：
-   *   `inner/stageCss` 已变成 1035x777，而 `geometry()` 仍返回 777x1035、
-   *   overlay canvas 仍 2137x2846 ⇒ 模型按旧视口渲染，挤在左侧窄带、右侧露出棋盘格。
-   *
-   * 兜底触发源为什么是这三个：
-   *   · `resize`          —— 桌面窗口缩放；
-   *   · `orientationchange` —— 手机旋转（部分浏览器只发它，且早于布局更新）；
-   *   · `visualViewport.resize` —— 移动端地址栏收起/键盘弹起等"可视视口"变化。
-   * 三者都只做一件事：延后一拍再 `measure()`。`measure()` 自带"尺寸没变就不通知"的
-   *   去重，所以多路触发不会造成重复 resize。
-   */
+  /** ResizeObserver：root 尺寸变化即重算（避免轮询） */
   let observer = null;
-  let fallbacksBound = false;
-
-  /** 绑定兜底事件（幂等；只绑一次） */
-  function watchFallbacks() {
-    if (fallbacksBound || typeof window === 'undefined') return;
-    fallbacksBound = true;
-    /**
-     * 事件触发 → 计数 → 延后一帧再量。
-     * 计数按触发源分开记：真机旋转后看 `stats().trigger` 就知道是哪个源发了、哪个没发。
-     */
-    const kick = (src) => () => {
-      st.trigger[src] += 1;
-      // 旋转时 layout viewport 可能在本事件之后才更新，所以延后一帧再量
-      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => { measure(); });
-      else measure();
-    };
-    window.addEventListener('resize', kick('resize'), { passive: true });
-    // 旋转：等动画结束再处理，且**重新挂载当前文档**（不是只 resize）。
-    //   实测：真机旋转后仅靠 resize 链路，画布会停在旧尺寸（client 与容器不一致），
-    //   而"手动重选模型"能恢复 —— 说明完整 activate → mount → resize 这条路是可靠的。
-    //   所以这里直接复用那条路：尺寸确实变了就重新激活同一份文档。
-    //   代价是一次模型重挂（与手动重载等价），换来确定性恢复。
-    let rotateTimer = 0;
-    window.addEventListener('orientationchange', () => {
-      st.trigger.orientationchange += 1;
-      if (rotateTimer) { try { clearTimeout(rotateTimer); } catch { /* 忽略 */ } }
-      rotateTimer = setTimeout(() => {
-        rotateTimer = 0;
-        const before = { w: st.size.width, h: st.size.height };
-        try { measure(); } catch { return; }
-        const changed = st.size.width !== before.w || st.size.height !== before.h;
-        if (!changed || !st.document || st.swapping) return;
-        try { activate(st.document); } catch { /* 重挂失败时保留原画面，不打断用户 */ }
-      }, ROTATE_RELOAD_DELAY_MS);
-    }, { passive: true });
-    if (window.visualViewport) {
-      try { window.visualViewport.addEventListener('resize', kick('visualViewport'), { passive: true }); } catch { /* 老浏览器忽略 */ }
-    }
-  }
-
-  /**
-   * 建 ResizeObserver（幂等、可迟到补建）。
-   * 不再因为"此刻 rootEl() 为空"就永久放弃：`measure()` 每次都会调一次本函数，
-   * 一旦根容器进 DOM 就会补建观察者。
-   */
   function watchResize() {
-    if (!observer && typeof ResizeObserver === 'function') {
-      const el = rootEl();
-      if (el) {
-        observer = new ResizeObserver(() => { st.trigger.resizeObserver += 1; measure(); });
-        observer.observe(el);
-      }
-    }
-    watchFallbacks();
+    if (observer || typeof ResizeObserver !== 'function') return;
+    const el = rootEl();
+    if (!el) return;
+    observer = new ResizeObserver(() => { measure(); });
+    observer.observe(el);
   }
 
   // ---------------------------------------------------------------- 常驻断言
@@ -434,19 +345,6 @@ export function createStageSurface({ root, log } = {}) {
       active: st.activeId,
       mode: stageMode(),
       size: { ...st.size },
-      // domSize：实时读一次 DOM，与 size 并排就能判断「DOM 没变（布局侧）」还是「DOM 变了但没同步」
-      domSize: (() => {
-        const el = rootEl();
-        if (!el) return null;
-        try {
-          const r = el.getBoundingClientRect();
-          return { width: Math.round(r.width), height: Math.round(r.height) };
-        } catch { return null; }
-      })(),
-      /** 各尺寸触发源的命中计数（真机旋转排查用，见 st.trigger 注释） */
-      trigger: { ...st.trigger },
-      lastMeasureAt: Math.round(st.lastMeasureAt),
-      lastChangeAt: Math.round(st.lastChangeAt),
       dpr: st.dpr,
       fps: st.fps,
       swapping: st.swapping,
@@ -557,11 +455,6 @@ export function createStageSurface({ root, log } = {}) {
     } catch { /* 忽略 */ }
     measure();
     watchResize();
-    // 根容器可能在本函数之后才进 DOM（脚本顺序/异步挂载）：延后一帧再量一次，
-    // 让 observer 补建、几何不落后。只补一次，不引入轮询。
-    if (typeof requestAnimationFrame === 'function') {
-      requestAnimationFrame(() => { try { measure(); } catch { /* 忽略 */ } });
-    }
   } catch (err) {
     note(`渲染面初始化失败：${err && err.message}`, 'warn');
   }

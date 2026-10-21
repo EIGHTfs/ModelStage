@@ -69,27 +69,9 @@ export function installDiagHud({ getRendererInfo, readCanvasPixels, overlayCanva
         const ri = (() => {
           try { return getRendererInfo ? getRendererInfo() : null; } catch { return null; }
         })();
-        // 尺寸链路诊断：真机旋转后看这两行就能分清
-        //   「事件没发（计数全 0）」/「发了但 DOM 尺寸没变（geo 与 dom 相同且都旧）」
-        //   /「尺寸变了但下游没跟上（geo≠dom 或 Δ 很大）」
-        // 放在「模型未就绪」早退之前：旋转排查常常发生在装载前/装载失败时，这两行必须始终可见。
-        const ss = (() => {
-          try { return window.__WEB__ && window.__WEB__.surface ? window.__WEB__.surface.stats() : null; } catch { return null; }
-        })();
-        const ssRows = [];
-        if (ss && ss.trigger) {
-          const t = ss.trigger;
-          const dom = ss.domSize ? `${ss.domSize.width}x${ss.domSize.height}` : 'n/a';
-          const age = ss.lastChangeAt ? `${Math.round(performance.now() - ss.lastChangeAt)}ms前` : 'n/a';
-          ssRows.push(`geo ${ss.size.width}x${ss.size.height}   dom ${dom}   dpr ${ss.dpr}   末次变化 ${age}`);
-          ssRows.push(`trig ro ${t.resizeObserver} / resize ${t.resize} / orient ${t.orientationchange} / vv ${t.visualViewport}`);
-        }
         if (!ri) {
-          body.textContent = [
-            `等待模型…（app 尚未就绪）`,
-            `viewport ${window.innerWidth}x${window.innerHeight}`,
-            ...ssRows,
-          ].join('\n');
+          body.textContent = `等待模型…（app 尚未就绪）
+viewport ${window.innerWidth}x${window.innerHeight}`;
           return;
         }
         const rows = [
@@ -98,7 +80,6 @@ export function installDiagHud({ getRendererInfo, readCanvasPixels, overlayCanva
           `#stage-canvas    attr/client ${sizes(spineCv)}   visibility ${spineCv ? getComputedStyle(spineCv).visibility : 'n/a'}`,
           `#live2d-overlay  attr/client ${sizes(overlayCv)}   bg ${overlayCv ? getComputedStyle(overlayCv).backgroundColor : 'n/a'}`,
           `PIXI  w ${ri ? ri.width : '?'} h ${ri ? ri.height : '?'} res ${ri ? ri.resolution : '?'}`,
-          ...ssRows,
         ];
         if (overlayCv && overlayCv.clientWidth > 0 && overlayCv.clientHeight > 0 && readCanvasPixels) {
           const w = overlayCv.clientWidth;
