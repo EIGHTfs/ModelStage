@@ -142,6 +142,9 @@ bash web.sh start|stop|restart|status     # 默认 8804（独立服务）
 - [x] 状态持久化沿用旧前端键名 `spine-multi-viewer.tree-state.v1`（`games` / `chars` /
       `activeGame` 存游戏名 / `lastByGame` 按游戏名存上次模型 id）
 - [x] 键盘可达：树行 `tabindex=0`，Enter / 空格等价于点击
+- [x] **定位当前角色（F3）**：选中后把该行滚进可视区（`roster/reveal.js`）。三条纪律：
+      已可见不动；用户滚动手势 800ms 内不抢（`lastReveal=skipped-user-scrolling`）；
+      目标被折叠时先展开父级再滚；启动自动恢复同样定位
 - [x] 未接线控件全部 `disabled` 并标注「待接线（M3/M6）」（顶栏截图导出/影院模式已接线、导入与菜单已删除、左栏选择目录仍待接线；
       底栏 8 个全部接线）—— 明细见下节「表现侧接线记录（F1/F2）」
 - [x] 穷举实操 31 项全过 + 控制台零错误（`test/roster-actions.js` + `tool/check-console.mjs`）

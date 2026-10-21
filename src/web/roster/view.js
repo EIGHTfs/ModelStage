@@ -10,6 +10,10 @@
 //
 // 状态全部收在 state 里，DOM 只是投影：这样"点一下到底改了什么"可以直接读 state 验证。
 
+import { createReveal } from './reveal.js';
+import { visibleChars } from './filter.js';
+import { snapshotRoster } from './snapshot.js';
+import { readSaved, saveState } from './persist.js';
 import {
   createNameIndex, mergeNameTable, loadRootModels, loadRootNames, buildChars,
 } from './list.js';
@@ -17,7 +21,6 @@ import { el, renderGameRow, renderCharRow, renderVariantRow } from './rows.js';
 import { formatError } from '../infra/api.js';
 
 /** localStorage 键名：与旧前端一致，不得改名（M7 要用它做持久化，改名会让用户既有状态失效） */
-const LS_KEY = 'spine-multi-viewer.tree-state.v1';
 
 /** 渲染上限：每个游戏最多渲染多少角色行（避免 2000+ 角色一次铺满）。
  *  默认值只是兜底，可用 window.__WEB_CONFIG__.renderLimitPerGame 覆盖 */
@@ -45,45 +48,12 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     selected: null,
     activeGame: null,
   };
+  // 定位控制器：把"选中后滚到可见"的策略外置（见 roster/reveal.js）
+  const reveal = createReveal({ listEl, getState: () => state, render: () => render() });
+
   const nameIndex = createNameIndex();
   const namesLoaded = new Set();
   const modelById = new Map();
-
-  // ------------------------------------------------------------ 持久化
-
-  /** 读展开态与上次选中（结构照旧前端的 {games, chars, activeGame, lastByGame}） */
-  function readSaved() {
-    try {
-      const s = JSON.parse(localStorage.getItem(LS_KEY) || '{}');
-      return {
-        games: new Set(Array.isArray(s.games) ? s.games : []),
-        chars: new Set(Array.isArray(s.chars) ? s.chars : []),
-        activeGame: typeof s.activeGame === 'string' ? s.activeGame : null,
-        lastByGame: s.lastByGame && typeof s.lastByGame === 'object' ? s.lastByGame : {},
-        // 旧格式：只有单个 lastModelId（更早版本写入的），读出来用于兼容恢复
-        lastModelId: typeof s.lastModelId === 'string' ? s.lastModelId : null,
-      };
-    } catch {
-      return { games: new Set(), chars: new Set(), activeGame: null, lastByGame: {}, lastModelId: null };
-    }
-  }
-
-  /** 写展开态与每个游戏上次选中的变体（键名/结构沿用旧前端：activeGame 存游戏名） */
-  function saveState() {
-    try {
-      const s = readSaved();
-      const lastByGame = { ...s.lastByGame };
-      if (state.activeGame && state.selected) lastByGame[state.activeGame] = state.selected.modelId;
-      localStorage.setItem(LS_KEY, JSON.stringify({
-        games: [...state.expandedGames],
-        chars: [...state.expandedChars],
-        activeGame: state.activeGame || s.activeGame,
-        lastByGame,
-      }));
-    } catch {
-      // 隐私模式等写不了就忽略：持久化是增强，不影响当前会话
-    }
-  }
 
   // ------------------------------------------------------------ 数据加载
 
@@ -174,30 +144,6 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
   // ------------------------------------------------------------ 过滤
 
   /** 单条变体的可搜索文本（资源名 / 目录名 / 角色名 / 服装名） */
-  function variantSearchText(v) {
-    const m = v.model;
-    const nm = v.nm;
-    return `${m.name} ${m.srcDir || ''} ${nm ? `${nm.nameZh} ${nm.name} ${nm.costume}` : ''}`.toLowerCase();
-  }
-
-  /** 角色是否命中（按角色整组判定：搜角色名时显示该角色全部变体） */
-  function charMatches(c) {
-    const kw = state.keyword;
-    if (!kw) return true;
-    if (String(c.title).toLowerCase().includes(kw)) return true;
-    return c.variants.some((v) => variantSearchText(v).includes(kw));
-  }
-
-  /** 某游戏在搜索下可见的角色（未加载的游戏不参与过滤） */
-  function visibleChars(game) {
-    const entry = state.gameChars.get(game.key);
-    if (!entry) return [];
-    if (!state.keyword) return entry.chars;
-    const gameHit = String(game.name).toLowerCase().includes(state.keyword)
-      || game.roots.some((r) => String(r.id).toLowerCase().includes(state.keyword));
-    return gameHit ? entry.chars : entry.chars.filter(charMatches);
-  }
-
   // ------------------------------------------------------------ 渲染
 
   /** 渲染整棵树（只渲染可见部分；展开的角色才生成变体行） */
@@ -213,7 +159,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     for (const game of state.games) {
       const status = gameStatus(game);
       if (status === 'ready') loadedGames += 1;
-      const chars = visibleChars(game);
+      const chars = visibleChars(game, state);
       const open = state.expandedGames.has(game.key) || (searching && chars.length > 0);
 
       listEl.append(renderGameRow(game, {
@@ -263,33 +209,8 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
   }
 
   /** 状态快照（自动化断言与排查用，避免每次都去数 DOM） */
-  function snapshot() {
-    const games = state.games.map((g) => {
-      const chars = state.gameChars.get(g.key);
-      return {
-        key: g.key,
-        name: g.name,
-        roots: g.roots.map((r) => r.id),
-        status: gameStatus(g),
-        sources: g.roots.map((r) => (state.loaded.get(r.id) || {}).source || '').filter(Boolean),
-        chars: chars ? chars.chars.length : 0,
-        variants: chars ? chars.chars.reduce((n, c) => n + c.variants.length, 0) : 0,
-        miss: chars ? chars.stats.miss : 0,
-      };
-    });
-    return {
-      games,
-      expandedGames: [...state.expandedGames],
-      expandedChars: [...state.expandedChars],
-      keyword: state.keyword,
-      selected: state.selected,
-      domRows: {
-        games: listEl.querySelectorAll('[data-game-key].tree-game').length,
-        chars: listEl.querySelectorAll('[data-char-key].tree-char').length,
-        variants: listEl.querySelectorAll('[data-model-id]').length,
-      },
-    };
-  }
+  /** 快照：投影逻辑在 roster/snapshot.js（断言只读这份） */
+  const snapshot = () => snapshotRoster({ state, listEl, gameStatus });
 
   // ------------------------------------------------------------ 事件
 
@@ -298,7 +219,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     if (state.expandedGames.has(gameKey)) {
       state.expandedGames.delete(gameKey);
       render();
-      saveState();
+      saveState(state);
       return;
     }
     state.expandedGames.add(gameKey);
@@ -306,7 +227,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     render();
     const game = state.games.find((g) => g.key === gameKey);
     if (game) await ensureGameLoaded(game);
-    saveState();
+    saveState(state);
   }
 
   /** 点二级：折叠/展开角色（变体已在内存，不发请求） */
@@ -314,7 +235,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     if (state.expandedChars.has(charKey)) state.expandedChars.delete(charKey);
     else state.expandedChars.add(charKey);
     render();
-    saveState();
+    saveState(state);
   }
 
   /** 点三级：选中变体（高亮 + 记录状态，M4 用它去渲染） */
@@ -323,7 +244,8 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     state.selected = { modelId, gameKey, gameName: game ? game.name : null, charKey };
     state.activeGame = game ? game.name : state.activeGame;
     render();
-    saveState();
+    state.lastReveal = reveal.revealActive(); // 选中后把这一行滚到可视区（已可见/用户正在滚都会跳过）
+    saveState(state);
     if (typeof onSelect === 'function') {
       const hit = modelById.get(modelId);
       onSelect(hit ? hit.model : null);
@@ -342,6 +264,9 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
         onGameClick(row.dataset.gameKey);
       }
     }
+
+    // 用户滚动信号由 reveal 控制器统一挂（滚轮 / 触摸 / 指针 / 滚动条）
+    reveal.attachUserScrollListeners();
 
     listEl.addEventListener('click', (e) => {
       const row = e.target.closest('[data-model-id], [data-char-key], [data-game-key]');
@@ -372,7 +297,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
       state.expandedGames.clear();
       state.expandedChars.clear();
       render();
-      saveState();
+      saveState(state);
     });
   }
 
@@ -457,7 +382,9 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
       state.selected = { modelId, gameKey: game.key, gameName: game.name, charKey: hit.charKey };
       state.activeGame = game.name;
       render();
-      saveState(); // 顺带把旧格式迁移成 lastByGame（saveState 只写 lastByGame）
+      // 自动恢复同样把恢复到的那一行滚进视野；但用户若正在滚动就不会抢（守卫在 revealActive 里）
+      state.lastReveal = reveal.revealActive();
+      saveState(state); // 顺带把旧格式迁移成 lastByGame（saveState 只写 lastByGame）
       if (typeof onSelect === 'function') onSelect(modelById.get(modelId)?.model || null);
       return { restored: true, modelId, gameKey: game.key, charKey: hit.charKey };
     }
@@ -467,5 +394,5 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     return { restored: false, reason: 'missing', modelId };
   }
 
-  return { mount, state, snapshot, render, ensureGameLoaded, restoreLast };
+  return { mount, state, snapshot, render, ensureGameLoaded, restoreLast, revealActive: reveal.revealActive, markUserScroll: reveal.markUserScroll };
 }
