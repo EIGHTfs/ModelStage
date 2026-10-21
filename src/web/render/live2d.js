@@ -46,7 +46,7 @@ export function createLive2DRenderer({ live2d } = {}) {
     },
   });
   let handleRef = null;
-  // DPR 档位：'auto' = 跟随 Surface 下发的 res；'1'/'1.5'/'2' = 用户指定
+  // DPR 档位：'auto' = 跟随 Surface 下发的 res；'1'/'1.5'/'2' = 显式指定档位
   let dprWanted = 'auto';
 
   /** 几何唯一来源：Surface 句柄（渲染器不自行测量 DOM） */
