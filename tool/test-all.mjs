@@ -37,6 +37,7 @@ const SUITES = [
   { name: 'spine-actions', wait: 4500 },
   { name: 'panel-actions', wait: 4500 },
   { name: 'roster-actions', wait: 4500 },
+  { name: 'anim-list', wait: 4500 },
 ];
 
 const argv = process.argv.slice(2);
