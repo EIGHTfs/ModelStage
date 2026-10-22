@@ -14,7 +14,7 @@ import { mountDebugPanel } from '../debug/panel.js';
 import { formatError } from '../infra/api.js';
 import { dom, state, stage } from '../app/context.js';
 import { stageStatus } from '../app/status.js';
-import { VIEW_SETTINGS_KEY, applyBackground, applyTheme, readViewSettings } from '../app/view-settings.js';
+import { VIEW_SETTINGS_KEY, applyBackground, applyTheme, readViewSettings, saveViewSettings } from '../app/view-settings.js';
 import { DEFAULT_PART_FILTER_KEYWORDS, applyPartFilter } from '../app/part-filter.js';
 import {
   connectSettingsIo, exportSettingsFile, importSettingsFromText, openImportPicker,
@@ -168,6 +168,7 @@ export function runSettingsAction(action) {
 export function restoreDefaultSettings() {
   try { localStorage.removeItem(VIEW_SETTINGS_KEY); } catch { /* 存储不可用不算失败 */ }
   state.panelSettings = {};
+  try { saveViewSettings({ panel: {} }); } catch { /* 存储不可用忽略 */ }
   const defaults = panelBridge.getPanelDefaults() || {};
   for (const [id, value] of Object.entries(defaults)) {
     // MSAA 默认值已由建上下文时生效，重放会白等一次上下文重建

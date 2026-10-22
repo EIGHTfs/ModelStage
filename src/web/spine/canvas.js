@@ -167,8 +167,8 @@ function buildDescriptor(model, ver, res) {
 }
 
 /** 当前相机对象（部分运行时用 scale 而非 zoom） */
-function cameraOf(state) {
-  return state.engine && state.engine.camera ? state.engine.camera : null;
+function cameraOf(st) {
+  return st.engine && st.engine.camera ? st.engine.camera : null;
 }
 
 /** 读相机缩放（统一成"越大越放大"的 zoom 语义） */
@@ -196,11 +196,11 @@ function setCameraZoom(cam, zoom) {
  * 记录视图基准：缩放基准取引擎的 userScale（引擎语义「越大越放大」），平移累计归零。
  * 不在本文件推导相机字段——引擎的 camera.zoom 是 userScale 的倒数，自己算必错。
  */
-function captureViewBase(state) {
-  const engine = state.engine;
+function captureViewBase(st) {
+  const engine = st.engine;
   // 基准 = 当前 userScale（引擎的 getCameraZoom 是唯一真相；resetCamera 之后取一次即可）
-  state.viewBaseScale = engine && typeof engine.getCameraZoom === 'function' ? engine.getCameraZoom() : 1;
-  state.viewPan = { x: 0, y: 0 };
+  st.viewBaseScale = engine && typeof engine.getCameraZoom === 'function' ? engine.getCameraZoom() : 1;
+  st.viewPan = { x: 0, y: 0 };
 }
 /**
  * 标定「平移输入 1 像素 → 画面位移多少像素」。
@@ -213,11 +213,11 @@ function captureViewBase(state) {
  *   zoom = 相对 fit 的倍数：engine.getCameraZoom() / 基准 userScale；reset 后为 1；
  *   panX/panY = **屏幕像素**，原点画布中心，向右/向下为正（累计值）。
  */
-function viewOf(state) {
-  const engine = state.engine;
-  const base = state.viewBaseScale || 1;
+function viewOf(st) {
+  const engine = st.engine;
+  const base = st.viewBaseScale || 1;
   const cur = engine && typeof engine.getCameraZoom === 'function' ? engine.getCameraZoom() : base;
-  const pan = state.viewPan || { x: 0, y: 0 };
+  const pan = st.viewPan || { x: 0, y: 0 };
   return {
     zoom: +(cur / base).toFixed(4),
     panX: +pan.x.toFixed(2),
@@ -518,6 +518,24 @@ api.setSkin = (name) => {
     return ok;
   } catch {
     return false;
+  }
+};
+
+/**
+ * 动作清单（名称 + 时长）：时长来自 skeletonData.animations 的 duration。
+ * 面板与底栏都读这一份，避免"两处各取一处"导致条数/时长不一致。
+ * @returns {Array<{name: string, duration: number|null}>}
+ */
+api.animationDetails = () => {
+  try {
+    const e = st.engine; // 与同一 api 里其它方法一致：引擎挂在 st 上
+    const anims = (e && e.skeletonData && e.skeletonData.animations) || [];
+    return anims.map((a) => {
+      const d = Number(a && a.duration);
+      return { name: String(a && a.name || ''), duration: Number.isFinite(d) && d > 0 ? d : null };
+    }).filter((a) => a.name);
+  } catch {
+    return [];
   }
 };
 

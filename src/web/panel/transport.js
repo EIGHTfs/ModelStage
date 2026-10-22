@@ -70,7 +70,6 @@ function renderControl(ctl) {
  */
 /** 底栏按钮图标（内联 SVG，与顶栏同一套线条风格；不引图标库） */
 const ICONS = {
-  'transport-loop': '<path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/>',
   'transport-prev': '<polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/>',
   'transport-play': '<polygon points="6 3 20 12 6 21 6 3"/>',
   'transport-next': '<polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/>',
@@ -98,7 +97,7 @@ export function mountTransport(footerEl, handlers = {}) {
 
   // 分三组摆位，与旧前端一致：左（循环/上一个）· 中（皮肤/播放/动作）· 右（下一个/重置/背景）
   const groups = [
-    ['transport-loop', 'transport-prev'],
+    ['transport-prev'],
     ['transport-skin', 'transport-play', 'transport-motion'],
     ['transport-next', 'transport-reset-view', 'transport-bg'],
   ];
@@ -152,7 +151,7 @@ export function mountTransport(footerEl, handlers = {}) {
     return true;
   }
 
-  /** 按钮按下态（单动循环/播放暂停这类开关型按钮） */
+  /** 按钮按下态（播放暂停这类开关型按钮） */
   function setPressed(id, on) {
     const node = nodes.get(id);
     if (!node) return;

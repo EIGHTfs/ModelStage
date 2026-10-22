@@ -37,8 +37,10 @@ export const PANEL_GROUPS = [
     title: '动作',
     defaultOpen: true,
     controls: [
-      // 动作组的「混合模式」：只管**动画切换**是否交叉淡化（与皮肤组那个是两件独立的事）
-      { kind: 'switch', label: '混合模式', id: 'ctl-mix-mode', core: true, title: '动画切换时是否交叉淡化（只影响动作，不影响皮肤）' },
+      // 动作组并列两个开关，各自管一件事（契约 §四，正交、不合并）：
+      //   混合模式 = 切换那一瞬间的过渡；循环播放 = 播完之后接谁
+      { kind: 'switch', label: '混合模式', id: 'ctl-mix-mode', core: true, title: '切换动作时的过渡：开=约 0.2s 渐变，关=硬切' },
+      { kind: 'switch', label: '循环播放', id: 'ctl-anim-loop', core: true, title: '播完之后接谁：开=按列表顺序连播、末尾回到第一条；关=停留当前动作重复播' },
       { kind: 'dynamic-list', label: '动作列表', id: 'ctl-anim-list', core: true, note: '选中模型后逐条列出动作，点一条即播放' },
     ],
   },
@@ -208,7 +210,6 @@ export const PANEL_GROUPS = [
 
 /** 底部播放条的控件（顺序与旧前端可见控件一致；皮肤/动作用下拉表达） */
 export const TRANSPORT_CONTROLS = [
-  { kind: 'button', id: 'transport-loop', label: '单动循环', title: '单动循环' },
   { kind: 'button', id: 'transport-prev', label: '上一个', title: '上一个' },
   { kind: 'select', id: 'transport-skin', label: '皮肤', value: 'default', options: ['default'] },
   { kind: 'button', id: 'transport-play', label: '播放/暂停', title: '播放/暂停' },

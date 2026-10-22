@@ -1,6 +1,6 @@
 // app/transport-actions.js —— 底栏播放条上的动作实现
 //
-// 播放条控件（播放/暂停、单动循环、上/下一条变体、背景切换、动作下拉、皮肤下拉）都只操作"当前内容"，
+// 播放条控件（播放/暂停、上/下一条变体、背景切换、动作下拉、皮肤下拉）都只操作"当前内容"，
 // 与渲染器实现无关，所以统一放这里。状态一律经 state.transport 的句柄落到 DOM，
 // 同时打 dataset 供自动化断言读。
 
@@ -8,6 +8,9 @@ import { dom, stage, state } from './context.js';
 import { stageStatus } from './status.js';
 import { formatError, getJson } from '../infra/api.js';
 import { applyBackground } from './view-settings.js';
+import {
+  buildAnimationList, isCycleLoop, labelWithDuration, notePlaying, playAnimation, setCycleLoop,
+} from './anim-list.js';
 
 /** 播放/暂停：切换引擎播放并同步按钮按下态与 dataset（进 CAMERA 之外的状态日志） */
 function toggleTransportPlay() {
@@ -21,20 +24,6 @@ function toggleTransportPlay() {
   stageStatus(`transport 播放${next ? '' : '暂停'}`, 'info');
 }
 /** 单动循环：切换 settings.loop（引擎 setLoop 走通用 setter） */
-function toggleTransportLoop() {
-  if (!stage) return;
-  const stats = stage.stats();
-  const cur = !!(stats && stats.settings && stats.settings.loop);
-  const next = !cur;
-  if (typeof stage.setLoop === 'function') stage.setLoop(next);
-  if (state.transport) state.transport.setPressed('transport-loop', next);
-  document.documentElement.dataset.transportLoop = next ? 'on' : 'off';
-  stageStatus(`transport 单动循环 ${next ? '开' : '关'}`, 'info');
-}
-/**
- * 上一个/下一个变体：取「当前根下、同一目录」的兄弟变体循环切换。
- * 为什么用 API 取：名册树是懒加载的，兄弟列表不在 state 里，直接查 /api/models 最准。
- */
 async function stepVariant(dir) {
   const cur = state.selectedModel;
   if (!cur || !cur.rootId || !cur.directory) { stageStatus('切换变体失败：当前没有可用的兄弟变体', 'warn'); return; }
@@ -61,23 +50,45 @@ function cycleBackground() {
   document.documentElement.dataset.transportBg = next;
   stageStatus(`transport 背景 → ${next}`, 'info');
 }
-/** 动作下拉选择：切动画并回填 dataset */
-function applyTransportMotion(name) {
-  if (!stage || !name) return;
-  const ok = stage.setAnimation(name);
-  document.documentElement.dataset.transportMotion = String(name);
-  stageStatus(`transport 动作 → ${name}${ok ? '' : '（引擎拒绝，保持原动作）'}`, ok ? 'info' : 'warn');
+/** 动作下拉选择：切动画并回填 dataset；右栏高亮与下拉互相跟随（同一份清单） */
+function applyTransportMotion(id) {
+  if (!id) return;
+  const ok = playAnimation(id);
+  document.documentElement.dataset.transportMotion = String(id);
+  // 当前动作的唯一真相是底栏下拉（契约 §七）：不管从哪一处触发，都把下拉同步到这条
+  if (state.transport) state.transport.setSelectValue('transport-motion', id);
+  if (typeof state.panel && state.panel.refreshAnimations === 'function') state.panel.refreshAnimations();
+  stageStatus(`transport 动作 → ${id}${ok ? '' : '（引擎拒绝，保持原动作）'}`, ok ? 'info' : 'warn');
 }
-/** 模型加载完成后填充播放条：动作下拉 + 循环/播放按下态 */
+/**
+ * 循环播放（右栏「动作」组开关，契约 §四）：
+ *   开 = 按列表顺序逐条播完剩余动作、末尾回到第一条并持续；关 = 停留当前动作重复播。
+ * 与「混合模式」正交：混合模式只管切换瞬间的过渡（引擎 mixTime），这里只管"播完接谁"，
+ *   两者互不调用、互不改写对方状态。
+ * @param {boolean} on
+ * @returns {boolean} 落地后的状态
+ */
+function applyAnimLoop(on) {
+  setCycleLoop(!!on);
+  state.animLoop = !!on;
+  document.documentElement.dataset.animLoop = on ? 'on' : 'off';
+  if (state.panel && typeof state.panel.setChecked === 'function') state.panel.setChecked('ctl-anim-loop', !!on);
+  return !!on;
+}
+
+/** 模型加载完成后填充播放条：动作下拉 + 播放状态 */
 function fillTransportOptions(info) {
   const transport = state.transport;
   if (!transport) return;
-  const anims = Array.isArray(info && info.animations) ? info.animations : [];
-  if (anims.length) {
-    transport.setOptions('transport-motion', anims.map((a) => ({ text: a, value: a })), info.motion || anims[0]);
+  // 与右栏同一份清单（同顺序、同文案、同时长）：契约 §一/§三
+  const list = buildAnimationList();
+  if (list.length) {
+    const preferred = (info && info.motion) || '';
+    const startId = list.some((x) => x.id === preferred) ? preferred : list[0].id;
+    transport.setOptions('transport-motion', list.map((x) => ({ text: labelWithDuration(x), value: x.id })), startId);
+    notePlaying(startId);
   }
   const stats = stage ? stage.stats() : null;
-  transport.setPressed('transport-loop', !!(stats && stats.settings && stats.settings.loop));
   document.documentElement.dataset.transportPlaying = stats && stats.playing ? 'on' : 'off';
 }
 /** 混合模式：两处开关指向同一状态，点任一处都要同步另一处的显示 */
@@ -121,6 +132,6 @@ function skinSwitchMixTime(fn) {
 }
 
 export {
-  toggleTransportPlay, toggleTransportLoop, stepVariant, cycleBackground,
+  toggleTransportPlay, stepVariant, cycleBackground, applyAnimLoop,
   applyTransportMotion, fillTransportOptions, applyMixMode, applySkinMix, skinSwitchMixTime,
 };

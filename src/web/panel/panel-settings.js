@@ -10,9 +10,13 @@ import { stageStatus } from '../app/status.js';
 import { PANEL_GROUPS, applyCapabilities, selfCheck, settingKeyOf } from './schema.js';
 import { mountPanel } from './view.js';
 import { applyDebugLog, applyHangGuard, applyShowStatus, connectShellControls, runSettingsAction } from './shell-controls.js';
-import { applyBackground, applyTheme } from '../app/view-settings.js';
+import { applyBackground, applyTheme, readViewSettings, saveViewSettings } from '../app/view-settings.js';
 import { DEFAULT_PART_FILTER_KEYWORDS, applyPartFilter } from '../app/part-filter.js';
-import { applyMixMode, applyTransportMotion } from '../app/transport-actions.js';
+import { applyAnimLoop, applyMixMode, applySkinMix, applyTransportMotion } from '../app/transport-actions.js';
+import {
+  buildAnimationList, currentAnimationId, durationText, labelWithDuration, onCycleAdvance,
+  primeAnimationDurations, syncTransportOptions,
+} from '../app/anim-list.js';
 
 /**
  * 皮肤列表刷新钩子：它依赖"当前模型"，实现在 model-actions 里（那边反过来要用 rebuildPanelFor），
@@ -31,6 +35,7 @@ const SHELL_APPLIERS = {
   'ctl-theme': (v) => applyTheme(v),
   'ctl-bg-mode': (v) => applyBackground(v),
   'ctl-mix-mode': (v) => applyMixMode(v),
+  'ctl-anim-loop': (v) => applyAnimLoop(v),
   'ctl-skin-mix': (v) => applySkinMix(v),
   'ctl-skin-list': (v) => stage && stage.setSkin(v),
   'ctl-part-filter': (v) => applyPartFilter({ enabled: !!v }),
@@ -55,13 +60,40 @@ const WIRED_IDS = (() => {
   return [...ids];
 })();
 
+/**
+ * 记住一项面板设置并落盘（刷新后保持）。
+ * 与视图偏好共用同一存储键的 panel 字段：一处读写，避免两套持久化各说一套。
+ */
+/** 启动回放默认值时暂停落盘：否则默认值会覆盖用户上次保存的设置 */
+let persistSuspended = false;
+export function suspendPanelPersist(on) {
+  persistSuspended = !!on;
+}
+
+function rememberPanelSetting(id, value) {
+  state.panelSettings = { ...(state.panelSettings || {}), [id]: value };
+  document.documentElement.dataset.panelSetting = JSON.stringify(state.panelSettings);
+  if (persistSuspended) return; // 回放阶段不落盘，避免默认值覆盖用户保存值
+  try { saveViewSettings({ panel: { ...state.panelSettings } }); } catch { /* 存储不可用就只保留内存态 */ }
+}
+
+/** 启动时把上次保存的面板设置重新应用一遍（跳过有专门恢复通道的项） */
+export function restorePanelSettings(skipIds) {
+  const saved = (readViewSettings().panel) || {};
+  const skip = skipIds instanceof Set ? skipIds : new Set();
+  for (const [id, value] of Object.entries(saved)) {
+    if (skip.has(id)) continue;
+    try { applyPanelSetting(id, value); } catch { /* 单项失败继续 */ }
+  }
+  return Object.keys(saved).length;
+}
+
 /** 面板控件回调：外壳项直接处理，其余一律经 renderer.setSetting（回显用生效值） */
 function applyPanelSetting(id, value) {
   const shell = SHELL_APPLIERS[id];
   if (shell) {
     shell(value);
-    state.panelSettings = { ...(state.panelSettings || {}), [id]: value };
-    document.documentElement.dataset.panelSetting = JSON.stringify(state.panelSettings);
+    rememberPanelSetting(id, value);
     return;
   }
   const cap = settingKeyOf(id);
@@ -81,8 +113,7 @@ function applyPanelSetting(id, value) {
     if (state.panel && applied !== null) state.panel.setValue(id, applied);
     return;
   }
-  state.panelSettings = { ...(state.panelSettings || {}), [id]: applied === null ? value : applied };
-  document.documentElement.dataset.panelSetting = JSON.stringify(state.panelSettings);
+  rememberPanelSetting(id, applied === null ? value : applied);
 }
 /** 面板三态快照（断言用：可用项 / 禁用项 / 隐藏项） */
 function panelSnapshot() {
@@ -113,6 +144,8 @@ function rebuildPanelFor(renderer) {
     wiredIds: WIRED_IDS,
   });
   state.panel = info;
+  // 底栏/循环推进需要"重绘右栏动作列表"：挂在面板句柄上，避免互相 import
+  info.refreshAnimations = () => refreshPanelAnimations();
   startFpsReadout(info);
   refreshSkinHook();
   state.panelSnapshot = panelSnapshot();
@@ -125,51 +158,66 @@ function rebuildPanelFor(renderer) {
   return check;
 }
 /**
- * 刷新"动作列表"：按当前模型的动画逐条列出，点一条直接播放。
- * 数据来源是渲染器的 getAnimations()（Spine/Live2D 都实现了），所以换渲染器也不用改这里。
+ * 底栏下拉变化 → 右栏高亮跟随（契约 §七：当前动作的唯一真相是下拉的值）。
+ * 为什么不只在应用层回调里刷：change 事件派发时下拉的值可能尚未落定，
+ *   当场重绘会读到旧值；这里挂独立监听并在下一拍重绘，两条路径互不依赖。
+ */
+let transportWatcherBound = false;
+function bindTransportMotionWatcher() {
+  if (transportWatcherBound) return;
+  const sel = document.querySelector('#transport-motion');
+  if (!sel) return;
+  sel.addEventListener('change', () => {
+    setTimeout(() => { try { refreshPanelAnimations(); } catch { /* 忽略 */ } }, 0);
+  });
+  transportWatcherBound = true;
+}
+
+/**
+ * 刷新右栏「动作列表」：与底栏同一份清单（同顺序、同文案、同时长），点一条即播。
+ * 高亮跟随底栏下拉的值（契约 §七：当前动作只有一处真相）。
+ * @returns {number} 列出的条数
  */
 export function refreshPanelAnimations() {
   const box = document.querySelector('#right-panel [data-ctl="ctl-anim-list"]');
   if (!box) return 0;
-  // 数据来源按优先级取（两个渲染器都不直接暴露 getAnimations）：
-  //   ① 渲染器自带 getAnimations（将来可能加）
-  //   ② 舞台 stats().animations（Spine：canvas.js 把引擎动画摊平在 stats 里）
-  //   ③ Live2D：bridge.readState().motions / motions 列表
-  const pickList = () => {
-    const r = state.currentRenderer || {};
-    try { if (typeof r.getAnimations === 'function') return r.getAnimations() || []; } catch { /* 继续兜底 */ }
-    try {
-      const snap = stage && typeof stage.stats === 'function' ? stage.stats() : null;
-      if (snap && Array.isArray(snap.animations) && snap.animations.length) return snap.animations;
-    } catch { /* 继续兜底 */ }
-    try {
-      const l2d = window.__WEB__ && window.__WEB__.live2d;
-      const st = l2d && l2d.bridge && typeof l2d.bridge.readState === 'function' ? l2d.bridge.readState() : null;
-      const arr = st && (st.motions || st.animations);
-      if (Array.isArray(arr)) return arr.map((m) => (typeof m === 'string' ? m : m && (m.name || m.id))).filter(Boolean);
-    } catch { /* 无 Live2D 就到此为止 */ }
-    return [];
-  };
-  let list = [];
-  try { list = pickList(); } catch { list = []; }
+  const list = buildAnimationList();
+  const currentId = currentAnimationId();
   box.replaceChildren();
   if (!list.length) {
-    const p = document.createElement('p');
-    p.className = 'ctl-note';
-    p.textContent = state.selectedModel ? '该模型没有动作' : '选中模型后显示';
-    box.append(p);
+    const hint = document.createElement('p');
+    hint.className = 'ctl-note';
+    hint.textContent = state.selectedModel ? '该模型没有动作' : '选中模型后显示';
+    box.append(hint);
     return 0;
   }
-  // 当前播放中的动作：以播放条那个动作用下拉为准（它是唯一真相，模型换了也会同步）
-  const current = (document.querySelector('#transport-motion') || {}).value || null;
-  for (const name of list) {
+  for (const item of list) {
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = name === current ? 'mini-btn is-primary ctl-anim' : 'mini-btn ctl-anim';
-    btn.dataset.anim = name;
-    btn.textContent = name;
-    btn.addEventListener('click', () => { applyTransportMotion(name); refreshPanelAnimations(); });
+    btn.className = item.id === currentId ? 'mini-btn is-primary ctl-anim' : 'mini-btn ctl-anim';
+    btn.dataset.anim = item.id;
+    // 时长取不到就只显示名字（契约 §二禁止 0s / — 冒充）
+    btn.textContent = labelWithDuration(item);
+    btn.title = item.id + (durationText(item.duration) ? `（${durationText(item.duration)}）` : '（时长未知）');
+    btn.addEventListener('click', () => { applyTransportMotion(item.id); refreshPanelAnimations(); });
     box.append(btn);
+  }
+  // 同一份清单同步底栏下拉（契约 §一/§三：两处必须逐项一致）
+  syncTransportOptions();
+  bindTransportMotionWatcher();
+  // 下拉可能刚被填好（首次打开时为空）——按最终值补一次高亮，避免"首屏没有当前项"
+  const finalId = currentAnimationId();
+  if (finalId) {
+    for (const btn of box.querySelectorAll('[data-anim]')) {
+      const on = btn.dataset.anim === finalId;
+      btn.classList.toggle('is-primary', on);
+    }
+  }
+  // 循环推进后由应用层回调重绘（不轮询 DOM）
+  onCycleAdvance(() => refreshPanelAnimations());
+  // 有缺时长的条目就预热一次（Live2D：读动作文件 Meta.Duration；取到后自动再刷一遍）
+  if (list.some((x) => !durationText(x.duration))) {
+    primeAnimationDurations().then((n) => { if (n > 0) refreshPanelAnimations(); }).catch(() => {});
   }
   return list.length;
 }
@@ -234,4 +282,6 @@ export function runPanelSelfCheck() {
   return check;
 }
 
-export { SHELL_APPLIERS, WIRED_IDS, applyPanelSetting, panelSnapshot, rebuildPanelFor, startFpsReadout };
+export {
+  SHELL_APPLIERS, WIRED_IDS, applyPanelSetting, panelSnapshot, rebuildPanelFor, startFpsReadout,
+};

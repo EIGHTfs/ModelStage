@@ -25,12 +25,15 @@ import { dom, setStage, stage, state } from './app/context.js';
 import { stageStatus } from './app/status.js';
 import { VIEW_SETTINGS_KEY, applyBackground, applyTheme, readViewSettings, saveViewSettings } from './app/view-settings.js';
 import { DEFAULT_PART_FILTER_KEYWORDS, applyPartFilter } from './app/part-filter.js';
-import { WIRED_IDS, applyPanelSetting, panelSnapshot, rebuildPanelFor, runPanelSelfCheck } from './panel/panel-settings.js';
+import {
+  WIRED_IDS, applyPanelSetting, panelSnapshot, rebuildPanelFor, restorePanelSettings,
+  runPanelSelfCheck, suspendPanelPersist,
+} from './panel/panel-settings.js';
 import { loadRoots } from './app/model-actions.js';
 import { installCameraLogger } from './app/camera-log.js';
 import { bindCinemaKeys, exportScreenshot, toggleCinema, toggleRightPanel } from './app/topbar-actions.js';
 import {
-  applyTransportMotion, cycleBackground, stepVariant, toggleTransportLoop, toggleTransportPlay,
+  applyTransportMotion, cycleBackground, stepVariant, toggleTransportPlay,
 } from './app/transport-actions.js';
 
 // 页面级第一件事：装诊断探针（幂等，重复调用不会重复包装 console）
@@ -311,7 +314,6 @@ function boot() {
 
   const transportInfo = mountTransport(dom.footer, {
     'transport-reset-view': () => { if (stage && stage.resetView) stage.resetView(); },
-    'transport-loop': () => toggleTransportLoop(),
     'transport-play': () => toggleTransportPlay(),
     'transport-prev': () => stepVariant(-1),
     'transport-next': () => stepVariant(1),
@@ -335,11 +337,15 @@ function boot() {
   // 面板声明的默认值即唯一真相：启动时统一走一遍生效表，避免"高亮在 A、引擎在 B"
   // MSAA 例外：它的默认值已由建上下文时的 antialias 生效，启动就重建会白等 2~5 秒
   const STARTUP_SKIP = new Set(['ctl-msaa', 'ctl-theme', 'ctl-bg-mode']);
+  suspendPanelPersist(true); // 回放默认值不落盘：否则每次刷新都会把用户设置覆盖回默认
   for (const [id, value] of Object.entries((state.panel && state.panel.defaults) || {})) {
     if (STARTUP_SKIP.has(id)) continue;
     applyPanelSetting(id, value);
   }
+  suspendPanelPersist(false);
   state.panelDefaults = { ...((state.panel && state.panel.defaults) || {}) };
+  // 刷新后保持：把上次保存的面板设置重新应用一遍（主题/背景/MSAA 有各自恢复通道，跳过）
+  try { restorePanelSettings(STARTUP_SKIP); } catch (err) { stageStatus(`恢复上次面板设置失败：${formatError(err)}`, 'warn'); }
   document.documentElement.dataset.panelReady = '1';
   document.documentElement.dataset.panelControls = String((state.panel && state.panel.controls) || 0);
   document.documentElement.dataset.transportControls = String(transportInfo.controls);
