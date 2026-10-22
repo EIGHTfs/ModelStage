@@ -10,9 +10,10 @@
 //   segmented 分段按钮组（单选语义，用 aria-pressed 表达当前项，M6 才真正改值）
 //   switch    开关（role=switch + aria-checked）
 //   actions   一组动作按钮（导出/导入/恢复默认）
-//   dynamic-list 动态内容占位（M6 由模型数据填充）
+//   dynamic-list 动态内容容器（由接线方按模型填充）
 //   note      纯说明文字
 
+import { ACTION_ICONS, COLLAPSE_ICON, GROUP_ICONS, svgIcon } from './icons.js';
 import { PANEL_GROUPS } from './schema.js';
 
 /** 元素工厂（与名册那边同名的本地小工具，避免跨模块只为建元素而互相依赖） */
@@ -145,6 +146,7 @@ function renderActions(ctl, ctx) {
     const btn = el('button', 'mini-btn', def.text);
     btn.type = 'button';
     btn.dataset.action = def.text;
+    if (ACTION_ICONS[def.text]) { btn.prepend(svgIcon(ACTION_ICONS[def.text])); btn.classList.add('has-icon'); }
     const reason = def.disabledReason || blocked; // 单按钮不可用时如实写原因，不冒充"待接线"
     if (reason) { btn.disabled = true; btn.title = reason; btn.dataset.disabledReason = reason; } else if (wired) {
       btn.title = def.title || def.text;
@@ -157,10 +159,11 @@ function renderActions(ctl, ctx) {
 
 /** 动态内容占位：M6 会在这个容器里填真实条目 */
 function renderDynamicList(ctl) {
+  // 容器由接线方按当前模型填充（动作列表）；空态给提示
   const box = el('div', 'ctl-dynamic');
-  box.dataset.ctl = ctl.label || '';
-  box.dataset.pending = 'true';
-  box.append(el('p', 'ctl-note', ctl.note || '（M6 接线）'));
+  box.dataset.ctl = ctl.id || ctl.label || '';
+  box.dataset.role = 'dynamic';
+  box.append(el('p', 'ctl-note', ctl.note || '选中模型后显示'));
   return box;
 }
 
@@ -259,8 +262,10 @@ function renderGroup(group, ctx) {
   trigger.type = 'button';
   trigger.setAttribute('aria-expanded', String(!!group.defaultOpen));
   trigger.setAttribute('aria-controls', `acc-body-${group.id}`);
-  trigger.append(el('span', 'acc-arrow'));
+  // 同旧端：标题前彩色图标（主色），箭头在右
+  if (GROUP_ICONS[group.id]) trigger.append(svgIcon(GROUP_ICONS[group.id]));
   trigger.append(el('span', 'acc-title', group.title));
+  trigger.append(el('span', 'acc-arrow'));
 
   const body = el('div', 'acc-body');
   body.id = `acc-body-${group.id}`;
@@ -311,11 +316,12 @@ export function mountPanel({ headEl, bodyEl, onSetting, wiredIds, groups }) {
 
   // 面板头：标题 + 「收起菜单」（旧前端在面板右缘有这个按钮；M3 未接线故 disabled）
   const title = el('span', 'panel-title', '控制面板');
-  const collapse = markPending(el('button', 'mini-btn', '收起菜单'), 'btn-collapse-menu');
+  // 「收起菜单」：点击由 main.js 在 #panel-head 委托绑定（面板重建不丢监听）
+  const collapse = el('button', 'mini-btn has-icon', '收起菜单');
+  collapse.prepend(svgIcon(COLLAPSE_ICON));
   collapse.dataset.ctl = 'btn-collapse-menu'; // 与组内控件同口径，便于统一用 [data-ctl] 定位
   collapse.type = 'button';
-  collapse.disabled = true;
-  collapse.title = '待接线（M6）：收起右侧面板';
+  collapse.title = '收起右侧控制面板（顶栏「菜单」可再打开）';
   headEl.append(title, collapse);
 
   for (const group of schema) bodyEl.append(renderGroup(group, ctx));

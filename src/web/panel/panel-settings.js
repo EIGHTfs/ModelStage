@@ -12,7 +12,7 @@ import { mountPanel } from './view.js';
 import { applyDebugLog, applyHangGuard, applyShowStatus, connectShellControls, runSettingsAction } from './shell-controls.js';
 import { applyBackground, applyTheme } from '../app/view-settings.js';
 import { DEFAULT_PART_FILTER_KEYWORDS, applyPartFilter } from '../app/part-filter.js';
-import { applyMixMode } from '../app/transport-actions.js';
+import { applyMixMode, applyTransportMotion } from '../app/transport-actions.js';
 
 /**
  * 皮肤列表刷新钩子：它依赖"当前模型"，实现在 model-actions 里（那边反过来要用 rebuildPanelFor），
@@ -31,7 +31,7 @@ const SHELL_APPLIERS = {
   'ctl-theme': (v) => applyTheme(v),
   'ctl-bg-mode': (v) => applyBackground(v),
   'ctl-mix-mode': (v) => applyMixMode(v),
-  'ctl-skin-mix': (v) => applyMixMode(v),
+  'ctl-skin-mix': (v) => applySkinMix(v),
   'ctl-skin-list': (v) => stage && stage.setSkin(v),
   'ctl-part-filter': (v) => applyPartFilter({ enabled: !!v }),
   'ctl-part-filter-reset': () => applyPartFilter({ keywords: DEFAULT_PART_FILTER_KEYWORDS.slice() }),
@@ -44,6 +44,9 @@ const SHELL_APPLIERS = {
 /** 可点控件全集 = 外壳项 + 声明了能力键的项（能力过滤决定其中哪些真的可点） */
 const WIRED_IDS = (() => {
   const ids = new Set(Object.keys(SHELL_APPLIERS));
+  // 面板头「收起菜单」：事件由 main.js 在 #panel-head 上委托绑定（不是 schema 控件），
+  //   但它是真接线的（收起右栏），所以要计入"已接线集合"，否则断言会把可点项当成漏网。
+  ids.add('btn-collapse-menu');
   for (const group of PANEL_GROUPS) {
     for (const ctl of group.controls || []) {
       if (ctl && ctl.id && settingKeyOf(ctl.id)) ids.add(ctl.id);
@@ -121,10 +124,72 @@ function rebuildPanelFor(renderer) {
   }
   return check;
 }
+/**
+ * 刷新"动作列表"：按当前模型的动画逐条列出，点一条直接播放。
+ * 数据来源是渲染器的 getAnimations()（Spine/Live2D 都实现了），所以换渲染器也不用改这里。
+ */
+export function refreshPanelAnimations() {
+  const box = document.querySelector('#right-panel [data-ctl="ctl-anim-list"]');
+  if (!box) return 0;
+  // 数据来源按优先级取（两个渲染器都不直接暴露 getAnimations）：
+  //   ① 渲染器自带 getAnimations（将来可能加）
+  //   ② 舞台 stats().animations（Spine：canvas.js 把引擎动画摊平在 stats 里）
+  //   ③ Live2D：bridge.readState().motions / motions 列表
+  const pickList = () => {
+    const r = state.currentRenderer || {};
+    try { if (typeof r.getAnimations === 'function') return r.getAnimations() || []; } catch { /* 继续兜底 */ }
+    try {
+      const snap = stage && typeof stage.stats === 'function' ? stage.stats() : null;
+      if (snap && Array.isArray(snap.animations) && snap.animations.length) return snap.animations;
+    } catch { /* 继续兜底 */ }
+    try {
+      const l2d = window.__WEB__ && window.__WEB__.live2d;
+      const st = l2d && l2d.bridge && typeof l2d.bridge.readState === 'function' ? l2d.bridge.readState() : null;
+      const arr = st && (st.motions || st.animations);
+      if (Array.isArray(arr)) return arr.map((m) => (typeof m === 'string' ? m : m && (m.name || m.id))).filter(Boolean);
+    } catch { /* 无 Live2D 就到此为止 */ }
+    return [];
+  };
+  let list = [];
+  try { list = pickList(); } catch { list = []; }
+  box.replaceChildren();
+  if (!list.length) {
+    const p = document.createElement('p');
+    p.className = 'ctl-note';
+    p.textContent = state.selectedModel ? '该模型没有动作' : '选中模型后显示';
+    box.append(p);
+    return 0;
+  }
+  // 当前播放中的动作：以播放条那个动作用下拉为准（它是唯一真相，模型换了也会同步）
+  const current = (document.querySelector('#transport-motion') || {}).value || null;
+  for (const name of list) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = name === current ? 'mini-btn is-primary ctl-anim' : 'mini-btn ctl-anim';
+    btn.dataset.anim = name;
+    btn.textContent = name;
+    btn.addEventListener('click', () => { applyTransportMotion(name); refreshPanelAnimations(); });
+    box.append(btn);
+  }
+  return list.length;
+}
+
 /** 帧率读数：把舞台实测帧率刷到面板上（500ms 一次；无舞台或未就绪时显示 —） */
 function startFpsReadout(panel) {
   if (!panel || typeof panel.setFps !== 'function') return;
+  /** Live2D 的实测帧率来自 PIXI ticker（FPS 是它自己统计的），Spine 的来自舞台 stats */
+  const live2dFps = () => {
+    try {
+      const l2d = window.__WEB__ && window.__WEB__.live2d;
+      if (!l2d || typeof l2d.isActive !== 'function' || !l2d.isActive()) return null;
+      const app = typeof l2d.getApp === 'function' ? l2d.getApp() : null;
+      const v = app && app.ticker ? app.ticker.FPS : null;
+      return typeof v === 'number' && isFinite(v) ? v : null;
+    } catch { return null; }
+  };
   const tick = () => {
+    const l2d = live2dFps();
+    if (l2d !== null) { panel.setFps(l2d); return; }
     const st = stage && stage.stats ? stage.stats() : null;
     panel.setFps(st && typeof st.fps === 'number' ? st.fps : null);
   };
@@ -132,9 +197,29 @@ function startFpsReadout(panel) {
   setInterval(tick, 500);
 }
 /** 装配完成后注入面板桥：恢复默认需要"按面板声明的默认值重放一遍" */
+// 导入项目配置后要重载资源根与名册树：实现在 app/model-actions.js，
+//   用钩子注入（那边反过来要用 rebuildPanelFor），保持单向依赖
+let reloadAppHook = null;
+export function connectReloadApp(fn) {
+  if (typeof fn === 'function') reloadAppHook = fn;
+}
+
 connectShellControls({
   applyPanelSetting: (id, value) => applyPanelSetting(id, value),
   getPanelDefaults: () => (state.panel && state.panel.defaults) || {},
+  reloadApp: () => (typeof reloadAppHook === 'function' ? reloadAppHook() : null),
+  applyViewerPrefs: (prefs) => {
+    applyTheme(prefs.uiTheme || 'dark-cyan');
+    applyBackground((prefs.background && prefs.background.mode) || 'checkerboard');
+    const kw = typeof prefs.partFilterKeywords === 'string' && prefs.partFilterKeywords.trim()
+      ? prefs.partFilterKeywords.split(',').map((k) => k.trim()).filter(Boolean)
+      : DEFAULT_PART_FILTER_KEYWORDS.slice();
+    applyPartFilter({ enabled: prefs.partFilterEnabled === true, keywords: kw });
+    if (state.panel && state.panel.setValue) {
+      state.panel.setValue('ctl-theme', state.viewTheme);
+      state.panel.setValue('ctl-bg-mode', state.viewBg);
+    }
+  },
 });
 
 

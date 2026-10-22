@@ -37,11 +37,72 @@ export function applyTheme(id) {
   saveViewSettings({ uiTheme: theme });
 }
 
-/** 背景模式：写舞台容器的 data-bg，具体底色由 CSS 决定 */
+/** 自定义背景图片上限（dataURL 存 localStorage，太大不安全） */
+const MAX_BG_IMAGE_BYTES = 4 * 1024 * 1024;
+
+/**
+ * 自定义背景：用户选一张本地图片当舞台背景。
+ * 为什么用 dataURL 而不是 objectURL：要跟着视图设置一起持久化（localStorage），
+ *   objectURL 只在本会话有效，刷新就黑；文件过大时拒绝并提示，避免把存储写爆。
+ * @returns {Promise<boolean>} 是否落地成功
+ */
+export function pickBackgroundImage() {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.style.cssText = 'position:fixed;left:-9999px;';
+    document.body.append(input);
+    input.addEventListener('change', () => {
+      const file = input.files && input.files[0];
+      input.remove();
+      if (!file) { resolve(false); return; }
+      if (file.size > MAX_BG_IMAGE_BYTES) {
+        document.documentElement.dataset.bgError = `图片过大（${Math.round(file.size / 1024)}KB > ${MAX_BG_IMAGE_BYTES / 1024 / 1024}MB）`;
+        resolve(false);
+        return;
+      }
+      const reader = new FileReader();
+      reader.addEventListener('load', () => {
+        const url = String(reader.result || '');
+        setCustomBackground(url);
+        resolve(!!url);
+      }, { once: true });
+      reader.addEventListener('error', () => { resolve(false); }, { once: true });
+      reader.readAsDataURL(file);
+    }, { once: true });
+    input.click();
+    document.documentElement.dataset.bgPicker = 'open';
+  });
+}
+
+/** 把图片落到舞台背景并持久化（data-bg=custom 时 CSS 不再画底色，由内联 backgroundImage 负责） */
+export function setCustomBackground(url) {
+  const stageEl = document.getElementById('stage');
+  if (!stageEl) return false;
+  stageEl.dataset.bg = 'custom';
+  stageEl.style.backgroundImage = url ? `url("${url}")` : '';
+  stageEl.style.backgroundSize = 'cover';
+  stageEl.style.backgroundPosition = 'center';
+  state.viewBg = 'custom';
+  saveViewSettings({ background: { mode: 'custom', color: '#2a2a2a', imageUrl: url || '' } });
+  document.documentElement.dataset.bgImage = url ? 'set' : 'none';
+  return !!url;
+}
+
+/** 背景模式：写舞台容器的 data-bg，具体底色由 CSS 决定；custom 走文件选择器 */
 export function applyBackground(mode) {
   const stageEl = document.getElementById('stage');
   if (!stageEl) return;
   const m = mode || 'checkerboard';
+  if (m === 'custom') {
+    // 已经选过图就直接用回来，没有才让用户选（避免每次切档都弹框）
+    const saved = (readViewSettings().background || {}).imageUrl || '';
+    if (saved) { setCustomBackground(saved); return; }
+    pickBackgroundImage();
+    return;
+  }
+  stageEl.style.backgroundImage = '';
   // 背景唯一入口：交给 Surface（它会写 data-bg 并通知所有渲染器）
   try {
     if (state.surface && typeof state.surface.setBackground === 'function') state.surface.setBackground(m);

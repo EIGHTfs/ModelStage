@@ -28,6 +28,10 @@ export const hangGuardConfig = { tickMs: 1000, stallLimit: 3 };
 let panelBridge = {
   applyPanelSetting: null,
   getPanelDefaults: () => ({}),
+  /** 导入项目配置后需要重载资源根与名册树（由 main.js 注入） */
+  reloadApp: null,
+  /** 应用导入的视图偏好（主题/背景/部件筛除） */
+  applyViewerPrefs: null,
 };
 
 /**
@@ -73,7 +77,7 @@ export function ensureDebugPanelHost() {
   if (state.debugPanelHost) return state.debugPanelHost;
   const host = document.createElement('div');
   host.id = 'debug-panel-host';
-  // 浮在舞台右下角：避开右栏（x≥1744）与播放条，不遮名册与面板
+  // 恢复最初的位置设定（面板自身另有 fixed 定位，实际按下一条 CSS 走）
   host.style.cssText = 'position:fixed;right:200px;bottom:100px;z-index:40;width:288px;';
   document.body.append(host);
   state.debugPanelHost = host;
@@ -139,39 +143,200 @@ function hangGuardTick() {
  * 设置导入导出（ctl-settings-io）：三个动作共用一条通路，按按钮文字分派。
  * 导入依赖后端写接口，接口没实现就不假装能做（按钮在 schema 里已带禁用原因）。
  */
+// 自动化入口：文件选择器在无头环境里没法点，测试直接喂 JSON 文本
+window.__WEB__ && (window.__WEB__.settingsIo = { importText: importSettingsFromText, exportNow: exportSettingsFile });
+
 export function runSettingsAction(action) {
   if (action === '导出设置') return exportSettingsFile();
+  if (action === '导入设置') return openImportPicker();
   if (action === '恢复默认') return restoreDefaultSettings();
   stageStatus(`设置动作不可用：${action}`, 'warn');
   return false;
 }
 
-/** 导出：前端生成 JSON + 触发下载（内容同时留在 __WEB__.settingsExport 供断言） */
-export function exportSettingsFile() {
+/**
+ * 导出：一个 JSON 文件同时带走「项目配置原文」+「前端偏好」。
+ * 结构对齐旧端的 settings-io 补丁：{ _meta, project:{files}, panel, view }
+ *   · project.files 来自 GET /api/config/export（资源根 + 名表文件原文，保留注释）
+ *   · panel/view 是本前端的面板设置与视图偏好（存在 localStorage 的那部分）
+ * 项目配置取不到时仍导出偏好，并在状态行注明（不因为一半失败就整体失败）。
+ */
+export async function exportSettingsFile() {
+  let project = null;
+  let projectError = null;
+  try {
+    const res = await fetch('/api/config/export');
+    const data = await res.json();
+    if (res.ok && data && data.files) project = { files: data.files };
+    else projectError = (data && data.error) || `HTTP ${res.status}`;
+  } catch (err) {
+    projectError = (err && err.message) || String(err);
+  }
   const payload = {
+    _meta: {
+      app: 'spine-multi-viewer',
+      formatVersion: 1,
+      exportedAt: new Date().toISOString(),
+      note: 'project=服务端配置原文（资源根+名表）；panel/view=前端偏好',
+    },
     schema: 'spine-viewer-settings/v2',
-    exportedAt: new Date().toISOString(),
+    project,
     panel: { ...(state.panelSettings || {}) },
     view: readViewSettings(),
   };
   const text = JSON.stringify(payload, null, 2);
-  window.__WEB__ && (window.__WEB__.settingsExport = { text, panelCount: Object.keys(payload.panel).length });
+  window.__WEB__ && (window.__WEB__.settingsExport = {
+    text,
+    panelCount: Object.keys(payload.panel).length,
+    projectFiles: project ? Object.keys(project.files).length : 0,
+    projectError,
+  });
   document.documentElement.dataset.settingsExport = String(text.length);
   try {
     const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
     const link = document.createElement('a');
     link.href = url;
-    link.download = `spine-viewer-settings-${payload.exportedAt.slice(0, 10)}.json`;
+    link.download = `spine-viewer-settings-${payload._meta.exportedAt.slice(0, 10)}.json`;
     document.body.append(link);
     link.click();
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-    stageStatus(`已导出设置：${Object.keys(payload.panel).length} 项，${text.length} 字节`, 'info', { show: true });
+    stageStatus(
+      `已导出设置：前端偏好 ${Object.keys(payload.panel).length} 项`
+      + (project ? ` + 项目配置 ${Object.keys(project.files).length} 个文件` : `（项目配置未取到：${projectError}）`)
+      + `，${text.length} 字节`, 'info', { show: true });
     return true;
   } catch (err) {
     stageStatus(`导出设置失败：${formatError(err)}`, 'error');
     return false;
   }
+}
+
+/**
+ * 打开导入文件选择器。
+ * 说明：浏览器不允许脚本直接读本地文件，只能由用户选文件；所以这里造一个隐藏 input，
+ *   选完立刻移除，文本交给 importSettingsFromText 处理（该函数也可被自动化直接调用）。
+ */
+export function openImportPicker() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json,application/json';
+  input.style.cssText = 'position:fixed;left:-9999px;';
+  document.body.append(input);
+  input.addEventListener('change', async () => {
+    const file = input.files && input.files[0];
+    input.remove();
+    if (!file) return;
+    let text = '';
+    try { text = await file.text(); } catch (err) {
+      stageStatus(`读取文件失败：${formatError(err)}`, 'error');
+      return;
+    }
+    await importSettingsFromText(text);
+  }, { once: true });
+  input.click();
+  stageStatus('已打开导入文件选择器：选一个之前导出的 JSON', 'info', { show: true });
+  return true;
+}
+
+/**
+ * 导入一个导出文件。两类内容分别落地（与旧端 settings-io 补丁一致）：
+ *   · project.files ⇒ POST /api/config/import（服务端校验→备份→写→回读自检）
+ *   · panel / view  ⇒ 前端偏好：写 localStorage 后立刻生效
+ * 兼容旧文件：顶层直接是偏好（没有 project/panel/view 包装）时按"仅偏好"处理。
+ * @param {string} text JSON 文本
+ * @returns {Promise<{ok:boolean, mode:string, written?:string[], backup?:string, error?:string}>}
+ */
+export async function importSettingsFromText(text) {
+  let parsed = null;
+  try { parsed = JSON.parse(String(text || '')); } catch (err) {
+    const msg = `导入失败：不是合法 JSON（${(err && err.message) || err}）`;
+    stageStatus(msg, 'error');
+    document.documentElement.dataset.settingsImport = `fail|${msg}`;
+    return { ok: false, mode: 'parse', error: msg };
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    const msg = '导入失败：文件内容为空或不是对象';
+    stageStatus(msg, 'error');
+    document.documentElement.dataset.settingsImport = `fail|${msg}`;
+    return { ok: false, mode: 'shape', error: msg };
+  }
+  const project = parsed.project && parsed.project.files ? parsed.project.files : null;
+  const viewer = parsed.viewer && typeof parsed.viewer === 'object' ? parsed.viewer : null;
+  const panelPrefs = parsed.panel && typeof parsed.panel === 'object' ? parsed.panel : null;
+  // 兼容三种来源：本项目导出（view）、旧端 settings-io（viewer）、以及最早期"顶层直接就是偏好"
+  const looksLikePrefs = !!(parsed.uiTheme || parsed.background
+    || parsed.partFilterEnabled !== undefined || parsed.partFilterKeywords !== undefined);
+  const viewPrefs = (parsed.view && typeof parsed.view === 'object')
+    ? parsed.view
+    : (viewer || (looksLikePrefs ? parsed : null));
+  const prefsOnly = !project && (viewPrefs || panelPrefs);
+  if (!project && !prefsOnly) {
+    const msg = '导入失败：文件里既没有 project.files（项目配置）也没有可识别的偏好字段';
+    stageStatus(msg, 'error');
+    document.documentElement.dataset.settingsImport = `fail|${msg}`;
+    return { ok: false, mode: 'empty', error: msg };
+  }
+  // ① 项目配置：交给后端（它自己校验、备份、回读自检）
+  let written = null;
+  let backup = null;
+  if (project) {
+    let res = null;
+    let data = null;
+    try {
+      res = await fetch('/api/config/import', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ files: project }),
+      });
+      data = await res.json();
+    } catch (err) {
+      const msg = `导入项目配置失败：${formatError(err)}`;
+      stageStatus(msg, 'error');
+      document.documentElement.dataset.settingsImport = `fail|${msg}`;
+      return { ok: false, mode: 'network', error: msg };
+    }
+    if (!res.ok || !data || data.ok !== true) {
+      const detail = data && data.details && data.details.length ? `：${data.details.join('；')}` : '';
+      const msg = `导入项目配置失败：${(data && data.error) || `HTTP ${res.status}`}${detail}`;
+      stageStatus(msg, 'error');
+      document.documentElement.dataset.settingsImport = `fail|${msg}`;
+      return { ok: false, mode: 'project', error: msg };
+    }
+    written = data.written || [];
+    backup = data.backup || null;
+    if (typeof panelBridge.reloadApp === 'function') {
+      try { await panelBridge.reloadApp(); } catch { /* 重载失败不影响导入结果展示 */ }
+    }
+  }
+  // ② 前端偏好：写 localStorage 后立刻生效
+  let appliedPrefs = 0;
+  if (prefsOnly || viewPrefs || panelPrefs) {
+    try {
+      const merged = { ...readViewSettings(), ...(viewPrefs || {}) };
+      localStorage.setItem(VIEW_SETTINGS_KEY, JSON.stringify(merged));
+      if (typeof panelBridge.applyViewerPrefs === 'function') panelBridge.applyViewerPrefs(merged);
+      else {
+        applyTheme(merged.uiTheme || 'dark-cyan');
+        applyBackground((merged.background && merged.background.mode) || 'checkerboard');
+      }
+      appliedPrefs = Object.keys(viewPrefs || {}).length;
+    } catch (err) {
+      stageStatus(`前端偏好写入失败：${formatError(err)}`, 'warn');
+    }
+    if (panelPrefs && typeof panelBridge.applyPanelSetting === 'function') {
+      for (const [id, value] of Object.entries(panelPrefs)) {
+        try { panelBridge.applyPanelSetting(id, value); appliedPrefs += 1; } catch { /* 单项失败继续 */ }
+      }
+    }
+  }
+  const parts = [];
+  if (project) parts.push(`项目配置 ${written ? written.length : 0} 个文件${backup ? `（备份 ${backup}）` : ''}`);
+  if (appliedPrefs) parts.push(`前端偏好 ${appliedPrefs} 项`);
+  const msg = `已导入：${parts.join(' + ') || '无变更'}`;
+  stageStatus(msg, 'info', { show: true });
+  document.documentElement.dataset.settingsImport = `ok|${msg}`;
+  return { ok: true, mode: project ? (prefsOnly ? 'both' : 'project') : 'prefs', written, backup };
 }
 
 /** 恢复默认：清本地存储 → 按面板声明的默认值重放一遍 → 视图复位 */

@@ -88,6 +88,47 @@
   border-color: var(--color-border);
 }
 
+/* 图标版顶栏按钮：与旧端一致 —— 方形、只放图标，名称走 aria-label/title */
+.icon-btn:has(> svg) {
+  width: 30px;
+  padding: 0;
+  justify-content: center;
+}
+
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 4px;
+}
+
+.btn-icon > svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+.mini-btn.has-icon,
+.transport-group .mini-btn.has-icon {
+  display: inline-flex;
+  align-items: center;
+}
+
+.icon-btn > svg {
+  width: 17px;
+  height: 17px;
+  display: block;
+}
+
+/* 选中/开启态（模型库、菜单、影院这类开关型按钮）：主色描边 + 主色图标 */
+.icon-btn[aria-pressed='true'] {
+  color: var(--color-primary);
+  border-color: color-mix(in srgb, var(--color-primary) 45%, transparent);
+}
+
+.icon-btn[aria-pressed='false'] {
+  color: var(--color-muted-foreground);
+}
+
 .mini-btn {
   height: 26px;
   padding: 0 8px;

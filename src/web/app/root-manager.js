@@ -210,12 +210,14 @@ export function createRootManager({ els, onChanged, formatError } = {}) {
     return String(after.length + 1);
   }
 
-  // 表单提交
-  if (els.form) {
-    els.form.addEventListener('submit', (e) => {
-      e.preventDefault();
-      submitAdd(els.pathInput ? els.pathInput.value : '', els.nameInput ? els.nameInput.value : '')
-        .then((ok) => { if (ok && els.pathInput) els.pathInput.value = ''; if (ok && els.nameInput) els.nameInput.value = ''; });
+  /** 目录浏览器的默认起点（上次添加的目录的父目录）；空则从 / 开始 */
+  let pickerStart = '';
+
+  // 「选择目录」：打开服务端目录浏览器（旧端同一交互），选完目录直接添加，面板里不填路径
+  if (els.triggerBtn) {
+    els.triggerBtn.addEventListener('click', () => {
+      if (!els.picker) { notify('目录浏览器未就绪', 'err'); return; }
+      els.picker.open(pickerStart);
     });
   }
 
@@ -231,6 +233,10 @@ export function createRootManager({ els, onChanged, formatError } = {}) {
 
   return {
     render, post, notify,
+    /** 目录浏览器实例（测试/排障用：open/goto/state） */
+    get picker() { return els.picker || null; },
+    /** 设置目录浏览器的默认起点（由装配方按现有根推算） */
+    setPickerStart(path) { pickerStart = String(path || ''); },
     submitAdd, submitRename, submitToggle, submitRemove,
     get roots() { return state.roots; },
     get last() { return state.last; },

@@ -67,7 +67,7 @@ function ensureStylesheet(doc) {
 }
 
 /** 建头部：标题 + 条数 + 清空/收起按钮 */
-function createHeader() {
+function createHeader(doc) {
   const head = el('div', 'dbg-head');
   const left = el('div', 'dbg-head-left');
   const countEl = el('span', 'dbg-count', '0 条');
@@ -103,15 +103,19 @@ function createHeader() {
   return { head, countEl, btnClear, btnCollapse, filter };
 }
 
-/** 建完整骨架 */
-function createShell(doc) {
+/**
+ * 建完整骨架。
+ * 注意 container：挂载点**必须**用调用方给的容器（否则面板永远贴在 body 上，
+ *   外面再怎么调定位都不生效——踩过：改宿主 left/bottom 完全没效果）。
+ */
+function createShell(doc, container) {
   const root = el('div', 'dbg-panel');
   root.setAttribute('role', 'region');
   root.setAttribute('aria-label', '调试日志');
-  const parts = createHeader();
+  const parts = createHeader(doc);
   const list = el('div', 'dbg-list');
   root.append(parts.head, list);
-  doc.body.append(root);
+  (container || doc.body).append(root);
   return { root, list, ...parts };
 }
 
@@ -283,6 +287,18 @@ function registerDiagSink(log) {
   if (!diagApi || typeof diagApi.addSink !== 'function') return () => {};
   if (typeof log.addExternal !== 'function') return () => {};
   return diagApi.addSink((entry) => {
+    // 交互流水（pointerdown / wheel）不进面板：它们由 diag 继续采集（/api/diag 可查），
+    //   相机动作另有 __WEB__.cameraLog；面板是"看问题"的地方，不该被每点一下刷一行。
+    const tag = String(entry.tag || entry.event || '');
+    const lcTag = tag.toLowerCase();
+    if (lcTag === 'interaction' || /^interaction\./.test(lcTag)) return;
+    // 状态行已经通过 STAGE 通道进来过一次；console 监听会把同一条再抓一遍（%c[STAGE:…]），
+    //   重复行对排障没用，这里把它滤掉，避免每条状态都显示两遍。
+    // 正文要按 diag 条目的真实结构取（sink 层没有 message 字段，是 diagMessage 现算的）
+    let msgText = '';
+    try { msgText = String(diagMessage(entry) || ''); } catch { msgText = ''; }
+    const rawText = (entry.data && entry.data.text) ? String(entry.data.text) : '';
+    if (lcTag === 'console' && (msgText.indexOf('[STAGE:') !== -1 || rawText.indexOf('[STAGE:') !== -1)) return;
     try {
       log.addExternal({
         ts: Date.parse(entry.t) || Date.now(),
@@ -309,16 +325,27 @@ export function mountDebugPanel({ log, container } = {}) {
   const doc = (container || document.body).ownerDocument || document;
   const linkEl = ensureStylesheet(doc);
   const state = { collapsed: false, level: 'all' };
-  const shell = createShell(doc);
+  const shell = createShell(doc, container);
+  // 防闪烁：面板样式是异步 <link>，样式到位前这块 DOM 会以"无样式裸块"绘制，
+  //   刷新时会闪一大片（看起来像样式加载失败）。先 visibility:hidden，样式就绪再显形；
+  //   link 出错或超时也放开，保证面板不会永久不可见。
+  const revealWhenStyled = () => { try { shell.root.style.visibility = ''; } catch { /* 忽略 */ } };
+  try { shell.root.style.visibility = 'hidden'; } catch { /* 忽略 */ }
   const view = createRenderer({ log, list: shell.list, countEl: shell.countEl, state });
   const wired = wireControls({ shell, view, log, state });
   const unwatchVisibility = syncVisibility({ root: shell.root, view, log });
 
-  // 样式表异步加载：加载完成前列表没有高度约束，「滚到底」无效，故就绪后重绘一次
+  // 样式表异步加载：加载完成前列表没有高度约束，「滚到底」无效，故就绪后重绘一次；
+  //   同时也是"防闪烁"的解锁点（样式一到就显形）。
   if (linkEl) {
     linkEl.addEventListener('load', () => {
+      revealWhenStyled();
       try { view.renderAll(); } catch { /* 重绘失败不影响业务 */ }
     }, { once: true });
+    linkEl.addEventListener('error', revealWhenStyled, { once: true });
+    setTimeout(revealWhenStyled, 800); // 兜底：慢网络/缓存异常也不至于一直看不见
+  } else {
+    revealWhenStyled(); // 样式表本来就在（重复挂载/已加载过）
   }
 
   // ---------------------------------------------------------------- diag → 面板（唯一数据源）

@@ -68,6 +68,31 @@ function renderControl(ctl) {
  *   pressed: (id: string) => boolean|null,
  * }} 播放条能力
  */
+/** 底栏按钮图标（内联 SVG，与顶栏同一套线条风格；不引图标库） */
+const ICONS = {
+  'transport-loop': '<path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/>',
+  'transport-prev': '<polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/>',
+  'transport-play': '<polygon points="6 3 20 12 6 21 6 3"/>',
+  'transport-next': '<polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/>',
+  'transport-reset-view': '<path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 3v6h6"/>',
+  'transport-bg': '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/>',
+  'transport-skin': '<path d="M12 2 4 6v6c0 5 3.4 9.4 8 10 4.6-.6 8-5 8-10V6l-8-4z"/>',
+  'transport-motion': '<circle cx="12" cy="12" r="9"/><polygon points="10 8 16 12 10 16 10 8"/>',
+};
+
+/** 给按钮前置一个图标（非按钮/未配图标则原样返回） */
+function withIcon(node, id) {
+  const body = ICONS[id];
+  if (!body || !node || node.tagName !== 'BUTTON') return node;
+  const wrap = document.createElement('span');
+  wrap.className = 'btn-icon';
+  wrap.setAttribute('aria-hidden', 'true');
+  wrap.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+  node.prepend(wrap);
+  node.classList.add('has-icon');
+  return node;
+}
+
 export function mountTransport(footerEl, handlers = {}) {
   footerEl.replaceChildren();
 
@@ -85,7 +110,7 @@ export function mountTransport(footerEl, handlers = {}) {
     for (const id of ids) {
       const ctl = byId.get(id);
       if (!ctl) continue;
-      const node = renderControl(ctl);
+      const node = withIcon(renderControl(ctl), id);
       nodes.set(id, node);
       box.append(node);
     }

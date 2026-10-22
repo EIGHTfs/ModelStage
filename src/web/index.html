@@ -51,11 +51,22 @@
     <span id="brand-title" class="brand-title">ModelStage</span>
   </div>
   <nav class="header-actions" aria-label="顶栏操作">
-    <!-- 顶栏按钮：能点的都必须真的生效（不留"看着能点却没反应"）；删掉的两个见 README 的 F2 记录 -->
-    <button type="button" class="icon-btn" id="btn-shot" title="截图导出（PNG，文件名带模型名与时间戳）">截图导出</button>
-    <button type="button" class="icon-btn" id="btn-library" title="模型库（显示/隐藏左栏）">模型库</button>
-    <button type="button" class="icon-btn" id="btn-cinema" aria-pressed="false" title="影院模式（隐藏顶栏与左右栏，Esc 退出）">影院模式</button>
-    <button type="button" class="icon-btn" id="btn-fullscreen" title="全屏">全屏</button>
+    <!-- 顶栏：与旧端一致用图标（内联 SVG，不引图标库）；可访问名走 aria-label + title -->
+    <button type="button" class="icon-btn" id="btn-library" aria-label="模型库（显示/隐藏左栏）" title="模型库（显示/隐藏左栏）">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+    </button>
+    <button type="button" class="icon-btn" id="btn-menu" aria-pressed="true" aria-label="菜单（显示/隐藏右侧控制面板）" title="菜单（显示/隐藏右侧控制面板）">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/></svg>
+    </button>
+    <button type="button" class="icon-btn" id="btn-shot" aria-label="截图导出" title="截图导出（PNG，文件名带模型名与时间戳）">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
+    </button>
+    <button type="button" class="icon-btn" id="btn-cinema" aria-pressed="false" aria-label="影院模式（显示/隐藏顶栏与左右栏，Esc 或中心双击退出）" title="影院模式（Esc 或中心双击退出）">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M7 4v16M17 4v16M2 12h20"/></svg>
+    </button>
+    <button type="button" class="icon-btn" id="btn-fullscreen" aria-label="全屏" title="全屏">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+    </button>
   </nav>
 </header>
 
@@ -73,14 +84,10 @@
        为什么是输入服务端绝对路径：模型由**服务端**扫描自己文件系统加载，浏览器的目录选择器
        只能给出客户端句柄，变不成服务端可读路径。 -->
   <div id="root-manager" class="panel-search">
-    <form id="root-add-form" style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px;">
-      <input id="root-add-path" type="text" autocomplete="off" list="root-path-hints"
-        placeholder="服务端绝对路径，如 /volume1/…/spines" aria-label="资源根目录（服务端绝对路径）" />
-      <input id="root-add-name" type="text" autocomplete="off" placeholder="显示名（可空）" aria-label="资源根显示名" />
-      <button type="submit" class="mini-btn is-primary" id="btn-add-root"
-        title="把这个目录登记为资源根">选择目录</button>
-    </form>
-    <datalist id="root-path-hints"></datalist>
+    <!-- 与旧端一致：面板上只有「选择目录」一个按钮；点了弹**服务端目录浏览器**去挑目录（不在面板里填路径） -->
+    <div class="root-add">
+      <button type="button" class="mini-btn is-primary" id="btn-add-root" title="浏览服务端目录，登记为资源根">选择目录</button>
+    </div>
     <div style="display:flex;justify-content:space-between;align-items:center;">
       <span class="muted-hint">资源根 <span id="root-count">0</span> 个</span>
       <button type="button" class="mini-btn" id="btn-root-toggle" aria-expanded="false" title="展开资源根管理">管理</button>

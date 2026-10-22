@@ -11,6 +11,12 @@
   border-bottom: 1px solid rgba(53, 58, 62, 0.5);
 }
 
+.acc-trigger > .btn-icon > svg {
+  width: 15px;
+  height: 15px;
+  color: var(--color-primary);
+}
+
 .acc-trigger {
   width: 100%;
   display: flex;
@@ -100,6 +106,147 @@
   color: var(--color-foreground);
   font-size: 11px;
   white-space: nowrap;
+}
+
+/* ---- 选中态与按压反馈（旧端同一口径：选中的那一档用主色描边 + 主色文字 + 主色淡底）----
+   为什么必须补：分段按钮/芯片组此前只有"可点"样式、没有"已选中"样式，
+   用户点完看不出当前生效的是哪一档；而芯片（滤镜 12 档）连基础样式都没有，是裸按钮。 */
+.ctl-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* ---- 资源根管理：列表要能滚（根多时不能只看到前几条）---- */
+#root-manager-body {
+  max-height: min(38vh, 320px);
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+#root-list {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- 目录浏览器（「选择目录」弹层，照旧端 roots-ui.js 的结构）---- */
+.dir-picker {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dir-picker-box {
+  width: min(560px, 92vw);
+  max-height: min(70vh, 640px);
+  display: flex;
+  flex-direction: column;
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.dir-picker-head,
+.dir-picker-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.dir-picker-foot {
+  border-bottom: none;
+  border-top: 1px solid var(--color-border);
+  flex-wrap: wrap;
+  font-size: 11px;
+}
+
+.dir-picker-foot input {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+.dir-picker-spacer { flex: 1; }
+
+.dir-picker-body {
+  padding: 12px 14px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dir-picker-hint { font-size: 12px; color: var(--color-muted-foreground); }
+.dir-picker-error { font-size: 12px; color: #e88; }
+.dir-picker-list { display: flex; flex-direction: column; gap: 4px; }
+.dir-picker-nav { width: 100%; text-align: left; }
+
+/* ---- 左栏「选择目录」：与旧端一致，面板上只有一个按钮 ---- */
+.root-add {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.root-add > #btn-add-root {
+  align-self: flex-start;
+}
+
+
+
+.chip-btn {
+  flex: 0 1 auto;
+  padding: 3px 7px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-muted);
+  color: var(--color-foreground);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* 悬停：主色描边，提示"可点" */
+.seg-btn:not(:disabled):hover,
+.chip-btn:not(:disabled):hover,
+.ctl-actions .mini-btn:not(:disabled):hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+/* 选中：主色描边 + 主色文字 + 主色淡底 + 加粗
+   （color-mix 前先给一层 rgba 兜底，老 Chromium 不支持 color-mix 时仍有可辨底色） */
+.seg-btn[aria-pressed='true'],
+.chip-btn[aria-pressed='true'] {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: rgba(255, 255, 255, 0.06);
+  background: color-mix(in srgb, var(--color-primary) 16%, transparent);
+  font-weight: 600;
+}
+
+/* 按压：轻微下沉，给"点到了"的即时反馈 */
+.seg-btn:not(:disabled):active,
+.chip-btn:not(:disabled):active,
+.ctl-actions .mini-btn:not(:disabled):active {
+  transform: translateY(1px);
+}
+
+/* 键盘可达：焦点环用主色，不依赖浏览器默认蓝框 */
+.seg-btn:focus-visible,
+.chip-btn:focus-visible,
+.switch-btn:focus-visible,
+.ctl-actions .mini-btn:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
 }
 
 /* 未接线：视觉上明确"暂不可用"，但仍然可读（不是隐藏） */

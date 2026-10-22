@@ -81,18 +81,46 @@ function fillTransportOptions(info) {
   document.documentElement.dataset.transportPlaying = stats && stats.playing ? 'on' : 'off';
 }
 /** 混合模式：两处开关指向同一状态，点任一处都要同步另一处的显示 */
+/**
+ * 混合模式（动作组）：只控制**动画切换**是否交叉淡化（引擎 mixTime 0.2s / 0）。
+ * 与「皮肤」组那个开关是两件独立的事：一个管动作过渡、一个管换肤过渡，
+ *   旧端也是分开的两个开关，互不同步。
+ */
 function applyMixMode(on) {
   const value = !!(stage && stage.setMixMode ? stage.setMixMode(on) : 0);
   state.mixMode = !!on;
-  if (state.panel) {
-    state.panel.setChecked('ctl-mix-mode', !!on);
-    state.panel.setChecked('ctl-skin-mix', !!on);
-  }
+  if (state.panel) state.panel.setChecked('ctl-mix-mode', !!on);
   document.documentElement.dataset.mixMode = on ? 'on' : 'off';
   return value;
 }
 
+/**
+ * 混合模式（皮肤组）：只控制**换肤**是否交叉淡化。
+ * 引擎没有独立的"皮肤混合"参数，所以实现方式是在换肤的那一刻临时套用 0.2s 混合，
+ *   换完立刻还原——这样动作与皮肤两个开关互不影响。
+ */
+function applySkinMix(on) {
+  state.skinMix = !!on;
+  if (state.panel) state.panel.setChecked('ctl-skin-mix', !!on);
+  document.documentElement.dataset.skinMix = on ? 'on' : 'off';
+  return state.skinMix;
+}
+
+/** 换肤时按「皮肤混合模式」决定是否临时淡入 */
+function skinSwitchMixTime(fn) {
+  const want = state.skinMix === true ? 0.2 : 0;
+  let prev = null;
+  try {
+    if (stage && stage.setMixMode) prev = stage.setMixMode(want > 0);
+  } catch { prev = null; }
+  try { return fn(); } finally {
+    try {
+      if (stage && stage.setMixMode && state.mixMode !== undefined) stage.setMixMode(state.mixMode === true);
+    } catch { /* 还原失败不影响业务 */ }
+  }
+}
+
 export {
   toggleTransportPlay, toggleTransportLoop, stepVariant, cycleBackground,
-  applyTransportMotion, fillTransportOptions, applyMixMode,
+  applyTransportMotion, fillTransportOptions, applyMixMode, applySkinMix, skinSwitchMixTime,
 };

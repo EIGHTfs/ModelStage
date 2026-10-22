@@ -7,6 +7,7 @@ import { dom, stage, state } from './context.js';
 import { stageStatus } from './status.js';
 import { formatError, getJson } from '../infra/api.js';
 import { createRootManager } from './root-manager.js';
+import { createDirPicker } from './dir-picker.js';
 
 async function loadWebConfig() {
   try {
@@ -19,7 +20,7 @@ async function loadWebConfig() {
 }
 import { createRosterView } from '../roster/view.js';
 import { fillTransportOptions } from './transport-actions.js';
-import { connectPanelRefresh, rebuildPanelFor } from '../panel/panel-settings.js';
+import { connectPanelRefresh, connectReloadApp, rebuildPanelFor, refreshPanelAnimations } from '../panel/panel-settings.js';
 
 /** 加载模型后刷新皮肤列表（换模型必须重建，不能停在上一个模型的皮肤） */
 function refreshSkinList() {
@@ -28,6 +29,7 @@ function refreshSkinList() {
   const current = skins.includes('default') ? 'default' : skins[0];
   state.panel.setOptions('ctl-skin-list', skins.map((s) => ({ text: s, value: s })), current);
   if (state.transport) state.transport.setOptions('transport-skin', skins.map((s) => ({ text: s, value: s })), current);
+  try { refreshPanelAnimations(); } catch { /* 动作列表刷新失败不影响主流程 */ }
   document.documentElement.dataset.skinCount = String(skins.length);
 }
 /** 在左栏顶部插一条错误横幅（替代抛异常到控制台） */
@@ -125,9 +127,13 @@ async function loadRoots(opts = {}) {
     if (!state.rootManager) {
       state.rootManager = createRootManager({
         els: {
-          list: dom.rootList, form: dom.rootAddForm, pathInput: dom.rootAddPath,
-          nameInput: dom.rootAddName, msg: dom.rootMsg, count: dom.rootCount,
-          toggleBtn: dom.btnRootToggle, body: dom.rootManagerBody,
+          list: dom.rootList, msg: dom.rootMsg, count: dom.rootCount,
+          triggerBtn: dom.btnAddRoot, toggleBtn: dom.btnRootToggle, body: dom.rootManagerBody,
+          // 目录浏览器：点「选择目录」弹出，选完把 {path,name} 交给 submitAdd
+          picker: createDirPicker({
+            formatError,
+            onPick: ({ path, name }) => state.rootManager.submitAdd(path, name),
+          }),
         },
         formatError,
         onChanged: () => { loadRoots({ skipRestore: true }); },
@@ -140,14 +146,11 @@ async function loadRoots(opts = {}) {
       state.rootManager.render(roots);
       state.rootManagerRendered = true;
     }
-    // 已有根当作"路径提示"：绝大多数新增都发生在已有根的同级目录
-    if (dom.rootPathHints) {
-      dom.rootPathHints.replaceChildren();
-      for (const r of roots) {
-        const opt = document.createElement('option');
-        opt.value = r.path || '';
-        dom.rootPathHints.append(opt);
-      }
+    // 目录浏览器默认起点：最后一个已有根所在的父目录（没有就从 / 开始）
+    if (state.rootManager && roots.length && typeof state.rootManager.setPickerStart === 'function') {
+      const last = roots[roots.length - 1].path || '';
+      const idx = Math.max(last.lastIndexOf('/'), last.lastIndexOf('\\'));
+      state.rootManager.setPickerStart(idx > 0 ? last.slice(0, idx) : '');
     }
     // 供自动化断言：资源根 id 序列 + 恢复结果
     document.documentElement.dataset.rootsIds = roots.map((r) => r.id).join(',');
@@ -167,3 +170,6 @@ export { refreshSkinList, showRootsError, onSelectModel, loadRoots };
 
 // 面板重建后需要按当前模型重刷皮肤列表：把本模块的实现注入回去（避免循环依赖）
 connectPanelRefresh(refreshSkinList);
+
+// 导入项目配置后重载资源根与名册树：注入本模块的 loadRoots（不重载当前模型）
+connectReloadApp(() => loadRoots({ skipRestore: true }));

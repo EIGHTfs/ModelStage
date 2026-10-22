@@ -207,9 +207,45 @@ export function toggleCinema(force) {
   return next;
 }
 
-/** Esc 退出影院模式（绑定一次；影院开着才响应） */
+/**
+ * 右侧控制面板显隐（顶栏「菜单」与面板头「收起菜单」共用一个开关）。
+ * 状态写在 <html data-right>，位移与淡出全在 style.css；顶栏按钮 aria-pressed 同步，
+ * 这样"面板被收起后怎么找回来"有明确答案：顶栏「菜单」。
+ * @param {boolean} [force] 传 true/false 强制设值；不传则翻转
+ * @returns {boolean} 切换后的状态（true=显示）
+ */
+export function toggleRightPanel(force) {
+  const root = document.documentElement;
+  const open = typeof force === 'boolean' ? force : root.dataset.right === 'off';
+  root.dataset.right = open ? 'on' : 'off';
+  const btn = document.getElementById('btn-menu');
+  if (btn) btn.setAttribute('aria-pressed', String(open));
+  stageStatus(`右侧控制面板：${open ? '显示' : '收起（顶栏「菜单」可再打开）'}`, 'info', { show: true });
+  return open;
+}
+
+/**
+ * 影院模式的快速开关：Esc 退出 + **舞台中心区域双击**进出。
+ * 为什么限定中心区域：四角/边缘留给拖拽与面板操作，避免"想微调视角却把界面收掉"。
+ * 双击判定用原生 dblclick（两次 click 间隔由浏览器判定），无需自己计时。
+ */
 export function bindCinemaKeys() {
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && document.documentElement.dataset.cinema === 'on') toggleCinema(false);
   });
+
+  const stageEl = document.getElementById('stage');
+  if (stageEl) {
+    stageEl.addEventListener('dblclick', (e) => {
+      const box = stageEl.getBoundingClientRect();
+      if (!box.width || !box.height) return;
+      // 中心 60% 区域内才算"中心双击"
+      const nx = (e.clientX - box.left) / box.width;
+      const ny = (e.clientY - box.top) / box.height;
+      const inCenter = nx > 0.2 && nx < 0.8 && ny > 0.2 && ny < 0.8;
+      if (!inCenter) return;
+      e.preventDefault();
+      toggleCinema();
+    });
+  }
 }

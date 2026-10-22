@@ -37,8 +37,9 @@ export const PANEL_GROUPS = [
     title: '动作',
     defaultOpen: true,
     controls: [
-      { kind: 'switch', label: '混合模式', id: 'ctl-mix-mode', core: true, title: '动画切换时是否交叉淡化（与皮肤组同一状态）' },
-      { kind: 'dynamic-list', label: '动作列表', core: true, note: '选中模型后逐条列出动作（M6 接线）' },
+      // 动作组的「混合模式」：只管**动画切换**是否交叉淡化（与皮肤组那个是两件独立的事）
+      { kind: 'switch', label: '混合模式', id: 'ctl-mix-mode', core: true, title: '动画切换时是否交叉淡化（只影响动作，不影响皮肤）' },
+      { kind: 'dynamic-list', label: '动作列表', id: 'ctl-anim-list', core: true, note: '选中模型后逐条列出动作，点一条即播放' },
     ],
   },
   {
@@ -46,7 +47,7 @@ export const PANEL_GROUPS = [
     title: '皮肤',
     controls: [
       // 与「动作」组的混合模式是同一状态，两处点任一处都要同步（main.js 统一维护）
-      { kind: 'switch', label: '混合模式', id: 'ctl-skin-mix', core: true, title: '动画切换时是否交叉淡化（与动作组同一状态）' },
+      { kind: 'switch', label: '混合模式', id: 'ctl-skin-mix', core: true, title: '切换皮肤时是否交叉淡化（只影响皮肤，不影响动作）' },
       // 皮肤列表：加载模型后按 skeletonData.skins 重建；默认 default
       { kind: 'chips', label: '皮肤列表', id: 'ctl-skin-list', core: true, defaultValue: 'default', options: [{ text: 'default', value: 'default' }] },
     ],
@@ -143,8 +144,7 @@ export const PANEL_GROUPS = [
         options: ['棋盘格', '纯色', '透明', '自定义'],
         values: ['checkerboard', 'solid', 'transparent', 'custom'],
         defaultValue: 'checkerboard',
-        disabledValues: ['custom'],
-        titles: ['棋盘格底纹', '纯色底色', '透明（露出页面底色）', '本地图片背景：需文件选择器，二期接入'],
+        titles: ['棋盘格底纹', '纯色底色', '透明（露出页面底色）', '本地图片背景（选一张图片作为舞台背景）'],
       },
     ],
   },
@@ -198,7 +198,7 @@ export const PANEL_GROUPS = [
         core: true,
         buttons: [
           { text: '导出设置', title: '把当前面板设置导出成 JSON 文件' },
-          { text: '导入设置', title: '从 JSON 文件导入设置', disabledReason: '导入不可用：后端 POST /api/config/import 尚未实现（501）' },
+          { text: '导入设置', title: '导入之前导出的 JSON（项目配置走 POST /api/config/import，前端偏好写本地存储）' },
           { text: '恢复默认', title: '清空本地保存的设置、面板回到声明默认值并复位视图' },
         ],
       },
@@ -305,7 +305,10 @@ export function applyCapabilities(groups, capabilities, options = {}) {
           controls.push({ ...ctl, disabled: true, reason: '无法确定能力键' });
           continue;
         }
-        controls.push(settings.has(resolved.key) ? { ...ctl } : { ...ctl, disabled: true, reason });
+        // 当前渲染器没有这项能力 ⇒ **整项隐藏**（设计如此：该渲染器不做这件事）。
+        // 只有"该接没接"才允许 disabled + 原因；把它们画成删除线会让用户以为功能坏了。
+        if (!settings.has(resolved.key)) continue;
+        controls.push({ ...ctl });
       }
       return { ...group, controls };
     })

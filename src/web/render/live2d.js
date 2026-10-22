@@ -5,6 +5,7 @@
 // 边界：画布与尺寸由 StageSurface 提供（handle），本文件不读 DOM 尺寸、不建画布。
 
 import { createCamera } from './camera/index.js';
+import { DEFAULT_FILTER, FILTER_PRESETS } from '../engine/filters.js';
 
 /**
  * 创建 Live2D 渲染器。
@@ -46,6 +47,59 @@ export function createLive2DRenderer({ live2d } = {}) {
     },
   });
   let handleRef = null;
+  /** 当前滤镜预设 id（original = 不挂滤镜） */
+  let presetId = DEFAULT_FILTER;
+  /** 已挂上的 PIXI.Filter（original 时为 null） */
+  let activeFilter = null;
+
+  /**
+   * 用引擎那 12 段预设表达式拼一份 PIXI 片元着色器。
+   * 为什么能复用：预设表里的 body 都是"对直通色 c 的表达式"，与渲染器无关；
+   *   这里只换外壳（PIXI 的 vTextureCoord/uSampler + 预乘还原），效果与 Spine 侧同一套公式。
+   */
+  function pixiFragmentOf(id) {
+    const preset = FILTER_PRESETS.find((x) => x.id === id) || FILTER_PRESETS[0];
+    return [
+      'precision mediump float;',
+      'varying vec2 vTextureCoord;',
+      'uniform sampler2D uSampler;',
+      'const vec3 LUMA = vec3(0.299, 0.587, 0.114);',
+      'vec3 toGray(vec3 c) { return vec3(dot(c, LUMA)); }',
+      'vec3 withSat(vec3 c, float s) { float l = dot(c, LUMA); return mix(vec3(l), c, s); }',
+      'void main() {',
+      '  vec4 texColor = texture2D(uSampler, vTextureCoord);', // PIXI 纹理是预乘的
+      '  float a = texColor.a;',
+      '  vec3 c = texColor.rgb / max(a, 0.00001);',            // 还原成直通再套预设
+      `  vec3 f = ${preset.body};`,
+      '  gl_FragColor = vec4(f * a, a);',
+      '}',
+    ].join('\n');
+  }
+
+  /** 把当前 presetId 落到 PIXI stage 上（original ⇒ 摘掉滤镜） */
+  function applyPreset() {
+    const app = (() => { try { return live2d.getApp ? live2d.getApp() : null; } catch { return null; } })();
+    if (!app || !app.stage) return false;
+    const PIXI = typeof window !== 'undefined' ? window.PIXI : null;
+    try {
+      if (presetId === DEFAULT_FILTER) {
+        app.stage.filters = null;
+        activeFilter = null;
+        return true;
+      }
+      if (!PIXI || typeof PIXI.Filter !== 'function') return false;
+      activeFilter = new PIXI.Filter(null, pixiFragmentOf(presetId));
+      // filterArea 固定成整屏：否则 PIXI 会按 stage 包围盒裁剪，滤镜边缘会缺一块
+      app.stage.filterArea = app.screen;
+      app.stage.filters = [activeFilter];
+      return true;
+    } catch {
+      // 着色器编译失败等：保持原渲染，不抛
+      activeFilter = null;
+      try { app.stage.filters = null; } catch { /* 忽略 */ }
+      return false;
+    }
+  }
   // DPR 档位：'auto' = 跟随 Surface 下发的 res；'1'/'1.5'/'2' = 显式指定档位
   let dprWanted = 'auto';
 
@@ -96,8 +150,10 @@ try { if (live2d.syncSize) live2d.syncSize({ size: { width: cssW, height: cssH }
       // Live2D 不支持 Spine 的插槽/网格类设置项：只声明确实生效的
       // 只声明确实生效的三项：纹理过滤（PIXI scaleMode）、限帧（ticker.maxFPS）、
       //   DPR（PIXI renderer.resolution + 覆盖层画布同源放大）。
-      // msaa / pma / fit 不声明：msaa 要重建 PIXI app（运行期做不到），pma/fit 是 Spine 专有语义。
-      settings: ['textureFilter', 'fps', 'dpr'],
+      // presetFilter：12 档滤镜预设，经 PIXI.Filter 挂到 overlay stage（复用引擎同一套表达式）
+      // msaa / pma / fit 不声明：msaa 要重建 PIXI app（运行期做不到）；
+      //   pma 由 PIXI 纹理管线托管、无法按页切直通/转预乘；fit 的"全部部件/动画全程"依赖 Spine 骨架包围盒数据（Live2D 无此数据）。
+      settings: ['textureFilter', 'fps', 'dpr', 'presetFilter'],
       debugDraw: [],
       camera: 'ortho-2d',
     },
@@ -109,7 +165,9 @@ try { if (live2d.syncSize) live2d.syncSize({ size: { width: cssW, height: cssH }
      */
     async mount(document, handle) {
       handleRef = handle || null;
-      return live2d.mount(document, handle);
+      const info = await live2d.mount(document, handle);
+      applyPreset(); // 新模型挂上后把当前滤镜补一次（切模型/重建后不断档）
+      return info;
     },
     /**
      * 尺寸变化：覆盖层 canvas 的像素尺寸按**引擎同一口径**的 DPR 设置。
@@ -140,6 +198,15 @@ if (typeof live2d.syncSize === 'function') {
     setSetting(key, value) {
       const cur = this.getSetting(key);
       if (cur !== null && cur !== undefined && String(cur) === String(value)) return true;
+      if (key === 'presetFilter') {
+        const id = String(value || DEFAULT_FILTER);
+        if (!FILTER_PRESETS.some((x) => x.id === id)) return false; // 未知档位不认
+        presetId = id;
+        // 模型还没挂时 applyPreset 返回 false，但档位已记住：mount 之后会补挂，
+        //   所以这里仍算成功（否则能力自检在"没加载模型"时会把已实现的能力误判为不支持）
+        applyPreset();
+        return true;
+      }
       if (key === 'dpr') {
         // 先记档位：即使当前没挂载也接受（下次 mount/resize 生效），这样能力自检不会误报不支持
         const v = String(value);
@@ -195,6 +262,7 @@ if (typeof live2d.syncSize === 'function') {
         if (app && app.renderer && app.renderer.resolution) return app.renderer.resolution;
         return effectiveRes();
       }
+      if (key === 'presetFilter') return presetId;
       if (key === 'textureFilter') return filterMode;
       if (key === 'fps') {
         const app = live2d.getApp ? live2d.getApp() : null;
