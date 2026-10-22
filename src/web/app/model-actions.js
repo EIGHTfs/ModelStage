@@ -5,6 +5,7 @@
 
 import { dom, stage, state } from './context.js';
 import { buildDocument } from '../infra/document.js';
+import { getSharedVirtualFS } from '../infra/vfs.js';
 import { diagEvent, stageStatus } from './status.js';
 import { formatError, getJson } from '../infra/api.js';
 import { createRootManager } from './root-manager.js';
@@ -41,6 +42,69 @@ function showRootsError(message) {
   banner.textContent = `读取资源根失败：${message}`;
   dom.rosterList.replaceChildren(banner);
 }
+/**
+ * 撤掉不再使用的资源包前缀（幂等；只撤自己注册过的那个）。
+ * V5 的实质：连开多个 bundle 模型时，旧前缀必须释放，否则 createdUrls/prefixes 会一路涨。
+ * @param {string|null} keep 要保留的前缀（换到别的资源包时传新前缀；切到非 bundle 时传 null）
+ */
+function releaseBundlePrefix(keep) {
+  const prev = state.bundlePrefix;
+  if (!prev || prev === keep) return;
+  try { getSharedVirtualFS().revoke(prev); } catch { /* 已撤销或不存在：忽略 */ }
+  state.bundlePrefix = null;
+}
+
+/**
+ * 资源包装载：插件管线 → VirtualFS → Document → 渲染器。
+ *
+ * 为什么入口地址用 vfs:// 而不是解析后的 blob：Document 组装与 Live2D 内部相对引用解析
+ *   都要经 VirtualFS（hits 才会增量）；blob 不能当基址（new URL(rel, 'blob:…') 直接非法）。
+ *
+ * @param {object} model roster 产出的 bundle 条目（含 rootId/rel/name/size）
+ * @param {string} name 显示名
+ * @returns {Promise<object|null>} 渲染器返回的 info（失败为 null）
+ */
+async function loadBundleModel(model, name) {
+  const host = state.pluginHost;
+  if (!host) {
+    stageStatus(`无法装载 ${name}：插件宿主未就绪（页面刚启动时可稍等再试）`, 'error');
+    return null;
+  }
+  // 解包 + 转码实测 3~4 秒：必须有可见状态，不能让用户点了没反应
+  stageStatus(`正在解包 ${name}…（首次约 3~4 秒）`, 'info');
+  const mat = await host.materialize({
+    rootId: model.rootId,
+    rel: model.rel,
+    name: model.name,
+    size: model.size,
+    rootKind: 'bundle',
+  });
+  if (!mat.ok) {
+    stage.unload();
+    stageStatus(`无法装载 ${name}：${mat.message}`, 'error');
+    return null;
+  }
+  const entryUrl = `${mat.prefix}${String(mat.entry).replace(/^\.?\//, '')}`;
+  const doc = await buildDocument({
+    kind: 'live2d',
+    id: model.id,
+    name,
+    rootId: model.rootId,
+    rootName: model.rootName,
+    source: 'bundle',
+    provider: mat.provider,
+    entry: { url: entryUrl },
+  });
+  if (!doc || doc.state !== 'ready') {
+    const why = (doc && (doc.warnings || []).join('；')) || '原因未知';
+    stageStatus(`无法装载 ${name}：${why}`, 'error');
+    return null;
+  }
+  releaseBundlePrefix(mat.prefix);      // 换包：先撤旧的（同前缀由 materialize 内部先撤再注册）
+  state.bundlePrefix = mat.prefix;
+  return state.currentRenderer ? state.currentRenderer.mount(doc) : stage.load({ document: doc });
+}
+
 /** 选中变体的回调：M2 只记状态（M4 用它去渲染舞台） */
 function onSelectModel(model) {
   state.selectedModel = model;
@@ -48,12 +112,10 @@ function onSelectModel(model) {
   if (!stage) { stageStatus(`已选中 ${name}（渲染器不可用）`, 'error'); return; }
   if (!model) { stage.unload(); return; }
 
-  // 只有 Spine 走本路径；Live2D 与资源包由 M5 的插件管线接管
   const kind = model.kind || 'spine';
-  if (kind !== 'spine' && kind !== 'live2d') {
-    // 资源包（bundle）仍未接入：保持明确提示，不做"看着能选却渲不出来"
+  if (kind !== 'spine' && kind !== 'live2d' && kind !== 'bundle') {
     stage.unload();
-    stageStatus(`已选中 ${name}（资源包渲染未接入）`, 'warn');
+    stageStatus(`已选中 ${name}（未知内容类型：${kind}）`, 'warn');
     return;
   }
 
@@ -69,16 +131,20 @@ function onSelectModel(model) {
     rootName: model.rootName,
     entry: model.entry || (model.modelUrl ? { url: model.modelUrl } : null),
   };
+  // 切到非资源包模型：先撤掉上一个资源包前缀（V5：不持续增长）
+  if (kind !== 'bundle') releaseBundlePrefix(null);
+
   // 装载前先组装 Document（Assets 层）：非 ready 就不进渲染层，把原因直接告诉用户
-  const loadPromise = buildDocument(loadDoc)
-    .then((doc) => {
+  const loadPromise = (kind === 'bundle'
+    ? loadBundleModel(model, name)
+    : buildDocument(loadDoc).then((doc) => {
       if (!doc || doc.state !== 'ready') {
         const why = (doc && (doc.warnings || []).join('；')) || '原因未知';
         stageStatus(`无法装载 ${name}：${why}`, 'error');
         return null;
       }
       return state.currentRenderer ? state.currentRenderer.mount(doc) : stage.load({ document: doc });
-    });
+    }));
   loadPromise
     .then((info) => {
       // null = 本次请求被排队/被更新的选择取代（Surface 的 last-wins 语义）：

@@ -177,7 +177,10 @@ async function buildLive2dAssets(doc, entry, vfs) {
   const raw = (entry.entry && entry.entry.url) || entry.modelUrl || null;
   const url = resolveUrl(vfs, raw);
   if (!url) { warn.push('缺少模型定义地址（entry.url / modelUrl）'); return doc; }
-  doc.assets.entry = { role: 'definition', name: raw.split('/').pop() || '', url, bytes: null };
+  // ref 保留**解析前**的原始地址：Live2D 内部相对引用要靠它推出 vfs 前缀
+  //   （url 是解析后的 blob，blob 不能当基址；vfs-settings 需要 vfs:// 形态才能把
+  //    motions/x.motion3.json 这类引用映射回已注册的前缀）。
+  doc.assets.entry = { role: 'definition', name: raw.split('/').pop() || '', url, ref: raw, bytes: null };
   try {
     const res = await fetch(url);
     if (!res || !res.ok) {

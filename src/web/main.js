@@ -15,6 +15,7 @@
 import { installDiag } from './infra/diag.js';
 import { getJson, formatError } from './infra/api.js';
 import { getSharedVirtualFS } from './infra/vfs.js';
+import { createPluginHost } from './infra/plugin-host.js';
 import { mountTransport } from './panel/transport.js';
 import { createSpineStage } from './spine/canvas.js';
 import { createStageSurface } from './render/surface.js';
@@ -288,6 +289,9 @@ function bindEvents() {
   bindCinemaKeys();
 }
 
+/** 插件宿主实例（boot 时创建；未就绪为 null） */
+let pluginHost = null;
+
 function boot() {
   // 面板与播放条是纯静态骨架（不依赖网络）：先挂上，保证首屏五区域都有内容
   // 舞台渲染器：WebGL 不可用（无头精简环境等）时只提示，不让整页崩
@@ -395,8 +399,26 @@ function boot() {
     defaultBrand: DEFAULT_BRAND,
     /** 名册状态快照（未挂载时返回 null） */
     rosterSnapshot: () => (state.roster ? state.roster.snapshot() : null),
+    /**
+     * 插件宿主（资产提供者）。
+     * 本阶段只做"加载 + 查询面"，不接渲染链路（接线在后续步骤）；
+     * 但宿主必须在页面起来时就绪，否则插件脚本会注册到空宿主上白跑。
+     */
+    pluginHost: () => pluginHost,
   });
   loadRoots();
+
+  // 插件宿主：非阻塞启动（失败只警告，绝不影响页面其它功能）。
+  //   顺序关键：createPluginHost 内部先挂 window.SpineViewerPlugins 再注入 <script>，
+  //   插件顶层读宿主时才拿得到。
+  try {
+    pluginHost = createPluginHost({ log: (level, msg) => stageStatus(msg, level) });
+    state.pluginHost = pluginHost;   // app 层（选模型分流）经 state 取用，不反向 import
+
+    pluginHost.loadAll().catch((e) => stageStatus(`插件加载异常：${(e && e.message) || e}`, 'warn'));
+  } catch (e) {
+    stageStatus(`插件宿主初始化失败（页面其余功能不受影响）：${(e && e.message) || e}`, 'warn');
+  }
 }
 
 boot();

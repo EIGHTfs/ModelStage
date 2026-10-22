@@ -211,8 +211,10 @@ function collectBaseline(ctx, instance) {
 async function loadModel(ctx, model) {
   const app = await prepareStage(ctx);
   // 入口地址优先取 Document.assets.entry.url（已由 Assets 层经 VirtualFS 解析）
-  const entryUrl = (model && model.assets && model.assets.entry && model.assets.entry.url)
-    || ctx.entryUrlOf(model);
+  // 优先 ref（解析前的原始地址，可能是 vfs://）：settings.url 与内部相对引用都以它为基址，
+  //   换成解析后的 blob 会让 url.resolve 拼出 blob:http://…/motions/x 这种无效地址。
+  const entryAsset = (model && model.assets && model.assets.entry) || {};
+  const entryUrl = entryAsset.ref || entryAsset.url || ctx.entryUrlOf(model);
   const url = ctx.resolveAsset(entryUrl);
   if (!url) throw new Error(`Live2D 模型缺少入口地址（entry.url）：${model && model.name}`);
   const t0 = performance.now();
