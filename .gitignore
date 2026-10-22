@@ -41,10 +41,20 @@ dist/
 
 # ---- 刻意排除：自动生成的资源清单 ----
 # config/models.<rootId>.json 是服务端扫描资源目录后落盘的索引（可随时重建，
-# 类似构建产物），不入库；配置文件 config/resources.json 则要入库。
+# 类似构建产物），不入库。
 config/models.*.json
 config/live2d.*.json
 config/*.tmp
+
+# ---- 刻意排除：用户配置（本机相关，换机器即失效）----
+# config/resources.json 存的是**本机绝对路径**的资源根列表，换设备后不适用，
+# 所以不入库；首次运行由服务端生成空模板，配置方式见 config/resources.example.json。
+config/resources.json
+
+# ---- 刻意排除：名表（上游数据，待重新设计后再定归属）----
+# config/names/<游戏>.json 是从上游抓取的名称/图标映射，体积大且来源随版本变化。
+# 缺失时不影响模型加载与渲染，只是回退显示拼音目录名、没有图标。
+config/names/
 
 # 导入配置时的自动备份（应急恢复用，不入库；轮换后旧的移入 config/.trash/）
 config/.bak-*/

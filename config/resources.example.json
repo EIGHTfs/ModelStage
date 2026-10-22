@@ -1,0 +1,40 @@
+// 本地资源根配置示例 —— 复制为 config/resources.json 后再改成你的路径
+// 文件格式：JSONC（标准 JSON + // 注释）；注释由 tool/parse-jsonc.mjs 剥离
+//
+// 必填字段：id（唯一标识，会出现在索引文件名 config/models/<类型>.<id>.json 里）
+//           path（本机的资源目录绝对路径）
+// 可选字段：name（界面显示名，缺省用目录名）
+//           enabled（缺省 true；false = 停用但保留在配置里，随时可再启用）
+//           names（指向 config/names/<names>.json 的角色名表，用于显示角色名）
+//           icons（角色头像目录，可外置：{ "dir": "绝对路径" }）
+//           头像文件名记在名表的 characters[id].icon；名表没记时回退模型目录自带 icon.png
+//
+// 三点需要知道：
+//   · 不声明"这个根是什么类型"：每个根都会被 Spine 与 Live2D 两个扫描器各扫一遍，
+//     目录里有什么内容就进什么清单（config/models/ 下两份索引互不干扰，各自可重建）
+//   · 同级根用同一个 name 会被界面合并成一个游戏节点（同一角色的两种画风自动聚合）
+//   · 界面「选择目录」会重写本文件（只保留文件头部注释），手写内容会被一并覆盖
+//
+// 下面两个根只示范字段写法，值全是占位符：
+//   ① 把所有可选字段都填上（名表 + 外置头像 + 启用）
+//   ② 只写必填字段，并演示停用（enabled:false）
+{
+  "roots": [
+    {
+      "id": "example_spine",
+      "name": "示例游戏 A",
+      "path": "/path/to/your/spine/assets",
+      "names": "example_a",
+      "icons": {
+        "dir": "/path/to/your/char_icons"
+      },
+      "enabled": true
+    },
+    {
+      "id": "example_live2d",
+      "name": "示例游戏 B",
+      "path": "/path/to/your/live2d/assets",
+      "enabled": false
+    }
+  ]
+}
