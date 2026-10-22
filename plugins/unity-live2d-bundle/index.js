@@ -797,9 +797,15 @@ ulbInstall: {
     try {
       return NS.bundleProbe.run(bytes).ok;
     } catch (e) {
-      // §3.7：catch 分支不得静默——至少记一条 debug（host.log 或降级 console）
-      const log = host.log || (console && console.debug ? (m) => console.debug(m) : null);
-      if (log) log('debug', `[unity-live2d-bundle] canHandle 内部异常，按不可读处理：${e.message}`, PLUGIN_ID);
+      // §3.7：catch 分支不得静默。这里**升到 warn**（不是 debug）：
+      //   canHandle 抛错通常不是"文件读不了"（那属于数据问题，返回 false 即可），
+      //   而是**调用方用法问题**——最典型的就是 bytes 传了 ArrayBuffer 而不是 Uint8Array（契约 §1.1），
+      //   此时表现为"这个文件没有提供者"，只有 warn 才查得动。
+      const log = host.log || (console && console.warn ? (m) => console.warn(m) : null);
+      if (log) {
+        log('warn', `[unity-live2d-bundle] canHandle 内部异常，按不可读处理：${e.message}`
+          + '（若 bytes 类型不符契约 §1.1 的 Uint8Array，请修宿主侧归一）', PLUGIN_ID);
+      }
       return false;
     }
   }
