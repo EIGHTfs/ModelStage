@@ -11,6 +11,11 @@ import path from 'node:path';
 const MAX_BYTES = 8 * 1024 * 1024;
 const MAX_ENTRIES_PER_REQ = 500;
 const MAX_LINE_CHARS = 8000;
+// 每个缓冲只留最近几个会话（防长期运行内存增长）。
+// 必须放在模块级：getSession() 是模块级函数，放在 createDiag() 的闭包里它看不见，
+//   走到淘汰分支就抛 ReferenceError，被上层 catch 成「落盘失败（降级为仅内存）」——
+//   表现为诊断日志从第 5 个会话起悄悄不再写文件，而页面一切正常。
+const SESSION_MAX = 4;
 
 /**
  * @param {{dataDir: string, diagFile: string}} paths
@@ -19,7 +24,6 @@ export function createDiag(paths) {
   // 服务端侧的环形缓冲（GET /api/diag 读它，与面板内容同源）。
   // 按会话 id 分组：页面重载会换 sid，旧条目不会混进"当前这一轮"的统计。
   const sessions = new Map();   // sid -> { recent, counts, lastAt }
-  const SESSION_MAX = 4;        // 只留最近几个会话，避免长期运行内存增长
 
   /**
    * 追加一批诊断条目。

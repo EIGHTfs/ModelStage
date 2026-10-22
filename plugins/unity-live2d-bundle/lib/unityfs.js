@@ -40,6 +40,26 @@
     UsesAssetBundleEncryption: 0x1400,
   };
 
+  // ⚠️ 已知不支持：BlocksAndDirectoryInfoCombined（0x40）
+  //
+  // 根因（2026-10-22 实测定位，样本 live2d/aijier_3，19.27MB）：
+  //   该样本 dataflags = 0xC2，同时置了 0x40（blocks 与 directoryInfo 合并为一段）
+  //   与 0x80（blocksInfo 在文件尾），压缩类型 2（LZ4），Unity 2018.4.34f1 / version 6。
+  //   其余 18 个样本（live2d/*）均为 Unity 2020.3.48f1 / version 8 / dataflags 0x240
+  //   （comp=0 未压缩、无 0x40、无 0x80），走的是 parse() 已实现的「头部 blocksInfo」路径。
+  //
+  // 为什么显式拒绝而不是"试着解"：
+  //   ARCHIVE 表里 0x40 这一位早已定义，但 parse() 从未实现该布局——它只判 0x80，
+  //   于是按「length - csz」从文件尾取固定长度。combined 布局下该位置取到的是错位数据；
+  //   而 LZ4 块解压只有"输出长度必须等于 expectedSize"这一道弱自洽检查，
+  //   错位数据偶尔能自洽解出（实测解出了 163 字节但 blockCount/nodeCount 是垃圾值），
+  //   于是错误一路带到 block 表读取才炸，报 CONTAINER_PARSE，现场看不出真实原因。
+  //
+  // 正确实现需要权威格式依据（Unity ArchiveStorageData/AssetBundle 的 combined 段布局，
+  //   或 UnityPy 对应解析作对照）。在没有权威参考前不猜实现——猜错的解析比明确报错危险得多：
+  //   它可能解出"看着能跑"的错数据，把 bug 推到渲染层才暴露。
+  //   需要支持时：补 combined 解析 + 用 aijier_3 与正常样本做双向对照自证。
+
   const COMPRESSION = { NONE: 0, LZMA: 1, LZ4: 2, LZ4HC: 3, LZHAM: 4 };
 
   /**
@@ -164,11 +184,21 @@
       });
     }
     const blocksInfoContentEnd = bi.absOffset;   // 表**内容**结束位置（不含表尾填充）
-    // 数据区起点：blocksInfo 段按**声明长度**占位（未压缩时声明长度可能比表内容大，
-    //   差值就是表尾对齐填充 —— 本样本 160 - 153 = 7 字节），读完再按标志对齐到 16。
-    //   注意别把「表内容结束」当成「数据开始」：那会整体错位 7 字节，M5 的 sha256 立刻不对。
-    const declaredEnd = start + blocksInfoCompressedSize;
-    if (declaredEnd > r.pos) r.seek(declaredEnd);
+    // 数据区起点（依据 AssetStudio BundleFile.cs ReadBlocksInfoAndDirectory，d158e86）：
+    //   · blocksInfo **内联在头部**（未置 0x80）时，该段按**声明长度** blocksInfoCompressedSize
+    //     占位——未压缩包的声明长度可能比表内容大，差值即表尾对齐填充
+    //     （实测样本 160 - 153 = 7 字节），故需把游标推到 start + compressedSize 才是数据起点。
+    //     别把「表内容结束」当成「数据开始」：那会整体错位 7 字节，moc3 的 sha256 立刻不对。
+    //   · blocksInfo **在文件尾**（置 0x80）时，数据块紧接 header 之后开始；
+    //     上面读 blocksInfo 前已保存 position、读后已 seek 回来，此处**不能再加 declaredEnd**，
+    //     否则会把数据起点整体推后 compressedSize 字节 → 数据块错位 → LZ4 解出垃圾
+    //     （报"LZ4 数据损坏：匹配位置越界"，与真实原因相距极远，极难排查）。
+    //     实测踩坑：live2d/aijier_3（Unity 2018.4 / version 6 / LZ4 / flags 0xC2）正是此情形，
+    //     19 个样本里唯一一个 blocksInfo 在尾的包，旧代码一直没覆盖到。
+    if (!blocksInfoAtEnd) {
+      const declaredEnd = start + blocksInfoCompressedSize;
+      if (declaredEnd > r.pos) r.seek(declaredEnd);
+    }
     if (dataflags & ARCHIVE.BlockInfoNeedPaddingAtStart) r.align(16);
     const dataStart = r.pos;
 

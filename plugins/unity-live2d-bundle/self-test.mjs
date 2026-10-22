@@ -174,7 +174,7 @@ if (want('M7') && parsed && NS.animToMotion && NS.model3) {
   const cab = NS.unityfs.nodeBytes(parsed, parsed.nodes[0].path);
   const sf2 = NS.serialized.parse(cab);
   const moc3Hit = NS.extract.findMoc3(sf2);
-  const profilePath = path.join(__dirname, 'profiles', 'azurlane.json');
+  const profilePath = path.join(__dirname, 'profiles', 'unityfs-live2d.json');
   const profile = fs.existsSync(profilePath) ? JSON.parse(fs.readFileSync(profilePath, 'utf8')) : {};
   const physPath = path.join(ORACLE, 'adaerbote_3.physics3.json');
   const physNames = [];

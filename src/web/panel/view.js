@@ -78,7 +78,8 @@ function renderSegmented(ctl, ctx) {
  * 未接线的开关**仍按旧端默认态显示**（defaultOn），只是不可点——避免"默认值看起来是关"的错配。
  */
 function renderSwitch(ctl, ctx) {
-  const wired = ctx.isWired(ctl.id);
+  // 未声明能力的控件由 applyCapabilities 置 ctl.disabled：这里一并压制交互（禁用+原因，不静默）
+  const wired = ctx.isWired(ctl.id) && ctl.disabled !== true;
   const row = el('div', 'ctl-row ctl-row-switch');
   row.dataset.ctl = ctl.id || ''; // 与分段/下拉一致：外层行可被 [data-ctl] 定位
   row.append(el('span', 'ctl-label', ctl.label));
@@ -259,12 +260,22 @@ export function mountPanel({ headEl, bodyEl, onSetting, wiredIds, groups }) {
   function setOptions(id, options, selected) {
     const box = bodyEl.querySelector(`[data-ctl="${id}"]`);
     if (!box || !Array.isArray(options)) return false;
+    // 该项可能因"当前渲染面未声明该能力"而禁用：重建选项时必须**保留禁用态**，
+    //   否则装载模型后刷新皮肤列表会把禁用按钮换成可点按钮（表现为"换面后又能点了"）。
+    const blocked = ctx && typeof ctx.disabledReason === 'function' ? ctx.disabledReason(id) : null;
     box.replaceChildren();
     for (const opt of options) {
       const btn = el('button', 'chip-btn', opt.text || opt.value);
       btn.type = 'button';
       btn.dataset.value = String(opt.value);
       btn.setAttribute('aria-pressed', String(opt.value === selected));
+      if (blocked) {
+        btn.disabled = true;
+        btn.title = `${blocked}：${opt.text || opt.value}`;
+        btn.dataset.disabledReason = blocked;
+        box.append(btn);
+        continue;
+      }
       btn.title = opt.text || opt.value;
       btn.addEventListener('click', () => {
         for (const other of box.children) other.setAttribute('aria-pressed', 'false');

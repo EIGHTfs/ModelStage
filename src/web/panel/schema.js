@@ -39,7 +39,7 @@ export const PANEL_GROUPS = [
     controls: [
       // 动作组并列两个开关，各自管一件事（契约 §四，正交、不合并）：
       //   混合模式 = 切换那一瞬间的过渡；循环播放 = 播完之后接谁
-      { kind: 'switch', label: '混合模式', id: 'ctl-mix-mode', core: true, title: '切换动作时的过渡：开=约 0.2s 渐变，关=硬切' },
+      { kind: 'switch', label: '混合模式', id: 'ctl-mix-mode', capabilityKey: 'mixMode', core: true, title: '切换动作时的过渡：开=约 0.2s 渐变，关=硬切' },
       { kind: 'switch', label: '循环播放', id: 'ctl-anim-loop', core: true, title: '播完之后接谁：开=按列表顺序连播、末尾回到第一条；关=停留当前动作重复播' },
       { kind: 'dynamic-list', label: '动作列表', id: 'ctl-anim-list', core: true, note: '选中模型后逐条列出动作，点一条即播放' },
     ],
@@ -51,7 +51,8 @@ export const PANEL_GROUPS = [
       // 与「动作」组的混合模式是同一状态，两处点任一处都要同步（main.js 统一维护）
       { kind: 'switch', label: '混合模式', id: 'ctl-skin-mix', core: true, title: '切换皮肤时是否交叉淡化（只影响皮肤，不影响动作）' },
       // 皮肤列表：加载模型后按 skeletonData.skins 重建；默认 default
-      { kind: 'chips', label: '皮肤列表', id: 'ctl-skin-list', core: true, defaultValue: 'default', options: [{ text: 'default', value: 'default' }] },
+      // capabilityKey: skin —— 渲染面不声明就置灰（Live2D 面没有皮肤概念）
+      { kind: 'chips', label: '皮肤列表', id: 'ctl-skin-list', core: true, capabilityKey: 'skin', defaultValue: 'default', options: [{ text: 'default', value: 'default' }] },
     ],
   },
   {
@@ -59,7 +60,7 @@ export const PANEL_GROUPS = [
     title: '播放',
     controls: [
       // 按关键词把部件从渲染中剔除（引擎 setSlotFilter + hideFilteredSlots 已有能力）
-      { kind: 'switch', label: '部件筛除', id: 'ctl-part-filter', core: true, title: '按关键词筛除部件（默认关）' },
+      { kind: 'switch', label: '部件筛除', id: 'ctl-part-filter', capabilityKey: 'partFilter', core: true, title: '按关键词筛除部件（默认关）' },
       // 关键字默认值取自旧端存储的 partFilterKeywords（mask,mosai,mmd,mozaiku）
       {
         kind: 'chips',
@@ -306,9 +307,14 @@ export function applyCapabilities(groups, capabilities, options = {}) {
           controls.push({ ...ctl, disabled: true, reason: '无法确定能力键' });
           continue;
         }
-        // 当前渲染器没有这项能力 ⇒ **整项隐藏**（设计如此：该渲染器不做这件事）。
-        // 只有"该接没接"才允许 disabled + 原因；把它们画成删除线会让用户以为功能坏了。
-        if (!settings.has(resolved.key)) continue;
+        // 当前渲染器没有这项能力 ⇒ **禁用 + 写明原因**（不隐藏、也不静默无效）。
+        //   为什么不用"隐藏"：隐藏会让用户以为"面板里从来没有这个功能"，
+        //   而实际上换个渲染面（Spine/Live2D）它就回来了——禁用+原因才说清"是这一面不支持"。
+        //   data-disabled-reason 由 view.js 渲染成 title 与属性，供断言与排查读取。
+        if (!settings.has(resolved.key)) {
+          controls.push({ ...ctl, disabled: true, reason: '当前渲染器不支持（未声明该能力）' });
+          continue;
+        }
         controls.push({ ...ctl });
       }
       return { ...group, controls };

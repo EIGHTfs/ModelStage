@@ -13,21 +13,13 @@
   "produces": {
     "kind": "live2d",
     "entry": "resolve(file)",
-    "legacyEntry": "open(ctx)",
     "schema": "doc/插件产出schema（prepare）.MD",
     "fields": [
-      "model",
-      "modelMeta",
-      "model3",
-      "urls",
-      "textures",
-      "motions",
-      "curveStats",
-      "paramTable",
-      "container",
-      "serialized"
+      "prefix",
+      "files",
+      "entry"
     ],
-    "note": "目标契约 resolve(file) 返回 { prefix, files, entry }；迁移期保留 open(ctx) 兼容旧宿主"
+    "note": "resolve(file) 按资产提供者契约 §1.2 返回 { prefix, files, entry }：prefix 形如 vfs://unity-live2d-bundle/<rootId>/<相对目录>/，files 为 relPath→Blob|string 映射，entry 是 files 内的渲染入口键"
   },
   "errorCodes": [
     "ULB_ERR_BAD_ARGS",
@@ -65,6 +57,6 @@
     "index.js"
   ],
   "assets": [
-    "profiles/azurlane.json"
+    "profiles/unityfs-live2d.json"
   ]
 }

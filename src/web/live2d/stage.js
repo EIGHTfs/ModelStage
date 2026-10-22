@@ -17,6 +17,7 @@
 // 资源入口先经 VirtualFS.resolve()（命中用 Blob URL，未命中回落原 URL）——不 patch PIXI 加载器。
 import { installDiagHud } from '../debug/diag-hud.js';
 import { createStageContext, OVERLAY_CANVAS_ID } from './stage-ctx.js';
+import { releaseLive2DResources } from './release.js';
 import { createOverlay } from './overlay.js';
 import { createPixiApp } from './pixi-app.js';
 import { createView } from './view.js';
@@ -64,50 +65,67 @@ export function createLive2DStage({ vfs, getOverlayHost, log } = {}) {
    * @param {object} doc 文档/条目
    * @param {object} handle StageSurface 句柄
    */
+  /**
+   * 断言"Live2D 画布真的在页面上"。
+   *
+   * 为什么需要这个断言（血的教训）：
+   *   PIXI 在**游离 canvas** 上渲染时，画面完全不可见，但 `readPixels`/像素采样**照样能读到有效像素**——
+   *   于是"ratio>0 / alpha=255"这类判据会把白屏判成正常。唯一可靠的判据是 DOM 关系：
+   *   canvas 在容器里、容器在文档里、且 `app.view` 就是这张 canvas。
+   * @returns {{ok: boolean, detail: object}}
+   */
+  function assertCanvasAttached() {
+    const app = ctx.st.app;
+    const el = (ctx.st.overlay && ctx.st.overlay.isConnected) ? ctx.st.overlay : document.getElementById('live2d-overlay');
+    const canvas = document.getElementById(OVERLAY_CANVAS_ID);
+    const inContainer = !!(canvas && el && typeof el.contains === 'function' && el.contains(canvas));
+    const inDom = !!(canvas && canvas.isConnected);
+    const viewOk = !!(app && app.view && app.view.isConnected === true);
+    const viewIsCanvas = !!(app && canvas && app.view === canvas);
+    return {
+      ok: inContainer && inDom && viewOk && viewIsCanvas,
+      detail: {
+        hasCanvas: !!canvas, inContainer, inDom, viewOk, viewIsCanvas,
+        appViewId: app && app.view ? (app.view.id || '(无 id)') : null,
+      },
+    };
+  }
+
   async function mount(doc, handle) {
     ctx.handleRef = handle || null;
     const entry = doc && (doc.model || doc);
     const result = await bridge.loadForEngine(entry);
+    // 装载后立刻校验"画布在页面上"：同面切换曾因 canvas 被 PIXI 摘掉而整屏空白，
+    //   而 stats/像素采样全都报正常；这里让缺陷当场变成一条 warn（自检也会读它）。
+    const chk = assertCanvasAttached();
+    if (!chk.ok) ctx.note(`Live2D 画布不在页面上（画面将不可见）：${JSON.stringify(chk.detail)}`, 'warn');
     return result;
   }
 
   /**
-   * 卸载：释放当前内容 + **自建 GL 资源**（PIXI app），并自隐藏。
+   * 卸载 / 彻底释放：**同一条释放路径**（实现在 live2d/release.js，便于静态回归）。
    *
-   * 为什么不能只 hide：契约 §五-7 明确「在 unmount/dispose 里遗留自建 GL 资源」算缺陷——
-   *   PIXI app 持有一个 WebGL 上下文与整棵 display tree，只 hide 会让它在切走后继续占用。
-   * 与 dispose() 的区别：**保留覆盖层 DOM 元素**，下次 mount 时 ensureApp() 重建 app 即可（更快）。
-   * 幂等：app 已为空时只做状态复位。
+   * 为什么 live2d 两面不做区分（与 spine 相反）：
+   *   PIXI `app.destroy(true)` 的 removeView 会摘掉 canvas 只留容器，留下「容器在、canvas 不在」
+   *   的中间态；一旦下游按容器复用，PIXI 就会渲染到**不在 DOM 的游离画布**上——页面全白，
+   *   而 stats 与像素采样全都正常（曾真实发生）。app 与覆盖层 DOM 重建成本都很低，
+   *   不值得为"保留 DOM"维护第二套生命周期。下次 mount 由 buildOverlay 全量重建。
+   * spine 相反：重建引擎要重注入运行时源码并按版本选运行时，代价高，所以那边保留引擎。
    */
   function unmount() {
-    const hadApp = !!ctx.st.app;
-    overlay.hide();                      // 自隐藏：不依赖调用方记得藏画布
-    if (ctx.st.app) {
-      try { ctx.st.app.destroy(true, { children: true }); } catch { /* 销毁失败不阻塞卸载 */ }
-      ctx.st.app = null;
-    }
-    // 状态复位：否则 isActive()/debug() 会继续报告"还有模型在显示"
-    ctx.st.model = null;
-    ctx.st.modelId = null;
-    ctx.st.meta = null;
-    ctx.st.motionMap = new Map();
-    ctx.st.vfsStats = null;
-    ctx.st.active = false;
-    if (hadApp) ctx.note('Live2D 已卸载（app 销毁、覆盖层隐藏；保留 DOM 便于再切回）');
+    releaseLive2DResources({ st: ctx.st, note: ctx.note, stopDiag: takeDiagStop() });
   }
 
-  /** 彻底释放（销毁 PIXI app 与覆盖层） */
+  /** 彻底释放：与 unmount 同一路径（渲染器实例是否丢弃由调用方决定） */
   function dispose() {
-    try { if (diagHandle && typeof diagHandle.stop === 'function') diagHandle.stop(); } catch { /* 忽略 */ }
+    releaseLive2DResources({ st: ctx.st, note: ctx.note, stopDiag: takeDiagStop() });
+  }
+
+  /** 取出并清空诊断 HUD 停止函数（幂等：第二次返回 null） */
+  function takeDiagStop() {
+    const h = diagHandle;
     diagHandle = null;
-    overlay.hide();
-    try { if (ctx.st.app) ctx.st.app.destroy(true, { children: true }); } catch { /* 忽略 */ }
-    ctx.st.app = null;
-    const el = document.getElementById('live2d-overlay');
-    if (el && el.parentElement) el.parentElement.removeChild(el);
-    ctx.st.overlay = null;
-    ctx.st.libsReady = null;
-    ctx.note('Live2D 已彻底释放（app 销毁、覆盖层移除）');
+    return h && typeof h.stop === 'function' ? () => h.stop() : null;
   }
 
   // 诊断 HUD：仅在 ?diag=1 时创建；所有取值都延迟到调用时（此处 app 可能为 null）
@@ -150,5 +168,10 @@ export function createLive2DStage({ vfs, getOverlayHost, log } = {}) {
     syncSize: (handle) => view.syncSize(handle),
     /** 写一条日志（供渲染器记录切换断言） */
     note: (message) => ctx.note(message),
+    /**
+     * 断言"画布真的在页面上"（切换/装载后自检用）。
+     * 像素采样在游离 canvas 上照样能读到有效像素，所以可见性只能用 DOM 关系判定。
+     */
+    assertCanvasAttached,
   };
 }

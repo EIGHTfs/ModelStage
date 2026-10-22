@@ -154,7 +154,9 @@ try { if (live2d.syncSize) live2d.syncSize({ size: { width: cssW, height: cssH }
       // presetFilter：12 档滤镜预设，经 PIXI.Filter 挂到 overlay stage（复用引擎同一套表达式）
       // msaa / pma / fit 不声明：msaa 要重建 PIXI app（运行期做不到）；
       //   pma 由 PIXI 纹理管线托管、无法按页切直通/转预乘；fit 的"全部部件/动画全程"依赖 Spine 骨架包围盒数据（Live2D 无此数据）。
-      settings: ['textureFilter', 'fps', 'dpr', 'presetFilter'],
+      // animation：动作切换经 bridge.playLabel 落地（本面唯一的"内容操作"能力）。
+      //   skin / partFilter / mixMode 不声明——本面没有对应实现，声明了就是骗面板。
+      settings: ['textureFilter', 'fps', 'dpr', 'presetFilter', 'animation'],
       debugDraw: [],
       camera: 'ortho-2d',
     },
@@ -205,8 +207,19 @@ if (typeof live2d.syncSize === 'function') {
      * @returns {boolean}
      */
     setSetting(key, value) {
-      const cur = this.getSetting(key);
-      if (cur !== null && cur !== undefined && String(cur) === String(value)) return true;
+      // animation 例外：重复点同一条动作是"重播"，不能被同值短路吞掉
+      if (key !== 'animation') {
+        const cur = this.getSetting(key);
+        if (cur !== null && cur !== undefined && String(cur) === String(value)) return true;
+      }
+      if (key === 'animation') {
+        // 空值 = 无操作（能力自检同值回灌时会走到这里）
+        const label = value === null || value === undefined ? '' : String(value);
+        if (!label) return true;
+        try { return live2d.bridge.playLabel(label) === true; } catch { return false; }
+      }
+      // 未声明的三项（skin / partFilter / mixMode）：本面确实不支持，如实返回 false
+      if (key === 'skin' || key === 'partFilter' || key === 'mixMode') return false;
       if (key === 'presetFilter') {
         const id = String(value || DEFAULT_FILTER);
         if (!FILTER_PRESETS.some((x) => x.id === id)) return false; // 未知档位不认
@@ -271,6 +284,10 @@ if (typeof live2d.syncSize === 'function') {
         if (app && app.renderer && app.renderer.resolution) return app.renderer.resolution;
         return effectiveRes();
       }
+      if (key === 'animation') {
+        // 无模型时回显 ''（不是 null，理由同 spine）
+        try { return (live2d.bridge.currentLabel && live2d.bridge.currentLabel()) || ''; } catch { return ''; }
+      }
       if (key === 'presetFilter') return presetId;
       if (key === 'textureFilter') return filterMode;
       if (key === 'fps') {
@@ -280,8 +297,10 @@ if (typeof live2d.syncSize === 'function') {
       return null;
     },
     /**
-     * 卸载：释放当前内容与自建 GL 资源（PIXI app），并自隐藏；幂等。
-     * 切换渲染面时走这里（保留覆盖层 DOM，再切回更快）。
+     * 卸载：释放内容 + 自建 GL 资源（PIXI app）+ 移除覆盖层容器；幂等。
+     * 与 dispose 同一释放路径（渲染器实例本身仍存活，下次 mount 全量重建 app 与 DOM）。
+     * 为什么不像 spine 那样保留：PIXI 的 destroy(true) 会摘掉 canvas 只留容器，
+     *   那个中间态正是"页面空白但 stats 正常"的来源；重建成本低，不值得为此维护两套生命周期。
      */
     unmount() {
       try { if (typeof live2d.unmount === 'function') live2d.unmount(); } catch { /* 忽略 */ }

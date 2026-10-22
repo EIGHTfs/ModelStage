@@ -8,7 +8,9 @@ import { createCamera } from './camera/index.js';
 import { buildDocument } from '../infra/document.js';
 
 /** Spine 渲染器支持的设置项 */
-const SETTINGS = ['fps', 'dpr', 'msaa', 'textureFilter', 'presetFilter', 'pma', 'fit'];
+// 前 7 项是"引擎参数"，后 4 项是"内容操作"（皮肤/部件筛除/动作混合/动作切换）：
+//   它们同样只能经 setSetting 落地（INV-01），否则 Live2D 模式下会打到隐藏的 spine 舞台。
+const SETTINGS = ['fps', 'dpr', 'msaa', 'textureFilter', 'presetFilter', 'pma', 'fit', 'skin', 'partFilter', 'mixMode', 'animation'];
 /** Spine 渲染器支持的调试绘制项
  *  注：不含 points —— 3.8/4.1/4.2/4.3 的 SkeletonDebugRenderer 均无 drawPoints（实测 grep 全为 0），
  *  该项永远画不出来，按「声明即必须可实现」不列入能力声明；运行时若探测到缺失项，
@@ -119,12 +121,34 @@ export function createSpineRenderer({ stage, onMsaa } = {}) {
     setSetting(key, value) {
       // 同值短路：生效值没变就不重复应用（msaa 会重建上下文、pma 会重传纹理、fit 会重置取景，
       //   无谓的重复执行既拖慢也破坏现场；能力自检因此可以安全地"同值回灌"）
-      const cur = this.getSetting(key);
-      if (cur !== null && cur !== undefined && String(cur) === String(value)) return true;
+      // 同值短路：animation 例外——重复点同一条动作是"重播"，不能被短路吞掉
+      if (key !== 'animation') {
+        const cur = this.getSetting(key);
+        if (cur !== null && cur !== undefined && String(cur) === String(value)) return true;
+      }
       const dbg = /^debug:(.+)$/.exec(String(key || ''));
       if (dbg) {
         if (!DEBUG_DRAW.includes(dbg[1]) || typeof stage.setDebug !== 'function') return false;
         try { stage.setDebug({ [dbg[1]]: !!value }); return true; } catch { return false; }
+      }
+      // ---- 内容操作四键：返回值语义与改动前一致（皮肤=是否真的切过去；mixMode=是否生效；
+      //      partFilter=是否下发；animation=舞台是否接受）
+      if (key === 'skin') {
+        try { return stage.setSkin(String(value)) !== false; } catch { return false; }
+      }
+      if (key === 'partFilter') {
+        try { stage.setPartFilter(value && typeof value === 'object' ? value : {}); return true; } catch { return false; }
+      }
+      if (key === 'mixMode') {
+        try { stage.setMixMode(!!value); } catch { return false; }
+        return this.getSetting('mixMode') === !!value;
+      }
+      if (key === 'animation') {
+        // 空值 = "没有要切的动作"：接受但不做事（能力自检会用同值回灌探活，
+        //   此刻通常还没装模型，返回 false 会被误判成"声明支持但未实现"）
+        const name = value === null || value === undefined ? '' : String(value);
+        if (!name) return true;
+        try { return stage.setAnimation(name) === true; } catch { return false; }
       }
       if (key === 'msaa') {
         // 抗锯齿要重建上下文，属外壳职责（applyMsaa）；渲染器只提供入口，不自己重建
@@ -149,6 +173,17 @@ export function createSpineRenderer({ stage, onMsaa } = {}) {
       const st = (() => { try { return stage.stats().settings; } catch { return null; } })();
       if (!st) return null;
       if (dbg) return !!(st.debug && st.debug[dbg[1]]);
+      // 内容操作四键：回显**生效值**（INV-08），读舞台/引擎的真实状态，不是请求值
+      if (key === 'skin') return st.skin || 'default';
+      if (key === 'mixMode') return (Number(st.mixTime) || 0) > 0;
+      if (key === 'partFilter') {
+        return { enabled: st.partFilterEnabled === true, keywords: Array.isArray(st.partFilterKeywords) ? st.partFilterKeywords.slice() : [] };
+      }
+      if (key === 'animation') {
+        // 无模型时回显 ''（而不是 null）：null 会让能力自检判成"没有生效值"
+        const eng = (() => { try { return stage.debug ? stage.debug().engine : null; } catch { return null; } })();
+        return (eng && eng.animationName) || '';
+      }
       const map = { fps: 'fpsLimit', dpr: 'dprMode', msaa: 'msaa', textureFilter: 'textureFilter', presetFilter: 'filter', pma: 'pma', fit: 'fit' };
       const k = map[key];
       return k && st[k] !== undefined ? st[k] : null;

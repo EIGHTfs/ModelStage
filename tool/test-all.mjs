@@ -30,8 +30,13 @@ const SUITE_TIMEOUT_MS = 180000;
 
 /** 套件清单：顺序固定（从"接线自检"到"重交互回归"） */
 const SUITES = [
+  // 静态契约套件（node --test + 最小 DOM 垫片，秒级、无需浏览器）：
+  //   放最前——契约级回归（卸载语义/画布挂载/分派规则）一旦破了，先在这里红，
+  //   不用等到跑完几十分钟的交互套件才发现。
+  { name: 'renderer-contract', runner: 'node-test', file: 'test/renderer-contract.test.mjs' },
+  { name: 'live2d-lifecycle', runner: 'node-test', file: 'test/live2d-lifecycle.test.mjs' },
   // 引擎冒烟（3.8 ↔ 4.1 版本往返 + samplePixels().ratio + lastError 判据）：
-  //   它验证的是"引擎能不能出画"，是所有交互套件的前置，放最前
+  //   它验证的是"引擎能不能出画"，是所有交互套件的前置
   { name: 'engine-b1', wait: 4500 },
   { name: 'f1-controls', wait: 4500 },
   { name: 'f2-topbar', wait: 4500 },
@@ -45,6 +50,8 @@ const SUITES = [
 
 /** 单套耗时估计（秒）：只为打印"预计多久"，不参与判定；取自实测均值 */
 const EST_SEC = {
+  'renderer-contract': 1,
+  'live2d-lifecycle': 1,
   'engine-b1': 18,
   'f1-controls': 24, 'f2-topbar': 14, 'f3-reveal': 11, 'f4-roots': 13,
   'spine-actions': 62, 'panel-actions': 17, 'roster-actions': 18, 'anim-list': 34,
@@ -80,7 +87,10 @@ const RULES = [
   { re: /^src\/web\/infra\//, suites: ['spine-actions', 'anim-list', 'panel-actions'] },
   { re: /^src\/web\/debug\//, suites: ['panel-actions'] },
   // 测试脚本本身：改了哪套就跑哪套（名字不在 SUITES 里的按"无法映射"处理）
-  { re: /^test\/([^/]+)\.js$/, suiteFromName: true },
+  // 静态套件的公共垫片：改它等于改两个静态套件
+  { re: /^test\/helpers\//, suites: ['renderer-contract', 'live2d-lifecycle'] },
+  // test/<名>.js 或 test/<名>.test.mjs：改了哪个套件就只跑哪个（静态套件同样适用）
+  { re: /^test\/([^/]+?)(?:\.test)?\.m?js$/, suiteFromName: true },
 ];
 
 /** 文档/配置类改动：不影响渲染回归（命中这些就跳过，除非显式 --all） */
@@ -284,7 +294,40 @@ function runSuiteWithRetry(suite) {
   return runSuite(suite);
 }
 
+/**
+ * 跑一个 node --test 静态套件，从 TAP 输出里取 pass/fail。
+ * @param {{name: string, file: string}} suite
+ * @returns {{name: string, failed: number|null, total: number|null, problems: number, ms: number, failing: string[], raw: string}}
+ */
+function runNodeTestSuite(suite) {
+  const file = path.join(PROJECT, suite.file);
+  if (!fs.existsSync(file)) return { name: suite.name, missing: true };
+  const started = Date.now();
+  const res = spawnSync(process.execPath, ['--test', file], {
+    cwd: PROJECT, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, timeout: SUITE_TIMEOUT_MS,
+  });
+  const out = `${res.stdout || ''}\n${res.stderr || ''}`;
+  const pass = /^# pass (\d+)$/m.exec(out);
+  const fail = /^# fail (\d+)$/m.exec(out);
+  const total = pass || fail ? Number(pass ? pass[1] : 0) + Number(fail ? fail[1] : 0) : null;
+  // 失败用例名：TAP 的 "not ok N - 名字"
+  const failing = [...out.matchAll(/^not ok \d+ - (.+)$/gm)].map((m) => m[1].trim());
+  return {
+    name: suite.name,
+    failed: fail ? Number(fail[1]) : null,
+    total,
+    problems: 0,
+    ms: Date.now() - started,
+    failing,
+    raw: out,
+    stderrTail: (res.stderr || '').trim().split('\n').slice(-3).join(' | ').slice(0, 300),
+    status: res.status,
+  };
+}
+
 function runSuite(suite) {
+  // 静态契约套件：`node --test <file>`，从 TAP 汇总行解析 pass/fail（无浏览器、无服务依赖）
+  if (suite.runner === 'node-test') return runNodeTestSuite(suite);
   const script = path.join(PROJECT, 'test', `${suite.name}.js`);
   if (!fs.existsSync(script)) return { name: suite.name, missing: true };
   let url = BASE;

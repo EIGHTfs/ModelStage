@@ -26,6 +26,23 @@ const OVERLAY_CANVAS_ID = 'live2d-overlay-canvas';
  *   log?: (message: string, level?: 'info'|'warn'|'error') => void,
  * }} [options] root 缺省用 #stage
  */
+/**
+ * 按 mode 选出要调用的卸载方法（纯函数，契约 §二 / §五-3 的落地判据）。
+ *   · mode='unmount' → 优先 unmount（释放内容、保留引擎）
+ *   · 其它（含缺省）→ dispose（彻底拆）
+ *   · 渲染器**没实现** unmount 时回落 dispose —— 宁可彻底拆，也不能什么都不做（否则就是资源泄漏）
+ * @param {object|null} renderer
+ * @param {'unmount'|'dispose'} mode
+ * @returns {Function|null} 无参调用函数；渲染器为空或两种方法都没有时返回 null
+ */
+export function pickDisposeCall(renderer, mode) {
+  if (!renderer) return null;
+  const want = mode === 'unmount' ? 'unmount' : 'dispose';
+  if (typeof renderer[want] === 'function') return () => renderer[want]();
+  if (typeof renderer.dispose === 'function') return () => renderer.dispose();
+  return null;
+}
+
 export function createStageSurface({ root, log } = {}) {
   /** 根容器（#stage） */
   function rootEl() {
@@ -316,12 +333,9 @@ export function createStageSurface({ root, log } = {}) {
    */
   async function disposeActive(mode = 'dispose') {
     const entry = renderers.get(st.activeId);
-    const fn = mode === 'unmount' ? 'unmount' : 'dispose';
-    if (entry && typeof entry[fn] === 'function') {
-      try { await entry[fn](); } catch { /* 卸载失败也要继续切面 */ }
-    } else if (entry && typeof entry.dispose === 'function') {
-      // 兼容：渲染器没实现 unmount 时退回 dispose —— 宁可彻底拆，也不留残渣
-      try { await entry.dispose(); } catch { /* 同上 */ }
+    const call = pickDisposeCall(entry, mode);
+    if (call) {
+      try { await call(); } catch { /* 卸载失败也要继续切面 */ }
     }
     st.activeId = null;
     st.document = null;

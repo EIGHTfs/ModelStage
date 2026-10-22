@@ -6,6 +6,7 @@
 //   ③ rebuildPanelFor：按当前渲染器能力重算三态 + 重跑能力自检（契约 INV-05）
 
 import { dom, stage, state } from '../app/context.js';
+import { rendererSupports, setRendererSetting } from '../app/renderer-setting.js';
 import { stageStatus } from '../app/status.js';
 import { PANEL_GROUPS, applyCapabilities, selfCheck, settingKeyOf } from './schema.js';
 import { mountPanel } from './view.js';
@@ -28,8 +29,9 @@ export function connectPanelRefresh(fn) {
 }
 
 /**
- * 外壳自己处理的控件（与渲染器无关）：主题/背景走 CSS 与 Surface，混合模式与皮肤列表走舞台既有状态，
- * 部件筛除是显示层策略。其余设置一律经 renderer.setSetting 下发（契约 INV-01：不得出现 stage.setXxx）。
+ * 外壳自己处理的控件：主题/背景走 CSS 与 Surface（与渲染器无关）；
+ *   皮肤、混合模式、部件筛除虽然也由外壳记住偏好，但**落地一律经 renderer.setSetting**（契约 INV-01）。
+ *   其它设置项同理——面板层不得直接调用舞台的 set 方法。
  */
 const SHELL_APPLIERS = {
   'ctl-theme': (v) => applyTheme(v),
@@ -37,7 +39,8 @@ const SHELL_APPLIERS = {
   'ctl-mix-mode': (v) => applyMixMode(v),
   'ctl-anim-loop': (v) => applyAnimLoop(v),
   'ctl-skin-mix': (v) => applySkinMix(v),
-  'ctl-skin-list': (v) => stage && stage.setSkin(v),
+  // 皮肤切换同样经渲染器（INV-01）：Live2D 面没声明 skin ⇒ 不会打到隐藏的 spine 舞台
+  'ctl-skin-list': (v) => setRendererSetting('skin', v),
   'ctl-part-filter': (v) => applyPartFilter({ enabled: !!v }),
   'ctl-part-filter-reset': () => applyPartFilter({ keywords: DEFAULT_PART_FILTER_KEYWORDS.slice() }),
   'ctl-hang-guard': (v) => applyHangGuard(v),
@@ -92,6 +95,14 @@ export function restorePanelSettings(skipIds) {
 function applyPanelSetting(id, value) {
   const shell = SHELL_APPLIERS[id];
   if (shell) {
+    // 外壳项里也有"依赖渲染面能力"的（皮肤/混合模式/部件筛除）：
+    //   渲染器没声明该键 ⇒ 直接拒绝并留痕，不静默无效（面板本身已把它置灰）
+    const cap = settingKeyOf(id);
+    const needKey = cap ? (cap.kind === 'debug' ? `debug:${cap.capabilityKey}` : cap.settingKey) : null;
+    if (needKey && !rendererSupports(needKey)) {
+      stageStatus(`当前渲染面未声明能力「${needKey}」，${id} 不可用`, 'warn');
+      return;
+    }
     shell(value);
     rememberPanelSetting(id, value);
     return;

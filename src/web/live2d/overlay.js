@@ -35,21 +35,34 @@ export function createOverlay(ctx) {
    *   但尺寸仍由 overlay.setBox 写 —— 本模块不再拥有"尺寸"这件事。
    */
   function buildOverlay() {
-    if (st.overlay && st.overlay.isConnected) return st.overlay;
+    // 复用条件必须**同时**满足：容器还在 DOM 里 **且** 里面确实有覆盖层 canvas。
+    //
+    // 为什么必须查 canvas（这个条件是踩过坑才补上的）：
+    //   PIXI 的 `app.destroy(true)` 第一参数是 removeView —— 它会把 canvas 从容器里摘掉。
+    //   渲染面"卸载"（同面换模型会走 unmount）正是这么做的；此时容器 div 仍在 DOM、
+    //   `st.overlay.isConnected` 仍为 true，只看 isConnected 就会**复用空容器** ⇒
+    //   ensureApp 用 getElementById 取 canvas 得到 null ⇒ PIXI 自建 canvas 但不插入 DOM ⇒
+    //   渲染在游离画布上，页面一片空白，而 stats 照样报"已加载"。
+    // 所以：容器可复用，但**canvas 丢了必须补建**（不整块重建，省掉重建容器的副作用）。
+    const hasCanvas = (el) => !!(el && el.querySelector && el.querySelector(`#${OVERLAY_CANVAS_ID}`));
+    if (st.overlay && st.overlay.isConnected && hasCanvas(st.overlay)) return st.overlay;
     const host = (typeof getOverlayHost === 'function' ? getOverlayHost() : null)
       || document.getElementById('stage') || document.body;
-    let el = document.getElementById(OVERLAY_ID);
+    let el = document.getElementById(OVERLAY_ID)
+      || (st.overlay && st.overlay.isConnected ? st.overlay : null);
     if (!el) {
       el = document.createElement('div');
       el.id = OVERLAY_ID;
       // 关键：pointer-events:none ⇒ 事件下穿到 Spine 画布，交互层与相机路径完全不变
       el.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;z-index:5;'
         + 'display:none;pointer-events:none;background:transparent;overflow:hidden';
+      host.appendChild(el);
+    }
+    if (!hasCanvas(el)) {
       const cv = document.createElement('canvas');
       cv.id = OVERLAY_CANVAS_ID;
       cv.style.cssText = 'display:block;width:100%;height:100%;background:transparent';
       el.appendChild(cv);
-      host.appendChild(el);
     }
     st.overlay = el;
     return el;

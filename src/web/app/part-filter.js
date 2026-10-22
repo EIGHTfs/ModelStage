@@ -4,7 +4,8 @@
 //   写 state → 下发给舞台 → 持久化 → 打 dataset（断言与排查都读它）。
 // 关键词默认值来自旧端存储的默认值，别处不再重复写死。
 
-import { state, stage } from './context.js';
+import { state } from './context.js';
+import { setRendererSetting } from './renderer-setting.js';
 import { saveViewSettings } from './view-settings.js';
 
 /** 部件筛除默认关键字：取自旧端存储 partFilterKeywords 的默认值 */
@@ -15,7 +16,8 @@ export function applyPartFilter(patch) {
   const cur = state.partFilter || { enabled: false, keywords: DEFAULT_PART_FILTER_KEYWORDS.slice() };
   const next = { enabled: !!cur.enabled, keywords: cur.keywords.slice(), ...patch };
   state.partFilter = next;
-  if (stage && stage.setPartFilter) stage.setPartFilter(next);
+  // 经渲染器下发（INV-01）：Live2D 面未声明 partFilter ⇒ 返回 false 并留一条 warn，状态仍记在 state 里
+  setRendererSetting('partFilter', next);
   saveViewSettings({ partFilterEnabled: next.enabled, partFilterKeywords: next.keywords.join(',') });
   document.documentElement.dataset.partFilter = next.enabled ? next.keywords.join(',') : 'off';
   return next;

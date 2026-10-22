@@ -82,7 +82,16 @@ export function createPixiApp(ctx) {
   async function ensureApp() {
     if (st.app) return st.app;
     const el = ctx.api.overlay.buildOverlay();
-    const canvas = document.getElementById(OVERLAY_CANVAS_ID);
+    // 兜底：buildOverlay 已保证容器里有 canvas；这里再取一次仍可能为空（例如被外部脚本摘掉）。
+    //   拿不到就补建并塞回容器 —— 绝不能让 PIXI 拿到 view:null（它会自建一张不在 DOM 里的游离画布，
+    //   渲染正常但页面空白，且像素采样照样能读到有效像素，极难发现）。
+    let canvas = document.getElementById(OVERLAY_CANVAS_ID);
+    if (!canvas && el) {
+      canvas = document.createElement('canvas');
+      canvas.id = OVERLAY_CANVAS_ID;
+      canvas.style.cssText = 'display:block;width:100%;height:100%;background:transparent';
+      el.appendChild(canvas);
+    }
     const opts = {
       view: canvas,
       backgroundAlpha: 0,

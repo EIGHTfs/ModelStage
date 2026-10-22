@@ -14,6 +14,7 @@
 //   这里只负责"给出清单 / 播某条 / 按顺序推进"，不自己另存一份"当前动作"。
 
 import { state, stage } from './context.js';
+import { setRendererSetting } from './renderer-setting.js';
 
 /** 面板与底栏共用的清单缓存（每次模型变化后重建） */
 let cached = [];
@@ -130,13 +131,9 @@ export function currentAnimationId() {
  */
 export function playAnimation(id) {
   if (!id) return false;
-  const bridge = live2dBridge();
-  let ok = false;
-  if (bridge && typeof bridge.playLabel === 'function') {
-    ok = bridge.playLabel(id) === true;
-  } else if (stage && typeof stage.setAnimation === 'function') {
-    ok = stage.setAnimation(id) === true;
-  }
+  // 一律经渲染器下发（INV-01）：Live2D 面走 bridge.playLabel、Spine 面走舞台的 setAnimation，
+  //   分流在各自渲染器的 setSetting('animation') 里，这里不再判断"哪一面"。
+  const { ok } = setRendererSetting('animation', id);
   if (ok) notePlaying(id);
   return ok;
 }
@@ -182,10 +179,7 @@ function stepCycle() {
   if (Date.now() - cycle.startedAt < waitMs) return;
   const next = list[(idx + 1) % list.length]; // 末尾回到第一条
   if (!next) return;
-  const bridge = live2dBridge();
-  const ok = bridge && typeof bridge.playLabel === 'function'
-    ? bridge.playLabel(next.id) === true
-    : (stage && typeof stage.setAnimation === 'function' && stage.setAnimation(next.id) === true);
+  const { ok } = setRendererSetting('animation', next.id);
   if (!ok) return;
   notePlaying(next.id);
   if (state.transport) state.transport.setSelectValue('transport-motion', next.id);

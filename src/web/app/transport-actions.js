@@ -5,6 +5,7 @@
 // 同时打 dataset 供自动化断言读。
 
 import { dom, stage, state } from './context.js';
+import { getRendererSetting, setRendererSetting } from './renderer-setting.js';
 import { stageStatus } from './status.js';
 import { formatError, getJson } from '../infra/api.js';
 import { applyBackground } from './view-settings.js';
@@ -98,7 +99,10 @@ function fillTransportOptions(info) {
  *   旧端也是分开的两个开关，互不同步。
  */
 function applyMixMode(on) {
-  const value = !!(stage && stage.setMixMode ? stage.setMixMode(on) : 0);
+  // 经渲染器下发（INV-01）：混合模式 = 动作切换是否交叉淡化，Spine 面有实现、Live2D 面没有
+  const { ok } = setRendererSetting('mixMode', !!on);
+  const applied = getRendererSetting('mixMode');
+  const value = ok && applied === true ? 0.2 : 0;
   state.mixMode = !!on;
   if (state.panel) state.panel.setChecked('ctl-mix-mode', !!on);
   document.documentElement.dataset.mixMode = on ? 'on' : 'off';
@@ -119,15 +123,15 @@ function applySkinMix(on) {
 
 /** 换肤时按「皮肤混合模式」决定是否临时淡入 */
 function skinSwitchMixTime(fn) {
-  const want = state.skinMix === true ? 0.2 : 0;
-  let prev = null;
+  // 换肤那一刻临时套用交叉淡化，换完立刻还原——动作/皮肤两个开关互不影响。
+  // 走渲染器（INV-01）；还原放在 finally 里，异常路径也不让皮肤混合状态漏在临时值上。
+  const want = state.skinMix === true;
+  setRendererSetting('mixMode', want);
   try {
-    if (stage && stage.setMixMode) prev = stage.setMixMode(want > 0);
-  } catch { prev = null; }
-  try { return fn(); } finally {
-    try {
-      if (stage && stage.setMixMode && state.mixMode !== undefined) stage.setMixMode(state.mixMode === true);
-    } catch { /* 还原失败不影响业务 */ }
+    return fn();
+  } finally {
+    // 还原到"用户当前选择"（state.mixMode 才是权威），不是还原到临时值
+    setRendererSetting('mixMode', state.mixMode === true);
   }
 }
 

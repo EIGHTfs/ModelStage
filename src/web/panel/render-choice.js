@@ -5,7 +5,9 @@ import { el, markDisabled } from './dom.js';
 
 /** 下拉（select）：项较多、单列占一行的场景（主题、DPR、皮肤等） */
 export function renderSelect(ctl, ctx) {
-  const wired = ctx.isWired(ctl.id);
+  // ctl.disabled 由 applyCapabilities 置（当前渲染面未声明该能力）：
+  //   必须同时压制交互，否则"看起来能点、点了没反应"就是静默无效。
+  const wired = ctx.isWired(ctl.id) && ctl.disabled !== true;
   const row = el('div', 'ctl-row');
   row.dataset.ctl = ctl.id || ''; // 与分段/开关一致：外层行也带 data-ctl，便于统一查询
   row.append(el('span', 'ctl-label', ctl.label));
@@ -32,7 +34,7 @@ export function renderSelect(ctl, ctx) {
 
 /** 预设按钮组（chips）：一组同名按钮，每项自带机器值（滤镜这类"多选一但项很多"的场景） */
 export function renderChips(ctl, ctx) {
-  const wired = ctx.isWired(ctl.id);
+  const wired = ctx.isWired(ctl.id) && ctl.disabled !== true;
   const row = el('div', 'ctl-row ctl-row-chips');
   row.append(el('span', 'ctl-label', ctl.label));
   const box = el('div', 'ctl-chips');

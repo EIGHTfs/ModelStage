@@ -44,6 +44,8 @@ function createMotionApi(ctx) {
 
   return {
     labels: () => ctx.api.model.motionLabels(),
+    /** 当前播放的动作标签（未播过为 null）；渲染器用它回显 animation 的生效值 */
+    currentLabel: () => st.currentLabel || null,
     /** 动作清单（只读）：标签 + group/index + 时长（取不到给 null） */
     motionItems() {
       const items = [];
@@ -88,6 +90,7 @@ function createMotionApi(ctx) {
       }
       try {
         st.model.motion(hit.group, hit.index);
+        st.currentLabel = label;      // 供 renderer.getSetting('animation') 回显生效值
         note(`Live2D 播动作：${label}`);
         return true;
       } catch (err) {

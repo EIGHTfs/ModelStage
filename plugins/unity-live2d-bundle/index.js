@@ -9,14 +9,16 @@
 //      → 需要上层重建 model3.json、把 AnimationClip 转成 motion3.json（转换器在 lib/ 里，
 //        本文件只负责"把素材取出来"，不在此处做转换）
 //
-// 与游戏无关：所有解析走 lib/ 的通用实现；游戏差异（命名约定等）从 profiles/<profile>.json 读，
-//   由资源根配置里的 profile 字段指定（本仓库测试根指向 azurlane）。
+// 与游戏无关：所有解析走 lib/ 的通用实现；同族容器的数据性差异（动作循环规则、淡入淡出、
+//   点击热区）放在 profiles/unityfs-live2d.json，由 file.profile 指定（缺省走通用规则）。
+//   注意：该 profile 文件名按**容器类型**命名而非游戏名——插件只分辨文件类型（fileKinds=bundle），
+//   按游戏名命名会让"碧蓝航线专用"的错觉传递下去，也会与资源根配置里的同名项撞名造成误读。
 //
 // 对外契约（宿主 plugin-host.js）：
-//   register({ id, name, label, fileKinds, probe, open })
-//     label     —— 角色库里变体标签用的文字（宿主按类型决定配色，插件不自创配色）
-//     probe(ctx) —— 返回 0..1 置信度；宿主用它判断"这个文件该不该给本插件读"
-//     open(ctx)  —— 真正读取；ctx = { rootId, rel, name, size, profile, host }
+//   register({ id, name, label, fileKinds, kind, canHandle, resolve })
+//     label      —— 角色库里变体标签用的文字（宿主按类型决定配色，插件不自创配色）
+//     canHandle(file) → boolean  同步纯判定（契约 §3.1）：是不是本插件能读的容器
+//     resolve(file)   → { prefix, files, entry }  契约 §1.2：容器 → 文件表 + 入口
 // ============================================================================
 
 'use strict';
@@ -86,144 +88,6 @@ ulbInstall: {
     return NS.bytes.latin1(bytes, 0, 7) === 'UnityFS' && bytes[7] === 0;
   }
 
-  /**
-   * 置信度：容器签名 +（可选）包内是否有 moc3。
-   * 只按"能不能读"打分，不按游戏名判断。
-   */
-  async function probe(ctx) {
-    try {
-      const bytes = ctx && ctx.bytes ? ctx.bytes : null;
-      // 没给字节时只能按名字/尺寸给个保守值（宿主一般会先给字节）
-      if (!bytes) return 0.5;
-      // 解析步骤全部委托给 lib/bundle-probe.js —— 与服务端 /api/bundle/probe 共用同一份实现，
-      //   避免"预检说能装、装载却失败"这种两份真相造成的漂移
-      const r = NS.bundleProbe.run(bytes);
-      if (!r.ok) {
-        // 有容器但没有 CAB-*（不是资产包）原来给 0.5，保持语义不变；其余不可读一律 0
-        return r.code === NS.errors.CODES.NO_CAB ? 0.5 : 0;
-      }
-      return r.moc3 ? 1 : 0.6;
-    } catch (e) {
-      console.info(`[${PLUGIN_ID}] probe 失败（按不可读处理）：${e.message}`);
-      return 0;
-    }
-  }
-
-  /**
-   * 给页面加载器装两个适配（幂等，只在首次生效）：
-   *
-   * ① `ModelSettings.resolveURL` 的**绝对 URL 直通**。
-   *   页面加载器会把 model3.json 里的每个资源路径都按「相对 model3.json 的 URL」解析
-   *   （ModelSettings.resolveURL → url.resolve(base, path)）。本插件给的是内存态的绝对 URL，
-   *   经它解析后会被拼坏：实测 `blob:http://127.0.0.1:8803/<uuid>` 变成 `blob:http//127.0.0.1:8803/<uuid>`
-   *   （少了冒号），于是贴图/骨架全部取不到（报 "Texture loading error" / XHR status 0）。
-   *   这里对**已带协议的 URL**（blob:/data:/http(s):/、以及以 / 开头的站内绝对路径）直接原样返回；
-   *   相对路径仍走框架原有解析 —— 对普通资源根模型没有任何行为变化。
-   *
-   * ② `Live2DLoader.middlewares` 的前置中间件：URL 是 blob:/data: 时自己 fetch，
-   *   不让框架的 XHR 去解析（与 ① 互补：① 管"路径不被改坏"，② 管"取回来"）。
-   *
-   * 两件事都只涉及"资产怎么取"，不涉及渲染与交互（渲染仍走原版舞台与公共管线）。
-   */
-  function installRuntimeAdapters() {
-    const PIXI = window.PIXI;
-    const l2d = PIXI && PIXI.live2d;
-    if (!l2d) return false;
-    let done = true;
-
-    for (const cls of [l2d.ModelSettings, l2d.Cubism4ModelSettings, l2d.Cubism2ModelSettings]) {
-      if (!cls || !cls.prototype || cls.prototype.__absUrlPassthrough) continue;
-      const proto = cls.prototype;
-      const orig = proto.resolveURL;
-      if (typeof orig !== 'function') continue;
-      proto.__absUrlPassthrough = true;
-      proto.resolveURL = function (path) {
-        if (typeof path === 'string' && /^(blob:|data:|https?:|\/)/i.test(path)) return path;
-        return orig.call(this, path);
-      };
-    }
-    if (!l2d.ModelSettings || !l2d.ModelSettings.prototype.__absUrlPassthrough) done = false;
-
-    const loader = l2d.Live2DLoader;
-    if (loader && Array.isArray(loader.middlewares)) {
-      if (!loader.__blobMiddlewareInstalled) {
-        loader.__blobMiddlewareInstalled = true;
-        loader.middlewares.unshift(async (context, next) => {
-          const u = context && typeof context.url === 'string' ? context.url : '';
-          if (!/^(blob:|data:)/i.test(u)) return next();
-          const r = await fetchWithTimeout(u, undefined, FETCH_TIMEOUT_MS);
-          if (!r.ok) throw NS.errors.fail('ULB_ERR_IO', `读取内存资源失败 HTTP ${r.status}: ${u.slice(0, 32)}…`);
-          if (context.type === 'json') context.result = await r.json();
-          else if (context.type === 'text') context.result = await r.text();
-          else context.result = await r.arrayBuffer();
-          return context.result;
-        });
-      }
-    } else {
-      done = false;
-    }
-    return done;
-  }
-
-  /**
-   * 后台盯着页面加载器（PIXI.live2d.Live2DLoader）出现就装上 blob 中间件。
-   *
-   * 为什么是后台轮询而不是 await：Live2D 运行时由舞台**首次 show() 时懒加载**——
-   *   插件在 show() 之前若一直等加载器，就会与"先装上中间件再 show"互相等待而死锁（实测踩过）。
-   *   轮询每 50 ms 检查一次；舞台把运行时脚本加载完到真正取模型资产之间还有足够时间，中间件必然先就位。
-   *   上限 60 秒，超时停止并留一条日志（不无限占着定时器）。
-   */
-  let blobLoaderTimer = null;
-  let loaderReady = null;        // 共享就绪 Promise：后台轮询装好后 resolve，舞台的 prepare() 直接等它
-  function startBlobLoaderWatch(timeoutMs) {
-    if (loaderReady) return loaderReady;
-    const limit = timeoutMs || 60000;
-    if (installRuntimeAdapters()) {
-      loaderReady = Promise.resolve(true);
-      return loaderReady;
-    }
-    const t0 = Date.now();
-    loaderReady = new Promise((resolve) => {
-      blobLoaderTimer = setInterval(() => {
-        if (installRuntimeAdapters()) {
-          clearInterval(blobLoaderTimer);
-          blobLoaderTimer = null;
-          resolve(true);
-        } else if (Date.now() - t0 > limit) {
-          clearInterval(blobLoaderTimer);
-          blobLoaderTimer = null;
-          console.warn(`[${PLUGIN_ID}] 等页面加载器超时（${limit} ms），本次按"未装适配"继续`);
-          // 超时不是终态：必须把共享 Promise 清空，下一次装载重新起轮询。
-          //   否则这个已 resolve 的 false 会被 startBlobLoaderWatch 首行的 `if (loaderReady) return` 命中，
-          //   导致本页会话此后**永久**按"未装适配"装载（实测：页面停留超过超时时间后首次装载必然失败）。
-          loaderReady = null;
-          resolve(false);
-        }
-      }, 50);
-    });
-    return loaderReady;
-  }
-
-  /**
-   * 等运行时加载器就绪并装上 blob 中间件（由舞台在装载前 await）。
-   *
-   * 为什么可以在这里等而不会死锁：舞台的 loadAndMountModel 已经先执行过 ensureLibs()，
-   *   运行时脚本（含加载器）已经在加载/就绪路上，只是 PIXI.live2d 可能还在初始化。
-   *   所以这里是**有限等待**（默认 15 秒），到点返回 false 并留日志，不无限等。
-   */
-  /**
-   * 舞台在装载前 await 的钩子：等「blob: 直通」适配装好。
-   *
-   * 这里**不自己轮询**，而是等 `startBlobLoaderWatch` 建立的那份共享 Promise —— 它在 open() 时就已启动，
-   *   运行时一出现就装好并 resolve。原先各自轮询 15 秒会误报「等页面加载器超时」（实测出现过），
-   *   因为页面加载器常常是在框架初始化（cubism4Ready）之后才挂上 PIXI.live2d 的。
-   */
-  async function prepareLoader() {
-    const p = loaderReady || startBlobLoaderWatch(60000);
-    const ok = await p;
-    if (!ok) console.warn(`[${PLUGIN_ID}] 页面加载器适配未装好，内存资源可能取不到`);
-    return ok;
-  }
 
   // 参数表缓存：同一份 moc3 反复 open 时不必重复创建 Cubism Core 的 Model
   //   （Core 的 Model 会占 WASM 堆内存且不随 JS 垃圾回收立即释放，连开多次会明显涨内存）。
@@ -399,71 +263,47 @@ ulbInstall: {
   }
 
   /**
-   * 把抽取出来的素材拼成一个**可渲染的 Live2D 模型**：moc3 / 纹理 PNG / physics3 / motion3 全部转成
-   * Blob URL 写进重建的 model3.json，再把 model3.json 也转成 Blob URL。
+   * 把 Unity 集成版抽取出的素材整理成**契约形态的「文件表 + 入口」**：
+   *   moc3 / 纹理 PNG / physics3 / motion3 / 重建的 model3.json 全部按「相对键」进 files，
+   *   model3.json 的 FileReferences 引用 files 内的键（不写 Blob URL）。
    *
-   * 为什么用 Blob URL 拼绝对路径：页面上的模型加载器（pixi-live2d-display）是按 model3.json 的
-   *   所在 URL 解析相对路径的；内存里的资源没有目录，故把每个资源的绝对 URL 直接写进 model3.json。
+   * 为什么用相对键而不是 Blob URL（契约 §1.2）：files 的值必须是文件内容（Blob/string），
+   *   URL 不是内容、也没法被 VirtualFS 注册；核心按 prefix 注册后由渲染层解析相对引用。
+   *   旧实现曾把 Blob URL 写进 model3 并给页面加载器装直通中间件，那属于契约 §3.8 点名的问题形态
+   *   （"想给加载器装中间件"= 产物形态设计有问题），现已按契约收敛为纯文件表。
    *
-   * 产出的形状与现有 Live2D 模型一致（id/name/kind/cubism/modelUrl/motions/expressions/textureFiles），
-   *   因此可以直接交给现有舞台 show()，复用原版右栏动作区与公共事件层——不新增渲染或事件代码。
+   * 键名规则：moc3 → 'moc3.moc3'；纹理 → 'textures/<原纹理名>.png'；
+   *   physics3 → 'physics3.json'；动作 → 'motions/<动作名>.motion3.json'；入口 → 'model3.json'。
+   *   键只按素材角色命名，不含游戏名/资源根路径（契约 §五.6 禁止写死）。
    *
-   * 迁移期新增的 `relative` 模式（契约 canHandle/resolve 用）：
-   *   不创建 Blob URL，model3 直接引用「相对键」（files 表里的 relPath），返回 { files, entry }。
-   *   这样核心拿到 files 后可按 prefix 注册 VirtualFS，渲染层按 entry 装载，不再依赖 Blob URL 直通。
-   *   需求意图：契约要求 resolve() 产出 prefix+files+entry，且插件不自行 register VirtualFS；
-   *   相对键的 model3 让 files 表自洽（不引用表外 URL），同时保留旧 open() 的 Blob URL 路径不变。
+   * @returns {Promise<{files: Map<string,Blob>, entry: string}>}
    */
-  async function buildRenderableModel(extracted, ctx, profile, opts) {
-    const relative = !!(opts && opts.relative);
-    const files = new Map();      // 相对键 → Blob|string（仅 relative 模式填充）
-    const urls = [];
-    // 键名规则：moc3 用固定键 'moc3.moc3'，纹理 'textures/<原纹理名>.png'，physics3 'physics3.json'，
-    //   动作 'motions/<动作名>.motion3.json'。键内不用游戏名/路径，只按素材角色命名（契约 §5.6 不写死游戏名）。
+  async function buildFileSet(extracted, profile) {
+    const files = new Map();      // 相对键 → Blob（契约 §1.2：Blob|string；二进制一律 Blob）
+    const put = (key, bytes, mime) => { files.set(key, new Blob([bytes], { type: mime || 'application/octet-stream' })); return key; };
+
     const KEY_MOC3 = 'moc3.moc3';
     const KEY_PHYSICS = 'physics3.json';
     const keyTexture = (n) => `textures/${n}.png`;
     const keyMotion = (n) => `motions/${n}.motion3.json`;
-    const model3Key = 'model3.json';
 
-    const blobUrl = (keyOrBytes, mime) => {
-      // relative 模式：keyOrBytes 是 {bytes, key}；旧模式：直接给 bytes
-      let bytes;
-      let key = null;
-      if (relative) { key = keyOrBytes.key; bytes = keyOrBytes.bytes; }
-      else { bytes = keyOrBytes; }
-      if (relative && key) files.set(key, new Blob([bytes], { type: mime || 'application/octet-stream' }));
-      if (relative) return key;     // relative 模式返回「键」而非 URL（model3 引用它，核心按 prefix 解析）
-      const u = URL.createObjectURL(new Blob([bytes], { type: mime || 'application/octet-stream' }));
-      urls.push(u);
-      return u;
-    };
-
-    const mocRef = blobUrl(relative ? { bytes: extracted.moc3, key: KEY_MOC3 } : extracted.moc3, 'application/octet-stream');
+    const mocRef = put(KEY_MOC3, extracted.moc3, 'application/octet-stream');
     // 纹理：逐张压缩编码（不并发），编完立刻释放 RGBA 缓冲 —— 峰值内存比"两张 67MB 级 PNG 同时生成"低得多。
     const textureRefs = [];
     for (const t of extracted.textures) {
       if (!t.rgba) continue;
       const png = await NS.png.encodePngAsync(t.rgba, t.width, t.height);
       t.pngBytes = png.length;
-      const tKey = keyTexture(t.name);
-      textureRefs.push(blobUrl(relative ? { bytes: png, key: tKey } : png, 'image/png'));
+      textureRefs.push(put(keyTexture(t.name), png, 'image/png'));
       t.rgba = null;   // 释放 4096²×4 ≈ 64MB 级缓冲（模型不再需要它）
     }
-    const physicsRef = extracted.physics3
-      ? blobUrl(relative ? { bytes: extracted.physics3, key: KEY_PHYSICS } : extracted.physics3, 'application/json')
-      : null;
+    const physicsRef = extracted.physics3 ? put(KEY_PHYSICS, extracted.physics3, 'application/json') : null;
 
-    // 动作：每个 motion3.json 一个引用，并按 profile 规则分组（组内顺序 = 名字序，稳定可复现）
+    // 动作：每个 motion3.json 一个键，并按 profile 规则分组（组内顺序 = 名字序，稳定可复现）
     const motionDefs = [];
     for (const m of extracted.motions) {
       const json = m.json;
-      const mKey = keyMotion(m.name);
-      const ref = blobUrl(
-        relative ? { bytes: new TextEncoder().encode(JSON.stringify(json)), key: mKey }
-                 : new TextEncoder().encode(JSON.stringify(json)),
-        'application/json',
-      );
+      const ref = put(keyMotion(m.name), new TextEncoder().encode(JSON.stringify(json)), 'application/json');
       motionDefs.push({ name: m.name, url: ref, group: NS.model3.motionGroupOf(m.name, profile), loop: !!json.Meta.Loop, meta: json.Meta });
     }
     motionDefs.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
@@ -477,51 +317,9 @@ ulbInstall: {
       paramNames,
       profile,
     });
-    const model3Ref = blobUrl(
-      relative ? { bytes: new TextEncoder().encode(JSON.stringify(model3)), key: model3Key }
-               : new TextEncoder().encode(JSON.stringify(model3)),
-      'application/json',
-    );
-
-    // 舞台需要 motions 形状：{ 组: [{ name }] }（它按 (组, 下标) 播放，故顺序必须与 model3 一致）
-    const motions = {};
-    for (const d of motionDefs) {
-      if (!motions[d.group]) motions[d.group] = [];
-      motions[d.group].push({ name: d.name, file: d.url, loop: d.loop, duration: d.meta.Duration });
-    }
-
-    const id = `bundle:${ctx.rootId}:${ctx.rel}`;
-    const out = {
-      model: {
-        id,
-        name: ctx.name,
-        kind: 'live2d',
-        cubism: 4,
-        modelUrl: model3Ref,
-        motions,
-        expressions: [],
-        textureFiles: textureRefs,
-        bundleProfile: profile.id || null,
-        bundleSource: { rootId: ctx.rootId, rel: ctx.rel, size: ctx.size },
-        // 能力层元数据：画布尺寸与 rest pose 包围盒（口径见 collectCoreModelMeta 注释）
-        designSize: (extracted.meta && extracted.meta.designSize) || null,
-        bbox: (extracted.meta && extracted.meta.bbox) || null,
-        meta: extracted.meta || null,
-        // 装载前把内存资源通道准备好：舞台会在取模型资产之前 await 它（见 live2d-stage.js）。
-        prepare: () => prepareLoader(),
-        // 释放本模型占用的内存资源（Blob URL）。舞台在切换到下一个模型时调用，
-        //   避免每次 open() 都把几十 MB 的贴图/骨架 Blob 留在页面里（实测连开十余次会拖死页面）。
-        revoke: () => {
-          for (const u of urls) { try { URL.revokeObjectURL(u); } catch { /* 忽略 */ } }
-          urls.length = 0;
-        },
-      },
-      model3,
-      motionDefs,
-      urls,
-    };
-    if (relative) out.files = files;   // 契约 resolve() 需要的文件表（相对键 → Blob）
-    return out;
+    // 入口：重建的 model3.json 也进 files（契约 §1.2：entry 必须是 files 的键）
+    put('model3.json', new TextEncoder().encode(JSON.stringify(model3)), 'application/json');
+    return { files, entry: 'model3.json' };
   }
 
   /**
@@ -599,178 +397,17 @@ ulbInstall: {
     return { converted, candidates, paramTable };
   }
 
-  /** 每个动作一行的元数据摘要。 */
-  function summarizeMotions(converted, profile) {
-    return converted.motions.map((m) => ({
-      name: m.name,
-      duration: m.json.Meta.Duration,
-      loop: m.json.Meta.Loop,
-      curves: m.json.Meta.CurveCount,
-      points: m.json.Meta.TotalPointCount,
-      segments: m.json.Meta.TotalSegmentCount,
-      group: NS.model3.motionGroupOf(m.name, profile),
-      skippedUnknownBinding: m.stats.skippedUnknownBinding,
-      skippedNotParameter: m.stats.skippedNotParameter,
-    }));
-  }
-
-  /**
-   * 曲线统计（统一口径：分母 = 全部绑定条数，含被丢弃动作里的绑定）。
-   *   未知名哈希与"不在参数表里"分别计数并各给样例；被丢弃的空动作也计入各自的绑定数。
-   *   另给"跳过量最多的前 5 个动作"，用于反证 moc3 与 AnimationClip 是否同源。
-   */
-  function summarizeCurves(converted, paramTable) {
-    const allStats = [...converted.motions, ...(converted.dropped || [])].map((m) => m.stats);
-    const curvesTotal = allStats.reduce((n, s) => n + s.curvesTotal, 0);
-    const skipByMotion = allStats
-      .map((s) => ({ name: s.name, skipped: s.skippedUnknownBinding + s.skippedNotParameter, total: s.curvesTotal }))
-      .filter((x) => x.skipped > 0)
-      .sort((a, b) => b.skipped - a.skipped);
-    return {
-      total: curvesTotal,
-      emitted: allStats.reduce((n, s) => n + s.emitted, 0),
-      skippedUnknownBinding: allStats.reduce((n, s) => n + s.skippedUnknownBinding, 0),
-      skippedNotParameter: allStats.reduce((n, s) => n + s.skippedNotParameter, 0),
-      skippedEmpty: allStats.reduce((n, s) => n + s.skippedEmpty, 0),
-      expandedSinglePoint: allStats.reduce((n, s) => n + (s.expandedSinglePoint || 0), 0),
-      invalidSegments: allStats.reduce((n, s) => n + s.invalidSegments, 0),
-      unknownHashCount: new Set(allStats.flatMap((s) => s.unknownHashes || [])).size,
-      notParameterIdCount: new Set(allStats.flatMap((s) => s.notParameterIds || [])).size,
-      sampleUnknownHashes: [...new Set(allStats.flatMap((s) => s.unknownHashes || []))].slice(0, 6),
-      sampleNotParameterIds: [...new Set(allStats.flatMap((s) => s.notParameterIds || []))].slice(0, 6),
-      motionsTotal: allStats.length,
-      motionsEmitted: converted.motions.length,
-      motionsDroppedEmpty: (converted.dropped || []).length,
-      droppedMotions: (converted.dropped || []).map((m) => `${m.name}(${m.stats.curvesTotal} 绑定全被跳过)`),
-      skipByMotion: skipByMotion.slice(0, 5).map((x) => `${x.name} ${x.skipped}/${x.total}`),
-      skipTop5Share: skipByMotion.length
-        ? +(skipByMotion.slice(0, 5).reduce((n, x) => n + x.skipped, 0) * 100 / Math.max(1, skipByMotion.reduce((n, x) => n + x.skipped, 0))).toFixed(1)
-        : 0,
-      whitelistApplied: !!paramTable,
-      whitelistCount: paramTable ? paramTable.count : 0,
-    };
-  }
-
-  /** 组装素材报告（只放数字摘要，不挂原始字节：整包几十 MB，挂上去会把页面内存吃光）。 */
-  function buildBundleReport(d) {
-    return {
-      kind: 'live2d-bundle',
-      container: {
-        signature: d.parsed.signature,
-        version: d.parsed.version,
-        engine: d.parsed.engineVersion,
-        player: d.parsed.playerVersion,
-        nodes: d.parsed.nodes.map((n) => ({ path: n.path, size: n.size, offset: n.offset })),
-        dataStart: d.parsed.dataStart,
-        bytes: d.bytesLength,
-      },
-      serialized: {
-        version: d.sf.version,
-        unityVersion: d.sf.unityVersion,
-        types: d.sf.types.length,
-        objects: d.sf.objects.length,
-        classStats: NS.serialized.typeStats(d.sf),
-      },
-      moc3: d.got.moc3 ? { bytes: d.got.moc3.length, magicOffset: d.got.moc3MagicOffset, pathID: d.got.moc3Object.pathID } : null,
-      physics3: d.got.physics3 ? { bytes: d.got.physics3.length } : null,
-      nativeFiles: d.got.nativeFiles.map((f) => ({ name: f.name, bytes: f.bytes ? f.bytes.length : 0 })),
-      textures: d.textures,
-      containerPaths: d.got.containerPaths,
-      profile: d.profile.id || (d.ctx && d.ctx.profile) || null,
-      motions: d.motionsSummary,
-      curveStats: d.curveStats,
-      paramTable: d.paramTable ? { count: d.paramTable.count, partCount: d.paramTable.partCount, hasTypes: !!d.paramTable.types } : null,
-      // 能力层元数据：designSize（moc3 CanvasInfo）/ bbox（rest pose 顶点包围盒）/ 结构计数
-      modelMeta: d.meta || null,
-      motionGroups: Object.keys(d.built.model.motions),
-      model3: d.built.model3,
-      model: d.built.model,
-      raw: {
-        moc3Bytes: d.got.moc3 ? d.got.moc3.length : 0,
-        physics3Bytes: d.got.physics3 ? d.got.physics3.length : 0,
-        serializedVersion: d.sf.version,
-        objects: d.sf.objects.length,
-      },
-      urls: d.built.urls.length,
-    };
-  }
-
-  /**
-   * 读取资源包：容器 → 对象表 → 抽取（moc3 / physics3 / 纹理 / 原生 Cubism 文件）→ 动画曲线转 motion3
-   *   → 拼可渲染模型（Blob URL）。
-   * @returns {Promise<object>} 素材报告 + 可交给 Live2D 舞台的 model
-   */
-  async function open(ctx) {
-    // §3.5 兼容层：旧宿主把宿主能力面挂在 host.host（嵌套）；新契约（§3.6）挂在 host 顶层。
-    //   两代都认：先 ctx.host（旧宿主经 ctx 注入）→ host.host（旧嵌套面）→ host（新顶层能力面）。
-    //   readBundleBytes 按 §3.6 对 hostApi.fetchFile 缺省抛 ULB_ERR_NO_HOST（可退化）。
-    const hostApi = (ctx && ctx.host) || host.host || host;
-    const bytes = await readBundleBytes(ctx, hostApi);
-    const { parsed, cabNode, cabBytes, resSBytes } = parseContainerNodes(bytes, ctx && ctx.name);
-    const sf = NS.serialized.parse(cabBytes);
-    const got = NS.extract.extractAll({ cabBytes, resSBytes, sf });
-    const profile = await loadProfile(ctx && ctx.profile);
-    const textures = decodeTextures(got, resSBytes);
-    const { converted, candidates, paramTable } = await convertClipMotions(got, sf, profile);
-    const motionsSummary = summarizeMotions(converted, profile);
-    const curveStats = summarizeCurves(converted, paramTable);
-
-    // 拼可渲染模型：moc3 / 纹理 / physics3 / motion3 全转 Blob URL，写进重建的 model3.json。
-    //   任一素材缺失/解码失败会让 buildRenderableModel 抛可读错误（宁可明确失败，也不产出坏模型）。
-    const extracted = {
-      moc3: got.moc3,
-      physics3: got.physics3,
-      textures,
-      motions: converted.motions,
-      paramNames: candidates,
-      // 能力层元数据（designSize / bbox / 计数）：由 Core 在同一趟解析里产出，前端直接用
-      meta: paramTable ? paramTable.meta : null,
-    };
-    installRuntimeAdapters();       // 已加载运行时的情况：立即装
-    startBlobLoaderWatch(60000);    // 未加载时：后台盯着，运行时一出现就装
-    const built = await buildRenderableModel(extracted, ctx, profile);   // 内含 await（PNG 压缩编码）
-
-    const report = buildBundleReport({
-      parsed, sf, got, textures, profile, paramTable,
-      motionsSummary, curveStats, built,
-      bytesLength: bytes.length, ctx,
-      meta: extracted.meta,
-    });
-
-
-    // 自检摘要：把"读到了什么"打进控制台，便于无人值守验证（不需要截图）
-    console.info(`[${PLUGIN_ID}] 已解析 ${(ctx && ctx.name) || cabNode.path}`
-      + `：容器 v${parsed.version}/${parsed.engineVersion}，节点 ${parsed.nodes.length}，`
-      + `对象 ${sf.objects.length}，moc3 ${report.moc3 ? report.moc3.bytes : 0} B，`
-      + `physics3 ${report.physics3 ? report.physics3.bytes : 0} B，`
-      + `纹理 ${textures.map((t) => `${t.name}(${t.width}x${t.height}${t.error ? ' 解码失败' : ''})`).join('/') || '无'}，`
-      + `动作 ${motionsSummary.length} 个/分组 ${report.motionGroups.join('+') || '无'}`
-      + `（clips ${curveStats.motionsTotal}，空动作丢弃 ${curveStats.motionsDroppedEmpty}${curveStats.droppedMotions.length ? '：' + curveStats.droppedMotions.join('、') : ''}），`
-      + `曲线 输出 ${curveStats.emitted}/${curveStats.total}`
-      + `（未知名哈希 ${curveStats.skippedUnknownBinding}，不在参数表 ${curveStats.skippedNotParameter}，`
-      + `单点补成两点 ${curveStats.expandedSinglePoint}，`
-      + `参数表白名单 ${curveStats.whitelistApplied ? curveStats.whitelistCount + ' 个' : '未应用'}，`
-      + `跳过集中度 前5动作占 ${curveStats.skipTop5Share}%，`
-      + `越界结构 ${curveStats.invalidSegments}），`
-      + `Blob URL ${built.urls.length} 个`);
-    return report;
-  }
 
   // ------------------------------------------------------------------
-  // 契约目标接口（资产提供者契约 §一）：canHandle(file) → boolean / resolve(file) → { prefix, files, entry }
+  // 契约接口（资产提供者契约 §一）：canHandle(file) → boolean / resolve(file) → { prefix, files, entry }
   //
-  // 需求意图：宿主按新契约只认这两个成员；同时旧 open/probe 保留在注册对象里做兼容层，
-  //   让尚未迁移的核心继续可用——删掉它们会破坏现有页面渲染路径（验收要求"保留现有能力"）。
+  // resolve 把两种包型都整理成「文件表 + 入口」：
+  //   · 原生 Cubism 文件集（包内已有 *.model3.json）→ 包内文件原样进表，entry 指包内那份 model3
+  //   · Unity 集成版（只有 moc3 + 纹理 + 曲线）→ 重建一份「相对路径版」model3，entry 指它
+  // files 的值是真实的 Blob/字符串（契约 §1.2 要求 Map<relPath, Blob|string>，不得放 Blob URL），
+  //   核心拿到后按 prefix 注册 VirtualFS，渲染层按 entry 装载——插件不自行 register/revoke（§1.2）。
   //
-  // resolve 与 open 的分工（避免重复解码纹理）：
-  //   · open() 保持原行为：Blob URL + 可渲染 model（旧宿主路径），内部已做 PNG 编码。
-  //   · resolve() 走「原生文件表」路径：两种包型都直接把包内素材按相对键填进 files，
-  //     Unity 集成版重建一份「相对路径版」model3（引用 files 内的键，不含 Blob URL），entry 指向它。
-  //   这样 files 的值是真实的 Blob/字符串（契约要求 Map<relPath, Blob|string>），
-  //     核心拿到后按 prefix 注册 VirtualFS，渲染层按 entry 装载——不依赖插件自持 Blob URL。
-  //
-  // 前缀规则：`unity-live2d-bundle/<rootId>/<rel>`（契约要求含插件 id 与资源根，保证唯一；
-  //   rel 里可能含多级目录，原样保留，不做转义——VirtualFS 按前缀做命名空间即可）。
+  // prefix 规则（§1.2 写死）：`vfs://<providerId>/<rootId>/<相对目录>/`，全局唯一、以 / 结尾。
   // ------------------------------------------------------------------
 
   /** 把 file（宿主传入的上下文）规整成旧 ctx 形状，缺字段给保守默认（不改语义）。 */
@@ -882,27 +519,25 @@ ulbInstall: {
       paramNames: candidates,
       meta: paramTable ? paramTable.meta : null,
     };
-    const built = await buildRenderableModel(extracted, ctx, profile, { relative: true });
+    const built = await buildFileSet(extracted, profile);
     if (!built.files || built.files.size === 0) throw NS.errors.fail('ULB_ERR_EXTRACT', 'Unity 集成版没有可产出的素材文件');
-    // built.files 已含 model3.json（相对键）；moc3 键固定为 'moc3.moc3'
+    // built.files 已含 moc3/纹理/physics3/motions/model3.json；entry 就是重建出的 model3.json 键
     files = built.files;
-    entry = 'model3.json';
+    entry = built.entry;
     return { prefix, files, entry };
   }
 
-  // 契约 §一：plugin.json 的 provides=["asset-provider"] 让宿主把本插件登记进资产提供者注册表；
-  //   注册对象上 kind 是产出内容类型（live2d），与 fileKinds 的容器类型 bundle 正交。
+  // 契约 §一：plugin.json 的 provides=["asset-provider"] 让宿主把本插件登记进资产提供者注册表。
+  //   注册对象上 kind 是产出内容类型（live2d），与 fileKinds 的容器类型 bundle 正交；
+  //   kind 的唯一权威来源是 plugin.json 的 produces.kind（插件契约 §3.2），这里带上只为便于调试。
   host.register({
     id: PLUGIN_ID,
     name: 'Unity Live2D 资源包',
     label: 'Live2D包',
-    // 契约 §三 的注册面：canHandle/resolve 是新宿主认的成员。
+    // 契约 §三 的注册面：只留新契约成员 canHandle/resolve。
     canHandle,
     resolve,
     kind: 'live2d',
-    // 兼容层（旧宿主仍在用 probe/open；删除会破坏现有渲染路径，验收要求保留现有能力）
-    probe,
-    open,
     fileKinds: ['bundle'],
   });
 }
