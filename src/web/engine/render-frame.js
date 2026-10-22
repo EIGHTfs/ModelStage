@@ -7,6 +7,9 @@ import { hideFilteredSlots, restoreFilteredSlots } from './skins.js';
 
 /** 绘制一帧 */
 export function renderFrame(engine) {
+  // 重建期间不出帧：loadingModel 之前只有"设"没有人"读"，这里让它真的生效
+  //   （重建会把 skeleton/renderer 短暂处于半换血状态，画出来只会闪）
+  if (engine.loadingModel) return;
   const { gl, skeleton, renderTarget } = engine;
   if (!gl || !skeleton || !renderTarget || !engine.adapters) return;
   gl.clearColor(0, 0, 0, 0);

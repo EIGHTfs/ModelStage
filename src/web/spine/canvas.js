@@ -494,13 +494,26 @@ for (const key of ['fit', 'textureFilter', 'speed', 'loop', 'debug', 'fpsLimit',
  * 四档都会重传贴图：auto 需要重新采样像素判断，其余三档要按新口径重上传。
  * @param {string} mode
  */
-api.setPma = (mode) => {
+api.setPma = async (mode) => {
   const m = ['auto', 'premultiplied', 'straight', 'upload'].includes(mode) ? mode : 'auto';
+  const prev = (st.settings && st.settings.pma) || 'auto';
   applySettings(st, { pma: m });
-  if (st.engine && typeof st.engine.rebuildTextures === 'function') {
-    try { st.engine.rebuildTextures(m); } catch { /* 重建失败保持原贴图 */ }
+  const eng = st.engine;
+  if (!eng || typeof eng.rebuildTextures !== 'function') return m;
+  // 必须 await：rebuildTextures 是异步的（要重新解包贴图 + 重建骨架），
+  //   不 await 会让"同步 try/catch"抓不到失败，UI 以为切换成功而实际没生效。
+  let ok = false;
+  try {
+    ok = await eng.rebuildTextures(m);
+  } catch (e) {
+    try { eng.log('error', `PMA 切换异常: ${e && e.message ? e.message : e}`, 'pma'); } catch { /* 忽略 */ }
+    ok = false;
   }
-  return m;
+  if (ok) return m;
+  // 失败如实反映：把档位回滚为上一档，面板/持久化读到的就是"实际生效值"
+  applySettings(st, { pma: prev });
+  try { eng.log('warn', `PMA 切换失败（${m}），已回滚为 ${prev}`, 'pma'); } catch { /* 忽略 */ }
+  return prev;
 };
 
 /**

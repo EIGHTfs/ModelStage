@@ -76,13 +76,10 @@ export function setTextureFilter(engine, mode) {
 export async function rebuildTextures(engine, mode) {
   const descriptor = engine.currentModel;
   if (!descriptor || !engine.spine || !engine.gl) return false;
-  engine.pmaMode = mode;
   engine.loadingModel = true;
-  engine.pendingPresent = true;
   try {
-    engine.stop();
-    engine.disposeContent();
-    engine.skeletonData = null;
+    // **先建新的**（旧纹理/骨架这时一根手指都没动）：建失败 ⇒ 现场完好，天然回滚，
+    //   不需要额外保存/恢复旧纹理那套状态快照（那才是容易漏、容易错的写法）。
     const model = await buildModel({
       adapters: engine.adapters,
       spine: engine.spine,
@@ -93,21 +90,33 @@ export async function rebuildTextures(engine, mode) {
       supportsStraight: engine.supportsStraightAlpha !== false,
       log: (l, m, s) => engine.log(l, m, s),
     });
+    // ---- 换血（到这里才允许动旧内容）
+    engine.stop();
+    engine.disposeContent();
+    engine.skeletonData = null;
+    engine.pmaMode = mode;
     engine.bindModel(model);
-    // 旧引擎在重建里也会重跑 initRenderer（换纹理后批处理器状态要干净）
     engine.disposeRenderer();
     engine.createRenderer();
     engine.resetCamera();
     if (engine.animationName) engine.setAnimation(engine.animationName, engine.loop);
     if (engine.activeSkins && engine.activeSkins.length) engine.setSkins(engine.activeSkins);
+    engine.loadingModel = false;   // 允许出帧（下方 finally 再保证一次）
+    engine.pendingPresent = true;
     engine.presentFirstFrame();
     engine.log('info', `PMA 模式已切换为 ${mode}（生效: ${model.pmaInfo.effectiveMode}）`, 'pma');
     return true;
   } catch (e) {
-    engine.pendingPresent = false;
     engine.log('error', `重建纹理失败: ${e && e.message ? e.message : e}`, 'pma');
     return false;
   } finally {
     engine.loadingModel = false;
+    engine.pendingPresent = false;
+    // ★ 关键兜底：无论成功还是失败，都不允许停在"循环已停"的死状态。
+    //   成功路径：stop() 过 ⇒ 这里把循环重新起来（presentFirstFrame 只画一帧、不会恢复循环）。
+    //   失败路径：build 在 stop 之前就抛了 ⇒ 循环本来还在跑，这里不会重复启动。
+    if (engine.skeleton && !engine.isPlaying) {
+      try { engine.start(); } catch { /* 启动失败也已在日志里 */ }
+    }
   }
 }
