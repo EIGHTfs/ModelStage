@@ -307,7 +307,12 @@ function registerDiagSink(log) {
   const diagApi = typeof window !== 'undefined' ? window.__DIAG__ : null;
   if (!diagApi || typeof diagApi.addSink !== 'function') return () => {};
   if (typeof log.addExternal !== 'function') return () => {};
-  return diagApi.addSink((entry) => {
+  // 同一条目可能既来自"补历史"又来自"订阅推送"（dump 与 sink 是两条路），按 diag 条目 id 去重
+  const seen = new Set();
+  const forward = (entry) => {
+    if (!entry) return;
+    const id = entry.id;
+    if (id !== undefined) { if (seen.has(id)) return; seen.add(id); }
     // 交互流水（pointerdown / wheel）不进面板：它们由 diag 继续采集（/api/diag 可查），
     //   相机动作另有 __WEB__.cameraLog；面板是"看问题"的地方，不该被每点一下刷一行。
     const tag = String(entry.tag || entry.event || '');
@@ -332,7 +337,11 @@ function registerDiagSink(log) {
         data: entry.data,
       });
     } catch { /* 转写失败不影响探针 */ }
-  });
+  };
+  // 先补历史再订阅：面板是在页面启动后才装配的，之前的事件只躺在 diag 缓冲里。
+  //   不补这一段，面板显示的是"半截现场"，与 GET /api/diag 的条数永远对不上（排查时极易误判为漏采）。
+  try { for (const past of (diagApi.dump() || [])) forward(past); } catch { /* 补历史失败不影响后续订阅 */ }
+  return diagApi.addSink(forward);
 }
 
 /**

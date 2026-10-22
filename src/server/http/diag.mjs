@@ -58,15 +58,29 @@ export function createDiag(paths) {
   /**
    * 读取最近的诊断条目（只读：不接受调用方指定文件/路径）。
    * 返回结构与面板一致：{ t, level, src, event, data }，外加 total 与级别分布。
-   * @param {{limit?: number}} [options]
-   * @returns {{ok: true, total: number, counts: object, entries: object[]}}
+   * @param {{limit?: number, sid?: string}} [options] sid 为页面实例 id（前端每次加载都换）
+   * @returns {{ok: true, sid: string|null, sidRequested: string|null, sidSource: 'query'|'latest'|'none', total: number, counts: object, entries: object[]}}
    */
   function readDiag(options = {}) {
     const limit = Math.min(Math.max(Number(options.limit) || CAPACITY, 1), CAPACITY);
-    const picked = pickSession(sessions, options.sid);
-    if (!picked) return { ok: true, sid: options.sid || null, total: 0, counts: { info: 0, warn: 0, error: 0, debug: 0 }, entries: [] };
+    const wanted = options.sid ? String(options.sid) : '';
+    // 选会话并**标明来源**：
+    //   query  = 按调用方给的 sid 精确命中（前端读"当前这一轮"走这条）
+    //   latest = 没给 sid 或给的 sid 尚未产生条目 ⇒ 兜底最近活跃会话（不传就永远空最难查）
+    //   none   = 一条会话都没有（页面还没上报过）
+    // 注意：兜底时**绝不能回显请求里的 sid** —— 那会让调用方以为"这个 sid 有数据但内容为空"。
+    let picked = wanted ? sessions.get(wanted) || null : null;
+    let sidSource = picked ? 'query' : null;
+    if (!picked) {
+      picked = pickSession(sessions, null);
+      sidSource = picked ? 'latest' : 'none';
+    }
+    const base = { ok: true, sidRequested: wanted || null, sidSource };
+    if (!picked) {
+      return { ...base, sid: null, total: 0, counts: { info: 0, warn: 0, error: 0, debug: 0 }, entries: [] };
+    }
     return {
-      ok: true,
+      ...base,
       sid: picked.sid,
       total: picked.recent.length,
       counts: { ...picked.counts },

@@ -45,6 +45,7 @@ function createState(override) {
     internal: false,      // 防自激：探针内部产生的 console 调用不再被采集
     lastInteraction: 0,
     sinks: new Set(),      // 订阅者（面板等）：push 时同步分发
+    seq: 0,                // 条目自增序号：面板"补历史 + 订阅"两条路会拿到同一条，用它去重
     // 页面实例 id：每次加载都不同。服务端按它分组，GET /api/diag?sid=… 只回该实例的条目，
     // 这样"API 条数 == 面板条数"不会被上一轮加载的旧条目污染。
     sid: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
@@ -123,6 +124,7 @@ function textOf(args, st) {
 /** 入队 + 淘汰最旧（环形缓冲）+ 触发落盘 */
 function push(st, level, src, event, data, extra) {
   const e = Object.assign({
+    id: (st.seq += 1),
     t: new Date().toISOString(),
     tRel: Date.now() - st.t0,
     level,
@@ -406,6 +408,27 @@ function createApi(st) {
       return () => { st.sinks.delete(fn); };
     },
     removeSink(fn) { return st.sinks.delete(fn); },
+    /**
+     * 从服务端读回**当前这一轮**（本页实例）的条目。
+     *
+     * 为什么必须带 sid：GET /api/diag 不带 sid 时后端只能兜底"最近活跃会话"，
+     *   多标签页/重载过的场景会读到**上一轮**的数据，排查时极易误判。
+     * 返回里带 sidSource（query/latest/none）——拿到 latest 就说明本页还没上报过或已过期。
+     * @param {{limit?: number}} [options]
+     * @returns {Promise<object>} 与 GET /api/diag 同结构
+     */
+    async readServer(options = {}) {
+      const qs = new URLSearchParams();
+      qs.set('sid', st.sid);
+      if (options.limit) qs.set('limit', String(options.limit));
+      // 带超时：这是诊断链路，服务端卡住时不能把调用方的 await 一起拖死（也不该为此起重试风暴）
+      const signal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+        ? AbortSignal.timeout(5000)
+        : undefined;
+      const res = await fetch(`/api/diag?${qs.toString()}`, { headers: { Accept: 'application/json' }, signal });
+      if (!res.ok) throw new Error(`GET /api/diag 失败：HTTP ${res.status}`);
+      return res.json();
+    },
     dump() { return st.buf.slice(); },
     errors() { return st.buf.filter((e) => e.level === 'error'); },
     warnings() { return st.buf.filter((e) => e.level === 'warn'); },

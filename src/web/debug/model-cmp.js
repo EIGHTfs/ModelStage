@@ -145,7 +145,8 @@ function postDiag(rec) {
     fetch('/api/diag', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ entries: [{ ts: Date.now(), level: 'info', tag: 'MODELCMP', message: JSON.stringify(rec) }] }),
+      // 带上本页 sid：否则这些条目落到 anonymous 会话，GET /api/diag?sid=… 取不到
+      body: JSON.stringify({ sid: (typeof window !== 'undefined' && window.__DIAG__ && window.__DIAG__.sid) || undefined, entries: [{ ts: Date.now(), level: 'info', tag: 'MODELCMP', message: JSON.stringify(rec) }] }),
     }).catch(() => {});
   } catch { /* 忽略 */ }
 }
