@@ -30,6 +30,9 @@ const SUITE_TIMEOUT_MS = 180000;
 
 /** 套件清单：顺序固定（从"接线自检"到"重交互回归"） */
 const SUITES = [
+  // 引擎冒烟（3.8 ↔ 4.1 版本往返 + samplePixels().ratio + lastError 判据）：
+  //   它验证的是"引擎能不能出画"，是所有交互套件的前置，放最前
+  { name: 'engine-b1', wait: 4500 },
   { name: 'f1-controls', wait: 4500 },
   { name: 'f2-topbar', wait: 4500 },
   { name: 'f3-reveal', wait: 4500 },
@@ -42,6 +45,7 @@ const SUITES = [
 
 /** 单套耗时估计（秒）：只为打印"预计多久"，不参与判定；取自实测均值 */
 const EST_SEC = {
+  'engine-b1': 18,
   'f1-controls': 24, 'f2-topbar': 14, 'f3-reveal': 11, 'f4-roots': 13,
   'spine-actions': 62, 'panel-actions': 17, 'roster-actions': 18, 'anim-list': 34,
 };
@@ -58,6 +62,8 @@ const EST_SEC = {
 //     不该因为它在 panel/ 目录下就顺带把 f2-topbar 也拉进来；
 //   · 其余目录规则按你给的映射表。
 const ALL = '*ALL*';
+/** 哨兵：该文件不影响回归（测试脚本不在 SUITES 里时用） */
+const IGNORE = '*IGNORE*';
 const RULES = [
   { re: /^tool\//, suites: ALL },
   { re: /^src\/web\/main\.js$/, suites: ALL },
@@ -92,7 +98,9 @@ function mapFile(file) {
     if (rule.suites === ALL) return ALL;
     if (rule.suiteFromName) {
       const name = m[1];
-      return EST_SEC[name] !== undefined ? [name] : null;   // 不是已知套件 ⇒ 当无法映射
+      // 测试脚本改动不影响产品：名字在 SUITES 里就跑那一套，否则**忽略**（不拖成全量）。
+      //   将来新增测试脚本不该把门禁拖慢；要跑它，加进 SUITES 或用 --only。
+      return EST_SEC[name] !== undefined ? [name] : IGNORE;
     }
     return rule.suites;
   }
@@ -133,6 +141,7 @@ function planFromFiles(files) {
   const picked = new Set();
   const rows = [];
   const unmapped = [];
+  const ignored = [];
   let sawAll = false;
   for (const file of files) {
     const hit = mapFile(file);
@@ -142,13 +151,14 @@ function planFromFiles(files) {
       continue;
     }
     if (hit === ALL) { sawAll = true; rows.push({ file, label: '全量' }); continue; }
+    if (hit === IGNORE) { ignored.push(file); rows.push({ file, label: '不在 SUITES，忽略' }); continue; }
     if (!hit.length) { rows.push({ file, label: '仅文档/配置，忽略' }); continue; }
     hit.forEach((name) => picked.add(name));
     rows.push({ file, label: hit.join(', ') });
   }
   const all = SUITES.map((s) => s.name);
   const suites = (sawAll || unmapped.length) ? all : all.filter((n) => picked.has(n));
-  return { suites, rows, unmapped, sawAll };
+  return { suites, rows, unmapped, ignored, sawAll };
 }
 
 /** 打印计划（--list 与自动模式共用）：每行"文件 → 套件"，末尾一行计划 + 预计耗时 */
@@ -156,6 +166,7 @@ function printPlan(files, plan) {
   say(`[test-all] 变动 ${files.length} 个文件 → 命中 ${plan.suites.length} 套`);
   for (const row of plan.rows) say(`  ${row.file.padEnd(34)} → ${row.label}`);
   for (const f of plan.unmapped) say(`  ⚠ 无法映射：${f}（保守起见追加全量）`);
+  for (const f of plan.ignored) say(`  · ${f} 不是已注册套件，忽略（如需跑请加进 SUITES 或 --only）`);
   if (!plan.suites.length) return;      // 0 套时不打空的"计划："行，由调用方给出跳过提示
   const est = plan.suites.reduce((sum, n) => sum + (EST_SEC[n] || 20), 0);
   const full = Object.values(EST_SEC).reduce((a, b) => a + b, 0);
@@ -291,8 +302,12 @@ function runSuite(suite) {
 
   let parsed = null;
   try { parsed = JSON.parse(res.stdout); } catch { parsed = null; }
+  // scriptResult 有两种形态：多数套件返回 JSON 字符串，engine-b1 直接返回对象。
+  //   只认字符串会让对象形态被判成"没产出结果"（曾经的 failed=null 假失败）。
   let result = null;
-  try { result = parsed && parsed.scriptResult ? JSON.parse(parsed.scriptResult) : null; } catch { result = null; }
+  const sr = parsed && parsed.scriptResult;
+  if (sr && typeof sr === 'object') result = sr;
+  else if (typeof sr === 'string') { try { result = JSON.parse(sr); } catch { result = null; } }
   return {
     name: suite.name,
     failed: result ? result.failed : null,
@@ -301,6 +316,9 @@ function runSuite(suite) {
     ms: Date.now() - started,
     failing: (result && result.results ? result.results.filter((r) => !r.ok).map((r) => r.name) : []),
     raw: res.stdout,
+    // 没产出结果时把 stderr 尾巴带出来：否则只看到 failed=null，不知道是 chrome 起不来还是脚本炸了
+    stderrTail: (res.stderr || '').trim().split('\n').slice(-4).join(' | ').slice(0, 400),
+    status: res.status,
   };
 }
 
@@ -314,9 +332,11 @@ if (selection.why === 'auto' && selection.files) printPlan(selection.files, sele
 
 if (!selection.suites.length) {
   // 无改动 / 仅文档配置改动：不跑任何套，但**退出码 0**（这是正常的"没什么要验"）
+  const ignoredOnly = selection.plan && selection.plan.ignored && selection.plan.ignored.length;
   const hint = selection.why === 'no-change'
     ? '工作区无改动，跳过回归（需要时用 --all）'
-    : '仅文档/配置变动，跳过回归（需要时用 --all）';
+    : (ignoredOnly ? '仅未注册的测试脚本变动，跳过回归（需要时用 --all 或 --only）'
+      : '仅文档/配置变动，跳过回归（需要时用 --all）');
   say(`[test-all] ${hint}`);
   process.exit(0);
 }
@@ -350,6 +370,10 @@ for (const suite of CHOSEN) {
   const r = runSuiteWithRetry(suite);
   report.suites.push(r);
   if (r.missing) { report.ok = false; say(`  ${r.name.padEnd(16)} ❌ 脚本缺失`); continue; }
+  if (r.failed === null) {
+    say(`  ${r.name.padEnd(16)} ⚠ 无结构化结果（status=${r.status} stdout=${(r.raw || '').length}B）`
+      + ` stdout头=${String(r.raw || '').slice(0, 120).replace(/\n/g, ' ')} stderr: ${r.stderrTail || '（空）'}`);
+  }
   const bad = r.failed === null || r.failed > 0;
   if (bad) report.ok = false;
   say(`  ${r.name.padEnd(16)} ${bad ? '❌' : '✅'} failed=${r.failed} total=${r.total} problems=${r.problems} ${r.ms}ms`
