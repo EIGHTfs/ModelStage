@@ -58,18 +58,84 @@ export function listRuntimeVersions(runtimeDir) {
   }
 }
 
+// ---------------------------------------------------------------- 插件静态下发（白名单）
+//
+// 为什么不能像以前那样"plugins/ 目录下有什么就发什么"：
+//   插件目录里除了代码还有自测脚本、笔记、临时产物（self-test.mjs、卡点清单.md 等），
+//   这些既不该对外可读，也不属于插件契约。所以只下发 plugin.json **显式声明**过的文件：
+//     · files[]  —— 插件代码（index.js / lib/*.js）
+//     · assets[] —— 插件自己的数据文件（如 profiles/<游戏>.json；插件运行时会自己 fetch 它）
+//     · entry    —— 入口（通常已在 files[] 里，兜底再收一次）
+//
+// 待收敛提示：容器判定/解包逻辑现在有三份副本（插件 lib/bundle-probe.js、
+//   tool/lib/bundle-probe-node.mjs、src/server/plugins/registry.mjs 的 detectBundleContainer），
+//   接线完成后统一收敛到插件一份（本轮不做，见 M5 步骤说明）。
+
+/** 插件白名单缓存：pluginsDir::id → Set<相对路径>；null 表示该插件没有可用清单 */
+const pluginWhitelistCache = new Map();
+
+/**
+ * 读某插件的可下发白名单（未声明的一律不发）。
+ * @returns {Set<string>|null} null = 清单缺失/损坏 ⇒ 该插件不可下发
+ */
+export function pluginWhitelist(pluginsDir, id) {
+  const key = `${pluginsDir}::${id}`;
+  if (pluginWhitelistCache.has(key)) return pluginWhitelistCache.get(key);
+  let list = null;
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(pluginsDir, id, 'plugin.json'), 'utf8'));
+    const declared = [];
+    if (Array.isArray(manifest.files)) declared.push(...manifest.files);
+    if (Array.isArray(manifest.assets)) declared.push(...manifest.assets);
+    if (manifest.entry) declared.push(manifest.entry);
+    list = new Set(declared.map((f) => String(f).replace(/^\.?\//, '')));
+  } catch {
+    list = null;
+  }
+  pluginWhitelistCache.set(key, list);
+  return list;
+}
+
+/** 路径段校验：拒绝绝对路径、空段、. 与 ..（穿越） */
+function isSafeRelPath(rel) {
+  if (!rel || rel.includes('\0')) return false;
+  if (path.isAbsolute(rel)) return false;
+  const segs = rel.split('/');
+  return segs.every((s) => s !== '' && s !== '.' && s !== '..');
+}
+
+/**
+ * /plugins/<id>/<file>：白名单下发。处理了返回 true。
+ * 语义：未在 plugin.json 声明 ⇒ 403（有清单但该文件不在白名单）；清单缺失/插件不存在 ⇒ 404。
+ */
+export function servePluginFile(ctx, req, res, p) {
+  const deny = (status, msg) => {
+    res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(msg);
+  };
+  let rel;
+  try {
+    rel = decodeURIComponent(p.slice('/plugins/'.length));
+  } catch {
+    return deny(400, `400: bad encoding ${p}`);
+  }
+  const slash = rel.indexOf('/');
+  const id = slash > 0 ? rel.slice(0, slash) : '';
+  const sub = slash > 0 ? rel.slice(slash + 1) : '';
+  if (!id || !sub) return deny(404, `404: ${p}`);
+  if (!isSafeRelPath(id) || !isSafeRelPath(sub)) return deny(403, `403: 路径非法 ${p}`);
+  const allow = pluginWhitelist(ctx.pluginsDir, id);
+  if (!allow) return deny(404, `404: 插件不存在或清单不可读 ${id}`);
+  if (!allow.has(sub)) return deny(403, `403: 未在 plugin.json 声明，拒绝下发 ${sub}`);
+  const abs = resolveUnder(ctx.pluginsDir, p, '/plugins/');
+  if (!abs) return deny(404, `404: ${p}`);
+  sendFile(req, res, abs);
+  return true;
+}
+
 /** /plugins/* 、/spine-runtimes/*；处理了返回 true */
 export function serveAssets(ctx, req, res, p) {
-  if (p.startsWith('/plugins/')) {
-    const abs = resolveUnder(ctx.pluginsDir, p, '/plugins/');
-    if (!abs) {
-      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end('404: ' + p);
-      return true;
-    }
-    sendFile(req, res, abs);
-    return true;
-  }
+  if (p.startsWith('/plugins/')) return servePluginFile(ctx, req, res, p);
   if (p === '/spine-runtimes/index.json') {
     const body = JSON.stringify({ versions: listRuntimeVersions(ctx.runtimeDir) });
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body), 'Cache-Control': 'no-store' });
@@ -129,5 +195,6 @@ export function createStaticRoutes(opts) {
   return {
     serveAssets: (req, res, p) => serveAssets(ctx, req, res, p),
     serveStatic: (req, res, p) => serveStatic(ctx, req, res, p),
+    pluginWhitelist: (id) => pluginWhitelist(ctx.pluginsDir, id),
   };
 }
