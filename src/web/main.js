@@ -14,6 +14,7 @@
 // 诊断探针必须最先装：后面的模块/渲染出问题时才有取证（API 与旧前端 legacy/patches/diag.js 一致）
 import { installDiag } from './infra/diag.js';
 import { getJson, formatError } from './infra/api.js';
+import { getSharedVirtualFS } from './infra/vfs.js';
 import { mountTransport } from './panel/transport.js';
 import { createSpineStage } from './spine/canvas.js';
 import { createStageSurface } from './render/surface.js';
@@ -114,6 +115,10 @@ let live2dStage = null;
 function ensureLive2DStage() {
   if (live2dStage) return live2dStage;
   live2dStage = createLive2DStage({
+    // 资源位置解析的唯一入口（VirtualFS 契约 §四）：先问 vfs，命中用虚拟地址，未命中回落原 URL。
+    // 必须是**同一个共享实例** —— 注册方（插件/验收脚本经 window.__VFS__）与消费方各建一个的话，
+    //   register 完也解析不到，表现为"接了但没生效"（这一行之前漏了，等于 Live2D 从未消费过 VFS）。
+    vfs: getSharedVirtualFS(),
     getOverlayHost: () => document.getElementById('stage'),
     // 引擎是懒创建的：每次加载时动态取当前实例（MSAA 重建后实例会换）
     getEngine: () => { try { return stage && stage.debug() ? stage.debug().engine : null; } catch { return null; } },

@@ -40,13 +40,26 @@ function normalizePath(raw) {
   return parts.join('/');
 }
 
-/** 取 URL 里可参与匹配的部分：绝对 URL 取 pathname，其余按原样归一化 */
+/**
+ * 取 URL 里可参与匹配的部分。
+ *
+ * http(s) 取 pathname（真实网络资源）；
+ * **自定义 scheme（vfs://…）整体按路径归一化** —— 它本身就是"路径标识"，不是网络地址。
+ * 早期一律走 new URL()：`vfs://prov/root/a.json` 会被拆成 host=prov + pathname=/root/a.json，
+ * 于是与注册时归一化出的 `vfs:/prov/root` 前缀永远对不上，vfs:// 路径全部 resolve 失败。
+ * @param {string} url
+ * @returns {string|null}
+ */
 function pathOfUrl(url) {
+  const text = String(url == null ? '' : url);
+  if (!text) return null;
+  const customScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(text) && !/^https?:\/\//i.test(text);
+  if (customScheme) return normalizePath(text);
   try {
-    const parsed = new URL(url, 'http://vfs.local/');
+    const parsed = new URL(text, 'http://vfs.local/');
     return normalizePath(parsed.pathname);
   } catch {
-    return normalizePath(url);
+    return normalizePath(text);
   }
 }
 
@@ -170,4 +183,31 @@ export function createVirtualFS(options = {}) {
   return { register, resolve, revoke, stats };
 }
 
+/**
+ * 进程内共享实例（懒创建、幂等）。
+ *
+ * 为什么需要它：VirtualFS 是"注册方（插件/测试）"与"消费方（渲染器）"之间的唯一通道，
+ * 双方必须拿到**同一个实例** —— 各建一个的话 register 完也解析不到，表现为"接了但没生效"。
+ * 同时挂到 window.__VFS__ 作为诊断/验收入口（与 window.__DIAG__ 同一模式）：
+ * 便于在页面里手工 register 一段内存资源，再用 vfs:// 路径装载做端到端验证。
+ * @returns {ReturnType<typeof createVirtualFS>}
+ */
+let sharedInstance = null;
+export function getSharedVirtualFS() {
+  if (!sharedInstance) {
+    sharedInstance = createVirtualFS();
+    try {
+      if (typeof window !== 'undefined' && !window.__VFS__) window.__VFS__ = sharedInstance;
+    } catch { /* 只读环境忽略 */ }
+  }
+  return sharedInstance;
+}
+
 export default createVirtualFS;
+
+// 诊断入口立刻可用：不等第一次资源解析。
+// 为什么：验收入口/排查时需要在**加载之前**就能 register 一段内存资源，
+//   懒创建会让"先 register 再装载"的顺序做不出来（表现为 __VFS__ 是 undefined）。
+if (typeof window !== 'undefined') {
+  try { if (!window.__VFS__) window.__VFS__ = getSharedVirtualFS(); } catch { /* 只读环境忽略 */ }
+}

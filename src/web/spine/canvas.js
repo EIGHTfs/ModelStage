@@ -13,6 +13,7 @@
 //   客户端按版本取源码文本塞进 window.__SPINE_RUNTIME_SOURCES__，由引擎懒执行。
 // ============================================================================
 
+import { getSharedVirtualFS } from '../infra/vfs.js';
 import { installRuntimeManager } from './runtimes.js';
 import { createStageCamera } from '../render/camera/spine.js';
 import { SpineEngine as NextEngine } from '../engine/index.js';
@@ -134,9 +135,28 @@ function fileUrl(root, f) {
   return `/api/file?root=${encodeURIComponent(root)}&path=${p}`;
 }
 
+/**
+ * 资源地址解析（VirtualFS 契约 §四）：先问 vfs，命中用虚拟地址，未命中回落原 URL。
+ *
+ * 为什么只有一个前置、不做第二条通道：vfs.resolve 是"内存资源 / 网络资源"唯一的统一入口，
+ *   未命中即回落 ⇒ 没有注册任何前缀时行为与改造前完全一致（可退化）。
+ *   注意：这里**不能**改成 patch fetch / 装中间件（契约 §五明令禁止）：那会让"资源从哪来"变成隐式全局状态。
+ * @param {string} url
+ * @returns {string}
+ */
+function resolveResource(url) {
+  try {
+    const hit = getSharedVirtualFS().resolve(url);
+    return hit || url;
+  } catch {
+    return url; // VFS 异常绝不阻断加载
+  }
+}
+
 /** 取二进制 → engine 需要的 { name, content: ArrayBuffer } */
 async function fetchBinary(root, f, signal) {
-  const r = await fetch(fileUrl(root, f), { cache: 'no-store', signal });
+  // 骨架 / atlas / 贴图页三类资源都从这里取 —— 单一前置点，三类一起接上 VFS
+  const r = await fetch(resolveResource(fileUrl(root, f)), { cache: 'no-store', signal });
   if (!r.ok) throw new Error(`资源 ${f && f.name ? f.name : ''} 读取失败（HTTP ${r.status}）`);
   return { name: (f && f.name) || '', content: await r.arrayBuffer() };
 }

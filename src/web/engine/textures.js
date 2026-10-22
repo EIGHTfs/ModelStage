@@ -55,7 +55,11 @@ export function loadImageElement(entry) {
     if (content instanceof ArrayBuffer || ArrayBuffer.isView(content)) {
       url = URL.createObjectURL(new Blob([content], { type: entry.type || 'image/png' }));
     } else if (typeof content === 'string') {
-      url = content.startsWith('data:') || content.startsWith('http') ? content : null;
+      // 字符串形态的贴图（URL 而非字节）：同样先问 VirtualFS，命中则用 Blob URL
+      const resolved = (() => {
+        try { return getSharedVirtualFS().resolve(content) || content; } catch { return content; }
+      })();
+      url = resolved.startsWith('data:') || resolved.startsWith('http') || resolved.startsWith('blob:') ? resolved : null;
     }
     if (!url) { reject(new Error(`图片数据不可用: ${entry.name}`)); return; }
     img.src = url;
