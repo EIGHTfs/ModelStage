@@ -28,6 +28,9 @@ export function createStageCamera({ getEngine } = {}) {
   }
 
   /** 写一条 CAMERA 日志（日志失败不影响相机） */
+  /** panBy 逐帧日志的节流时间戳（毫秒） */
+  let lastPanLogAt = 0;
+
   function emit(message, data) {
     if (typeof logger !== 'function') return;
     try { logger(message, data); } catch { /* 忽略 */ }
@@ -80,7 +83,13 @@ export function createStageCamera({ getEngine } = {}) {
         const cam = engine.camera;
         if (cam && cam.position) posAfter = { x: cam.position.x, y: cam.position.y };
       } catch { /* 同上 */ }
-      emit(`panBy(${dx > 0 ? '+' : ''}${dx}, ${dy > 0 ? '+' : ''}${dy}) → position ${posBefore ? `(${posBefore.x.toFixed(2)},${posBefore.y.toFixed(2)})` : '?'} → ${posAfter ? `(${posAfter.x.toFixed(2)},${posAfter.y.toFixed(2)})` : '?'}`, { dx, dy, posBefore, posAfter });
+      // 逐帧节流：一次拖动会调用几十次，全记会把日志刷满；这里 400ms 最多留一条过程样本，
+      //   整体位移由交互层抬手时汇总（drag total）。
+      const now = Date.now();
+      if (now - lastPanLogAt >= 400) {
+        lastPanLogAt = now;
+        emit(`panBy(${dx > 0 ? '+' : ''}${dx}, ${dy > 0 ? '+' : ''}${dy}) → position ${posBefore ? `(${posBefore.x.toFixed(2)},${posBefore.y.toFixed(2)})` : '?'} → ${posAfter ? `(${posAfter.x.toFixed(2)},${posAfter.y.toFixed(2)})` : '?'}`, { dx, dy, posBefore, posAfter });
+      }
       return posAfter;
     },
 

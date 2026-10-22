@@ -27,6 +27,7 @@ import { VIEW_SETTINGS_KEY, applyBackground, applyTheme, readViewSettings, saveV
 import { DEFAULT_PART_FILTER_KEYWORDS, applyPartFilter } from './app/part-filter.js';
 import { WIRED_IDS, applyPanelSetting, panelSnapshot, rebuildPanelFor, runPanelSelfCheck } from './panel/panel-settings.js';
 import { loadRoots } from './app/model-actions.js';
+import { installCameraLogger } from './app/camera-log.js';
 import { bindCinemaKeys, exportScreenshot, toggleCinema, toggleRightPanel } from './app/topbar-actions.js';
 import {
   applyTransportMotion, cycleBackground, stepVariant, toggleTransportLoop, toggleTransportPlay,
@@ -294,26 +295,18 @@ function boot() {
   // topbar-disabled-mark
   for (const b of document.querySelectorAll('#app-header button:disabled')) b.dataset.pending = 'true';
 
-  // 相机操作日志：供真机操作时判定（不做模拟测试）。
-  // 输出通道 presently 走控制台 + __WEB__.cameraLog；debug-log 接线后把这里换成 debugLog.log('CAMERA', line) 即可。
-  const cameraEntry = state.currentRenderer && state.currentRenderer.camera;
-  if (cameraEntry && cameraEntry.setLogger) {
-    cameraEntry.setLogger((line, data) => {
-      window.__WEB__ && (window.__WEB__.cameraLog = window.__WEB__.cameraLog || []).push({ at: Date.now(), line, data });
-      if (window.__WEB__.cameraLog.length > 200) window.__WEB__.cameraLog.shift();
-      console.info('%c[CAMERA]', 'color:#1fc0c5', line);
-    });
-  }
-
-
   initRenderer();
+  installCameraLogger(state.currentRenderer && state.currentRenderer.camera);
 
   attachInteraction();
 
   // 面板三态由当前渲染器能力决定；切换渲染器时必须重算 + 重跑自检（契约 INV-05）
   rebuildPanelFor(state.currentRenderer);
   if (state.surface && typeof state.surface.onRendererChange === 'function') {
-    state.surface.onRendererChange(() => { rebuildPanelFor(state.currentRenderer); });
+    state.surface.onRendererChange(() => {
+      rebuildPanelFor(state.currentRenderer);
+      installCameraLogger(state.currentRenderer && state.currentRenderer.camera); // 换面后相机入口换了
+    });
   }
 
   const transportInfo = mountTransport(dom.footer, {

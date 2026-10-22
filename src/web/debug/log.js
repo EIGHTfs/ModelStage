@@ -31,7 +31,8 @@ export const DEBUG_TAGS = Object.freeze([
 ]);
 
 /** 允许的级别 */
-export const DEBUG_LEVELS = Object.freeze(['info', 'warn', 'error']);
+// debug 是最低档：交互遥测（缩放/拖动）走这一档，默认过滤下不显示，切到低档才看
+export const DEBUG_LEVELS = Object.freeze(['debug', 'info', 'warn', 'error']);
 
 /**
  * 条目来源（面板据此加前缀，区分"应用自己说的"和"探针抓到的"）：
@@ -97,10 +98,10 @@ function toText(raw) {
  * 为什么把 data 并进 message：条目结构固定为 { ts, level, tag, message }，
  *   面板与外部检查代码都按这 4 个键读，多一个键会让两端解析口径不一致。
  */
-function buildMessage(message, payload) {
-  const head = toText(message);
-  const tail = payload === undefined ? '' : toText(payload);
-  const full = tail ? `${head} · ${tail}` : head;
+function buildMessage(message) {
+  // 只保留"发生了什么"这句话本身：级别是自有属性（level 字段 + 图标），
+  // 结构化细节是自有属性（data 字段，面板悬停/查看用），都不再拼进正文。
+  const full = toText(message);
   if (full.length <= MESSAGE_MAX) return full;
   const note = `…(截断 ${full.length - MESSAGE_MAX} 字)`;
   return full.slice(0, Math.max(0, MESSAGE_MAX - note.length)) + note;
@@ -211,7 +212,11 @@ export function createDebugLog(options = {}) {
       };
       const diag = typeof window !== 'undefined' ? window.__DIAG__ : null;
       if (diag && typeof diag.event === 'function') {
-        diag.event(fields.event, fields.data, { level: fields.level, src: fields.src || 'app', tag: fields.tag });
+        // message 必须一起送：只送 event+data 的话，正文（如"相机 fit: bbox=…"）会在面板里丢掉，
+        //   只剩一个标签名，等于把日志变哑。
+        diag.event(fields.event, fields.data, {
+          level: fields.level, src: fields.src || 'app', tag: fields.tag, message: fields.message,
+        });
         return fields; // 缓冲由 sink 写回；这里只回报"已上报"
       }
       return addExternal(fields);

@@ -145,6 +145,15 @@ function createPanScheduler(applyPan) {
  * 指针状态机：单指拖动 / 双指捏合。
  * @param {{canvas: HTMLCanvasElement, camera: object, options: object}} ctx
  */
+/** 一次拖动的累计位移（抬手时汇总成一条 CAMERA 日志；逐帧记会把面板刷满） */
+const dragAcc = { dx: 0, dy: 0, moves: 0 };
+
+function resetDragAcc() {
+  dragAcc.dx = 0;
+  dragAcc.dy = 0;
+  dragAcc.moves = 0;
+}
+
 function createPointerHandler(ctx, panScheduler) {
   const active = new Map(); // pointerId → 最近一次画布内坐标
   /** 捏合基线：起始 userScale 与起始两指距离（与旧端一致，绝对式换算，不逐帧累积） */
@@ -190,7 +199,11 @@ function createPointerHandler(ctx, panScheduler) {
       const dx = point.x - previous.x;
       const dy = point.y - previous.y;
       if (dx || dy) {
-        ctx.camera.note(`drag dx=${dx} dy=${dy}`);
+        // 拖动过程不逐帧记日志（一次拖动几十帧会直接把面板刷满）：
+        //   累计位移，抬手时汇总成一条；单帧的即时性由相机侧节流日志负责。
+        dragAcc.dx += dx;
+        dragAcc.dy += dy;
+        dragAcc.moves += 1;
         panScheduler.queue(dx, dy);
       }
       event.preventDefault();
@@ -225,6 +238,14 @@ function createPointerHandler(ctx, panScheduler) {
     if (!active.delete(event.pointerId)) return;
     try { ctx.canvas.releasePointerCapture(event.pointerId); } catch { /* 同上 */ }
     rebuildPinch();
+    // 拖动结束：有位移才记一条汇总（帧数一并给出，便于判断是"轻点"还是"长拖"）
+    if (dragAcc.moves > 0) {
+      ctx.camera.note(
+        `drag total dx=${Math.round(dragAcc.dx)} dy=${Math.round(dragAcc.dy)}（${dragAcc.moves} 帧）`,
+        { dx: Math.round(dragAcc.dx), dy: Math.round(dragAcc.dy), moves: dragAcc.moves },
+      );
+      resetDragAcc();
+    }
     if (active.size === 1) {
       const only = [...active.values()][0];
       if (only) pinchMid = { x: only.x, y: only.y };

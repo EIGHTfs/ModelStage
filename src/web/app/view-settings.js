@@ -41,9 +41,9 @@ export function applyTheme(id) {
 const MAX_BG_IMAGE_BYTES = 4 * 1024 * 1024;
 
 /**
- * 自定义背景：用户选一张本地图片当舞台背景。
+ * 自定义背景：取一张本地图片作为舞台背景。
  * 为什么用 dataURL 而不是 objectURL：要跟着视图设置一起持久化（localStorage），
- *   objectURL 只在本会话有效，刷新就黑；文件过大时拒绝并提示，避免把存储写爆。
+ *   objectURL 只活在当前页面生命周期里，刷新即失效；文件过大时拒绝并提示，避免把存储写爆。
  * @returns {Promise<boolean>} 是否落地成功
  */
 export function pickBackgroundImage() {

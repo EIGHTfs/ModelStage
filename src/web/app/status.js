@@ -49,3 +49,20 @@ export function stageStatus(text, level = 'info', opts = {}) {
   }
   return line;
 }
+
+/**
+ * 向诊断探针上报一条"应用语义"事件（plugin.load / bundle.parse / model.mount 等）。
+ * 探针不在（未装/被禁用）时静默跳过——日志是旁路，不能影响主流程。
+ * @param {string} name 事件名（点号分隔，如 model.mount）
+ * @param {object} [data] 结构化字段
+ * @param {{level?: string, src?: string}} [opts]
+ */
+export function diagEvent(name, data, opts) {
+  try {
+    const diag = typeof window !== 'undefined' ? window.__DIAG__ : null;
+    if (!diag || typeof diag.event !== 'function') return null;
+    return diag.event(name, data || {}, opts || {});
+  } catch {
+    return null; // 上报失败不影响业务
+  }
+}

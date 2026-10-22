@@ -4,7 +4,7 @@
 // 具体怎么画由渲染器负责；本模块不碰引擎内部。
 
 import { dom, stage, state } from './context.js';
-import { stageStatus } from './status.js';
+import { diagEvent, stageStatus } from './status.js';
 import { formatError, getJson } from '../infra/api.js';
 import { createRootManager } from './root-manager.js';
 import { createDirPicker } from './dir-picker.js';
@@ -76,6 +76,14 @@ function onSelectModel(model) {
       // null = 本次请求被排队/被更新的选择取代（Surface 的 last-wins 语义）：
       //   不能当成功读结果字段，否则出现"旧面已释放 + 新面没装"的空白 + TypeError
       if (!info) return; // 被排队/被取代：由真正生效的那次装载负责状态文案
+      diagEvent('model.mount', {
+        root: loadDoc.rootId || null,
+        model: loadDoc.name || null,
+        kind: loadDoc.kind || null,
+        version: info.version || null,
+        animations: Array.isArray(info.animations) ? info.animations.length : 0,
+        skins: Array.isArray(info.skins) ? info.skins.length : 0,
+      }, { level: 'info', src: 'app' });
       const isL2D = /^Live2D/.test(String(info.version || ''));
       const anims = Array.isArray(info.animations) ? info.animations : [];
       const motion = info.motion || anims[0] || '（无动作）';
@@ -109,6 +117,12 @@ async function loadRoots(opts = {}) {
     const [data, autoRestore] = await Promise.all([getJson('/api/roots'), loadWebConfig()]);
     const roots = Array.isArray(data?.roots) ? data.roots : [];
     state.roots = roots;
+    // 语义上报：资源根即"渲染能力来源"，其就绪对应旧端的 plugin.load
+    diagEvent('plugin.load', {
+      roots: roots.length,
+      kinds: [...new Set(roots.map((r) => r.kind || 'spine'))],
+      ids: roots.map((r) => r.id).slice(0, 12),
+    }, { level: 'info', src: 'app' });
     const roster = createRosterView({
       listEl: dom.rosterList,
       countEl: dom.rosterCount,

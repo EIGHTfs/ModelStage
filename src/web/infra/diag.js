@@ -45,8 +45,8 @@ function createState(override) {
     internal: false,      // 防自激：探针内部产生的 console 调用不再被采集
     lastInteraction: 0,
     sinks: new Set(),      // 订阅者（面板等）：push 时同步分发
-    // 会话 id：页面每次加载都不同。服务端按它分组，GET /api/diag?sid=… 只回本会话，
-    // 这样"API 条数 == 面板条数"不会被上一轮的旧条目污染。
+    // 页面实例 id：每次加载都不同。服务端按它分组，GET /api/diag?sid=… 只回该实例的条目，
+    // 这样"API 条数 == 面板条数"不会被上一轮加载的旧条目污染。
     sid: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
   };
 }
@@ -370,11 +370,11 @@ function captureInteractions(st) {
   };
 
   window.addEventListener('wheel', throttled((ev) => {
-    push(st, 'info', 'stage', 'interaction', { kind: 'wheel', deltaY: ev.deltaY, ctrl: ev.ctrlKey });
+    push(st, 'debug', 'stage', 'interaction', { kind: 'wheel', deltaY: ev.deltaY, ctrl: ev.ctrlKey });
   }), { passive: true });
 
   window.addEventListener('pointerdown', throttled((ev) => {
-    push(st, 'info', 'stage', 'interaction', { kind: 'pointerdown', x: ev.clientX, y: ev.clientY, button: ev.button });
+    push(st, 'debug', 'stage', 'interaction', { kind: 'pointerdown', x: ev.clientX, y: ev.clientY, button: ev.button });
   }), { passive: true });
 
   // 页面隐藏时补一次落盘（关标签/切后台时最后一批不至于丢）

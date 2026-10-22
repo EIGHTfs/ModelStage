@@ -86,12 +86,12 @@ function createHeader(doc) {
   btnCollapse.setAttribute('aria-label', '收起日志面板');
   btnCollapse.append(icon('chevron'));
 
-  // 级别过滤：默认"全部"，选中后只显示该级别（面板里"看得见什么"由用户决定）
+  // 级别过滤：默认"信息及以上"，切到更低档才展开调试条目
   const filter = doc.createElement('select');
   filter.className = 'dbg-filter';
   filter.title = '按级别过滤';
   filter.setAttribute('aria-label', '按级别过滤日志');
-  for (const [value, label] of [['all', '全部'], ['error', '错误'], ['warn', '警告'], ['info', '信息']]) {
+  for (const [value, label] of [['all', '全部（含调试）'], ['debug', '调试及以上'], ['info', '信息及以上'], ['warn', '警告及以上'], ['error', '仅错误']]) {
     const opt = doc.createElement('option');
     opt.value = value;
     opt.textContent = label;
@@ -134,6 +134,12 @@ function renderEntry(entry, { isCollapsed }) {
   // 来源（app/error/net/…）：一眼看出这条是"应用自己说的"还是"探针抓到的"
   meta.append(el('span', `dbg-src dbg-src-${String(entry.src || 'app').toLowerCase()}`, String(entry.src || 'app')));
   meta.append(el('span', 'dbg-tag', `[${String(entry.tag || '').toLowerCase()}]`));
+  // 结构化字段是自有属性：正文只写"发生了什么"，细节挂在行上（悬停可见）+ 一个 { } 标记
+  const detail = entry.data === undefined || entry.data === null ? '' : dataToText(entry.data);
+  if (detail) {
+    meta.append(el('span', 'dbg-data-mark', '{}'));
+    row.title = detail.length > 400 ? `${detail.slice(0, 400)}…` : detail;
+  }
   body.append(meta, el('div', `dbg-text dbg-text-${level}`, entry.message));
   row.append(body);
   if (isCollapsed) row.hidden = true;
@@ -151,15 +157,22 @@ function createRenderer({ log, list, countEl, state }) {
     list.scrollTop = list.scrollHeight;
   }
 
-  /** 更新头部条数 */
   function updateCount(n) {
     countEl.textContent = `${n} 条`;
   }
 
-  /** 当前过滤级别（all 表示不过滤） */
+  /** 级别档位：阈值越高越严格（all = 不过滤，含 debug） */
+  const LEVEL_RANK = { debug: 0, info: 1, warn: 2, error: 3 };
+
+  /**
+   * 阈值过滤：选中「信息及以上」时 debug 条目不显示（交互遥测不刷屏），
+   * 但条目仍在环形缓冲与 /api/diag 里，切到「全部（含调试）」即可看到。
+   */
   function levelPass(record) {
-    const want = state.level || 'all';
-    return want === 'all' || record.level === want;
+    const want = state.level || 'info';
+    if (want === 'all') return true;
+    const floor = LEVEL_RANK[want] === undefined ? 1 : LEVEL_RANK[want];
+    return (LEVEL_RANK[record.level] === undefined ? 1 : LEVEL_RANK[record.level]) >= floor;
   }
 
   /** 全量重绘（初始化 / 清空后 / 切换过滤 / 样式就绪后） */
@@ -259,17 +272,25 @@ function wireControls({ shell, view, log, state }) {
 }
 
 /** diag 条目的正文：event + 数据摘要（截断与 log.js 的 300 字规则一致） */
+/** 超长正文截断（面板一行能放下的量级） */
+function clip(text) {
+  const s = String(text || '');
+  return s.length > 300 ? `${s.slice(0, 290)}…` : s;
+}
+
+/** data 字段序列化成一行；不可序列化时给明确标记而不是抛错 */
+function dataToText(data) {
+  if (data === null || data === undefined) return '';
+  if (typeof data === 'string') return data;
+  try { return JSON.stringify(data); } catch { return '[unserializable]'; }
+}
+
 function diagMessage(entry) {
-  const head = String(entry.event || entry.src || 'event');
-  const data = entry.data;
-  let tail = '';
-  try {
-    if (data !== null && data !== undefined) tail = typeof data === 'string' ? data : JSON.stringify(data);
-  } catch {
-    tail = '[unserializable]';
-  }
-  const full = tail ? `${head} · ${tail}` : head;
-  return full.length > 300 ? `${full.slice(0, 290)}…` : full;
+  // 正文优先：应用侧（stageStatus / camera / debugLog.log）都带了 message，直接用它
+  if (entry && typeof entry.message === 'string' && entry.message) return clip(entry.message.trim());
+  const head = String((entry && (entry.event || entry.src)) || 'event');
+  const tail = dataToText(entry && entry.data);
+  return clip(tail ? `${head} · ${tail}` : head);
 }
 
 /**
@@ -291,14 +312,15 @@ function registerDiagSink(log) {
     //   相机动作另有 __WEB__.cameraLog；面板是"看问题"的地方，不该被每点一下刷一行。
     const tag = String(entry.tag || entry.event || '');
     const lcTag = tag.toLowerCase();
-    if (lcTag === 'interaction' || /^interaction\./.test(lcTag)) return;
     // 状态行已经通过 STAGE 通道进来过一次；console 监听会把同一条再抓一遍（%c[STAGE:…]），
     //   重复行对排障没用，这里把它滤掉，避免每条状态都显示两遍。
     // 正文要按 diag 条目的真实结构取（sink 层没有 message 字段，是 diagMessage 现算的）
     let msgText = '';
     try { msgText = String(diagMessage(entry) || ''); } catch { msgText = ''; }
     const rawText = (entry.data && entry.data.text) ? String(entry.data.text) : '';
-    if (lcTag === 'console' && (msgText.indexOf('[STAGE:') !== -1 || rawText.indexOf('[STAGE:') !== -1)) return;
+    // 控制台镜像去重：应用自己 console 出去的 [STAGE:] / [CAMERA] 已经通过各自通道进过一次
+    const isMirror = (t) => t.indexOf('[STAGE:') !== -1 || t.indexOf('[CAMERA]') !== -1;
+    if (lcTag === 'console' && (isMirror(msgText) || isMirror(rawText))) return;
     try {
       log.addExternal({
         ts: Date.parse(entry.t) || Date.now(),
@@ -324,7 +346,7 @@ export function mountDebugPanel({ log, container } = {}) {
   }
   const doc = (container || document.body).ownerDocument || document;
   const linkEl = ensureStylesheet(doc);
-  const state = { collapsed: false, level: 'all' };
+  const state = { collapsed: false, level: 'info' };
   const shell = createShell(doc, container);
   // 防闪烁：面板样式是异步 <link>，样式到位前这块 DOM 会以"无样式裸块"绘制，
   //   刷新时会闪一大片（看起来像样式加载失败）。先 visibility:hidden，样式就绪再显形；

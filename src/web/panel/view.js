@@ -14,43 +14,11 @@
 //   note      纯说明文字
 
 import { ACTION_ICONS, COLLAPSE_ICON, GROUP_ICONS, svgIcon } from './icons.js';
+import { el, markDisabled, markPending } from './dom.js';
+import { renderChips, renderSelect } from './render-choice.js';
 import { PANEL_GROUPS } from './schema.js';
 
 /** 元素工厂（与名册那边同名的本地小工具，避免跨模块只为建元素而互相依赖） */
-function el(tag, className, text) {
-  const n = document.createElement(tag);
-  if (className) n.className = className;
-  if (text !== undefined && text !== null) n.textContent = String(text);
-  return n;
-}
-
-/** 每个未接线控件统一打上标记：M6 接线时以此为准逐项摘掉 */
-function markPending(node, id) {
-  node.dataset.pending = 'true';
-  if (id) node.id = id;
-  return node;
-}
-
-/**
- * 标成一个不可点控件，并区分两种原因：
- *   · 能力不支持（schema 过滤给的 reason）→ 如实写原因，不打"待接线"标记（那是开发中项的语义）
- *   · 未接线 → 保持原有 data-pending + 「待接线（M6）」
- * @param {HTMLElement} node
- * @param {object} ctl 控件定义
- * @param {{disabledReason?: Function}} ctx
- */
-function markDisabled(node, ctl, ctx) {
-  node.disabled = true;
-  const reason = ctx && ctx.disabledReason ? ctx.disabledReason(ctl.id) : null;
-  if (reason) {
-    node.title = `${reason}：${ctl.label || ''}`.trim();
-    node.dataset.disabledReason = reason; // 便于断言与排查
-    return;
-  }
-  markPending(node, null);
-  node.title = '待接线（M6）';
-}
-
 /**
  * 分段按钮组：一个 label + 若干选项按钮。
  * 接线口径：控件带 `values` 才算已接线——按钮可点、默认项按 defaultValue 高亮、点击回传机器值；
@@ -168,61 +136,6 @@ function renderDynamicList(ctl) {
 }
 
 /** 下拉（select）：用于主题这类"项较多、单列占位"的选择 */
-function renderSelect(ctl, ctx) {
-  const wired = ctx.isWired(ctl.id);
-  const row = el('div', 'ctl-row');
-  row.dataset.ctl = ctl.id || ''; // 与分段/开关保持一致：外层行也带 data-ctl，便于统一查询
-  row.append(el('span', 'ctl-label', ctl.label));
-  const sel = el('select', 'ctl-select');
-  sel.id = ctl.id || '';
-  sel.dataset.ctlSelect = ctl.id || '';
-  for (const opt of ctl.options) {
-    const o = document.createElement('option');
-    o.value = opt.value;
-    o.textContent = opt.text;
-    sel.append(o);
-  }
-  if (ctl.defaultValue !== undefined) sel.value = ctl.defaultValue;
-  if (wired) {
-    sel.addEventListener('change', () => {
-      try { ctx.onSetting(ctl.id, sel.value); } catch { /* 接线失败保持选择 */ }
-    });
-  } else {
-    markDisabled(sel, ctl, ctx);
-  }
-  row.append(sel);
-  return row;
-}
-
-/** 预设按钮组（chips）：一组同名按钮，每项自带机器值（用于滤镜等"多选一但项很多"的场景） */
-function renderChips(ctl, ctx) {
-  const wired = ctx.isWired(ctl.id);
-  const row = el('div', 'ctl-row ctl-row-chips');
-  row.append(el('span', 'ctl-label', ctl.label));
-  const box = el('div', 'ctl-chips');
-  box.dataset.ctl = ctl.id || '';
-  box.setAttribute('role', 'group');
-  box.setAttribute('aria-label', ctl.label);
-  for (const opt of ctl.options) {
-    const btn = el('button', 'chip-btn', opt.text || opt.value);
-    btn.type = 'button';
-    btn.setAttribute('aria-pressed', String(opt.value === ctl.defaultValue));
-    if (wired) {
-      btn.title = opt.text || opt.value;
-      btn.addEventListener('click', () => {
-        for (const other of box.children) other.setAttribute('aria-pressed', 'false');
-        btn.setAttribute('aria-pressed', 'true');
-        try { ctx.onSetting(ctl.id, opt.value); } catch { /* 接线失败不影响面板状态 */ }
-      });
-    } else {
-      markDisabled(btn, ctl, ctx);
-    }
-    box.append(btn);
-  }
-  row.append(box);
-  return row;
-}
-
 /** 只读行：label + 值（值由接线方写入，用于展示无法切换或纯信息类内容） */
 function renderReadonly(ctl) {
   const row = el('div', 'ctl-row ctl-row-readonly');

@@ -19,6 +19,7 @@
 //     改取 /api/live2d/models。
 
 import { getJson } from '../infra/api.js';
+import { diagEvent } from '../app/status.js';
 
 /** 资源名后缀归一化候选（与 char-tree.js 的 ASSET_SUFFIX_PATTERNS 一致） */
 const ASSET_SUFFIX_PATTERNS = [/_hx$/i];
@@ -128,11 +129,16 @@ export async function loadRootModels(root) {
 
   const spine = await getJson(`/api/models?root=${id}`);
   const spineModels = Array.isArray(spine.models) ? spine.models : [];
-  if (spineModels.length) return { models: spineModels, source: 'spine-models' };
+  if (spineModels.length) {
+    // 语义上报：资源包/目录的清单解析结果
+    diagEvent('bundle.parse', { root: id, source: 'spine-models', models: spineModels.length }, { level: 'info', src: 'app' });
+    return { models: spineModels, source: 'spine-models' };
+  }
 
   // Spine 扫描为空：该目录可能装的是 Live2D（目录型），改用 Live2D 清单
   const l2d = await getJson(`/api/live2d/models?root=${id}`);
   const l2dModels = Array.isArray(l2d.models) ? l2d.models : [];
+  diagEvent('bundle.parse', { root: id, source: 'live2d-models', models: l2dModels.length }, { level: 'info', src: 'app' });
   return { models: l2dModels, source: 'live2d-models' };
 }
 
