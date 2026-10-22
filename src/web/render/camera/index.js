@@ -63,18 +63,23 @@ export function createCamera({ kind = 'spine', backend, log } = {}) {
   }
 
   /**
-   * 一档缩放（与引擎 `userScale *= 1 + t*STEP` 完全一致）。
-   * @param {number} dir 方向：>0 放大、<0 缩小（只看符号）
+   * 缩放步进（与引擎 `userScale *= 1 + t*STEP` 完全一致）。
+   *
+   * `dir` 的**符号给方向、绝对值给档数**：交互层按帧合并滚轮事件时会把一次帧内的
+   *   多个 tick 累加成一个数传进来（如 +7），若只取符号就会把幅度丢掉——用户快速滚轮
+   *   反而只缩一档，手感明显回退。传 ±1 时行为与原来逐字一致。
+   * @param {number} dir 方向 + 档数：>0 放大、<0 缩小（|dir| 档）
    */
   function zoomStep(dir) {
     const cur = scale();
     if (!Number.isFinite(cur)) return null;
     const sign = dir > 0 ? 1 : dir < 0 ? -1 : 0;
     if (sign === 0) return cur;
-    const next = clamp(cur * (1 + sign * CAMERA.STEP));
+    const steps = Math.max(1, Math.trunc(Math.abs(Number(dir) || 1)));
+    const next = clamp(cur * (1 + sign * CAMERA.STEP) ** steps);
     if (next === null) return cur;
     try { backend.setScale(next); } catch (err) { note(`setScale 失败：${err && err.message}`, 'warn'); }
-    note(`zoomStep(${sign}) ${cur.toFixed(4)} → ${next.toFixed(4)}（范围 ${limits.min}~${limits.max}）`);
+    note(`zoomStep(${sign > 0 ? '+' : '-'}${steps}) ${cur.toFixed(4)} → ${next.toFixed(4)}（范围 ${limits.min}~${limits.max}）`);
     return scale();
   }
 
