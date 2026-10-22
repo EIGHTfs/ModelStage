@@ -551,11 +551,24 @@ export function createWriteApi({ paths, config, models, names }) {
         return fail(500, `写入后回读失败（请检查配置）: ${e.message}`, { backup });
       }
 
+      // ---------- ⑧ 备份轮换（只留最近若干份，更早的移入 config/.trash/） ----------
+      // 为什么放在这里而不是备份之后：轮换会移走旧备份，若本次写入随后失败，
+      //   唯一可用的回滚点可能已经被挪进 .trash/ —— 所以必须等"写成功 + 回读自检通过"再轮换。
+      // 为什么资源根写操作也要轮换：add/remove/rename/toggle 每次都会生成一个 .bak-<时间戳>/，
+      //   之前只有 import 路径调用轮换 ⇒ 这条路径只增不减，实测堆到过上百个目录。
+      let pruned = 0;
+      try {
+        pruned = pruneBackups(BACKUP_KEEP);
+      } catch {
+        /* 轮换失败不影响本次写入结果（与 import 路径同口径） */
+      }
+
       const body = {
         ok: true,
         action,
         changed: plan.changed,
         backup,
+        pruned,
         invalidated,
         // roots 与 GET /api/roots 同形（只含启用的，前端直接可渲染）
         roots: toRootView(after.filter((r) => r.enabled !== false)),
@@ -567,20 +580,6 @@ export function createWriteApi({ paths, config, models, names }) {
     });
   }
 
-  /**
-   * POST /api/config/import —— 导入配置（`resources.json` + `names/*.json`）。
-   *
-   * 与资源根写操作同一条管道（校验 → 备份 → 写 → 失效缓存 → 回读自检），差异只有四点：
-   *   ① 一次可能涉及多个文件，**备份目录只有一个**（同一次导入要能整体回滚到同一时点）；
-   *   ② 校验是**整体拒绝**：任一文件不合法就一个字节都不写，避免配置"半新半旧"；
-   *   ③ 资源根可能全变，所以这里失效**全部**清单缓存；名表文件被替换，还要清名表缓存
-   *      （名表按文件名缓存，不清就会一直显示导入前的角色名，像"导入没生效"）；
-   *   ④ 写完全部文件后做回读自检：每个文件都要能重新解析，且 resources.json 的根数
-   *      与导入内容一致 —— 这才算真的写对（防截断、防被清洗逻辑改条数）。
-   *
-   * @param {string} rawBody 原始请求体文本
-   * @returns {Promise<{status:number, body:object}>}
-   */
   /**
    * POST /api/config/import —— 导入配置（`resources.json` + `names/*.json`）。
    *
