@@ -15,7 +15,7 @@
 
 import { ACTION_ICONS, COLLAPSE_ICON, GROUP_ICONS, svgIcon } from './icons.js';
 import { el, markDisabled, markPending } from './dom.js';
-import { renderChips, renderSelect } from './render-choice.js';
+import { renderChips, renderListRow, renderSelect } from './render-choice.js';
 import { PANEL_GROUPS } from './schema.js';
 
 /** 元素工厂（与名册那边同名的本地小工具，避免跨模块只为建元素而互相依赖） */
@@ -129,7 +129,7 @@ function renderActions(ctl, ctx) {
 /** 动态内容占位：M6 会在这个容器里填真实条目 */
 function renderDynamicList(ctl) {
   // 容器由接线方按当前模型填充（动作列表）；空态给提示
-  const box = el('div', 'ctl-dynamic');
+  const box = el('div', 'ctl-dynamic ctl-list');
   box.dataset.ctl = ctl.id || ctl.label || '';
   box.dataset.role = 'dynamic';
   box.append(el('p', 'ctl-note', ctl.note || '选中模型后显示'));
@@ -215,6 +215,8 @@ export function mountPanel({ headEl, bodyEl, onSetting, wiredIds, groups }) {
   // 这样"schema 加了取值域但还没接生效"的控件会保持 disabled，不会出现点了没反应。
   const wiredSet = new Set(Array.isArray(wiredIds) ? wiredIds : []);
   // 能力过滤结果（schema.applyCapabilities 写在控件上）：disabled 的控件一律不可点并给 reason
+  const byId = new Map(); // id → 控件定义（setOptions 需要读 emptyText 之类的声明）
+  for (const group of schema) for (const ctl of group.controls || []) if (ctl && ctl.id) byId.set(ctl.id, ctl);
   const disabledMap = new Map();
   for (const group of schema) {
     for (const ctl of group.controls || []) {
@@ -264,11 +266,20 @@ export function mountPanel({ headEl, bodyEl, onSetting, wiredIds, groups }) {
     //   否则装载模型后刷新皮肤列表会把禁用按钮换成可点按钮（表现为"换面后又能点了"）。
     const blocked = ctx && typeof ctx.disabledReason === 'function' ? ctx.disabledReason(id) : null;
     box.replaceChildren();
+    const asList = box.classList.contains('ctl-list'); // 皮肤列表：列表行；其它：横向 chips
+    const ctlDef = byId.get(id) || null;
+    if (asList && options.length === 0 && ctlDef && ctlDef.emptyText) {
+      // 空态照旧端：居中一行弱化小字（如"默认皮肤"），不留空白区
+      box.append(el('div', 'ctl-list-empty', ctlDef.emptyText));
+      return true;
+    }
     for (const opt of options) {
-      const btn = el('button', 'chip-btn', opt.text || opt.value);
+      const btn = asList
+        ? renderListRow(opt, { selected: String(opt.value) === String(selected) })
+        : el('button', 'chip-btn', opt.text || opt.value);
       btn.type = 'button';
       btn.dataset.value = String(opt.value);
-      btn.setAttribute('aria-pressed', String(opt.value === selected));
+      if (!asList) btn.setAttribute('aria-pressed', String(String(opt.value) === String(selected)));
       if (blocked) {
         btn.disabled = true;
         btn.title = `${blocked}：${opt.text || opt.value}`;

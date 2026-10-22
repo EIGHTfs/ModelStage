@@ -52,7 +52,7 @@ export const PANEL_GROUPS = [
       { kind: 'switch', label: '混合模式', id: 'ctl-skin-mix', core: true, title: '切换皮肤时是否交叉淡化（只影响皮肤，不影响动作）' },
       // 皮肤列表：加载模型后按 skeletonData.skins 重建；默认 default
       // capabilityKey: skin —— 渲染面不声明就置灰（Live2D 面没有皮肤概念）
-      { kind: 'chips', label: '皮肤列表', id: 'ctl-skin-list', core: true, capabilityKey: 'skin', defaultValue: 'default', options: [{ text: 'default', value: 'default' }] },
+      { kind: 'chips', layout: 'list', label: '皮肤列表', id: 'ctl-skin-list', core: true, capabilityKey: 'skin', defaultValue: 'default', emptyText: '默认皮肤', options: [{ text: 'default', value: 'default' }] },
     ],
   },
   {
@@ -173,7 +173,7 @@ export const PANEL_GROUPS = [
     defaultOpen: true,
     controls: [
       // values 与 options 一一对应：面板只负责把"点了哪个选项"翻成机器值，再交给接线方
-      { kind: 'segmented', label: '渲染帧率', id: 'ctl-fps', capabilityKey: 'fps', options: ['60 FPS', '30 FPS'], values: [60, 30], defaultValue: 60, readout: true },
+      { kind: 'segmented', label: '渲染帧率', id: 'ctl-fps', capabilityKey: 'fps', options: ['90 FPS', '60 FPS', '30 FPS'], values: [90, 60, 30], defaultValue: 60, readout: true },
       { kind: 'segmented', label: '渲染像素比（DPR）', id: 'ctl-dpr', capabilityKey: 'dpr', options: ['自动', '1', '1.5', '2'], values: ['auto', 1, 1.5, 2], defaultValue: 'auto' },
       {
         kind: 'segmented',

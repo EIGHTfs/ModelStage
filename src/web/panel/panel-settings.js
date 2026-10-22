@@ -189,39 +189,59 @@ function bindTransportMotionWatcher() {
  * 高亮跟随底栏下拉的值（契约 §七：当前动作只有一处真相）。
  * @returns {number} 列出的条数
  */
+/**
+ * 造一行动作（样式照旧端：左名称溢出省略 + 右时长等宽小字，选中主色描边）。
+ * 单独成函数：列表重绘逻辑本身要保持在可读范围，行构造细节拆出来。
+ * @param {{id: string, label: string, duration: number|null}} anim
+ * @param {string} currentId 当前播放中的动作 id
+ * @returns {HTMLButtonElement}
+ */
+function buildAnimRow(anim, currentId) {
+  const row = document.createElement('button');
+  row.type = 'button';
+  row.className = 'ctl-list-row ctl-anim';
+  row.dataset.anim = anim.id;
+  row.setAttribute('aria-pressed', String(anim.id === currentId));
+  const name = document.createElement('span');
+  name.className = 'ctl-list-name';
+  name.textContent = anim.label;
+  row.append(name);
+  const timeText = durationText(anim.duration);
+  if (timeText) { // 时长取不到就不显示（契约 §二禁止 0s / — 冒充）
+    const time = document.createElement('span');
+    time.className = 'ctl-list-time';
+    time.textContent = timeText;
+    row.append(time);
+  }
+  row.title = anim.id + (timeText ? `（${timeText}）` : '（时长未知）');
+  row.addEventListener('click', () => { applyTransportMotion(anim.id); refreshPanelAnimations(); });
+  return row;
+}
+
 export function refreshPanelAnimations() {
   const box = document.querySelector('#right-panel [data-ctl="ctl-anim-list"]');
   if (!box) return 0;
   const list = buildAnimationList();
   const currentId = currentAnimationId();
   box.replaceChildren();
+  box.classList.add('ctl-list'); // 容器行样式（旧端 space-y-1 / max-h-48 / overflow-y-auto）
   if (!list.length) {
     const hint = document.createElement('p');
-    hint.className = 'ctl-note';
+    hint.className = 'ctl-list-empty'; // 旧端空态：居中弱化小字
     hint.textContent = state.selectedModel ? '该模型没有动作' : '选中模型后显示';
     box.append(hint);
     return 0;
   }
-  for (const item of list) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = item.id === currentId ? 'mini-btn is-primary ctl-anim' : 'mini-btn ctl-anim';
-    btn.dataset.anim = item.id;
-    // 时长取不到就只显示名字（契约 §二禁止 0s / — 冒充）
-    btn.textContent = labelWithDuration(item);
-    btn.title = item.id + (durationText(item.duration) ? `（${durationText(item.duration)}）` : '（时长未知）');
-    btn.addEventListener('click', () => { applyTransportMotion(item.id); refreshPanelAnimations(); });
-    box.append(btn);
-  }
+  for (const anim of list) box.append(buildAnimRow(anim, currentId));
   // 同一份清单同步底栏下拉（契约 §一/§三：两处必须逐项一致）
   syncTransportOptions();
   bindTransportMotionWatcher();
   // 下拉可能刚被填好（首次打开时为空）——按最终值补一次高亮，避免"首屏没有当前项"
   const finalId = currentAnimationId();
   if (finalId) {
+    // 选中态统一用 aria-pressed（样式在 panel.css 的 .ctl-list-row[aria-pressed='true']）
     for (const btn of box.querySelectorAll('[data-anim]')) {
-      const on = btn.dataset.anim === finalId;
-      btn.classList.toggle('is-primary', on);
+      btn.setAttribute('aria-pressed', String(btn.dataset.anim === finalId));
     }
   }
   // 循环推进后由应用层回调重绘（不轮询 DOM）
@@ -236,9 +256,25 @@ export function refreshPanelAnimations() {
 /** 帧率读数：把舞台实测帧率刷到面板上（500ms 一次；无舞台或未就绪时显示 —） */
 function startFpsReadout(panel) {
   if (!panel || typeof panel.setFps !== 'function') return;
-  /** Live2D 的实测帧率来自 PIXI ticker（FPS 是它自己统计的），Spine 的来自舞台 stats */
+  /**
+   * Live2D 面的实测帧率取自**渲染器统计的实际出画帧数**（getMeasuredFps）。
+   *
+   * 为什么不再用 `app.ticker.FPS`：那是 rAF/ticker 的触发频率，不是渲染次数。渲染被门控跳过时
+   *   tick 照样发生，用它显示会恒等于屏幕刷新率——"上限 60 却显示 89"里就有一部分来自这个读数失真。
+   *   （Spine 面本来就是引擎按实际渲染帧统计，读数口径正确。）
+   */
   const live2dFps = () => {
     try {
+      // 取**当前激活的真实渲染器**（state.currentRenderer 是门面，只转发固定几个方法，
+      //   不含 getMeasuredFps；activeRenderer() 拿到的才是带门控计数的那个实例）
+      const r = (state.surface && typeof state.surface.activeRenderer === 'function')
+        ? state.surface.activeRenderer()
+        : state.currentRenderer;
+      if (r && typeof r.getMeasuredFps === 'function') {
+        const v = r.getMeasuredFps();
+        if (typeof v === 'number' && isFinite(v) && v > 0) return v;
+      }
+      // 兜底：渲染器没提供时回退 ticker.FPS（会偏高，仅供观察，不能用于验收）
       const l2d = window.__WEB__ && window.__WEB__.live2d;
       if (!l2d || typeof l2d.isActive !== 'function' || !l2d.isActive()) return null;
       const app = typeof l2d.getApp === 'function' ? l2d.getApp() : null;

@@ -9,10 +9,36 @@ export const ACTION_ICONS = {
   恢复默认: '<path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 3v6h6"/>',
 };
 
+/**
+ * 顶栏图标。形状取自旧端 lucide 组件定义（`_e("PanelLeft", …)` / `_e("PanelRight", …)`）：
+ *   PanelLeft  = rect(3,3,18,18,r2) + path M9 3v18
+ *   PanelRight = rect(3,3,18,18,r2) + path M15 3v18
+ * 顶栏按钮在 index.html 里只放空 <svg> 占位，path 由 applyTopbarIcons() 从这里注入，
+ *   保证图标只有这一处来源。
+ */
+export const TOPBAR_ICONS = {
+  panelLeft: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>',
+  panelRight: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/>',
+};
+
+/** 把顶栏图标的 path 注入到按钮里的 <svg>；返回注入个数 */
+export function applyTopbarIcons(doc = document) {
+  const map = { 'btn-library': TOPBAR_ICONS.panelLeft, 'btn-menu': TOPBAR_ICONS.panelRight };
+  let filled = 0;
+  for (const [id, body] of Object.entries(map)) {
+    const svg = doc.querySelector(`#${id} svg`);
+    if (!svg) continue;
+    svg.innerHTML = body;
+    filled += 1;
+  }
+  return filled;
+}
+
 /** 分组标题图标（与旧端同一套语义与配色：主色线条图标） */
 export const GROUP_ICONS = {
   motion: '<path d="M4 4h16v16H4z"/><path d="M4 9h16"/><path d="m9 4 2 5"/><path d="m15 4 2 5"/><path d="M8 14h8v6H8z"/>',
-  skin: '<path d="M20.4 3.6a2 2 0 0 1 0 2.8L9 17.8 4 19l1.2-5L16.6 3.6a2 2 0 0 1 3.8 0z"/>',
+  // Shirt：与旧端 lucide Shirt 同一条 path
+  skin: '<path d="M20.38 3.46 16 2a4 4 0 0 1-8 0L3.62 3.46a2 2 0 0 0-1.34 2.23l.58 3.47a1 1 0 0 0 .99.84H6v10c0 1.1.9 2 2 2h8a2 2 0 0 0 2-2V10h2.15a1 1 0 0 0 .99-.84l.58-3.47a2 2 0 0 0-1.34-2.23z"/>',
   play: '<polygon points="6 3 20 12 6 21 6 3"/>',
   filter: '<path d="m5 3 7 9v6h2v-6l7-9H5z"/><path d="M12 18v3"/>',
   pma: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/>',

@@ -117,6 +117,77 @@
   gap: 4px;
 }
 
+/* ---- 面板内可选列表（动作列表 / 皮肤列表）：与旧端同一套行样式 ----
+   旧端（dist/index.html）原文：
+     容器  className="space-y-1 max-h-48 overflow-y-auto pr-1"
+     行    className="w-full text-left px-2 lg:px-3 py-1 lg:py-1.5 rounded-md text-sm transition-colors
+                     flex items-center justify-between
+                     选中: bg-primary/15 text-primary border border-primary
+                     未选中: hover:bg-accent/60 border border-transparent"
+     名称  className="truncate"        时长 className="text-[10px] text-muted-foreground font-mono shrink-0 ml-2"
+   换算：max-h-48 = 192px；py-1/lg:py-1.5 = 4/6px；px-2/lg:px-3 = 8/12px；rounded-md = 6px；text-sm = 14px。 */
+.ctl-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;                      /* 旧端 space-y-1 */
+  max-height: 192px;             /* 旧端 max-h-48 */
+  overflow-y: auto;              /* 旧端 overflow-y-auto */
+  padding-right: 4px;            /* 旧端 pr-1 */
+}
+
+.ctl-list-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid transparent;   /* 未选中：透明描边，选中才显主色（避免文字跳动） */
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-foreground);
+  font-size: 14px;
+  text-align: left;
+  transition: background-color 200ms var(--ui-ease), color 200ms var(--ui-ease), border-color 200ms var(--ui-ease);
+}
+
+@media (min-width: 1024px) {
+  .ctl-list-row { padding: 6px 12px; }   /* 旧端 lg:py-1.5 lg:px-3 */
+}
+
+.ctl-list-row:not(:disabled):hover {
+  background: var(--color-secondary);    /* 旧端 hover:bg-accent/60 */
+}
+
+.ctl-list-row[aria-pressed='true'] {
+  background: rgba(255, 255, 255, 0.06);
+  background: color-mix(in srgb, var(--color-primary) 15%, transparent); /* 旧端 bg-primary/15 */
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.ctl-list-name {
+  overflow: hidden;
+  text-overflow: ellipsis;   /* 旧端 truncate */
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.ctl-list-time {
+  flex: 0 0 auto;            /* 旧端 shrink-0 */
+  margin-left: 8px;          /* 旧端 ml-2 */
+  font-size: 10px;           /* 旧端 text-[10px] */
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--color-muted-foreground);
+}
+
+.ctl-list-empty {
+  padding: 8px 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--color-muted-foreground);
+}
+
 /* ---- 资源根管理：列表要能滚（根多时不能只看到前几条）---- */
 #root-manager-body {
   max-height: min(38vh, 320px);
@@ -431,21 +502,25 @@
   background-color: transparent;
 }
 
-/* ---- 右栏不可点控件的删除线（跟随 disabled / data-pending 状态自动生效与消失） ----
-   口径：按钮/下拉被禁用 → 它们自己的文字各自划掉（分段组内逐项精确）；
-        开关与下拉没有可见文字，则划掉所在行的 .ctl-label。
-   颜色用弱化色，避免抢视觉。*/
-#right-panel button:disabled,
-#right-panel select:disabled {
+/* ---- 删除线只表达「未接线」，不再表达「当前渲染器不支持」 ----
+   为什么这么分（这不只是样式取舍，两种禁用是完全不同的事实）：
+     · 未接线（data-pending）：功能本应存在、但还没接上 → 划线，表示"这条先划掉"；
+     · 能力不支持（data-disabled-reason）：当前渲染器压根没有这项能力（如 Live2D 没有
+       动画混合时长、部件筛除是 Spine 插槽概念）→ 只灰化 + 原生 title 说明，**不划线**。
+   曾经两者共用 :disabled 划线，导致 Live2D 面「混合模式 / 皮肤列表 / 部件筛除」
+   被划成"像坏了一样"，掩盖了"这一面本来就没这个能力"的真实原因。
+   颜色用弱化色，避免抢视觉。 */
+#right-panel button[data-pending="true"],
+#right-panel select[data-pending="true"],
+#right-panel .chip-btn[data-pending="true"] {
   text-decoration: line-through;
   text-decoration-thickness: 1px;
   text-decoration-color: var(--color-muted-foreground);
 }
 
-#right-panel .ctl-row:has(> [role="switch"][disabled]) > .ctl-label,
-#right-panel .ctl-row:has(> [role="switch"][aria-disabled="true"]) > .ctl-label,
-#right-panel .ctl-row:has(> select:disabled) > .ctl-label,
-#right-panel .ctl-row:has(> .ctl-chips > .chip-btn[data-pending]) > .ctl-label {
+#right-panel .ctl-row:has(> [role="switch"][data-pending="true"]) > .ctl-label,
+#right-panel .ctl-row:has(> select[data-pending="true"]) > .ctl-label,
+#right-panel .ctl-row:has(> .ctl-chips > .chip-btn[data-pending="true"]) > .ctl-label {
   text-decoration: line-through;
   text-decoration-thickness: 1px;
   text-decoration-color: var(--color-muted-foreground);

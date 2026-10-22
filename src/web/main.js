@@ -33,7 +33,10 @@ import {
 } from './panel/panel-settings.js';
 import { loadRoots } from './app/model-actions.js';
 import { installCameraLogger } from './app/camera-log.js';
-import { bindCinemaKeys, exportScreenshot, toggleCinema, toggleRightPanel } from './app/topbar-actions.js';
+import { applyTopbarIcons } from './panel/icons.js';
+import {
+  bindCinemaKeys, bindSidebarStateSync, exportScreenshot, syncSidebarButtons, toggleCinema, toggleRightPanel,
+} from './app/topbar-actions.js';
 import {
   applyTransportMotion, cycleBackground, stepVariant, toggleTransportPlay,
 } from './app/transport-actions.js';
@@ -251,7 +254,7 @@ async function applyMsaa(mode) {
 function toggleLeftPanel() {
   state.leftPanelVisible = !state.leftPanelVisible;
   dom.leftPanel.classList.toggle('is-hidden', !state.leftPanelVisible);
-  dom.btnLibrary.setAttribute('aria-expanded', String(state.leftPanelVisible));
+  syncSidebarButtons(); // 高亮只认"实际可见"，不在这里单独写 aria
 }
 
 /** 全屏切换（原生 API，无副作用；不需要等后续里程碑） */
@@ -272,8 +275,9 @@ async function toggleFullscreen() {
 
 /** 绑定事件（只给"有真实行为"的控件挂处理器；其余控件在 HTML 里 disabled） */
 function bindEvents() {
+  applyTopbarIcons();          // 顶栏图标唯一来源：panel/icons.js
+  bindSidebarStateSync();      // 高亮与边栏真实显隐同步（含影院/收起/过渡）
   dom.btnLibrary.addEventListener('click', toggleLeftPanel);
-  dom.btnLibrary.setAttribute('aria-expanded', 'true');
   dom.btnFullscreen.addEventListener('click', toggleFullscreen);
   // 顶栏两个真动作：截图导出（canvas→blob→下载）与影院模式（切 data-cinema，显隐在 CSS）
   if (dom.btnShot) dom.btnShot.addEventListener('click', () => exportScreenshot());

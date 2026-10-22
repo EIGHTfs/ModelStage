@@ -33,18 +33,30 @@ export function renderSelect(ctl, ctx) {
 }
 
 /** 预设按钮组（chips）：一组同名按钮，每项自带机器值（滤镜这类"多选一但项很多"的场景） */
+/** 造一个候选项节点：列表布局用行，否则用 chips 胶囊 */
+function buildOptionNode(ctl, opt) {
+  if (ctl.layout === 'list') {
+    const row = renderListRow(opt, { selected: opt.value === ctl.defaultValue });
+    row.type = 'button';
+    return row;
+  }
+  const chip = el('button', 'chip-btn', opt.text || opt.value);
+  chip.type = 'button';
+  chip.setAttribute('aria-pressed', String(opt.value === ctl.defaultValue));
+  return chip;
+}
+
 export function renderChips(ctl, ctx) {
   const wired = ctx.isWired(ctl.id) && ctl.disabled !== true;
   const row = el('div', 'ctl-row ctl-row-chips');
   row.append(el('span', 'ctl-label', ctl.label));
-  const box = el('div', 'ctl-chips');
+  // layout:'list' → 纵向列表容器（皮肤列表照旧端的行样式）；否则仍是横向 chips（滤镜预设等）
+  const box = el('div', ctl.layout === 'list' ? 'ctl-chips ctl-list' : 'ctl-chips');
   box.dataset.ctl = ctl.id || '';
   box.setAttribute('role', 'group');
   box.setAttribute('aria-label', ctl.label);
   for (const opt of ctl.options) {
-    const btn = el('button', 'chip-btn', opt.text || opt.value);
-    btn.type = 'button';
-    btn.setAttribute('aria-pressed', String(opt.value === ctl.defaultValue));
+    const btn = buildOptionNode(ctl, opt);
     if (wired) {
       btn.title = opt.text || opt.value;
       btn.addEventListener('click', () => {
@@ -59,4 +71,23 @@ export function renderChips(ctl, ctx) {
   }
   row.append(box);
   return row;
+}
+
+/**
+ * 单选列表的一行（与旧端动作/皮肤列表同一套样式）：
+ *   左名右值、选中主色描边、hover 变色、名称溢出省略。
+ * @param {{text: string, value: string}} opt
+ * @param {{selected?: boolean, timeText?: string, title?: string}} [opts]
+ * @returns {HTMLButtonElement}
+ */
+export function renderListRow(opt, opts = {}) {
+  const btn = el('button', 'ctl-list-row');
+  btn.type = 'button';
+  btn.dataset.value = String(opt.value);
+  btn.setAttribute('aria-pressed', String(!!opts.selected));
+  const name = el('span', 'ctl-list-name', opt.text || opt.value);
+  btn.append(name);
+  if (opts.timeText) btn.append(el('span', 'ctl-list-time', opts.timeText));
+  if (opts.title) btn.title = opts.title;
+  return btn;
 }

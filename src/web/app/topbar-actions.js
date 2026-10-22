@@ -202,9 +202,72 @@ export function toggleCinema(force) {
   root.dataset.cinema = next ? 'on' : 'off';
   const btn = document.getElementById('btn-cinema');
   if (btn) btn.setAttribute('aria-pressed', String(next));
+  syncSidebarButtons(); // 影院模式隐藏了两侧栏，两个开关的高亮也要跟着灭/亮
   if (next) startIdleWatch(); else stopIdleWatch();
   stageStatus(`影院模式：${next ? '开（隐藏顶栏与左右栏，Esc 退出）' : '关'}`, 'info', { show: true });
   return next;
+}
+
+/**
+ * 边栏"实际可见"判定：收起是靠 translateX 移出视口，所以看几何而不是看状态变量。
+ * 这样影院模式、面板头「收起菜单」、按钮切换、CSS 过渡中都能得到同一口径的答案。
+ * @param {HTMLElement|null} el
+ * @param {'left'|'right'} side
+ * @returns {boolean}
+ */
+function isPanelOnScreen(el, side) {
+  if (!el) return false;
+  const root = document.documentElement;
+  // ① 状态量优先：影院模式 / 收起状态 / is-hidden 都是"确定要隐藏"，过渡动画没走完也该立刻判定为隐藏，
+  //    否则点击后要等 transitionend 才更新高亮，读起来像"慢了半拍"。
+  const declaredHidden = side === 'left'
+    ? (root.dataset.cinema === 'on' || root.dataset.left === 'off' || el.classList.contains('is-hidden'))
+    : (root.dataset.cinema === 'on' || root.dataset.right === 'off');
+  if (declaredHidden) return false;
+  // ② 几何兜底：没有被状态量宣布隐藏时，以真实位置为准（窗口过窄/面板被外部样式挤掉等情况）
+  const r = el.getBoundingClientRect();
+  if (!r.width || !r.height) return false;
+  return side === 'left' ? r.right > 8 : r.left < window.innerWidth - 8;
+}
+
+/**
+ * 把顶栏两个边栏开关的高亮同步到边栏的真实显隐状态。
+ * 高亮只认这一处结论：按钮自己 toggle class 不算，影院模式关掉边栏时也必须跟着灭。
+ * @returns {{leftOn: boolean, rightOn: boolean}}
+ */
+export function syncSidebarButtons() {
+  const leftOn = isPanelOnScreen(document.getElementById('left-panel'), 'left');
+  const rightOn = isPanelOnScreen(document.getElementById('right-panel'), 'right');
+  const btnLeft = document.getElementById('btn-library');
+  const btnRight = document.getElementById('btn-menu');
+  if (btnLeft) {
+    btnLeft.setAttribute('aria-pressed', String(leftOn)); // 高亮态由 aria-pressed 驱动（样式在 components.css）
+    btnLeft.setAttribute('aria-expanded', String(leftOn));
+    btnLeft.dataset.sidebarState = leftOn ? 'shown' : 'hidden';
+  }
+  if (btnRight) {
+    btnRight.setAttribute('aria-pressed', String(rightOn));
+    btnRight.dataset.sidebarState = rightOn ? 'shown' : 'hidden';
+  }
+  document.documentElement.dataset.leftState = leftOn ? 'on' : 'off';
+  document.documentElement.dataset.rightState = rightOn ? 'on' : 'off';
+  return { leftOn, rightOn };
+}
+
+/**
+ * 订阅所有会改变边栏显隐的动作（按钮/影院/收起/过渡/缩放），统一回调同步高亮。
+ * 只绑一次；CSS 过渡结束再同步一次，避免"点完立刻读位置"读到动画中间值。
+ */
+export function bindSidebarStateSync() {
+  if (bindSidebarStateSync.done) return false;
+  bindSidebarStateSync.done = true;
+  for (const id of ['left-panel', 'right-panel']) {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('transitionend', () => syncSidebarButtons());
+  }
+  window.addEventListener('resize', () => syncSidebarButtons());
+  syncSidebarButtons();
+  return true;
 }
 
 /**
@@ -218,8 +281,7 @@ export function toggleRightPanel(force) {
   const root = document.documentElement;
   const open = typeof force === 'boolean' ? force : root.dataset.right === 'off';
   root.dataset.right = open ? 'on' : 'off';
-  const btn = document.getElementById('btn-menu');
-  if (btn) btn.setAttribute('aria-pressed', String(open));
+  syncSidebarButtons(); // 高亮跟随真实显隐（不在这里自己写 class）
   stageStatus(`右侧控制面板：${open ? '显示' : '收起（顶栏「菜单」可再打开）'}`, 'info', { show: true });
   return open;
 }
