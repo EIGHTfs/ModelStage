@@ -70,6 +70,16 @@ async function loadBundleModel(model, name) {
     stageStatus(`无法装载 ${name}：插件宿主未就绪（页面刚启动时可稍等再试）`, 'error');
     return null;
   }
+  // 宿主对象在启动时就已创建，但插件脚本可能还在注入（启动即自动恢复时尤其明显）。
+  //   装载入口自己等一次：loadAll 幂等，已装载完成时立即返回，不会重复请求清单。
+  await host.loadAll();
+  // 等完之后仍无 bundle 提供者 ⇒ 是真的没有能处理它的插件（配置/目录问题），
+  //   与"宿主未就绪"分开报，别让用户对着错误提示猜。
+  const bundleProviders = typeof host.providersFor === 'function' ? host.providersFor(['bundle']) : [];
+  if (!bundleProviders.length) {
+    stageStatus(`无法装载 ${name}：没有能处理 bundle 的插件（检查 config/plugins.json 与 plugins/ 目录）`, 'error');
+    return null;
+  }
   // 解包 + 转码实测 3~4 秒：必须有可见状态，不能让用户点了没反应
   stageStatus(`正在解包 ${name}…（首次约 3~4 秒）`, 'info');
   const mat = await host.materialize({

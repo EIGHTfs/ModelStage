@@ -307,14 +307,13 @@ export function applyCapabilities(groups, capabilities, options = {}) {
           controls.push({ ...ctl, disabled: true, reason: '无法确定能力键' });
           continue;
         }
-        // 当前渲染器没有这项能力 ⇒ **禁用 + 写明原因**（不隐藏、也不静默无效）。
-        //   为什么不用"隐藏"：隐藏会让用户以为"面板里从来没有这个功能"，
-        //   而实际上换个渲染面（Spine/Live2D）它就回来了——禁用+原因才说清"是这一面不支持"。
-        //   data-disabled-reason 由 view.js 渲染成 title 与属性，供断言与排查读取。
-        if (!settings.has(resolved.key)) {
-          controls.push({ ...ctl, disabled: true, reason: '当前渲染器不支持（未声明该能力）' });
-          continue;
-        }
+        // 当前渲染器没有这项能力 ⇒ **不构建**（面板里根本不存在这个控件）。
+        //   依据：面板能力契约 §3.1「能力不支持的项必须根本不构建（无 DOM、无监听、无样式计算）」；
+        //        §四十九「这类东西对这种模型不存在 → 不加载」。
+        //   注意别和"隐藏"混淆：隐藏=先构建再 display:none（契约明令禁止）；
+        //   这里是不进 controls，等于面板里从来没有这一项——Live2D 没有 PMA 口径、没有 MSAA
+        //   上下文级开关、没有骨架 fit 三模式，就不该在 Live2D 面画出这几项。
+        if (!settings.has(resolved.key)) continue;
         controls.push({ ...ctl });
       }
       return { ...group, controls };

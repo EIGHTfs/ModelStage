@@ -257,6 +257,7 @@ if (typeof live2d.syncSize === 'function') {
     /** DPR 变化：与引擎保持同口径（Live2D 自身不决定像素比） */
     setDpr() { /* 由 resize() 统一按引擎口径同步 */ },
 
+
     /**
      * 应用一项设置（契约 renderer/v1）。未知键返回 false 不抛。
      * @param {string} key textureFilter | fps

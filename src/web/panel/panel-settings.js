@@ -155,6 +155,11 @@ function rebuildPanelFor(renderer) {
     wiredIds: WIRED_IDS,
   });
   state.panel = info;
+  // 暴露"实际构建出来的已接线控件"：能力不支持的项根本不构建（契约 §3.1），
+  //   所以 panelWired 不能直接给全量 WIRED_IDS，否则断言会拿面板里不存在的 id 去比。
+  const builtIds = [...document.querySelectorAll('#right-panel [data-ctl]')].map((n) => n.dataset.ctl);
+  state.panelWired = WIRED_IDS.filter((id) => builtIds.includes(id));
+  if (typeof window !== 'undefined' && window.__WEB__) window.__WEB__.panelWired = state.panelWired;
   // 底栏/循环推进需要"重绘右栏动作列表"：挂在面板句柄上，避免互相 import
   info.refreshAnimations = () => refreshPanelAnimations();
   startFpsReadout(info);

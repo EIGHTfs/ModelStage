@@ -13,6 +13,7 @@ import { createDebugLog } from '../debug/log.js';
 import { mountDebugPanel } from '../debug/panel.js';
 import { formatError } from '../infra/api.js';
 import { dom, state, stage } from '../app/context.js';
+import { resetViewViaRenderer } from '../render/reset-view.js';
 import { stageStatus } from '../app/status.js';
 import { VIEW_SETTINGS_KEY, applyBackground, applyTheme, readViewSettings, saveViewSettings } from '../app/view-settings.js';
 import { DEFAULT_PART_FILTER_KEYWORDS, applyPartFilter } from '../app/part-filter.js';
@@ -183,7 +184,8 @@ export function restoreDefaultSettings() {
     panel.setValue('ctl-theme', state.viewTheme);
     panel.setValue('ctl-bg-mode', state.viewBg);
   }
-  try { if (stage && stage.resetView) stage.resetView(); } catch { /* 视图复位失败不影响设置 */ }
+  // 视图复位走统一入口（只认当前渲染器，避免 Live2D 面打到隐藏的 Spine 舞台）
+  try { resetViewViaRenderer(state.currentRenderer); } catch { /* 视图复位失败不影响设置 */ }
   document.documentElement.dataset.settingsRestored = String(Date.now());
   stageStatus('已恢复默认设置（本地存储已清空、视图已复位）', 'info', { show: true });
   return true;

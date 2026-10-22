@@ -69,6 +69,9 @@ export function createSpineRenderer({ stage, onMsaa } = {}) {
       try { if (engine && typeof engine.applyPan === 'function') engine.applyPan(dx, dy); } catch { /* 忽略 */ }
     },
     resetView() {
+      // 走舞台的 resetView：它除了相机归位，还会重取"平移基准"(viewBaseScale/viewPan)，
+      //   只调 engine.resetCamera() 会让基准停在旧值，复位后一拖就跳。
+      try { if (typeof stage.resetView === 'function') { stage.resetView(); return; } } catch { /* 落到下面的兜底 */ }
       const engine = engineOf();
       try { if (engine && typeof engine.resetCamera === 'function') engine.resetCamera(); } catch { /* 忽略 */ }
     },

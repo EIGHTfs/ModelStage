@@ -90,6 +90,13 @@ export function createPluginHost(opts = {}) {
   /** /api/plugins 返回的清单快照 */
   let discovered = [];
   let loaded = false;
+  /**
+   * 进行中的 loadAll（并发去重）。
+   * 为什么需要：启动预热与"用户一打开就点资源包"可能同时触发装载，
+   *   两路各发一次 /api/plugins、各评估一遍插件，既浪费也会让提供者注册更晚。
+   *   这里让后来者复用同一个 Promise：清单只取一次、插件只装载一次。
+   */
+  let loadingPromise = null;
 
   /**
    * 取资源根里的文件字节（契约 §3.6 的唯一取字节通道）。
@@ -298,9 +305,27 @@ export function createPluginHost(opts = {}) {
 
   /**
    * 读启用清单并逐个加载。**任何失败都不抛**：宿主是增强项，不能拖垮页面。
+   *
+   * 幂等 + 并发去重（装载入口每次都会先调它，热路径必须几乎零成本）：
+   *   · 已装载完成 → 直接返回上次结果，不再请求 /api/plugins；
+   *   · 正在装载   → 后来者复用同一个 Promise（清单只取一次、插件只评估一次）。
+   * 这解决了"页面刚起、插件脚本还在注入时就发起装载"的时序竞争。
    * @returns {Promise<{discovered: number, registered: number}>}
    */
   async function loadAll() {
+    if (loaded) return { discovered: discovered.length, registered: countRegistered() };
+    if (loadingPromise) return loadingPromise;
+    loadingPromise = doLoadAll().finally(() => { loadingPromise = null; });
+    return loadingPromise;
+  }
+
+  /** 已成功装载（注册提供者）的插件数 */
+  function countRegistered() {
+    return [...loadState.values()].filter((s) => s.loaded).length;
+  }
+
+  /** loadAll 的实际执行体（内部使用；失败只记日志不抛） */
+  async function doLoadAll() {
     try {
       const res = await fetch(`${base}/api/plugins`, { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -321,7 +346,7 @@ export function createPluginHost(opts = {}) {
       try { await loadPlugin(pl); } catch (e) { say.warn(`插件 ${pl && pl.id} 装载异常：${(e && e.message) || e}`); }
     }
     loaded = true;
-    const ok = [...loadState.values()].filter((s) => s.loaded).length;
+    const ok = countRegistered();
     say.info(`插件装载完成：加载 ${discovered.length} 个、注册 ${ok} 个提供者`
       + (ok < discovered.length ? `（${discovered.length - ok} 个未生效，见上方警告）` : ''));
     return { discovered: discovered.length, registered: ok };

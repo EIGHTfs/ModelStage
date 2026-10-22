@@ -33,6 +33,7 @@ import {
 } from './panel/panel-settings.js';
 import { loadRoots } from './app/model-actions.js';
 import { installCameraLogger } from './app/camera-log.js';
+import { resetViewViaRenderer } from './render/reset-view.js';
 import { applyTopbarIcons } from './panel/icons.js';
 import {
   bindCinemaKeys, bindSidebarStateSync, exportScreenshot, syncSidebarButtons, toggleCinema, toggleRightPanel,
@@ -326,7 +327,7 @@ function boot() {
   }
 
   const transportInfo = mountTransport(dom.footer, {
-    'transport-reset-view': () => { if (stage && stage.resetView) stage.resetView(); },
+    'transport-reset-view': () => resetViewViaRenderer(state.currentRenderer),
     'transport-play': () => toggleTransportPlay(),
     'transport-prev': () => stepVariant(-1),
     'transport-next': () => stepVariant(1),
@@ -419,6 +420,9 @@ function boot() {
     pluginHost = createPluginHost({ log: (level, msg) => stageStatus(msg, level) });
     state.pluginHost = pluginHost;   // app 层（选模型分流）经 state 取用，不反向 import
 
+    // 这里只是**启动预热**：不 await，不阻塞首屏。真正需要插件的能力入口
+    //   （如资源包装载 loadBundleModel）会自己 await 一次 loadAll（幂等，已装载则立即返回），
+    //   所以插件注册晚于首屏也安全。
     pluginHost.loadAll().catch((e) => stageStatus(`插件加载异常：${(e && e.message) || e}`, 'warn'));
   } catch (e) {
     stageStatus(`插件宿主初始化失败（页面其余功能不受影响）：${(e && e.message) || e}`, 'warn');
