@@ -24,7 +24,38 @@ export const ZOOM_MIN = CAMERA.MIN;
 export const ZOOM_MAX = CAMERA.MAX;
 
 /**
- * 创建运行时上下文。
+ * 判定"带 scheme 的引用"（拼接目录时用）：任意 scheme 或 data: 都不要拼目录。
+ *
+ * 为什么拼接前必须判：模型定义里允许写绝对 URL，拼上去会变成
+ *   `/files/dir/http://host/x.motion3.json` 这种无效地址（曾导致 14 次 miss）。
+ *   注意这里包含 `vfs://` —— 它的作用是"别再前缀目录"，不是"可直连"。
+ * @param {string} url
+ * @returns {boolean}
+ */
+export function isAbsoluteRef(url) {
+  const text = String(url == null ? '' : url);
+  if (!text) return false;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) return true;
+  return /^data:/i.test(text);   // data: 可能不带 //
+}
+
+/**
+ * 判定"浏览器可直接取用"的地址（resolveAsset 短接用）：http/https/blob/data。
+ *
+ * **不能包含 vfs://**：vfs:// 是虚拟地址，必须交给 VirtualFS 解析成 blob/真实地址；
+ *   当成"可直连"放行会让浏览器直接 fetch('vfs://…') → Network error
+ *   （这条我自己先踩了一次：短接后 vfs:// 装载全挂、hits 变 0）。
+ * @param {string} url
+ * @returns {boolean}
+ */
+export function isDirectUrl(url) {
+  const text = String(url == null ? '' : url);
+  if (!text) return false;
+  if (/^(https?|blob):/i.test(text)) return true;
+  return /^data:/i.test(text);
+}
+
+/** 创建运行时上下文。
  * @param {{vfs?: object, getOverlayHost?: Function, log?: Function}} options
  * @returns {object} ctx（st / handleRef / 薄工具 / api 注册表）
  */
@@ -62,6 +93,9 @@ export function createStageContext({ vfs, getOverlayHost, log } = {}) {
   /** 资源入口经 VirtualFS 解析（命中用 Blob URL，未命中回落原 URL） */
   function resolveAsset(url) {
     if (!url) return null;
+    // 已经可直接取用（http/https/blob/data）就不必问 VFS：它对这些永远 miss
+    // 注意 vfs:// 不在此列 —— 那是虚拟地址，必须由 VirtualFS 解析
+    if (isDirectUrl(url)) return url;
     try {
       const hit = vfs && typeof vfs.resolve === 'function' ? vfs.resolve(url) : null;
       return hit || url;

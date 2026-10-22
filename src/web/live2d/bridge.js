@@ -4,7 +4,7 @@
 //   不直接碰 PIXI。相机动作（resetView / setZoomRatio / pan）最终都落到 view.applyZoom()，
 //   与 Spine 共用同一套相机语义（render/camera）。
 // 成员语义见各方法注释；成员集合属于对外契约，增删需同步渲染器与面板。
-import { ZOOM_MIN, ZOOM_MAX } from './stage-ctx.js';
+import { ZOOM_MIN, ZOOM_MAX, isAbsoluteRef } from './stage-ctx.js';
 
 /**
  * 创建桥对象。
@@ -29,7 +29,10 @@ function createMotionApi(ctx) {
     const mo = ((meta.motions && meta.motions[group]) || [])[index] || null;
     const file = mo && (mo.File || mo.Name);
     if (!file) return null;
-    const joined = file.startsWith('/') ? file : `${dir}${file}`;
+    // 绝对地址（任意 scheme 或 data:）不拼目录：模型定义里允许写绝对 URL，
+    //   拼上去会变成 /files/…/http://… 这种无效地址（曾经 14 次 miss 的来源）；
+    //   根绝对（/xxx）也原样保留。
+    const joined = isAbsoluteRef(file) || file.startsWith('/') ? file : `${dir}${file}`;
     try { return ctx.resolveAsset(joined); } catch { return joined; }
   }
 
