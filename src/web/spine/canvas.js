@@ -134,31 +134,29 @@ async function ensureRuntimeSource(ver) {
 //   运行时库（/spine-runtimes/*）仍在这里加载：那是**库**不是模型资产，属已批准的豁免项。
 
 /**
- * 取到一份 ready 的 Document（渲染器入参的唯一形态）。
- * · 传 { document } ⇒ 直接用；state !== 'ready' 直接抛（错误文档不允许进入渲染层）
- * · 传 { root, model } ⇒ 交给 Assets 层组装（兼容测试与旧调用，本层不取资源）
+ * 取出 ready 的 Document（舞台入参的唯一形态）。
+ * 只认 { document }：非 Document 直接抛，ready 之外（error）也抛并留痕。
+ *   组装是调用方的事（api.buildDocument 或 app/model-actions），舞台不代劳。
  * @param {object} st 舞台状态
- * @param {object} arg { document } | { root, model }
- * @returns {Promise<object>} ready 的 Document
+ * @param {object} arg 只接受 { document }
+ * @returns {object} ready 的 Document
  */
-async function resolveDocument(st, arg) {
-  const given = arg && arg.document;
-  if (given) {
-    if (given.state !== 'ready') {
-      const why = (given.warnings || []).join('；') || '未提供原因';
-      throw businessError(`Document 不是 ready 状态（${given.state}）：${why}`);
-    }
-    return given;
+function resolveDocument(st, arg) {
+  // **只接受 Document**，不做旧形状（catalog entry）的兜底组装：
+  //   兜底留着，调用方忘了组装就会静默走它，而"组装失败"这条路径永远没人覆盖。
+  //   组装入口是 api.buildDocument（Assets 层 infra/document.js），调用方显式两步走。
+  const doc = arg && arg.document;
+  if (!doc || typeof doc.state !== 'string') {
+    // 旧形状（{ root, model }）要点名，否则调用方只看到 undefined 不知错在哪
+    const got = arg && arg.model
+      ? `旧形状 { root, model }（kind=${(arg.model.kind) || '?'}）`
+      : (doc && typeof doc === 'object' ? `普通对象（kind=${doc.kind || '?'}）` : String(doc));
+    throw businessError(`stage.load 只接受 Document（请先 buildDocument 组装），收到：${got}`);
   }
-  const model = arg && arg.model;
-  if (!model) throw new Error('load 需要 { document } 或 { root, model }');
-  const doc = await buildDocument(model, {
-    log: (m) => { try { st.engine && st.engine.log && st.engine.log('warn', m, 'doc'); } catch { /* 忽略 */ } },
-  });
   if (doc.state !== 'ready') {
     const why = (doc.warnings || []).join('；') || '未提供原因';
-    st.lastError = why;
-    throw businessError(`Document 组装失败：${why}`);
+    st.lastError = why;   // 组装失败要留痕：下一次成功装载会清掉它
+    throw businessError(`Document 不是 ready 状态（${doc.state}）：${why}`);
   }
   return doc;
 }
@@ -362,11 +360,10 @@ function startPlayback(st, info, loop) {
   return { animations: anims, motion };
 }
 
-/** 加载主流程（编排：选版本 → 注入源码 → 取资源 → 建 engine → 加载 → 起播） */
+/** 加载主流程（编排：校验 Document → 选版本 → 注入源码 → 建 engine → 加载 → 起播） */
 async function loadIntoStage(st, arg) {
-  // 入参二选一：{ document }（渲染器走的正规路径）或旧的 { root, model }（测试/兼容）。
-  // 兼容路径也在**Assets 层**组装 Document —— 本层不取模型资源。
-  const doc = await resolveDocument(st, arg);
+  // 入参只有一种形状：{ document }（ready）。资源地址与字节都在组装阶段备好，本层不取。
+  const doc = resolveDocument(st, arg);
   const model = doc;
   const seq = ++st.seq;
   // 每次装载开始都清掉上一次的错误：lastError 语义是"最近一次装载的结果状态"，
@@ -494,6 +491,14 @@ for (const key of ['fit', 'textureFilter', 'speed', 'loop', 'debug', 'fpsLimit',
  * 四档都会重传贴图：auto 需要重新采样像素判断，其余三档要按新口径重上传。
  * @param {string} mode
  */
+/**
+ * 组装 Document（Assets 层入口，测试/工具用）。
+ * 产品路径由 app/model-actions 组装；舞台只消费 ready 的 Document，绝不自己取资源。
+ * @param {object} entry catalog 条目（含 kind / rootId / entry.url 等）
+ * @returns {Promise<object>} Document（state 可能是 'error'，调用方自行判断）
+ */
+api.buildDocument = (entry) => buildDocument(entry || {});
+
 api.setPma = async (mode) => {
   const m = ['auto', 'premultiplied', 'straight', 'upload'].includes(mode) ? mode : 'auto';
   const prev = (st.settings && st.settings.pma) || 'auto';
