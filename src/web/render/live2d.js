@@ -5,6 +5,7 @@
 // 边界：画布与尺寸由 StageSurface 提供（handle），本文件不读 DOM 尺寸、不建画布。
 
 import { createCamera } from './camera/index.js';
+import { createFrameGate } from '../engine/frame-gate.js';
 import { buildDocument } from '../infra/document.js';
 import { DEFAULT_FILTER, FILTER_PRESETS } from '../engine/filters.js';
 
@@ -50,6 +51,60 @@ export function createLive2DRenderer({ live2d } = {}) {
   let handleRef = null;
   /** 当前滤镜预设 id（original = 不挂滤镜） */
   let presetId = DEFAULT_FILTER;
+
+  // ---------------------------------------------------------------- 帧率门控
+  //
+  // 为什么不用 PIXI 的 ticker.maxFPS：它按 deltaTime 判断且带容差，90Hz 屏上相位抖动时会放行，
+  //   实测 60/30 档经常跑到 90。这里把 ticker 的限帧关掉（maxFPS=0），并把 PIXI 自己的渲染回调
+  //   从 ticker 上摘下来，改由本门控决定何时调 app.render()。
+  //   ticker 本身继续跑 ⇒ 模型动作/物理仍按真实时间推进，只有**出画**被门控。
+  const frameGate = createFrameGate(() => fpsLimit);
+  // 实测渲染帧率：只有**真的调了 app.render()** 才计数。
+  //   为什么不能拿 app.ticker.FPS 当读数：ticker 是"rAF 触发频率"。把渲染从 ticker 上摘下来门控后，
+  //   tick 仍按 rAF 跑（≈屏幕刷新率），用它显示会永远等于刷新率（90Hz 屏上设 60 也可能显示 89）——
+  //   那是**读数失真**，与"限帧有没有生效"是两件事，必须分开修、分开说。
+  let fpWindowStart = 0;
+  let fpWindowFrames = 0;
+  let measuredFps = 0;
+  let gateApp = null;      // 已装门控的 app（换 app 后重装）
+  let gateHandler = null;  // ticker 上的门控回调（换 app 时先摘掉）
+
+  /**
+   * 把帧率门控装到给定 PIXI app 上（幂等：同一个 app 不重复装）。
+   * @param {object} app PIXI.Application
+   * @returns {boolean} 是否装好
+   */
+  function installFrameGate(app) {
+    if (!app || !app.ticker || typeof app.ticker.add !== 'function') return false;
+    if (gateApp === app && gateHandler) return true;
+    if (gateApp && gateHandler && gateApp.ticker && typeof gateApp.ticker.remove === 'function') {
+      try { gateApp.ticker.remove(gateHandler); } catch { /* 旧 app 已销毁 */ }
+    }
+    try { app.ticker.maxFPS = 0; } catch { /* 老版本无此属性 */ }
+    // 摘掉 PIXI 自带的渲染回调（Application.start() 里以 app.render + app 为键挂上去的）
+    try {
+      if (typeof app.ticker.remove === 'function' && typeof app.render === 'function') app.ticker.remove(app.render, app);
+    } catch { /* 忽略 */ }
+    frameGate.reset();
+    gateHandler = () => {
+      // deltaMS 由 PIXI ticker 维护：本次 tick 距上次的真实毫秒间隔
+      if (!frameGate.shouldRender(app.ticker.deltaMS)) return;
+      try { app.render(); } catch { /* 单帧渲染失败不打断 ticker */ }
+      // 实测帧率：每 ≥500ms 结算一次，与实际出画严格同源
+      const nowMs = performance.now();
+      if (!fpWindowStart) fpWindowStart = nowMs;
+      fpWindowFrames += 1;
+      const span = nowMs - fpWindowStart;
+      if (span >= 500) {
+        measuredFps = (fpWindowFrames * 1000) / span;
+        fpWindowFrames = 0;
+        fpWindowStart = nowMs;
+      }
+    };
+    app.ticker.add(gateHandler);
+    gateApp = app;
+    return true;
+  }
   /** 已挂上的 PIXI.Filter（original 时为 null） */
   let activeFilter = null;
 
@@ -177,6 +232,8 @@ try { if (live2d.syncSize) live2d.syncSize({ size: { width: cssW, height: cssH }
       }
       handleRef = handle || null;
       const info = await live2d.mount(document, handle);
+      // 每次装载后确保门控装在当前 app 上（unmount 会销毁 app，重建后是新的实例）
+      try { installFrameGate(live2d.getApp ? live2d.getApp() : null); } catch { /* 门控装不上不应阻断装载 */ }
       applyPreset(); // 新模型挂上后把当前滤镜补一次（切模型/重建后不断档）
       return info;
     },
@@ -266,10 +323,11 @@ if (typeof live2d.syncSize === 'function') {
           return true;
         }
         if (key === 'fps') {
+          // 1~120：90 档要能接受（高刷屏）。实际限制由 frameGate 做，PIXI 的 maxFPS 保持 0。
           const n = Math.max(1, Math.min(120, Number(value) || 60));
-          if (!app.ticker) return false;
-          app.ticker.maxFPS = n;   // 0 = 不限帧，故这里只接受 ≥1 的值
           fpsLimit = n;
+          try { app.ticker.maxFPS = 0; } catch { /* 忽略 */ }
+          installFrameGate(app);
           return true;
         }
       } catch { return false; }
@@ -292,7 +350,8 @@ if (typeof live2d.syncSize === 'function') {
       if (key === 'textureFilter') return filterMode;
       if (key === 'fps') {
         const app = live2d.getApp ? live2d.getApp() : null;
-        return app && app.ticker && app.ticker.maxFPS ? app.ticker.maxFPS : fpsLimit;
+        // 回显"目标档位"：maxFPS 已被关掉（恒 0），真实限制在我们的门控里
+        return fpsLimit;
       }
       return null;
     },
@@ -302,6 +361,12 @@ if (typeof live2d.syncSize === 'function') {
      * 为什么不像 spine 那样保留：PIXI 的 destroy(true) 会摘掉 canvas 只留容器，
      *   那个中间态正是"页面空白但 stats 正常"的来源；重建成本低，不值得为此维护两套生命周期。
      */
+    /**
+     * 实测渲染帧率（每 ≥500ms 结算一次，只统计真正出画的帧）。
+     * 面板读数必须用它，不能用 PIXI 的 ticker.FPS（那是 rAF 频率）。
+     * @returns {number} 最近窗口的 frames/s；0 表示暂无数据
+     */
+    getMeasuredFps() { return measuredFps; },
     unmount() {
       try { if (typeof live2d.unmount === 'function') live2d.unmount(); } catch { /* 忽略 */ }
     },

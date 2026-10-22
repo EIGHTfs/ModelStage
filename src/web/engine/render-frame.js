@@ -4,6 +4,7 @@
 //   StageSurface 只负责尺寸与背景，不接管渲染帧（统一调度属 B6 收尾，需同时改 surface 与 canvas.js）。
 
 import { hideFilteredSlots, restoreFilteredSlots } from './skins.js';
+import { createFrameGate } from './frame-gate.js';
 
 /** 绘制一帧 */
 export function renderFrame(engine) {
@@ -56,11 +57,18 @@ export function startLoop(engine) {
   engine.lastTime = performance.now();
   engine.fpsLastTime = engine.lastTime;
   engine.fpsFrames = 0;
+  // 帧率门控用累加器（见 frame-gate.js）：单门限会把每帧的零头丢掉，
+  //   长期平均偏低，且相位抖动时会连放两帧（90Hz 屏上表现为帧率超过目标）。
+  engine.frameGate = createFrameGate(() => engine.fpsLimit);
+  engine.lastTickAt = engine.lastTime;
   const loop = () => {
     if (!engine.isPlaying) return;
     engine.animationId = requestAnimationFrame(loop);
     const now = performance.now();
-    if (now - engine.lastTime < 1000 / engine.fpsLimit) return;
+    // 先算"距上一 tick 的间隔"再判门控：动画时钟 lastTime 只在实际渲染时推进，语义不变
+    const tickDelta = now - engine.lastTickAt;
+    engine.lastTickAt = now;
+    if (!engine.frameGate.shouldRender(tickDelta)) return;
     let dt = (now - engine.lastTime) / 1000;
     engine.lastTime = now;
     dt = Math.min(dt, 0.1);
