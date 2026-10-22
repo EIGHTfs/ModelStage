@@ -312,11 +312,16 @@ export function createStageSurface({ root, log } = {}) {
   // ---------------------------------------------------------------- 激活状态机
   /**
    * 唯一卸载入口：幂等，不关心当前是哪一面。
+   * @param {'unmount'|'dispose'} [mode] 切换渲染面用 unmount（保留引擎）；Surface 销毁用 dispose（彻底拆）
    */
-  async function disposeActive() {
+  async function disposeActive(mode = 'dispose') {
     const entry = renderers.get(st.activeId);
-    if (entry && typeof entry.dispose === 'function') {
-      try { await entry.dispose(); } catch { /* 卸载失败也要继续切面 */ }
+    const fn = mode === 'unmount' ? 'unmount' : 'dispose';
+    if (entry && typeof entry[fn] === 'function') {
+      try { await entry[fn](); } catch { /* 卸载失败也要继续切面 */ }
+    } else if (entry && typeof entry.dispose === 'function') {
+      // 兼容：渲染器没实现 unmount 时退回 dispose —— 宁可彻底拆，也不留残渣
+      try { await entry.dispose(); } catch { /* 同上 */ }
     }
     st.activeId = null;
     st.document = null;

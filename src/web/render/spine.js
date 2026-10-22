@@ -185,9 +185,17 @@ export function createSpineRenderer({ stage, onMsaa } = {}) {
       try { engine = stage.debug ? stage.debug().engine : null; } catch { engine = null; }
       if (engine && typeof engine.setDprMode === 'function') engine.setDprMode(value === null || value === undefined ? 'auto' : value);
     },
-    /** 幂等卸载（画布隐藏由 StageSurface 负责，不在这里碰 DOM） */
-    dispose() {
+    /**
+     * 卸载：释放当前模型内容并**停掉渲染循环**（不再出帧），引擎与 GL 上下文保留以便快速切回。
+     * stage.unload() 内部已做 engine.stop() + clearSkeleton() + 让在途加载失效。
+     * 画布可见性由 StageSurface 负责（渲染器不碰 DOM，契约 §一）。
+     */
+    unmount() {
       try { if (typeof stage.unload === 'function') stage.unload(); } catch { /* 忽略 */ }
+    },
+    /** 彻底释放：销毁引擎（含 WebGL 上下文）；幂等（Surface 销毁时走这里） */
+    dispose() {
+      try { if (typeof stage.dispose === 'function') stage.dispose(); } catch { /* 忽略 */ }
     },
     isActive() {
       try { return !!(stage.stats && stage.stats().model); } catch { return false; }

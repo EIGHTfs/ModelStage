@@ -279,7 +279,14 @@ if (typeof live2d.syncSize === 'function') {
       }
       return null;
     },
-/** 幂等卸载（覆盖层的隐藏由 StageSurface 负责） */
+    /**
+     * 卸载：释放当前内容与自建 GL 资源（PIXI app），并自隐藏；幂等。
+     * 切换渲染面时走这里（保留覆盖层 DOM，再切回更快）。
+     */
+    unmount() {
+      try { if (typeof live2d.unmount === 'function') live2d.unmount(); } catch { /* 忽略 */ }
+    },
+    /** 彻底释放：销毁 PIXI app 与覆盖层 DOM；幂等（Surface 销毁时走这里） */
     dispose() {
       try { if (typeof live2d.dispose === 'function') live2d.dispose(); } catch { /* 忽略 */ }
     },

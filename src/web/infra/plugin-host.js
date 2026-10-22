@@ -83,6 +83,8 @@ export function createPluginHost(opts = {}) {
 
   /** id → provider（插件 register 上来的对象） */
   const providers = new Map();
+  /** id → 清单里声明的角色（provides）——插件自己 register 时不一定带，以清单为准 */
+  const manifestProvides = new Map();
   /** id → { loaded, error, files, ms } 装载状态（排障用） */
   const loadState = new Map();
   /** /api/plugins 返回的清单快照 */
@@ -113,7 +115,9 @@ export function createPluginHost(opts = {}) {
       if (!plugin || typeof plugin !== 'object') { say.warn('register 收到非对象，已忽略'); return false; }
       const id = String(plugin.id || '').trim();
       if (!id) { say.warn('register 缺少 id，已忽略'); return false; }
-      const rec = { ...plugin, id };
+      // 角色以**清单**为准（契约 插件契约 §二）：register 上来的对象不覆盖它
+      const declared = manifestProvides.get(id) || [];
+      const rec = { ...plugin, id, provides: declared.slice() };
       providers.set(id, rec);
       const st = loadState.get(id) || { files: 0, ms: 0 };
       loadState.set(id, { ...st, loaded: true, error: null });
@@ -313,6 +317,7 @@ export function createPluginHost(opts = {}) {
     }
     say.info(`发现 ${discovered.length} 个启用插件：${discovered.map((p) => p.id).join(', ')}`);
     for (const pl of discovered) {
+      if (pl && pl.id) manifestProvides.set(pl.id, Array.isArray(pl.provides) ? pl.provides.map(String) : []);
       try { await loadPlugin(pl); } catch (e) { say.warn(`插件 ${pl && pl.id} 装载异常：${(e && e.message) || e}`); }
     }
     loaded = true;
@@ -347,6 +352,9 @@ export function createPluginHost(opts = {}) {
         + '契约 §1.1 要求 Uint8Array；插件可能因此判不出容器（表现为"没有提供者"）');
     }
     for (const p of providers.values()) {
+      // 只有声明了 asset-provider 角色的插件才参与"这个文件归谁解"（契约 §一/§二）。
+      //   其它角色（renderer/editor/exporter/panel）不该在这里被问到。
+      if (!Array.isArray(p.provides) || !p.provides.includes('asset-provider')) continue;
       if (typeof p.canHandle !== 'function') continue;
       let hit = false;
       try {
@@ -367,6 +375,7 @@ export function createPluginHost(opts = {}) {
       discovered: discovered.map((p) => p.id),
       providers: [...providers.values()].map((p) => ({
         id: p.id,
+        provides: Array.isArray(p.provides) ? p.provides.slice() : [],
         kind: p.kind || null,
         fileKinds: Array.isArray(p.fileKinds) ? p.fileKinds.slice() : [],
         hasCanHandle: typeof p.canHandle === 'function',

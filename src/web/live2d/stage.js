@@ -71,9 +71,29 @@ export function createLive2DStage({ vfs, getOverlayHost, log } = {}) {
     return result;
   }
 
-  /** 卸载（保留 PIXI app，便于快速再切回） */
+  /**
+   * 卸载：释放当前内容 + **自建 GL 资源**（PIXI app），并自隐藏。
+   *
+   * 为什么不能只 hide：契约 §五-7 明确「在 unmount/dispose 里遗留自建 GL 资源」算缺陷——
+   *   PIXI app 持有一个 WebGL 上下文与整棵 display tree，只 hide 会让它在切走后继续占用。
+   * 与 dispose() 的区别：**保留覆盖层 DOM 元素**，下次 mount 时 ensureApp() 重建 app 即可（更快）。
+   * 幂等：app 已为空时只做状态复位。
+   */
   function unmount() {
-    return overlay.hide();
+    const hadApp = !!ctx.st.app;
+    overlay.hide();                      // 自隐藏：不依赖调用方记得藏画布
+    if (ctx.st.app) {
+      try { ctx.st.app.destroy(true, { children: true }); } catch { /* 销毁失败不阻塞卸载 */ }
+      ctx.st.app = null;
+    }
+    // 状态复位：否则 isActive()/debug() 会继续报告"还有模型在显示"
+    ctx.st.model = null;
+    ctx.st.modelId = null;
+    ctx.st.meta = null;
+    ctx.st.motionMap = new Map();
+    ctx.st.vfsStats = null;
+    ctx.st.active = false;
+    if (hadApp) ctx.note('Live2D 已卸载（app 销毁、覆盖层隐藏；保留 DOM 便于再切回）');
   }
 
   /** 彻底释放（销毁 PIXI app 与覆盖层） */

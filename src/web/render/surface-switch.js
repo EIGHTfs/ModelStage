@@ -63,7 +63,15 @@ export function createSwitcher(ctx) {
     const previous = state.activeId;
     setMode('loading');           // ① 先遮住：任何方向都不可能叠加
     try {
-      await disposeActive();      // ② 统一卸载（幂等）
+      // ② 统一卸载：**按"换不换渲染器"分流**
+      //   · 同一渲染器换内容（spine→spine / live2d→live2d）→ unmount：释放内容与自建 GL 资源，
+      //     但保留引擎/PIXI 覆盖层，再装载更快
+      //   · 换渲染器（spine↔live2d）→ dispose：彻底拆，**不留旧 GL 上下文**
+      //     （留着就是契约 §五-7 说的"遗留自建 GL 资源"，且连续切换会累积上下文）
+      const nextId = (document && (document.rendererId || (document.kind === 'live2d' ? 'live2d' : 'spine'))) || null;
+      const unloadMode = previous && previous === nextId ? 'unmount' : 'dispose';
+      note(`卸载模式=${unloadMode}（previous=${previous || 'none'} next=${nextId || 'none'}）`);
+      await disposeActive(unloadMode);
       // 门禁（契约 D1）：activate 只接受 Document。
       //   传旧形状（catalog entry，没有 state 字段）→ **直接抛错**，不做兜底组装：
       //   兜底一旦留着，忘了组装的调用点就会静默走它，契约形同虚设。

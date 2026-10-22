@@ -71,7 +71,14 @@ function apiBasics(res, p) {
     return sendJson(res, 200, { roots: list, groups: data.config.buildGroups(list) });
   }
   if (p === '/api/plugins') {
-    return sendJson(res, 200, { ok: true, dir: 'plugins', plugins: data.plugins.readPlugins() });
+    return sendJson(res, 200, {
+      ok: true,
+      dir: 'plugins',
+      plugins: data.plugins.readPlugins(),
+      // 角色注册表（角色 → 插件 id）：前端按 provides 决定把插件挂到哪个注册表；
+      //   排障时也能一眼看出"某角色有没有插件认领"
+      roles: data.plugins.roleIndex(),
+    });
   }
   if (p === '/api/brand') {
     const env = data.env.readDotEnv();
