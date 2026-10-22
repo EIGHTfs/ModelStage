@@ -49,6 +49,56 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     activeGame: null,
   };
   // 定位控制器：把"选中后滚到可见"的策略外置（见 roster/reveal.js）
+  /**
+   * 调试计数器（**纯计量**，只做 ++，不影响任何调度与渲染结果）。
+   * 用途：首屏渲染次数是"每个根各触发一次全树 render"这个性能问题的直接指标，
+   *   优化前后必须用同一口径对比（见 __WEB__ 侧的 counters() 取数）。
+   */
+  const counters = { render: 0, ensureRootLoaded: 0, renderScheduled: 0 };
+
+  // ------------------------------------------------------------ 渲染调度（rAF 合并）
+  //
+  // 为什么需要：加载阶段每条路径都会触发一次全树重绘——ensureRootLoaded 里"开始加载"与
+  //   "加载完成"各一次、ensureGameLoaded 末尾再来一次。N 个资源根就是 ~2N+ 次全树替换，
+  //   首屏 1000+ 行时单次 100~250ms，叠加起来就是成片的长任务（实测冷搜 8 个长任务）。
+  //   这些中间态在视觉上没有价值（同一帧内根本看不到），合并成一次既省时间也减少闪烁。
+  //
+  // 三条硬约束：
+  //   ① 不漏最后一帧：pending 标志只在真正 render() 之后清除；另有 flushRender() 强制落地，
+  //      加载流程末尾与"rAF 不触发"（后台标签页）时都会走它。
+  //   ② 不闪烁：同一帧内多次请求只渲染一次，因此**只会更少**中间态，不会多出来。
+  //   ③ 状态不丢：render() 本身没改，展开态/滚动/选中/关键词全部照旧读取。
+  let pendingRender = false;
+  let rafId = null;
+  let fallbackTimer = null;
+
+  /** 清理已排队的调度（rAF 与兜底定时器都要清，否则会多渲一次） */
+  function clearScheduled() {
+    if (rafId !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(rafId);
+    if (fallbackTimer !== null) clearTimeout(fallbackTimer);
+    rafId = null;
+    fallbackTimer = null;
+    pendingRender = false;
+  }
+
+  /** 下一帧渲染（同帧内多次调用合并为一次） */
+  function scheduleRender() {
+    counters.renderScheduled += 1;
+    if (pendingRender) return;
+    pendingRender = true;
+    if (typeof requestAnimationFrame !== 'function') { flushRender(); return; }
+    rafId = requestAnimationFrame(() => { rafId = null; flushRender(); });
+    // 兜底：后台标签页/被节流的 rAF 可能长时间不回调，绝不能让首屏永久空白
+    fallbackTimer = setTimeout(() => { fallbackTimer = null; flushRender(); }, 120);
+  }
+
+  /** 立刻渲染（若有已排队的请求）。幂等：没有待渲染时什么都不做。 */
+  function flushRender() {
+    if (!pendingRender) return;
+    clearScheduled();
+    render();
+  }
+
   const reveal = createReveal({ listEl, getState: () => state, render: () => render() });
 
   const nameIndex = createNameIndex();
@@ -65,6 +115,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
    * @returns {Promise<object>} 该根的加载状态条目（ready / error）
    */
   function ensureRootLoaded(root) {
+    counters.ensureRootLoaded += 1;
     const cur = state.loaded.get(root.id);
     if (cur && cur.promise) return cur.promise.then(() => cur);
     if (cur && cur.status === 'ready') return Promise.resolve(cur);
@@ -87,10 +138,10 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
         entry.error = formatError(err);
       }
       entry.promise = null;
-      render();
+      scheduleRender();          // 加载完成：合并到下一帧（不再每个根各渲一次）
     })();
     state.loaded.set(root.id, entry);
-    render();
+    scheduleRender();            // 开始加载：同上（视觉上只是把游戏行标成 loading）
     return entry.promise.then(() => entry);
   }
 
@@ -133,12 +184,14 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     });
     if (pending.length) await Promise.all(pending.map((r) => ensureRootLoaded(r)));
     rebuildGameChars(game);
-    render();
+    scheduleRender();
   }
 
   /** 搜索需要全局数据：首次输入关键词时把所有游戏补加载（并行，服务端有缓存） */
   async function ensureAllLoaded() {
     await Promise.all(state.games.map((g) => ensureGameLoaded(g)));
+    // 硬约束①：所有加载完成后**一定**有一次渲染，不依赖 rAF 是否被节流
+    flushRender();
   }
 
   // ------------------------------------------------------------ 过滤
@@ -148,6 +201,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
 
   /** 渲染整棵树（只渲染可见部分；展开的角色才生成变体行） */
   function render() {
+    counters.render += 1;
     listEl.replaceChildren();
 
     const searching = state.keyword.length > 0;
@@ -394,5 +448,16 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     return { restored: false, reason: 'missing', modelId };
   }
 
-  return { mount, state, snapshot, render, ensureGameLoaded, restoreLast, revealActive: reveal.revealActive, markUserScroll: reveal.markUserScroll };
+  return {
+    mount, state, snapshot, render, ensureGameLoaded,
+    restoreLast,
+    revealActive: reveal.revealActive,
+    markUserScroll: reveal.markUserScroll,
+    /** 调试计数（渲染/加载次数）：优化前后用同一口径对比 */
+    counters: () => ({ ...counters }),
+    /** 立刻落地待渲染的请求（测试/自检用：不依赖 rAF 时机） */
+    flushRender,
+    /** 归零计数（测量前调用，避免把上一段的调用混进来） */
+    resetCounters: () => { counters.render = 0; counters.ensureRootLoaded = 0; counters.renderScheduled = 0; },
+  };
 }
