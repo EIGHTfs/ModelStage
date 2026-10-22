@@ -50,16 +50,14 @@ function probeSummary(probe) {
  * 读失败不抛：动作列表为空但装载仍可继续。
  */
 async function fetchDefinition(ctx, model) {
-  const raw = ctx.entryUrlOf(model);
-  const url = raw ? ctx.resolveAsset(raw) : null;
-  if (!url) return { motions: {}, expressions: [], json: null };
-  try {
-    const json = await (await fetch(url)).json();
-    return { ...definitionParts(json), json };
-  } catch (err) {
-    ctx.note(`模型定义读取失败（动作列表将为空）：${err && err.message}`, 'warn');
+  // 定义由 Document 带来（meta.extras.json）：渲染器不再自己读模型定义文件。
+  // 没有定义时降级为空动作表（留一条 warn），**不发请求** —— 取资源是 Assets 层的职责。
+  const inline = model && model.meta && model.meta.extras && model.meta.extras.json;
+  if (!inline) {
+    ctx.note('模型定义未随 Document 提供（动作列表为空）', 'warn');
     return { motions: {}, expressions: [], json: null };
   }
+  return { ...definitionParts(inline), json: inline };
 }
 
 /**
@@ -176,6 +174,8 @@ function attachInstance(ctx, instance, app, model, def, entryUrl) {
     modelUrl: entryUrl || model.modelUrl,
     motions: def.motions,
     expressions: def.expressions,
+    // 动作时长来自 Document（Assets 层预取）；桥接层按"标签 → 动作文件"查这张表
+    motionDurations: (model && model.meta && model.meta.motionDurations) || {},
   };
   return buildMotionMap(st, st.meta);
 }
@@ -210,7 +210,9 @@ function collectBaseline(ctx, instance) {
  */
 async function loadModel(ctx, model) {
   const app = await prepareStage(ctx);
-  const entryUrl = ctx.entryUrlOf(model);
+  // 入口地址优先取 Document.assets.entry.url（已由 Assets 层经 VirtualFS 解析）
+  const entryUrl = (model && model.assets && model.assets.entry && model.assets.entry.url)
+    || ctx.entryUrlOf(model);
   const url = ctx.resolveAsset(entryUrl);
   if (!url) throw new Error(`Live2D 模型缺少入口地址（entry.url）：${model && model.name}`);
   const t0 = performance.now();

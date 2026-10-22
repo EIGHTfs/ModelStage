@@ -22,12 +22,18 @@ function createMotionApi(ctx) {
   /** label → 秒数（null = 确实取不到） */
   const durationCache = new Map();
 
+  /** 动作在 model3.json 里的原始 File 值（如 motions/idle.motion3.json） */
+  function motionFileOf(group, index) {
+    const meta = st.meta || {};
+    const mo = ((meta.motions && meta.motions[group]) || [])[index] || null;
+    return (mo && (mo.File || mo.Name)) || null;
+  }
+
   /** 动作文件 URL：model3.json 里的 File 相对模型目录 */
   function motionFileUrl(group, index) {
     const meta = st.meta || {};
     const dir = String(meta.modelUrl || '').replace(/[^/]*$/, '');
-    const mo = ((meta.motions && meta.motions[group]) || [])[index] || null;
-    const file = mo && (mo.File || mo.Name);
+    const file = motionFileOf(group, index);
     if (!file) return null;
     // 绝对地址（任意 scheme 或 data:）不拼目录：模型定义里允许写绝对 URL，
     //   拼上去会变成 /files/…/http://… 这种无效地址（曾经 14 次 miss 的来源）；
@@ -42,7 +48,13 @@ function createMotionApi(ctx) {
     motionItems() {
       const items = [];
       for (const [label, hit] of (st.motionMap || new Map())) {
-        let duration = durationCache.has(label) ? durationCache.get(label) : null;
+        // 时长优先级：① Document 预取表（Assets 层，全量动作都有）
+        //              ② durationCache（本进程补取过的）
+        //              ③ 已加载动作的 motionManager（只有被播过的那条有，作最后兜底）
+        const prefetched = ((st.meta && st.meta.motionDurations) || {})[motionFileOf(hit.group, hit.index)];
+        let duration = Number.isFinite(prefetched) && prefetched > 0
+          ? prefetched
+          : (durationCache.has(label) ? durationCache.get(label) : null);
         if (duration === null) {
           try {
             const mm = st.model && st.model.internalModel && st.model.internalModel.motionManager;
@@ -55,24 +67,17 @@ function createMotionApi(ctx) {
       }
       return items;
     },
-    /** 预热动作时长：并行读每个动作文件的 Meta.Duration；返回新取到条数 */
+    /**
+     * 预热动作时长（**本版不实现**）。
+     *
+     * 为什么保留空实现：时长要读动作文件（motion3.json）里的 Meta.Duration，
+     *   而"取模型资源"已按契约收到 Assets 层（infra/document.js）——渲染器里不允许再 fetch 动作文件。
+     *   恢复正解：让 Document 多带一份 meta.motionDurations（Assets 层算好），这里只读地取用。
+     *   在那之前动作时长显示为空，属已知能力缺口，不是 bug。
+     * @returns {Promise<number>} 本次补齐条数（恒 0）
+     */
     async ensureMotionDurations() {
-      if (!st.motionMap || !st.motionMap.size) return 0;
-      let filled = 0;
-      const jobs = [];
-      for (const [label, hit] of st.motionMap) {
-        if (durationCache.has(label)) continue;
-        const url = motionFileUrl(hit.group, hit.index);
-        if (!url) { durationCache.set(label, null); continue; }
-        jobs.push(fetch(url).then((res) => res.json()).then((json) => {
-          const d = Number(json && json.Meta && json.Meta.Duration);
-          const ok = Number.isFinite(d) && d > 0;
-          durationCache.set(label, ok ? d : null);
-          if (ok) filled += 1;
-        }).catch(() => { durationCache.set(label, null); }));
-      }
-      await Promise.all(jobs);
-      return filled;
+      return 0;
     },
     /** 动作切换：标签 → (group, index) */
     playLabel(label) {

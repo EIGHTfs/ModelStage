@@ -13,7 +13,7 @@
 //   客户端按版本取源码文本塞进 window.__SPINE_RUNTIME_SOURCES__，由引擎懒执行。
 // ============================================================================
 
-import { getSharedVirtualFS } from '../infra/vfs.js';
+import { buildDocument } from '../infra/document.js';
 import { installRuntimeManager } from './runtimes.js';
 import { createStageCamera } from '../render/camera/spine.js';
 import { SpineEngine as NextEngine } from '../engine/index.js';
@@ -128,61 +128,59 @@ async function ensureRuntimeSource(ver) {
   window.__SPINE_RUNTIME_SOURCES__[ver] = text;
 }
 
-/** 资源 URL：优先用 /api/models 条目自带的 url，否则按 root+path 拼 */
-function fileUrl(root, f) {
-  if (f && typeof f.url === 'string' && f.url) return f.url;
-  const p = encodeURIComponent(f && f.path ? f.path : '');
-  return `/api/file?root=${encodeURIComponent(root)}&path=${p}`;
+// 说明：模型资源（骨架 / atlas / 贴图）的**取用已上移到 infra/document.js**（Assets 层），
+//   本文件只消费 Document 给出的地址与字节 —— 渲染器里不再有 fetch / XHR 取模型资源，
+//   因此也不会有"取资源失败"分支（契约 渲染器契约 §五-6、Document 契约 D4）。
+//   运行时库（/spine-runtimes/*）仍在这里加载：那是**库**不是模型资产，属已批准的豁免项。
+
+/**
+ * 取到一份 ready 的 Document（渲染器入参的唯一形态）。
+ * · 传 { document } ⇒ 直接用；state !== 'ready' 直接抛（错误文档不允许进入渲染层）
+ * · 传 { root, model } ⇒ 交给 Assets 层组装（兼容测试与旧调用，本层不取资源）
+ * @param {object} st 舞台状态
+ * @param {object} arg { document } | { root, model }
+ * @returns {Promise<object>} ready 的 Document
+ */
+async function resolveDocument(st, arg) {
+  const given = arg && arg.document;
+  if (given) {
+    if (given.state !== 'ready') {
+      const why = (given.warnings || []).join('；') || '未提供原因';
+      throw businessError(`Document 不是 ready 状态（${given.state}）：${why}`);
+    }
+    return given;
+  }
+  const model = arg && arg.model;
+  if (!model) throw new Error('load 需要 { document } 或 { root, model }');
+  const doc = await buildDocument(model, {
+    log: (m) => { try { st.engine && st.engine.log && st.engine.log('warn', m, 'doc'); } catch { /* 忽略 */ } },
+  });
+  if (doc.state !== 'ready') {
+    const why = (doc.warnings || []).join('；') || '未提供原因';
+    st.lastError = why;
+    throw businessError(`Document 组装失败：${why}`);
+  }
+  return doc;
 }
 
 /**
- * 资源地址解析（VirtualFS 契约 §四）：先问 vfs，命中用虚拟地址，未命中回落原 URL。
- *
- * 为什么只有一个前置、不做第二条通道：vfs.resolve 是"内存资源 / 网络资源"唯一的统一入口，
- *   未命中即回落 ⇒ 没有注册任何前缀时行为与改造前完全一致（可退化）。
- *   注意：这里**不能**改成 patch fetch / 装中间件（契约 §五明令禁止）：那会让"资源从哪来"变成隐式全局状态。
- * @param {string} url
- * @returns {string}
+ * engine 的模型描述符（字段名是 engine 的契约，见文档 §14）。
+ * 数据全部来自 **Document.assets**（地址已由 Assets 层经 VirtualFS 解析、字节也由那一层取好）。
+ * @param {object} doc ready 的 Document
+ * @param {string} ver 运行时版本
  */
-function resolveResource(url) {
-  try {
-    const hit = getSharedVirtualFS().resolve(url);
-    return hit || url;
-  } catch {
-    return url; // VFS 异常绝不阻断加载
-  }
-}
-
-/** 取二进制 → engine 需要的 { name, content: ArrayBuffer } */
-async function fetchBinary(root, f, signal) {
-  // 骨架 / atlas / 贴图页三类资源都从这里取 —— 单一前置点，三类一起接上 VFS
-  const r = await fetch(resolveResource(fileUrl(root, f)), { cache: 'no-store', signal });
-  if (!r.ok) throw new Error(`资源 ${f && f.name ? f.name : ''} 读取失败（HTTP ${r.status}）`);
-  return { name: (f && f.name) || '', content: await r.arrayBuffer() };
-}
-
-/** 并发取骨架 / atlas / 所有贴图页 */
-async function fetchModelResources(root, model, signal) {
-  const [skeleton, atlas, ...textures] = await Promise.all([
-    fetchBinary(root, model.skeletonFile, signal),
-    fetchBinary(root, model.atlasFile, signal),
-    ...(model.textureFiles || []).map((t) => fetchBinary(root, t, signal)),
-  ]);
-  return { skeleton, atlas, textures };
-}
-
-/** engine 的模型描述符（字段名是 engine 的契约，见文档 §14） */
-function buildDescriptor(model, ver, res) {
+function buildDescriptor(doc, ver) {
+  const assets = (doc && doc.assets) || {};
+  const entry = assets.entry || {};
+  const atlas = assets.atlas || {};
+  const textures = Array.isArray(assets.textures) ? assets.textures : [];
   return {
-    name: model.name || model.id,
+    name: (doc && (doc.name || doc.id)) || '',
     version: ver,
-    skeletonFile: { name: (model.skeletonFile && model.skeletonFile.name) || '', content: res.skeleton.content },
-    atlasFile: { name: (model.atlasFile && model.atlasFile.name) || '', content: res.atlas.content },
-    textureFiles: res.textures.map((t, i) => ({
-      name: (model.textureFiles && model.textureFiles[i] && model.textureFiles[i].name) || t.name,
-      content: t.content,
-    })),
-    atlasPma: model.atlasPma === true ? true : model.atlasPma === false ? false : null,
+    skeletonFile: { name: entry.name || '', content: entry.bytes },
+    atlasFile: { name: atlas.name || '', content: atlas.bytes },
+    textureFiles: textures.map((t) => ({ name: t.name || '', content: t.bytes })),
+    atlasPma: doc && doc.meta && doc.meta.extras ? doc.meta.extras.atlasPma : null,
   };
 }
 
@@ -366,9 +364,10 @@ function startPlayback(st, info, loop) {
 
 /** 加载主流程（编排：选版本 → 注入源码 → 取资源 → 建 engine → 加载 → 起播） */
 async function loadIntoStage(st, arg) {
-  const root = arg && arg.root;
-  const model = arg && arg.model;
-  if (!root || !model) throw new Error('load 需要 { root, model }');
+  // 入参二选一：{ document }（渲染器走的正规路径）或旧的 { root, model }（测试/兼容）。
+  // 兼容路径也在**Assets 层**组装 Document —— 本层不取模型资源。
+  const doc = await resolveDocument(st, arg);
+  const model = doc;
   const seq = ++st.seq;
   // 每次装载开始都清掉上一次的错误：lastError 语义是"最近一次装载的结果状态"，
   //   成功后若不清，后面每次成功采样都会带着旧的失败原因（实测会污染对照表的每一格）
@@ -383,16 +382,17 @@ async function loadIntoStage(st, arg) {
   installRuntimeManager();
   const Engine = await pickEngineCtor();
   const avail = await availableVersions();
-  const ver = pickRuntimeVersion(model.version, avail);
+  // 版本来自 Document 的 meta（Document 形状里没有顶层 version）：
+  //   读错会挑到不匹配的运行时 —— 表现为骨架解析报 "Bone name must not be null" 这类怪错
+  const ver = pickRuntimeVersion((doc.meta && doc.meta.version) || doc.version, avail);
   if (!ver) throw businessError('无法确定该模型的 Spine 版本：元数据缺少 version，且运行时清单不可用');
   await ensureRuntimeSource(ver);
   if (seq !== st.seq) throw abortedError();
-  const res = await fetchModelResources(root, model, ctl.signal);
   if (seq !== st.seq) throw abortedError();
   if (!ensureStageEngine(st, Engine, st.canvas)) throw businessError('当前环境没有可用的 WebGL，无法渲染 Spine');
   if (!st.runtimeKeys.includes(ver)) st.runtimeKeys.push(ver);
   st.loads++;
-  const info = await st.engine.loadModel(buildDescriptor(model, ver, res));
+  const info = await st.engine.loadModel(buildDescriptor(doc, ver));
   if (seq !== st.seq) throw abortedError();
   if (!info) throw businessError('模型加载失败（引擎未返回结果）');
   st.lastArg = arg; // 供 MSAA 重建上下文后恢复同一模型

@@ -5,6 +5,7 @@
 // 边界：不碰 DOM 尺寸、不建 canvas —— 只通过 handle 取画布/尺寸/DPR，用 handle.requestRender 请求渲染。
 
 import { createCamera } from './camera/index.js';
+import { buildDocument } from '../infra/document.js';
 
 /** Spine 渲染器支持的设置项 */
 const SETTINGS = ['fps', 'dpr', 'msaa', 'textureFilter', 'presetFilter', 'pma', 'fit'];
@@ -82,19 +83,31 @@ export function createSpineRenderer({ stage, onMsaa } = {}) {
       camera: 'ortho-2d',
     },
     /** 相机由渲染器提供（统一相机，backend 委托引擎原生方法） */
+    /** Assets 层入口（测试/工具用）：catalog entry → ready Document。渲染器自身不取资源 */
+    buildDocument,
     camera,
     /**
      * 装载：入口 url 映射成引擎认识的 modelUrl（catalog 只给 entry.url）。
      * @param {object} document
      * @param {object} handle StageSurface 句柄（本渲染器目前不需要使用，保留参数位）
      */
+    /**
+     * 装载：入参是 **ready 的 Document**（契约 Document契约 §二 / 渲染器契约 §二）。
+     * 本层不再把 catalog entry 改写成引擎字段、也不取任何资源 ——
+     *   资源地址与字节都已在 infra/document.js 组装时备好。
+     * @param {object} document ready 的 Document
+     * @returns {Promise<object>} info
+     */
     async mount(document, handle) {
       void handle;
-      const doc = document || {};
-      const entryUrl = doc.entry && doc.entry.url ? doc.entry.url : (doc.modelUrl || null);
-      const adapted = entryUrl ? { ...doc, modelUrl: entryUrl } : doc;
-      const rootId = adapted.rootId || (adapted.root && adapted.root.id) || null;
-      return stage.load({ root: rootId, model: adapted });
+      // 只接受 ready 的 Document，**不提供旧形状兜底**：
+      //   兜底一旦留着，将来任何新调用点忘了组装就会静默走它，契约就形同虚设
+      //   （现存的调用点 surface-switch 与 app/model-actions 都已在调用前 buildDocument）。
+      if (!document || document.state !== 'ready') {
+        const why = (document && (document.warnings || []).join('；')) || '未提供 Document';
+        throw new Error(`spine.mount 只接受 ready 的 Document（请先 buildDocument）：${why}`);
+      }
+      return stage.load({ document });
     },
     /**
      * 应用一项设置（面板唯一入口，契约 renderer/v1）。

@@ -4,6 +4,7 @@
 // 具体怎么画由渲染器负责；本模块不碰引擎内部。
 
 import { dom, stage, state } from './context.js';
+import { buildDocument } from '../infra/document.js';
 import { diagEvent, stageStatus } from './status.js';
 import { formatError, getJson } from '../infra/api.js';
 import { createRootManager } from './root-manager.js';
@@ -68,9 +69,16 @@ function onSelectModel(model) {
     rootName: model.rootName,
     entry: model.entry || (model.modelUrl ? { url: model.modelUrl } : null),
   };
-  const loadPromise = state.currentRenderer
-    ? state.currentRenderer.mount(loadDoc)
-    : stage.load({ root: model.rootId, model });
+  // 装载前先组装 Document（Assets 层）：非 ready 就不进渲染层，把原因直接告诉用户
+  const loadPromise = buildDocument(loadDoc)
+    .then((doc) => {
+      if (!doc || doc.state !== 'ready') {
+        const why = (doc && (doc.warnings || []).join('；')) || '原因未知';
+        stageStatus(`无法装载 ${name}：${why}`, 'error');
+        return null;
+      }
+      return state.currentRenderer ? state.currentRenderer.mount(doc) : stage.load({ document: doc });
+    });
   loadPromise
     .then((info) => {
       // null = 本次请求被排队/被更新的选择取代（Surface 的 last-wins 语义）：

@@ -3,6 +3,8 @@
 // 从 surface.js 拆出的原因：切换是"渲染面"最核心也最易错的一段（串行锁、排队、失败回滚、
 //   唯一写入 data-stage-mode），单独成文件便于审计与回归；时序与副作用仍全部通过 ctx 回调
 //   走 Surface 既有的 setMode / disposeActive / handle，不新增第二条切换入口。
+//
+// 组装 Document 走 Assets 层（infra/document.js）：本文件只做切换时序，不取模型资源。
 
 /**
  * 创建切换器。
@@ -62,14 +64,29 @@ export function createSwitcher(ctx) {
     setMode('loading');           // ① 先遮住：任何方向都不可能叠加
     try {
       await disposeActive();      // ② 统一卸载（幂等）
-      const kind = document && document.kind === 'live2d' ? 'live2d' : 'spine';
-      const rendererId = (document && document.rendererId) || kind;
+      // 门禁（契约 D1）：activate 只接受 Document。
+      //   传旧形状（catalog entry，没有 state 字段）→ **直接抛错**，不做兜底组装：
+      //   兜底一旦留着，忘了组装的调用点就会静默走它，契约形同虚设。
+      const doc = document;
+      if (!doc || typeof doc.state !== 'string') {
+        const got = doc && typeof doc === 'object' ? `普通对象（kind=${doc.kind || '?'}）` : String(doc);
+        throw new Error(`surface.activate 只接受 Document（请先 buildDocument 组装），收到：${got}`);
+      }
+      // ready 之外（如 error）不进入渲染层，但属可预期的用户侧失败：给提示、不抛
+      if (doc.state !== 'ready') {
+        const why = (doc && (doc.warnings || []).join('；')) || '缺少 Document';
+        note(`跳过装载：Document 不可用（${(doc && doc.state) || 'none'}）：${why}`);
+        setMode(previous === 'live2d' ? 'live2d' : 'spine');
+        return null;
+      }
+      const kind = doc.kind === 'live2d' ? 'live2d' : 'spine';
+      const rendererId = doc.rendererId || kind;
       const entry = renderers.get(rendererId);
       if (!entry) throw new Error(`没有注册渲染器：${rendererId}`);
       measure();
-      const info = await entry.mount(document, handle(rendererId)); // ③ 装载
+      const info = await entry.mount(doc, handle(rendererId)); // ③ 装载
       state.activeId = rendererId;
-      state.document = document || null;
+      state.document = doc || null;
       setMode(kind);              // ④ 切面（全项目唯一写入点）
       requestRender();
       noteSwitch(`activated:${rendererId}`);

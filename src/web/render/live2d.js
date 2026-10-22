@@ -5,6 +5,7 @@
 // 边界：画布与尺寸由 StageSurface 提供（handle），本文件不读 DOM 尺寸、不建画布。
 
 import { createCamera } from './camera/index.js';
+import { buildDocument } from '../infra/document.js';
 import { DEFAULT_FILTER, FILTER_PRESETS } from '../engine/filters.js';
 
 /**
@@ -157,6 +158,8 @@ try { if (live2d.syncSize) live2d.syncSize({ size: { width: cssW, height: cssH }
       debugDraw: [],
       camera: 'ortho-2d',
     },
+    /** Assets 层入口（测试/工具用）：catalog entry → ready Document */
+    buildDocument,
     camera,
     /**
      * 装载：把 Surface 句柄透传给覆盖层实现（画布/尺寸/DPR 都从这里来）。
@@ -164,6 +167,12 @@ try { if (live2d.syncSize) live2d.syncSize({ size: { width: cssW, height: cssH }
      * @param {object} handle
      */
     async mount(document, handle) {
+      // 只接受 ready 的 Document（契约 Document契约 §二 硬规则 1）
+      // 只接受 ready 的 Document，**不提供旧形状兜底**（理由同 render/spine.js）
+      if (!document || document.state !== 'ready') {
+        const why = (document && (document.warnings || []).join('；')) || '未提供 Document';
+        throw new Error(`live2d.mount 只接受 ready 的 Document（请先 buildDocument）：${why}`);
+      }
       handleRef = handle || null;
       const info = await live2d.mount(document, handle);
       applyPreset(); // 新模型挂上后把当前滤镜补一次（切模型/重建后不断档）

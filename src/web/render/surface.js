@@ -11,6 +11,7 @@
 // 为什么这么分：新增渲染面（3D）时只加一个 register()，不必再改画布/尺寸/可见性逻辑。
 
 import { createSwitcher } from './surface-switch.js';
+import { buildDocument } from '../infra/document.js';
 
 /** 覆盖层容器 id（Live2D 面用） */
 
@@ -474,6 +475,8 @@ export function createStageSurface({ root, log } = {}) {
 
   return {
     register,
+    /** Assets 层入口（测试/工具用）：catalog entry → ready Document */
+    buildDocument,
     handle,
     activate,
     dispose,
