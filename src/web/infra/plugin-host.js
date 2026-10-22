@@ -15,6 +15,8 @@
 //   ② 只加载启用清单：/api/plugins 已按 config/plugins.json 过滤，被禁用的插件不会出现在清单里
 //   ③ canHandle 由宿主调用、宿主兜异常：插件内部抛错一律当"不认这个文件"，不冒泡到调用方
 
+import { getSharedVirtualFS } from './vfs.js';
+
 /** 宿主提示通道：优先用注入的 log（项目调试日志），否则退回 console */
 function makeLogger(log) {
   const push = (level, msg) => {
@@ -153,6 +155,143 @@ export function createPluginHost(opts = {}) {
     if (error) say.warn(`插件 ${id} 未生效：${error}（其余插件与页面不受影响）`);
   }
 
+  // ---------------------------------------------------------------- 预筛与物化（resolve → VFS）
+  //
+  // 为什么要预筛：canHandle 必须看**完整容器字节**才能判定（它要解析 UnityFS 的 CAB 节点，
+  //   实测只给前 64 字节时连真 bundle 都判 false），而单个包 44MB、单次判定 ~95ms。
+  //   对目录里每个文件都这么来一遍是不可接受的，所以先按"根类型 + 后缀 + 大小"筛掉绝大多数，
+  //   只对候选包读全量字节。
+  //
+  // **别把这层去掉**：直接对整目录跑 findProvider 会让一次扫描读几百 MB、卡住主线程。
+
+  /** 普通模型资产的后缀：这些不可能是资源包，别为它们读全量 */
+  const ORDINARY_ASSET_EXT = /\.(json|skel|atlas|png|jpe?g|webp|bmp|gif|moc3|motion3|physics3|cdi3|txt|md|bin)$/i;
+  /** 单个包大小上限（防御性：超过就不读，避免把内存打爆） */
+  const MAX_BUNDLE_BYTES = 512 * 1024 * 1024;
+
+  /**
+   * 预筛：返回 null 表示"可能是资源包，值得读全量"，否则返回跳过原因。
+   * @param {{rootId?:string, rel?:string, name?:string, size?:number, rootKind?:string}} file
+   */
+  function prefilterReason(file) {
+    if (!file || !file.rootId || !file.rel) return '缺少 rootId/rel';
+    if (file.rootKind && file.rootKind !== 'bundle') return `资源根类型是 ${file.rootKind}，不是 bundle`;
+    const name = String(file.name || file.rel);
+    if (ORDINARY_ASSET_EXT.test(name)) return `后缀是普通模型资产（${name.split('.').pop()}），不可能是资源包`;
+    if (typeof file.size === 'number' && file.size === 0) return '文件为空';
+    if (typeof file.size === 'number' && file.size > MAX_BUNDLE_BYTES) return `文件过大（${file.size}B > 上限 ${MAX_BUNDLE_BYTES}B）`;
+    return null;
+  }
+
+  /**
+   * 校验 provider.resolve 的返回值（契约 §一 / §5.8：不得返回缺字段半成品）。
+   * @returns {string|null} null = 合规，否则返回原因
+   */
+  function validateResolved(res) {
+    if (!res || typeof res !== 'object') return '返回值不是对象';
+    if (typeof res.prefix !== 'string' || !/^vfs:\/\/.+\/$/.test(res.prefix)) {
+      return `prefix 不合契约 §1.2（应形如 vfs://<providerId>/<rootId>/<相对目录>/）：${res.prefix}`;
+    }
+    const files = res.files;
+    const size = files instanceof Map ? files.size
+      : (files && typeof files === 'object' ? Object.keys(files).length : 0);
+    if (!size) return 'files 为空';
+    if (typeof res.entry !== 'string' || !res.entry) return 'entry 缺失';
+    const has = files instanceof Map
+      ? files.has(res.entry)
+      : Object.prototype.hasOwnProperty.call(files, res.entry);
+    if (!has) return `entry 不在 files 里：${res.entry}`;
+    return null;
+  }
+
+  /** 读全量字节（file.bytes 优先；没有就经 /api/file 取） */
+  async function bytesOf(file) {
+    const given = toUint8Array(file.bytes);
+    if (given) return { ok: true, bytes: given };
+    try {
+      const got = await fetchFile(file.rootId, file.rel);
+      return { ok: true, bytes: got.bytes };
+    } catch (e) {
+      return { ok: false, message: `读文件失败：${(e && e.message) || e}` };
+    }
+  }
+
+  /** 找提供者并 resolve（含返回值契约校验） */
+  async function resolveViaProvider(file, bytes) {
+    const provider = findProvider({ ...file, bytes });
+    if (!provider) {
+      return {
+        ok: false,
+        reason: 'no-provider',
+        message: `没有启用的提供者能处理 ${file.rel}`
+          + '（检查 config/plugins.json 是否禁用了对应插件，或插件是否加载失败）',
+      };
+    }
+    if (typeof provider.resolve !== 'function') {
+      return { ok: false, reason: 'no-resolve', message: `提供者 ${provider.id} 没有 resolve()` };
+    }
+    let res = null;
+    try {
+      res = await provider.resolve({ ...file, bytes, host: hostApi });
+    } catch (e) {
+      return { ok: false, reason: 'resolve-failed', message: `提供者 ${provider.id} 解析失败：${(e && e.message) || e}` };
+    }
+    const bad = validateResolved(res);
+    if (bad) return { ok: false, reason: 'bad-result', message: `提供者 ${provider.id} 返回不合契约：${bad}` };
+    return { ok: true, provider: provider.id, res };
+  }
+
+  /** 注册进 VirtualFS；同前缀重复装载时先撤再注册（不泄漏旧 prefix） */
+  function registerResolved(vfs, res) {
+    try {
+      vfs.register(res.prefix, res.files);
+      return { ok: true, reRegistered: false };
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      if (!/已注册/.test(msg)) return { ok: false, message: `注册进 VirtualFS 失败：${msg}` };
+      try { vfs.revoke(res.prefix); } catch { /* 撤销失败也继续重试 */ }
+      try {
+        vfs.register(res.prefix, res.files);
+        return { ok: true, reRegistered: true };
+      } catch (e2) {
+        return { ok: false, message: `重新注册失败：${(e2 && e2.message) || e2}` };
+      }
+    }
+  }
+
+  /**
+   * 把一个资源包文件"物化"进 VirtualFS：预筛 → 读全量 → findProvider → resolve → register。
+   * 本函数**不碰渲染**（接线是下一步），只保证"资源真的进了 VFS 且能解析出入口地址"。
+   * @param {object} file { rootId, rel, name?, size?, rootKind?, bytes? }
+   * @param {{vfs?: object}} [opts]
+   * @returns {Promise<object>} { ok, reason?, message?, provider?, prefix?, entry?, entryUrl?, files? }
+   */
+  async function materialize(file, opts = {}) {
+    const vfs = opts.vfs || getSharedVirtualFS();
+    const skip = prefilterReason(file);
+    if (skip) return { ok: false, reason: 'prefilter', message: `跳过：${skip}` };
+
+    const read = await bytesOf(file);
+    if (!read.ok) return { ok: false, reason: 'read-failed', message: read.message };
+
+    const got = await resolveViaProvider(file, read.bytes);
+    if (!got.ok) return got;
+
+    const reg = registerResolved(vfs, got.res);
+    if (!reg.ok) return { ok: false, reason: 'register-failed', message: reg.message };
+
+    const entryUrl = vfs.resolve(got.res.prefix + String(got.res.entry).replace(/^\.?\//, ''));
+    return {
+      ok: true,
+      provider: got.provider,
+      prefix: got.res.prefix,
+      entry: got.res.entry,
+      entryUrl,
+      files: got.res.files instanceof Map ? got.res.files.size : Object.keys(got.res.files).length,
+      reRegistered: reg.reRegistered,
+    };
+  }
+
   /**
    * 读启用清单并逐个加载。**任何失败都不抛**：宿主是增强项，不能拖垮页面。
    * @returns {Promise<{discovered: number, registered: number}>}
@@ -245,6 +384,10 @@ export function createPluginHost(opts = {}) {
     providersFor,
     findProvider,
     fetchFile,
+    /** 资源包 → VirtualFS（预筛 → 读全量 → resolve → register），不碰渲染 */
+    materialize,
+    /** 预筛判定（排障用：为什么某个文件没被当成资源包） */
+    prefilterReason,
     report,
     isLoaded: () => loaded,
     host: hostApi,

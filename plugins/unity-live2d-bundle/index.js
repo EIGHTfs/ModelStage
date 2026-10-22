@@ -834,7 +834,10 @@ ulbInstall: {
     const relDir = String(ctx.rel).replace(/\/+$/, '').split('/').slice(0, -1).join('/');
     const dirSeg = relDir ? `${relDir}/` : '';
     const prefix = `vfs://${PLUGIN_ID}/${String(ctx.rootId)}/${dirSeg}`;
-    const files = new Map();
+    // files 必须用 let：Unity 集成版分支会整体替换成 built.files（第 885 行附近），
+    //   用 const 会在那条路径上抛 "Assignment to constant variable"——
+    //   这个 bug 一直没暴露是因为 resolve() 此前从未被核心调用过（只有 open() 在跑）。
+    let files = new Map();
     let entry = null;
 
     if (got.nativeFiles.some((f) => /\.model3\.json$/i.test(f.name))) {
