@@ -24,6 +24,8 @@
 // 结构：本文件按职责拆成小函数（每函数 ≤50 行）：容量规整 / 文本化 / 组装正文 /
 //   环形缓冲 / 订阅总线 / 编排，四者互不重叠。
 
+import { sanitizeUrl } from '../infra/diag.js';
+
 /** 允许的 tag（大写）。调用方只能从这里取，不自造。 */
 export const DEBUG_TAGS = Object.freeze([
   'RUNTIME', 'LOADER', 'RENDERER', 'CAMERA', 'ANIMATION', 'SKIN', 'FILTER',
@@ -53,20 +55,74 @@ function normalizeSource(src) {
 /** 敏感键：data 里这些键的值一律打码（与 infra/diag.js 的 URL 脱敏同一套口径） */
 const SENSITIVE_KEY_RE = /^(token|access_token|refresh_token|id_token|api_?key|apikey|secret|password|passwd|pwd|auth|authorization|session|sessionid|sid|code|sign|signature|sig)$/i;
 
-/** data 脱敏：敏感键打码；像 URL 的字符串去掉 query 里的凭据 */
+/** 递归深度上限：日志对象可能很深（含 DOM/PIXI 引用），到上限就截断成占位符 */
+const SANITIZE_MAX_DEPTH = 6;
+/** 单个对象/数组最多看多少个成员（避免大对象被整份遍历） */
+const SANITIZE_MAX_KEYS = 40;
+/** 深度截断占位符 */
+const DEPTH_MARK = '[depth-limit]';
+/** 循环引用占位符 */
+const CIRCULAR_MARK = '[circular]';
+
+/**
+ * 字符串脱敏：**凡带 query 的字符串一律按 URL 清洗**（不看有没有 scheme）。
+ *
+ * 为什么不能只看 ^https?://：日志里的地址大多是相对路径（/api/x?token=…），
+ *   只认绝对地址等于把这类凭据全放过。清洗实现复用 infra/diag.js 的 sanitizeUrl
+ *   （网络采集那条路径已经用它处理过相对/绝对两种形态）。
+ * @param {string} value
+ * @returns {string}
+ */
+function sanitizeString(value) {
+  if (!value.includes('?') || !value.includes('=')) return value;
+  try {
+    return sanitizeUrl(value);
+  } catch {
+    return value.replace(/([?&][^=&]*(?:token|key|secret|password|code|sign)[^=&]*=)[^&]*/gi, '$1***');
+  }
+}
+
+/**
+ * 递归脱敏一个值（对象/数组都进）。
+ * @param {*} value
+ * @param {number} depth 当前层数（0 = data 本身）
+ * @param {WeakSet<object>} seen 已访问对象（循环引用保护）
+ * @returns {*}
+ */
+function sanitizeValue(value, depth, seen) {
+  if (value === null || value === undefined) return value;
+  const type = typeof value;
+  if (type === 'string') return sanitizeString(value);
+  if (type !== 'object') return value;
+  if (depth >= SANITIZE_MAX_DEPTH) return DEPTH_MARK;
+  if (seen.has(value)) return CIRCULAR_MARK;
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return value.slice(0, SANITIZE_MAX_KEYS).map((item) => sanitizeValue(item, depth + 1, seen));
+    }
+    const out = {};
+    for (const key of Object.keys(value).slice(0, SANITIZE_MAX_KEYS)) {
+      out[key] = SENSITIVE_KEY_RE.test(key) ? '***' : sanitizeValue(value[key], depth + 1, seen);
+    }
+    return out;
+  } catch {
+    return null; // 抛异常的取值器（getter/DOM）整体放弃，不影响其它条目
+  }
+}
+
+/**
+ * data 脱敏（对外唯一入口）：敏感键整体打码 + 递归清洗 URL 里的凭据。
+ *
+ * 为什么要递归：日志里的凭据不只出现在顶层，常见形态是 { req: { url: '…?token=…' } }；
+ *   只洗一层等于只堵住最显眼的那条路。深度与循环都有上限，脱敏本身不能成为风险。
+ * @param {*} data
+ * @returns {*}
+ */
 function sanitizeData(data) {
   if (data === null || data === undefined) return null;
   try {
-    if (typeof data === 'string') return data.replace(/([?&][^=&]*(?:token|key|secret|password|code|sign)[^=&]*=)[^&]*/gi, '$1***');
-    if (typeof data !== 'object') return data;
-    const out = Array.isArray(data) ? [] : {};
-    for (const k of Object.keys(data).slice(0, 40)) {
-      const v = data[k];
-      out[k] = SENSITIVE_KEY_RE.test(k) ? '***' : (typeof v === 'string' && /^[a-z]+:\/\//i.test(v)
-        ? v.replace(/([?&][^=&]*(?:token|key|secret|password|code|sign)[^=&]*=)[^&]*/gi, '$1***')
-        : v);
-    }
-    return out;
+    return sanitizeValue(data, 0, new WeakSet());
   } catch {
     return null;
   }
@@ -208,7 +264,9 @@ export function createDebugLog(options = {}) {
         message: buildMessage(message, opts.data),
         src: opts.src,
         event: opts.event || tag,
-        data: opts.data === undefined ? null : opts.data,
+        // 脱敏必须发生在这里（转发之前）：diag 会把它写进缓冲并 POST 给服务端，
+        // 只在 addExternal 里脱敏的话，GET /api/diag 与落盘仍是明文。
+        data: opts.data === undefined ? null : sanitizeData(opts.data),
       };
       const diag = typeof window !== 'undefined' ? window.__DIAG__ : null;
       if (diag && typeof diag.event === 'function') {
