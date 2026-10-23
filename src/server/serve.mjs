@@ -24,6 +24,7 @@ import { resolveSafe } from './assets/probe.mjs';
 import { browseDir } from './assets/browse.mjs';
 import { createStaticRoutes, sendFile } from './http/static.mjs';
 import { createDiag } from './http/diag.mjs';
+import { createReady } from './http/ready.mjs';
 import { createWriteApi, toRootView } from './http/write.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -36,6 +37,8 @@ const data = createServerData({ root: ROOT });
 // 静态/资源类路由（/plugins、/spine-runtimes、src/web 静态）单独成模块
 const staticRoutes = createStaticRoutes({ root: ROOT, webRoot: WEB_ROOT, runtimeDir: RUNTIME_DIR, pluginsDir: PLUGINS_DIR });
 const diag = createDiag(data.paths);
+// 就绪信号通道（契约 就绪信号契约.md）：与 diag 完全分离的状态机，不进调试面板
+const ready = createReady();
 // 写接口（资源根增删改名启停 / 导入配置）：读路径与写路径共用同一份 config/models/names 实例
 const writeApi = createWriteApi({
   paths: data.paths, config: data.config, models: data.models, names: data.names,
@@ -305,6 +308,29 @@ const server = http.createServer((req, res) => {
     }
     if (p === '/api/diag' && req.method === 'POST') {
       return readBody(req, res, (body) => sendJson(res, 200, diag.appendDiag(body)));
+    }
+    // 就绪信号（契约 §五）：快照幂等；SSE 先推全量再推增量；POST 是页面侧上报入口
+    if (p === '/api/ready' && req.method === 'GET') {
+      const stage = url.searchParams.get('stage') || '';
+      const snap = ready.snapshot(stage || undefined);
+      // 未登记的阶段名 = 调用方写错（契约 §三：阶段必须先登记）⇒ 400 并回可用清单；
+      //   已登记但尚未上报的返回 state:'pending'（200），两者语义不同，别混。
+      return sendJson(res, snap && snap.ok === false ? 400 : 200, snap);
+    }
+    if (p === '/api/ready/stream' && req.method === 'GET') {
+      return ready.subscribe(req, res);   // 长连接：先 snapshot 事件，后 update 事件
+    }
+    if (p === '/api/ready' && req.method === 'POST') {
+      // 注意：readBody 给的是**原始字符串**（diag 自己在内部 parse），这里必须自行解析
+      return readBody(req, res, (raw) => {
+        let body = {};
+        try {
+          body = raw ? JSON.parse(raw) : {};
+        } catch {
+          return sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON' });
+        }
+        return sendJson(res, 200, ready.apply(body));
+      });
     }
     // 资源根写操作（增 / 删 / 改名 / 启停）：校验 → 备份 → 写 → 失效缓存
     // 具体管道在 http/write.mjs；这里只负责读请求体与发响应。

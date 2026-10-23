@@ -5,6 +5,7 @@
 // 边界：画布与尺寸由 StageSurface 提供（handle），本文件不读 DOM 尺寸、不建画布。
 
 import { createCamera } from './camera/index.js';
+import { trackModelStage, markModelFailed } from '../infra/ready.js';
 import { createFrameGate } from '../engine/frame-gate.js';
 import { buildDocument } from '../infra/document.js';
 import { DEFAULT_FILTER, FILTER_PRESETS } from '../engine/filters.js';
@@ -142,6 +143,8 @@ export function createLive2DRenderer({ live2d } = {}) {
   let fpWindowStart = 0;
   let fpWindowFrames = 0;
   let measuredFps = 0;
+  // 累计真实绘制帧数：painted 的**硬计数**证据（契约 §六-2 禁止用像素采样当"画过帧"的证明）
+  let renderedTotal = 0;
   let gateApp = null;      // 已装门控的 app（换 app 后重装）
   let gateHandler = null;  // ticker 上的门控回调（换 app 时先摘掉）
 
@@ -167,6 +170,7 @@ export function createLive2DRenderer({ live2d } = {}) {
       if (!frameGate.shouldRender(app.ticker.deltaMS)) return;
       try { app.render(); } catch { /* 单帧渲染失败不打断 ticker */ }
       // 实测帧率：每 ≥500ms 结算一次，与实际出画严格同源
+      renderedTotal += 1;
       const nowMs = performance.now();
       if (!fpWindowStart) fpWindowStart = nowMs;
       fpWindowFrames += 1;
@@ -304,14 +308,28 @@ try { if (live2d.syncSize) live2d.syncSize({ size: { width: cssW, height: cssH }
       // 只接受 ready 的 Document，**不提供旧形状兜底**（理由同 render/spine.js）
       if (!document || document.state !== 'ready') {
         const why = (document && (document.warnings || []).join('；')) || '未提供 Document';
+        markModelFailed(`Document 不可用：${why}`, { kind: 'live2d' });
         throw new Error(`live2d.mount 只接受 ready 的 Document（请先 buildDocument）：${why}`);
       }
       handleRef = handle || null;
-      const info = await live2d.mount(document, handle);
-      // 每次装载后确保门控装在当前 app 上（unmount 会销毁 app，重建后是新的实例）
-      try { installFrameGate(live2d.getApp ? live2d.getApp() : null); } catch { /* 门控装不上不应阻断装载 */ }
-      applyPreset(); // 新模型挂上后把当前滤镜补一次（切模型/重建后不断档）
-      return info;
+      try {
+        const info = await live2d.mount(document, handle);
+        // 每次装载后确保门控装在当前 app 上（unmount 会销毁 app，重建后是新的实例）
+        try { installFrameGate(live2d.getApp ? live2d.getApp() : null); } catch { /* 门控装不上不应阻断装载 */ }
+        applyPreset(); // 新模型挂上后把当前滤镜补一次（切模型/重建后不断档）
+        // 就绪信号（契约 §2.2）：painted 用门控里累计的**真实绘制帧数**，不用像素采样
+        trackModelStage({
+          kind: 'live2d',
+          id: document.id || (document.meta && document.meta.id) || null,
+          canvas: handle && handle.canvas,
+          getFrames: () => renderedTotal,
+          getActions: () => ((live2d.bridge && live2d.bridge.motionItems ? live2d.bridge.motionItems().length : 0)),
+        });
+        return info;
+      } catch (e) {
+        markModelFailed(`装载失败：${(e && e.message) || e}`, { kind: 'live2d' });
+        throw e;
+      }
     },
     /**
      * 尺寸变化：覆盖层 canvas 的像素尺寸按**引擎同一口径**的 DPR 设置。
@@ -521,6 +539,8 @@ if (typeof live2d.syncSize === 'function') {
      * @returns {number} 最近窗口的 frames/s；0 表示暂无数据
      */
     getMeasuredFps() { return measuredFps; },
+    /** 累计真实绘制帧数（painted 判据的硬计数来源，验收用） */
+    getRenderedFrames() { return renderedTotal; },
     unmount() {
       try { if (typeof live2d.unmount === 'function') live2d.unmount(); } catch { /* 忽略 */ }
     },

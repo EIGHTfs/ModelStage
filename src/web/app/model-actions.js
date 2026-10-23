@@ -4,6 +4,7 @@
 // 具体怎么画由渲染器负责；本模块不碰引擎内部。
 
 import { dom, stage, state } from './context.js';
+import { markModelFailed } from '../infra/ready.js';
 import { buildDocument } from '../infra/document.js';
 import { getSharedVirtualFS } from '../infra/vfs.js';
 import { diagEvent, stageStatus } from './status.js';
@@ -136,6 +137,7 @@ async function loadModel(model, name) {
   if (!src.ok) {
     stage.unload();
     stageStatus(`无法装载 ${name}：${src.message}`, 'error');
+    markModelFailed(`无法装载 ${name}：${src.message}`);
     return null;
   }
   const doc = await buildDocument({
@@ -147,6 +149,7 @@ async function loadModel(model, name) {
   if (!doc || doc.state !== 'ready') {
     const why = (doc && (doc.warnings || []).join('；')) || '原因未知';
     stageStatus(`无法装载 ${name}：${why}`, 'error');
+    markModelFailed(`无法装载 ${name}：${why}`);
     return null;
   }
   // 统一清理：新 Document 不用旧前缀就释放（换容器/切到目录型模型都走这一句）

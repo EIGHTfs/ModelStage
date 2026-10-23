@@ -13,6 +13,7 @@
 
 // 诊断探针必须最先装：后面的模块/渲染出问题时才有取证（API 与旧前端 legacy/patches/diag.js 一致）
 import { installDiag } from './infra/diag.js';
+import { markStage, installReadyApi, trackElementStage, trackElementWhenReady } from './infra/ready.js';
 import { getJson, formatError } from './infra/api.js';
 import { getSharedVirtualFS } from './infra/vfs.js';
 import { createPluginHost } from './infra/plugin-host.js';
@@ -139,8 +140,27 @@ function initRenderer() {
   const surface = createStageSurface({ log: (message, level) => stageStatus(message, level === 'error' ? 'error' : level === 'warn' ? 'warn' : 'info') });
   surface.register(createSpineRenderer({ stage, onMsaa: applyMsaa }));
   surface.register(createLive2DRenderer({ live2d: ensureLive2DStage() }));
+  // 就绪信号 renderer 阶段（契约 §三）：两面都注册完 = 已实例化；
+  //   能力声明可读 = settled；能拿到 activeRenderer 且可下发设置 = interactive
+  markStage('renderer', 'mounted', { faces: 2 });
+  const twoFrames = (fn) => requestAnimationFrame(() => requestAnimationFrame(fn));
+  twoFrames(() => {
+    const caps = (() => { try { return surface.capabilities ? surface.capabilities() : null; } catch { return null; } })();
+    if (caps) markStage('renderer', 'settled', { settings: (caps.settings || []).length, camera: caps.camera || null });
+    const active = (() => { try { return surface.activeRenderer ? surface.activeRenderer() : null; } catch { return null; } })();
+    if (active && typeof active.setSetting === 'function') {
+      markStage('renderer', 'interactive', { activeId: active.id || null });
+    }
+  });
   state.surface = surface;
+  // 就绪信号：三个 DOM 阶段（契约 §2.1 三级；settled = 动画/布局稳定后才报）
+  trackElementWhenReady({ name: 'topbar', selector: '#app-header' });
+  trackElementWhenReady({ name: 'sidebarLeft', selector: '#left-panel' });
+  // 调试浮层由面板模块异步挂载（.dbg-panel），出现后再开始三级跟踪
+  trackElementWhenReady({ name: 'debugPanel', selector: '.dbg-panel', timeoutMs: 15000 });
   window.__WEB__ && (window.__WEB__.surface = surface);
+  // 就绪信号（契约 §5.1）：__WEB__.ready() 全量、__WEB__.ready('model') 单阶段
+  installReadyApi(window.__WEB__);
   // 只读断言入口（summary/results/disable/enable/run）
   // 兼容层：对外仍是一个 renderer（camera 按当前面取，mount 走 Surface 的唯一入口）
   const facade = {
@@ -368,6 +388,8 @@ function boot() {
   loadBrand();
   bindEvents();
   // 暴露给调试与自动化断言（M2 验收用）
+  // 就绪信号：`__WEB__` 一建好就算"骨架可用"（契约 §三 shell 阶段）
+  markStage('shell', 'interactive', { version: 'M4' });
   window.__WEB__ = Object.assign(window.__WEB__ || {}, {
     /** 当前渲染器（只读，便于排查：id / capabilities / camera 是否就绪） */
     get renderer() { return state.currentRenderer; },

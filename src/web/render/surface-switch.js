@@ -1,3 +1,4 @@
+import { markModelFailed } from '../infra/ready.js';
 // render/surface-switch.js —— 渲染面切换状态机（last-wins 排队 + 单次切换时序）
 //
 // 从 surface.js 拆出的原因：切换是"渲染面"最核心也最易错的一段（串行锁、排队、失败回滚、
@@ -78,12 +79,15 @@ export function createSwitcher(ctx) {
       const doc = document;
       if (!doc || typeof doc.state !== 'string') {
         const got = doc && typeof doc === 'object' ? `普通对象（kind=${doc.kind || '?'}）` : String(doc);
+        // 就绪信号：失败必须是显式 failed + 原因（测试当场能报，而不是等超时）
+        markModelFailed(`不是 Document：收到 ${got}`);
         throw new Error(`surface.activate 只接受 Document（请先 buildDocument 组装），收到：${got}`);
       }
       // ready 之外（如 error）不进入渲染层，但属可预期的用户侧失败：给提示、不抛
       if (doc.state !== 'ready') {
         const why = (doc && (doc.warnings || []).join('；')) || '缺少 Document';
         note(`跳过装载：Document 不可用（${(doc && doc.state) || 'none'}）：${why}`);
+        markModelFailed(`Document 不可用（${(doc && doc.state) || 'none'}）：${why}`);
         setMode(previous === 'live2d' ? 'live2d' : 'spine');
         return null;
       }

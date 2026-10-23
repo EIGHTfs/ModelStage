@@ -5,6 +5,7 @@
 // 边界：不碰 DOM 尺寸、不建 canvas —— 只通过 handle 取画布/尺寸/DPR，用 handle.requestRender 请求渲染。
 
 import { createCamera } from './camera/index.js';
+import { trackModelStage, markModelFailed } from '../infra/ready.js';
 import { buildDocument } from '../infra/document.js';
 
 /** Spine 渲染器支持的设置项 */
@@ -186,15 +187,32 @@ export function createSpineRenderer({ stage, onMsaa } = {}) {
      * @returns {Promise<object>} info
      */
     async mount(document, handle) {
-      void handle;
       // 只接受 ready 的 Document，**不提供旧形状兜底**：
       //   兜底一旦留着，将来任何新调用点忘了组装就会静默走它，契约就形同虚设
       //   （现存的调用点 surface-switch 与 app/model-actions 都已在调用前 buildDocument）。
       if (!document || document.state !== 'ready') {
         const why = (document && (document.warnings || []).join('；')) || '未提供 Document';
+        // 就绪信号：失败要立刻可见（带原因），测试据此直接报错而不是等超时
+        markModelFailed(`Document 不可用：${why}`, { kind: 'spine' });
         throw new Error(`spine.mount 只接受 ready 的 Document（请先 buildDocument）：${why}`);
       }
-      return stage.load({ document });
+      try {
+        const info = await stage.load({ document });
+        // 就绪信号（契约 §2.2）：mounted → painted → interactive 由 trackModelStage 逐级推进。
+        //   painted 用引擎自己的已绘帧计数（stage.debug().frames），**不用像素采样**：
+        //   画布 detach 之后像素采样仍可能"有颜色"，那是弱证据。
+        trackModelStage({
+          kind: 'spine',
+          id: document.id || (document.meta && document.meta.id) || null,
+          canvas: handle && handle.canvas,
+          getFrames: () => stage.debug().frames,
+          getActions: () => ((stage.debug().animations || []).length),
+        });
+        return info;
+      } catch (e) {
+        markModelFailed(`装载失败：${(e && e.message) || e}`, { kind: 'spine' });
+        throw e;
+      }
     },
     /**
      * 应用一项设置（面板唯一入口，契约 renderer/v1）。
