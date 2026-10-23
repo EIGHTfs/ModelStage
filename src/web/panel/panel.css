@@ -715,10 +715,17 @@
   cursor: default;
 }
 
-/* ---- 底栏三块对齐（配合 style.css 的 .app-footer grid 1fr auto 1fr）---- */
-#app-footer > .transport-group:nth-child(1) { justify-self: start; }
-#app-footer > .transport-group:nth-child(2) { justify-self: center; }
-#app-footer > .transport-group:nth-child(3) { justify-self: end; }
+/* ---- 底栏三块对齐（配合 style.css 的 .app-footer grid minmax(0,1fr) auto minmax(0,1fr)）----
+   三块都必须 min-width:0：grid 列能收缩了，但块内是 flex，子项的隐式最小宽度同样会撑破。 */
+#app-footer > .transport-group { min-width: 0; flex-wrap: nowrap; }
+/* 按角色定列（不是 nth-child）：空块被跳过时，剩下的块仍落在正确的列上 */
+#app-footer > .transport-group[data-slot='left'] { grid-column: 1; justify-self: start; }
+#app-footer > .transport-group[data-slot='center'] { grid-column: 2; justify-self: center; }
+#app-footer > .transport-group[data-slot='right'] {
+  grid-column: 3;
+  justify-self: end;
+  justify-content: flex-end;
+}
 
 /* ---- 右栏 240px 下的自适应：控件行撑满、长文本省略、列表/分段不溢出 ---- */
 #right-panel .ctl-row,
@@ -731,7 +738,14 @@
 #right-panel .acc-trigger { width: 100%; min-width: 0; }
 
 /* ---- 竖屏 / 窄屏：底栏只留图标（文字标签隐藏，按钮收成方形并保留触控尺寸）---- */
-@media (orientation: portrait), (max-width: 640px) {
+/* 纯图标断点：底栏"全部显示不裁字"时内容宽约 1068px（7 个控件 + 名称），
+   加上左右各 16px 边距 ⇒ 视口 < 1100px 就放不下，此时自动转纯图标模式
+   （否则只能靠裁字/换行/压盖，三者都不合需求）。竖屏同样命中这条。 */
+@media (orientation: portrait), (max-width: 1100px) {
+  /* 只显示图标后右块仍可能放不下一行（4 个 32px 按钮 + 间距 > 列宽）⇒ 允许换行，
+     此时浮条必须能长高，否则换行出来的按钮会溢出浮条底边。 */
+  #app-footer { height: auto; min-height: var(--footer-h); padding: 6px 9px; }
+
   #app-footer button .btn-label,
   #app-footer .transport-picker-btn .picker-label { display: none; }
 
@@ -739,7 +753,8 @@
     min-width: 32px;
     /* 触控目标不小于 32×32：只留图标时按钮变方，高度也要补够 */
     min-height: 32px;
-    padding: 4px 6px;
+    /* 纯图标时左右 padding 会把图标推偏 ⇒ 清零并居中 */
+    padding: 0;
     justify-content: center;
   }
 
@@ -749,15 +764,21 @@
   #app-footer .mini-btn {
     min-width: 32px;
     min-height: 32px;
-    padding: 0 6px;
+    padding: 0;
     justify-content: center;
   }
+
+  /* 图标本身不能有左右外边距残留（否则居中会偏） */
+  #app-footer .btn-icon { margin: 0; }
 
   #app-footer .transport-picker-list { min-width: 140px; }
 }
 
-/* 底栏里的下拉不能按右栏那套 220px 上限：三块布局下右块（皮肤/动作/重置/背景）
-   会被撑到 488px、越过自己的列压住中间块（实测 grid 列 313/58/313 却溢出到 822px）。
-   这里收窄到 110px，名称过长由 .picker-label 省略。 */
-#app-footer .transport-picker-btn { max-width: 110px; }
-#app-footer .transport-group { max-width: 100%; }
+/* 底栏的下拉按内容自然宽度显示（浮条宽度是 fit-content，不靠裁字来省空间）。
+   只解除右栏那套 220px 上限，名称不省略。 */
+#app-footer .transport-picker-btn { max-width: none; }
+#app-footer .transport-picker-btn .picker-label {
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+}

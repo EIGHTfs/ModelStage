@@ -233,16 +233,25 @@ button:disabled {
 
 .app-footer {
   position: fixed;
-  left: 50%;
+  /* 居中用 left/right + margin-inline:auto（不再用 transform）：
+     宽度是 fit-content，transform 与 auto margin 叠着容易算错中心。 */
+  left: 0;
+  right: 0;
   bottom: 15px;
-  transform: translateX(-50%);
-  /* 窄屏收窄，避免浮条宽度超过视口造成横向溢出 */
-  width: min(720px, calc(100vw - 2rem));
-  height: var(--footer-h);
+  margin-inline: auto;
+  /* 宽度由内容决定：控件全部显示、不裁字、不换行；只有真的放不下时才受视口约束 */
+  width: fit-content;
+  max-width: calc(100vw - 32px);
+  /* 高度不再写死：右块（皮肤/动作/重置/背景）在 720px 浮条里放不下一行会换行，
+     写死 42px 会把换行出来的按钮顶出浮条外。min-height 保证单行时仍是原高度。 */
+  height: auto;
+  min-height: var(--footer-h);
   /* 三块布局用 grid：左右各 1fr、中间 auto ⇒ 中间块天然落在浮条（=视口）正中。
-     不用 position:absolute：那会脱离文档流，窄屏时压住两侧控件。 */
+     不用 position:absolute：那会脱离文档流，窄屏时压住两侧控件。
+     关键：fr 的隐式最小尺寸是 auto（内容最小宽度），内容一宽列就被撑破、右块向左溢出压住
+     中间块（实测皮肤 picker 压住播放按钮）。所以必须用 minmax(0, 1fr) 允许列收缩到 0。 */
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
   gap: 8px;
   padding: 0 9px;
@@ -308,7 +317,7 @@ html[data-right="off"] .panel-right {
 
 html[data-cinema="on"][data-idle="on"] .app-footer {
   opacity: 0;
-  transform: translateX(-50%) translateY(8px);
+  transform: translateY(8px);
   pointer-events: none;
 }
 

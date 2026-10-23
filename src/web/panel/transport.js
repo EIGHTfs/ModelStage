@@ -5,19 +5,16 @@
 // 铁律：不允许"看着能点却没反应"——只有 handler 存在的控件才会被解锁。
 //
 // 动态选项：动作/皮肤下拉的选项由模型数据填充（setOptions），渲染时的 options 只是占位文案。
+//
+// 自绘下拉本身（触发器 + listbox + 键盘 + 背景选项源）在 panel/transport-picker.js；
+//   本文件只负责"有哪些控件、怎么分组、怎么和 app 层接线"。
 
 import { TRANSPORT_CONTROLS } from './schema.js';
-import { listBackgrounds } from '../app/backgrounds.js';
-import { applyBackground, readViewSettings, setCustomBackground } from '../app/view-settings.js';
-import { stageStatus } from '../app/status.js';
-
-/** 元素工厂 */
-function el(tag, className, text) {
-  const n = document.createElement(tag);
-  if (className) n.className = className;
-  if (text !== undefined && text !== null) n.textContent = String(text);
-  return n;
-}
+import { GROUP_ICONS } from './icons.js';
+import { el } from './dom.js';
+import {
+  BG_MODES, applyBgValue, bindBgSync, createPicker, currentBgValue, refreshBgOptions,
+} from './transport-picker.js';
 
 /** 统一打死"未接线"标记 */
 function markPending(node, id, title) {
@@ -92,283 +89,19 @@ const PLAY_ICONS = {
 const PLAY_LABELS = { play: '播放', pause: '暂停' };
 
 /** 底栏按钮图标（内联 SVG，与顶栏同一套线条风格；不引图标库） */
+// 皮肤/动作/背景与右栏是同一个功能，图标**直接引右栏那套**（GROUP_ICONS），
+//   两处各抄一份 path 必然漂移（曾出现：右栏动作是网格图标、底栏是波形图标）。
+// 上一个/下一个/播放/重置视图右栏没有对应功能，图标留在这里。
 const ICONS = {
   'transport-prev': '<polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/>',
   'transport-play': '<polygon points="6 3 20 12 6 21 6 3"/>',
   'transport-next': '<polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/>',
   'transport-reset-view': '<path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 3v6h6"/>',
-  'transport-bg': '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/>',
-  'transport-skin': '<path d="M12 2 4 6v6c0 5 3.4 9.4 8 10 4.6-.6 8-5 8-10V6l-8-4z"/>',
-  'transport-motion': '<circle cx="12" cy="12" r="9"/><polygon points="10 8 16 12 10 16 10 8"/>',
+  // 以下三个与右栏同名功能共用一份 path
+  'transport-bg': GROUP_ICONS.theme,
+  'transport-skin': GROUP_ICONS.skin,
+  'transport-motion': GROUP_ICONS.motion,
 };
-
-/**
- * 自绘下拉的键盘语义（WAI-ARIA combobox 惯用法）：
- *   Esc      关闭并把焦点还给触发按钮
- *   ↑/↓      打开（若关闭）或移动高亮
- *   Enter/空格 确认当前高亮项并关闭
- * 抽成模块级函数是为了让 createPicker 本体保持可读（单函数长度门禁）。
- * @param {KeyboardEvent} ev
- * @param {{isOpen:Function, open:Function, close:Function, count:Function,
- *          activeIndex:Function, setActive:Function, pickActive:Function}} api
- */
-/**
- * 按选项清单重建列表项（纯 DOM 构建，便于测试与复用）。
- * @param {Array<{text:string,value:string}>} options
- * @param {(value:string) => void} onPickItem 点某项时回调
- * @param {HTMLElement} list 目标 <ul>
- * @returns {Array<{value:string, text:string, node:HTMLLIElement}>}
- */
-function buildPickerItems(options, onPickItem, list) {
-  list.replaceChildren();
-  const items = [];
-  for (const opt of options || []) {
-    // 分组标题：只做视觉分隔（role=presentation），不进可选项数组，键盘不会停在它上面
-    if (opt.group) {
-      const head = el('li', 'transport-picker-group', opt.text);
-      head.setAttribute('role', 'presentation');
-      list.append(head);
-      continue;
-    }
-    const li = el('li', 'transport-picker-item', opt.text);
-    li.setAttribute('role', 'option');
-    li.dataset.value = String(opt.value);
-    li.tabIndex = -1;
-    li.addEventListener('click', () => onPickItem(String(opt.value)));
-    items.push({ value: String(opt.value), text: opt.text, node: li });
-    list.append(li);
-  }
-  return items;
-}
-
-function handlePickerKey(ev, api) {
-  const key = ev.key;
-  if (key === 'Escape') { if (api.isOpen()) { api.close(); ev.preventDefault(); } return; }
-  if (key === 'ArrowDown' || key === 'ArrowUp') {
-    if (!api.isOpen()) { api.open(); ev.preventDefault(); return; }
-    const step = key === 'ArrowDown' ? 1 : -1;
-    const next = Math.max(0, Math.min(api.count() - 1, (api.activeIndex() < 0 ? 0 : api.activeIndex()) + step));
-    api.setActive(next);
-    ev.preventDefault();
-    return;
-  }
-  if (key === 'Enter' || key === ' ') {
-    if (!api.isOpen()) return;
-    api.pickActive();
-    ev.preventDefault();
-  }
-}
-
-/**
- * 自绘下拉（替代原生 <select>）：触发按钮 + 弹出列表。
- *
- * 为什么不用原生 select：视觉无法与新端设计语言统一（旧端的动作/皮肤也是自绘面板），
- *   而且原生 select 的键盘行为在各浏览器不一致，无法保证"上下键移动高亮、Esc 关闭并回焦"。
- *
- * 结构（无障碍语义照 WAI-ARIA combobox/listbox）：
- *   .transport-picker[data-ctl]
- *     button.transport-picker-btn[aria-haspopup=listbox][aria-expanded]
- *       span.picker-label（显示当前项文案）+ svg chevron
- *     ul.transport-picker-list[role=listbox] > li[role=option][aria-selected]
- *
- * @param {{id:string, label:string, title?:string, options:Array<{text:string,value:string}>, value:string}} ctl
- * @param {(value:string) => void} onPick 选中回调（只有真实选中才触发，与原生 select 的 change 同义）
- */
-function createPicker(ctl, onPick, hooks = {}) {
-  const root = el('div', 'transport-picker');
-  root.dataset.ctl = ctl.id;
-  const btn = el('button', 'transport-picker-btn');
-  btn.type = 'button';
-  btn.setAttribute('aria-haspopup', 'listbox');
-  btn.setAttribute('aria-expanded', 'false');
-  btn.setAttribute('aria-label', ctl.label || '选择');
-  if (ctl.title) btn.title = ctl.title;
-  // 图标：与按钮控件同一套（ICONS 按 id 取），窄屏只显示图标时也有东西可看
-  const iconBody = ICONS[ctl.id];
-  if (iconBody) {
-    const wrap = el('span', 'btn-icon');
-    wrap.setAttribute('aria-hidden', 'true');
-    wrap.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${iconBody}</svg>`;
-    btn.append(wrap);
-    btn.classList.add('has-icon');
-  }
-  const labelEl = el('span', 'picker-label', '');
-  btn.append(labelEl);
-  const list = el('ul', 'transport-picker-list');
-  list.setAttribute('role', 'listbox');
-  list.hidden = true;
-  root.append(btn, list);
-
-  let items = [];
-  let activeIndex = -1;
-  let current = ctl.value || '';
-
-  /** 更新触发按钮上的文案 */
-  function paintLabel() {
-    const hit = items.find((it) => it.value === current);
-    labelEl.textContent = hit ? hit.text : (items[0] ? items[0].text : '');
-  }
-
-  /** 高亮某一项（-1 = 不高亮） */
-  function paintActive() {
-    items.forEach((it, i) => {
-      it.node.classList.toggle('is-active', i === activeIndex);
-      it.node.setAttribute('aria-selected', String(it.value === current));
-    });
-  }
-
-  function close(returnFocus = false) {
-    if (list.hidden) return;
-    list.hidden = true;
-    btn.setAttribute('aria-expanded', 'false');
-    root.classList.remove('is-open');
-    activeIndex = -1;
-    paintActive();
-    if (returnFocus) { try { btn.focus(); } catch { /* 忽略 */ } }
-  }
-
-  function open() {
-    // 影院模式下底栏整体被收起，不自作主张弹出
-    if (document.documentElement.dataset.cinema === 'on') return;
-    // 打开前刷新（背景图列表会随上传/删除变化，不刷新就会列出过期项）
-    if (typeof hooks.onBeforeOpen === 'function') { try { hooks.onBeforeOpen(); } catch { /* 刷新失败就用现有选项 */ } }
-    list.hidden = false;
-    btn.setAttribute('aria-expanded', 'true');
-    root.classList.add('is-open');
-    const cur = items.findIndex((it) => it.value === current);
-    activeIndex = cur >= 0 ? cur : 0;
-    paintActive();
-    try { (items[activeIndex] || {}).node.focus(); } catch { /* 忽略 */ }
-  }
-
-  /** 选中（真实选择）：更新显示 + 通知调用方（与原生 change 一致，不重复触发同值） */
-  function pick(value, { silent = false } = {}) {
-    const hit = items.find((it) => it.value === value);
-    if (!hit) return false;
-    const changed = value !== current;
-    current = value;
-    paintLabel();
-    paintActive();
-    if (!silent && changed) onPick(value);
-    return true;
-  }
-
-  /** 重建选项（换模型/换面时调用）：建行细节在模块级 buildPickerItems */
-  function setOptions(next, value) {
-    items = buildPickerItems(next, (v) => { pick(v); close(true); }, list);
-    if (typeof value === 'string') current = value;
-    if (!items.some((it) => it.value === current)) current = items[0] ? items[0].value : '';
-    paintLabel();
-    paintActive();
-    return items.length;
-  }
-
-  // 触发按钮：点击开合
-  btn.addEventListener('click', () => { if (list.hidden) open(); else close(); });
-  // 键盘：↓/↑ 移动高亮、Enter 确认、Esc 关闭并回焦（逻辑在模块级 handlePickerKey）
-  root.addEventListener('keydown', (ev) => handlePickerKey(ev, {
-    isOpen: () => !list.hidden,
-    open,
-    close: () => close(true),
-    count: () => items.length,
-    activeIndex: () => activeIndex,
-    setActive: (i) => { activeIndex = i; paintActive(); try { (items[i] || {}).node.focus(); } catch { /* 忽略 */ } },
-    pickActive: () => { const hit = items[activeIndex]; if (hit) { pick(hit.value); close(true); } },
-  }));
-  // 点外部收起
-  document.addEventListener('click', (ev) => { if (!root.contains(ev.target)) close(); });
-
-  setOptions(ctl.options && ctl.options.length
-    ? ctl.options.map((o) => (typeof o === 'string' ? { text: o, value: o } : o))
-    : [], current);
-
-  return {
-    root,
-    setOptions,
-    setValue: (v) => { current = String(v); paintLabel(); paintActive(); },
-    open,
-    close: () => close(false),
-    isOpen: () => !list.hidden,
-    value: () => current,
-  };
-}
-
-/** 底栏「背景」的内置模式（与右栏「背景模式」四个档位一一对应） */
-const BG_MODES = [
-  { text: '棋盘格', value: 'mode:checkerboard' },
-  { text: '纯色', value: 'mode:solid' },
-  { text: '透明', value: 'mode:transparent' },
-  { text: '自定义（选本地图片）', value: 'mode:custom' },
-];
-
-/**
- * 当前背景在列表里的值：内置模式用 `mode:<模式>`，服务端自定义图用 `img:<url>`。
- * @param {Array<{url: string}>} images 服务端已有的自定义图
- * @returns {string} 当前值
- */
-function currentBgValue(images) {
-  const bg = readViewSettings().background || {};
-  if (bg.mode === 'custom' && bg.imageUrl) {
-    const hit = (images || []).find((it) => it.url === bg.imageUrl);
-    return hit ? `img:${hit.url}` : 'mode:custom';
-  }
-  return `mode:${bg.mode || 'checkerboard'}`;
-}
-
-/**
- * 应用一个背景选择值。
- * @param {string} value `mode:<模式>` 或 `img:<url>`
- * @returns {boolean} 是否落地
- */
-/** url → 自定义图名字（切图时状态行要显示人话，而不是一串 url） */
-const bgImageNames = new Map();
-
-/**
- * 应用一个背景选择值，并写一条状态（与皮肤/动作切换保持一致：让用户看到"切成了什么"）。
- * @param {string} value `mode:<模式>` 或 `img:<url>`
- * @returns {boolean} 是否落地
- */
-function applyBgValue(value) {
-  const v = String(value || '');
-  if (v.startsWith('img:')) {
-    const url = v.slice(4);
-    const ok = setCustomBackground(url);
-    document.dispatchEvent(new CustomEvent('panel:bg-applied', { detail: { mode: 'custom' } }));
-    stageStatus(`背景 → ${bgImageNames.get(url) || '自定义图片'}${ok ? '' : '（舞台未就绪）'}`, ok ? 'info' : 'warn', { show: true });
-    return ok;
-  }
-  if (v.startsWith('mode:')) {
-    const mode = v.slice(5);
-    applyBackground(mode);   // 内部会广播 panel:bg-applied，底栏/右栏据此同步
-    const text = (BG_MODES.find((m) => m.value === `mode:${mode}`) || {}).text || mode;
-    stageStatus(`背景 → ${text}`, 'info', { show: true });
-    return true;
-  }
-  return false;
-}
-
-/**
- * 重新拉取背景选项（内置 4 模式 + 服务端自定义图，自定义图带分组标题）。
- * 没有自定义图时只列内置 4 项——不出现空的「自定义图片」分组。
- * @param {object} picker createPicker 句柄
- * @returns {Promise<number>} 选项条数
- */
-async function refreshBgOptions(picker) {
-  if (!picker) return 0;
-  const r = await listBackgrounds();
-  const images = r && r.ok ? (r.items || []) : [];
-  const opts = BG_MODES.slice();
-  if (images.length) {
-    opts.push({ text: '自定义图片', group: true });
-    bgImageNames.clear();
-    for (const it of images) {
-      bgImageNames.set(it.url, it.name);
-      opts.push({ text: it.name, value: `img:${it.url}` });
-    }
-  }
-  picker.setOptions(opts, currentBgValue(images));
-  return opts.length;
-}
 
 /** 给按钮前置一个图标（非按钮/未配图标则原样返回） */
 function withIcon(node, id) {
@@ -383,27 +116,16 @@ function withIcon(node, id) {
   return node;
 }
 
-/**
- * 任何来源（右栏档位 / 右栏列表 / 底栏自己）改了背景，都让底栏下拉重新对齐。
- * 只刷新自己、不再往回广播，避免来回触发。
- */
-function bindBgSync(picker) {
-  if (typeof document === 'undefined') return;
-  document.addEventListener('panel:bg-applied', () => {
-    refreshBgOptions(picker).catch(() => { /* 刷新失败保持现状 */ });
-  });
-}
-
 export function mountTransport(footerEl, handlers = {}) {
   footerEl.replaceChildren();
 
-  // 三块布局（配合 .app-footer 的 grid 1fr auto 1fr）：
-  //   左＝翻页、中＝播放/暂停（必须落在视口正中）、右＝内容与视图相关的一组。
-  const groups = [
-    ['transport-prev', 'transport-next'],
-    ['transport-play'],
-    ['transport-skin', 'transport-motion', 'transport-reset-view', 'transport-bg'],
-  ];
+  // 分组由数组派生：center:true 的控件单独成中块，它之前→左块、之后→右块。
+  //   这样调整控件顺序只需改 schema 的数组，不必同步维护第二份分组表（以前漏改一处就错位）。
+  const ids = TRANSPORT_CONTROLS.map((c) => c.id);
+  const centerIdx = TRANSPORT_CONTROLS.findIndex((c) => c.center === true);
+  const groups = centerIdx < 0
+    ? [ids]                                                              // 没标 center ⇒ 单块兜底
+    : [ids.slice(0, centerIdx), [ids[centerIdx]], ids.slice(centerIdx + 1)];
   const byId = new Map(TRANSPORT_CONTROLS.map((c) => [c.id, c]));
   const nodes = new Map();
   /** 自绘下拉的句柄（id → picker），setOptions/setSelectValue 走它 */
@@ -411,16 +133,22 @@ export function mountTransport(footerEl, handlers = {}) {
   /** 自带回调的 picker（不依赖 handlers 即可用）：背景选择器属于这一类 */
   const selfWired = new Set();
 
-  for (const ids of groups) {
+  for (let gi = 0; gi < groups.length; gi += 1) {
+    const groupIds = groups[gi];
+    // 空块直接跳过：否则会占掉一个 grid 列（center 标在数组首项时左块就是空的）
+    if (!groupIds.length) continue;
     const box = el('div', 'transport-group');
-    for (const id of ids) {
+    // 显式标出这块该落在哪一列：跳过空块后，剩下的块不能靠 DOM 顺序去猜列
+    //   （否则 center 标在首项时，中块会被排到第 1 列、偏移 300+px）
+    box.dataset.slot = centerIdx < 0 ? 'left' : ['left', 'center', 'right'][gi];
+    for (const id of groupIds) {
       const ctl = byId.get(id);
       if (!ctl) continue;
       if (id === 'transport-bg') {
         // 背景：内置 4 模式 + 服务端自定义图，选中即应用（不再"点一次换一个"的循环切换）。
         //   这里不接 handlers['transport-bg']：那个是旧的循环切换动作，接了就会"选了又跳下一项"。
         const bgPicker = createPicker(
-          { ...ctl, options: BG_MODES.slice(), value: currentBgValue([]) },
+          { ...ctl, icon: ICONS[ctl.id], options: BG_MODES.slice(), value: currentBgValue([]) },
           (value) => applyBgValue(value),
           { onBeforeOpen: () => { refreshBgOptions(bgPicker).catch(() => { /* 刷新失败沿用现有选项 */ }); } },
         );
@@ -435,7 +163,11 @@ export function mountTransport(footerEl, handlers = {}) {
       if (ctl.custom === 'picker') {
         // 自绘下拉：回调直接接到 handlers[id]（与原生 select 的 change 同义）
         const picker = createPicker(
-          { ...ctl, options: (ctl.options || []).map((o) => (typeof o === 'string' ? { text: o, value: o } : o)) },
+          {
+            ...ctl,
+            icon: ICONS[ctl.id],
+            options: (ctl.options || []).map((o) => (typeof o === 'string' ? { text: o, value: o } : o)),
+          },
           (value) => {
             const h = handlers[id];
             if (typeof h !== 'function') { document.documentElement.dataset.pickerError = `no-handler:${id}`; return; }
