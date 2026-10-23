@@ -24,6 +24,10 @@ export const STATES = ['pending', 'mounted', 'painted', 'settled', 'interactive'
  *  必须与 settled 同档，否则会被当成"未前进"静默丢弃（实测踩过：painted 报不上去）。 */
 const RANK = { pending: 0, mounted: 1, painted: 2, settled: 2, interactive: 3 };
 
+/** 模型阶段轮询间隔（ms）：只读帧计数/动作数，代价可忽略，且远低频于渲染帧 */
+const MODEL_POLL_MS = 80;
+/** DOM 阶段轮询间隔（ms）：读包围盒/动画状态，120ms 足够判断"稳定" */
+const ELEMENT_POLL_MS = 120;
 /** 上报去抖窗口（ms）：同一窗口内的多次变更合成一条请求 */
 const FLUSH_DEBOUNCE_MS = 120;
 
@@ -183,7 +187,7 @@ export function trackModelStage(opts) {
       return;
     }
     if (Date.now() - t0 > timeoutMs) { stop(); return; }
-    setTimeout(tick, 80); // 轮询间隔 80ms：只读计数，代价可忽略，且远低频于渲染帧
+    setTimeout(tick, MODEL_POLL_MS);
   };
 
   function stop() {
@@ -210,6 +214,16 @@ export function trackModelStage(opts) {
  * @param {{name: string, el: Element, detail?: object, timeoutMs?: number}} opts
  * @returns {() => void} 停止跟踪
  */
+/** 执行阶段的附加判据；抛错按"未就绪"处理（不能因探针异常就报绿） */
+function safeProbe(fn) {
+  try {
+    const r = fn();
+    return r && typeof r === 'object' ? { ok: r.ok === true, detail: r.detail || (r.ok ? {} : { probeError: 'ok=false' }) } : { ok: false, detail: { probeError: '探针无返回值' } };
+  } catch (e) {
+    return { ok: false, detail: { probeError: String((e && e.message) || e).slice(0, 80) } };
+  }
+}
+
 /** 元素当前包围盒的紧凑表示（两次采样相等 ⇒ 布局稳定） */
 function boxOf(node) {
   try {
@@ -259,14 +273,17 @@ export function trackElementStage(opts) {
     // 连续两次采样都稳定且无动画 ⇒ 视为布局/动画稳定
     if (stableHits >= 1) {
       markStage(name, 'settled', { ...(opts && opts.detail ? opts.detail : {}), box });
-      if (!blocked(el)) {
-        markStage(name, 'interactive', { ...(opts && opts.detail ? opts.detail : {}), box });
+      // interactive 可在通用判据之外再加该阶段自己的条件（如"声明内的控件都构建了"）：
+      //   探针返回 {ok, detail}；不 ok 就继续等，绝不为了"报绿"放宽。
+      const probe = opts && typeof opts.interactiveProbe === 'function' ? safeProbe(opts.interactiveProbe) : { ok: true, detail: {} };
+      if (!blocked(el) && probe.ok) {
+        markStage(name, 'interactive', { ...(opts && opts.detail ? opts.detail : {}), ...(probe.detail || {}), box });
         stop();
         return;
       }
     }
     if (Date.now() - t0 > timeoutMs) { stop(); return; }
-    setTimeout(tick, 120);
+    setTimeout(tick, ELEMENT_POLL_MS);
   };
   tick();
   return stop;
@@ -288,7 +305,7 @@ export function trackElementWhenReady(opts) {
     const el = document.querySelector(selector);
     if (el) { inner = trackElementStage({ ...opts, name, el }); return; }
     if (Date.now() - t0 > timeoutMs) { stopped = true; return; }
-    setTimeout(tryStart, 80);
+    setTimeout(tryStart, MODEL_POLL_MS);
   };
   tryStart();
   return () => { stopped = true; if (inner) inner(); };

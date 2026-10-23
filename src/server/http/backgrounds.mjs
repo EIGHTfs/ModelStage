@@ -272,6 +272,7 @@ function readUpload(env, req) {
     const abortWith = (reason, message, status) => {
       if (aborted) return;
       aborted = true;
+      req.resume();   // 继续把剩余字节读出来丢弃：不占内存，也能让连接安静下来
       const r = fail(reason, message, status);
       r.destroy = true;
       resolve(r);

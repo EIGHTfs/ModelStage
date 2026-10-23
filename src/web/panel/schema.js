@@ -23,7 +23,7 @@
  *   —— 默认全支持会让"声明了但没实现"的缺陷静默存在（见 doc/契约/面板能力契约.md §五）。
  */
 export const RENDERER_INDEPENDENT = [
-  'ctl-theme', 'ctl-bg-mode', 'ctl-bg-color', 'ctl-bg-image',
+  'ctl-theme', 'ctl-bg-mode', 'ctl-bg-color', 'ctl-bg-image', 'ctl-bg-list',
   'ctl-hang-guard', 'ctl-show-status', 'ctl-debug-log', 'ctl-settings-io',
   // 动作组的两个：循环开关由应用层定时器推进、动作列表内容由应用层填，
   //   与"渲染器是否声明某项能力"无关（两面都要有）。
@@ -148,6 +148,13 @@ export const PANEL_GROUPS = [
           { text: '霓虹夜', value: 'neon-violet' },
           { text: '云蓝', value: 'cloud-blue' },
         ],
+      },
+      {
+        // 自定义图片列表：内容由 panel/background-list.js 从服务端填（上传/改名/删除/设为背景）
+        kind: 'dynamic-list',
+        label: '自定义图片',
+        id: 'ctl-bg-list', core: true,
+        note: '上传 png / jpeg / webp（单张 ≤5MB），点缩略图即设为背景',
       },
       {
         kind: 'segmented',

@@ -80,10 +80,11 @@ export function pickBackgroundImage() {
 export function setCustomBackground(url) {
   const stageEl = document.getElementById('stage');
   if (!stageEl) return false;
-  stageEl.dataset.bg = 'custom';
+  stageEl.dataset.bg = url ? 'custom' : 'checkerboard';
   stageEl.style.backgroundImage = url ? `url("${url}")` : '';
-  stageEl.style.backgroundSize = 'cover';
-  stageEl.style.backgroundPosition = 'center';
+  // 没有图就不要留 cover（否则空 url 也会把棋盘图案拉伸）
+  stageEl.style.backgroundSize = url ? 'cover' : '';
+  stageEl.style.backgroundPosition = url ? 'center' : '';
   state.viewBg = 'custom';
   saveViewSettings({ background: { mode: 'custom', color: '#2a2a2a', imageUrl: url || '' } });
   document.documentElement.dataset.bgImage = url ? 'set' : 'none';
@@ -102,7 +103,11 @@ export function applyBackground(mode) {
     pickBackgroundImage();
     return;
   }
+  // 三个内联样式都要清：只清 backgroundImage 不够——自定义图设过 background-size:cover，
+  //   留着会把棋盘格/纯色依赖的 CSS 图案尺寸覆盖成 cover（整块拉伸成一个巨大格子，看着"背景不对"）。
   stageEl.style.backgroundImage = '';
+  stageEl.style.backgroundSize = '';
+  stageEl.style.backgroundPosition = '';
   // 背景唯一入口：交给 Surface（它会写 data-bg 并通知所有渲染器）
   try {
     if (state.surface && typeof state.surface.setBackground === 'function') state.surface.setBackground(m);

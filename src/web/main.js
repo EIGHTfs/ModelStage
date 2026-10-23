@@ -158,6 +158,25 @@ function initRenderer() {
   trackElementWhenReady({ name: 'sidebarLeft', selector: '#left-panel' });
   // 调试浮层由面板模块异步挂载（.dbg-panel），出现后再开始三级跟踪
   trackElementWhenReady({ name: 'debugPanel', selector: '.dbg-panel', timeoutMs: 15000 });
+  trackElementWhenReady({ name: 'sidebarRight', selector: '#right-panel' });
+  // 底栏：现在是**自绘 picker**（button[aria-expanded] + ul[role=listbox]），不是原生 select。
+  //   interactive 额外要求：触发按钮存在、aria-expanded=false（收起态=可用且没被展开卡住）、
+  //   且**不存在** select.transport-select（存在即说明退回旧实现）。
+  if (dom.footer) {
+    trackElementStage({
+      name: 'bottombar',
+      el: dom.footer,
+      interactiveProbe: () => {
+        const btn = dom.footer.querySelector('.transport-picker .transport-picker-btn');
+        const nativeSelect = dom.footer.querySelector('select.transport-select');
+        const expanded = btn ? btn.getAttribute('aria-expanded') : null;
+        return {
+          ok: !!btn && expanded === 'false' && !nativeSelect,
+          detail: { pickerBtn: !!btn, expanded, nativeSelect: !!nativeSelect },
+        };
+      },
+    });
+  }
   window.__WEB__ && (window.__WEB__.surface = surface);
   // 就绪信号（契约 §5.1）：__WEB__.ready() 全量、__WEB__.ready('model') 单阶段
   installReadyApi(window.__WEB__);

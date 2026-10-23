@@ -631,3 +631,76 @@
 .transport-picker-item:hover { background: var(--color-secondary, rgba(255, 255, 255, 0.06)); }
 .transport-picker-item.is-active { outline: 1px solid var(--color-primary, #1fc0c5); }
 .transport-picker-item[aria-selected='true'] { color: var(--color-primary, #1fc0c5); font-weight: 600; }
+
+/* ---- 右栏「自定义图片」列表（主题背景组）----
+   结构见 panel/background-list.js：状态行 + 上传按钮 + 若干行（缩略图 / 名称+大小 / 改名 / 删除）。 */
+.ctl-dynamic[data-ctl='ctl-bg-list'] { display: flex; flex-direction: column; gap: 8px; }
+
+.bg-actions { display: flex; gap: 6px; }
+
+.bg-btn {
+  padding: 4px 8px;
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.12));
+  border-radius: 6px;
+  background: var(--color-secondary, rgba(255, 255, 255, 0.06));
+  color: var(--color-foreground, #e9ebed);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.bg-btn:hover { border-color: var(--color-primary, #1fc0c5); }
+.bg-btn-primary { border-color: var(--color-primary, #1fc0c5); color: var(--color-primary, #1fc0c5); }
+.bg-btn-danger.is-armed { border-color: #e05a5a; color: #e05a5a; font-weight: 600; }
+
+.bg-hint { margin: 0; min-height: 0; font-size: 12px; color: var(--color-muted, #8b949e); }
+.bg-hint[data-kind='error'] { color: #e05a5a; }
+
+.bg-items { display: flex; flex-direction: column; gap: 6px; }
+
+/* 行会换行：右栏被拖窄时（实测约 130px）缩略图与名称一行、动作按钮另起一行，
+   否则名称会被压成一个字、按钮竖着叠起来看不清。 */
+.bg-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+
+.bg-item:hover { border-color: var(--color-border, rgba(255, 255, 255, 0.12)); }
+
+.bg-thumb {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.12));
+  border-radius: 4px;
+  background: #000 center/cover no-repeat;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.bg-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.bg-thumb:hover { border-color: var(--color-primary, #1fc0c5); }
+
+.bg-meta { flex: 1 1 56px; min-width: 56px; display: flex; flex-direction: column; gap: 2px; }
+.bg-item > .bg-btn { flex: 0 0 auto; }
+.bg-name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bg-size { font-size: 11px; color: var(--color-muted, #8b949e); }
+
+.bg-name-input {
+  width: 100%;
+  padding: 2px 4px;
+  border: 1px solid var(--color-primary, #1fc0c5);
+  border-radius: 4px;
+  background: var(--color-panel, #14181a);
+  color: var(--color-foreground, #e9ebed);
+  font-size: 13px;
+}
+
+/* 编辑态：行内的「改名/删除」让位给「确定/取消」（窄面板下它们会重叠并拦住点击） */
+.bg-item.is-editing > .bg-btn { display: none; }
+.bg-item.is-editing .bg-meta { gap: 4px; }

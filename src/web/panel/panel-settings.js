@@ -6,6 +6,7 @@
 //   ③ rebuildPanelFor：按当前渲染器能力重算三态 + 重跑能力自检（契约 INV-05）
 
 import { dom, stage, state } from '../app/context.js';
+import { resetStage, trackElementStage } from '../infra/ready.js';
 import { rendererSupports, setRendererSetting } from '../app/renderer-setting.js';
 import { stageStatus } from '../app/status.js';
 import { PANEL_GROUPS, applyCapabilities, selfCheck, settingKeyOf } from './schema.js';
@@ -13,6 +14,7 @@ import { mountPanel } from './view.js';
 import { applyDebugLog, applyHangGuard, applyShowStatus, connectShellControls, runSettingsAction } from './shell-controls.js';
 import { applyBackground, applyTheme, readViewSettings, saveViewSettings } from '../app/view-settings.js';
 import { DEFAULT_PART_FILTER_KEYWORDS, applyPartFilter } from '../app/part-filter.js';
+import { refreshBackgrounds } from './background-list.js';
 import { applyAnimLoop, applyMixMode, applySkinMix, applyTransportMotion } from '../app/transport-actions.js';
 import { repaintActive } from '../render/playback.js';
 import {
@@ -165,6 +167,39 @@ function exposePanelWired(tries = 20) {
   } catch { /* 无法覆盖就保持原样 */ }
 }
 
+/** 就绪信号：panel 阶段的跟踪句柄（面板每次重建都会重新起算，旧句柄要先停） */
+let panelStageStop = null;
+
+/**
+ * 就绪信号 panel 阶段（埋点，不改面板逻辑）。
+ * interactive 的附加判据（契约要求）：
+ *   · 当前渲染器**声明内**的控件都已构建：state.panelWired 里的每个 id 都能在 DOM 里找到
+ *     （panelWired 本身就是"实际构建出来的已接线控件"，两者互证，避免"报绿但少控件"）
+ *   · ctl-anim-list 已有内容或明确空态（空态是 .ctl-list-empty 提示，不是空白容器）
+ */
+function trackPanelStage() {
+  if (panelStageStop) { try { panelStageStop(); } catch { /* 忽略 */ } panelStageStop = null; }
+  resetStage('panel');   // 换渲染器/重建面板 ⇒ 控件集合变了，必须从 mounted 重新走三级
+  panelStageStop = trackElementStage({
+    name: 'panel',
+    el: dom.panelBody,
+    timeoutMs: 12000,
+    interactiveProbe: () => {
+      const built = [...document.querySelectorAll('#right-panel [data-ctl]')].map((n) => n.dataset.ctl);
+      const wired = Array.isArray(state.panelWired) ? state.panelWired : [];
+      const missing = wired.filter((id) => !built.includes(id));
+      const box = document.querySelector('#right-panel [data-ctl="ctl-anim-list"]');
+      const rows = box ? [...box.children].filter((n) => !n.classList.contains('ctl-list-empty')).length : 0;
+      const emptyHint = !!(box && box.querySelector('.ctl-list-empty'));
+      const animOk = !!box && (rows > 0 || emptyHint);
+      return {
+        ok: wired.length > 0 && missing.length === 0 && animOk,
+        detail: { wired: wired.length, built: built.length, missing: missing.length, animRows: rows, animEmptyHint: emptyHint },
+      };
+    },
+  });
+}
+
 function rebuildPanelFor(renderer) {
   const groups = applyCapabilities(PANEL_GROUPS, renderer && renderer.capabilities, {
     onWarn: (message) => stageStatus(message, 'warn'),
@@ -195,6 +230,8 @@ function rebuildPanelFor(renderer) {
   exposePanelWired();
   startFpsReadout(info);
   refreshSkinHook();
+  // 自定义背景图列表：面板重建后重新拉一次（切面/重开面板都会走到这里）
+  refreshBackgrounds().catch(() => { /* 列表拉取失败只是少一块内容，不影响面板其余部分 */ });
   state.panelSnapshot = panelSnapshot();
   const check = selfCheck(renderer || {});
   state.panelSelfCheck = check;
@@ -202,12 +239,21 @@ function rebuildPanelFor(renderer) {
   if (!check.passed) {
     stageStatus(`能力自检未通过：${check.violations.map((v) => `${v.key}（${v.actual}）`).join('、')}`, 'error');
   }
+  trackPanelStage();   // 就绪信号：面板构建完毕 → 三级跟踪（mount/稳定/可交互）
   return check;
 }
 // 应用层请求"重绘动作列表"（如底栏自绘下拉选中后）——用事件解耦，避免 app⇄panel 循环依赖。
 if (typeof document !== 'undefined') {
   document.addEventListener('panel:refresh-animations', () => {
     try { refreshPanelAnimations(); } catch { /* 重绘失败不影响播放 */ }
+  });
+}
+
+// 列表里点了某张图设为背景 → 「背景模式」档位同步到「自定义」（视觉一致，不是另存一套状态）
+if (typeof document !== 'undefined') {
+  document.addEventListener('panel:bg-applied', (ev) => {
+    const mode = (ev && ev.detail && ev.detail.mode) || 'custom';
+    try { if (state.panel && state.panel.setValue) state.panel.setValue('ctl-bg-mode', mode); } catch { /* 忽略 */ }
   });
 }
 

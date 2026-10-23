@@ -364,8 +364,11 @@ const server = http.createServer((req, res) => {
       return backgrounds.uploadStream(req)
         .then((r) => {
           sendJson(res, r.status, r.body);
-          // 超限/中断：响应先发出去，再断开剩下的上传流（顺序反了客户端只看到连接重置）
-          if (r.destroy) req.destroy();
+          // 超限/中断：响应先落地，再稍微缓一下才断开。
+          //   立刻 destroy 会让浏览器 fetch 只看到网络错误（拿不到 413 与 reason，
+          //   用户就只能看到笼统的"上传失败"）；缓 800ms 足够响应刷出去，
+          //   同时不让一个超大上传一直占着连接。
+          if (r.destroy) setTimeout(() => { try { req.destroy(); } catch { /* 已断开 */ } }, 800);
         })
         .catch((e) => sendJson(res, 500, { ok: false, reason: 'server-error', error: String((e && e.message) || e) }));
     }
@@ -391,7 +394,8 @@ const server = http.createServer((req, res) => {
           .catch((e) => sendJson(res, 500, { ok: false, reason: 'server-error', error: String((e && e.message) || e) }));
       });
     }
-    if (p.startsWith('/api/backgrounds/file/') && req.method === 'GET') {
+    // GET 与 HEAD 都要接：代理/预取会先发 HEAD 探测，只认 GET 会让它拿到 404 的 JSON 头
+    if (p.startsWith('/api/backgrounds/file/') && (req.method === 'GET' || req.method === 'HEAD')) {
       // id 只用于查索引，绝不拼进路径（用户可控输入）
       const id = decodeURIComponent(p.slice('/api/backgrounds/file/'.length));
       const hit = backgrounds.fileOf(id);
