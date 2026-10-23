@@ -296,6 +296,30 @@ __DIAG__.config               // 当前配置（capacity=500 等）
 
 面板显示：本阶段不做（等 M6 的「调试日志」开关）。
 
+## 五之补、自定义背景图存储（data/backgrounds/）
+
+舞台背景支持用户上传自己的静图，落盘在 **`data/backgrounds/`**（与 `data/export/` 同类的运行时数据）。
+
+- 索引：`data/backgrounds/index.json`（`{version, items:[{id,name,file,mime,bytes,addedAt}]}`），
+  原子写（`.tmp` + `rename`），且进程内串行排队，避免并发上传互相覆盖
+- 图片文件：`bg-<时间戳>-<随机>.<png|jpg|webp>`，**文件名由服务端生成**，不使用用户提供的名字
+- 删除：文件移到 `data/backgrounds/.trash/`（可恢复），索引同步移除
+- 上限 5MB；只收 png / jpeg / webp（按文件头判定，不信任 Content-Type 与扩展名）；
+  刻意不收 gif——动画背景在无 GPU 的软渲染机上会持续重绘，与"暂停不空转"目标冲突
+
+接口（写接口区，与 `/api/roots`、`/api/config/import` 同一管道风格）：
+
+| 方法 | 路径 | 说明 | 失败原因码 |
+|---|---|---|---|
+| GET | `/api/backgrounds` | 列表（新加的在前） | — |
+| POST | `/api/backgrounds` | 上传：原始二进制 body + `x-filename`（仅用于显示名，百分号编码可选） | `too-large`(413) / `bad-type`(415) / `empty`(400) / `disk-error`(500) |
+| POST | `/api/backgrounds/rename` | 重命名：`{id,name}`，只改显示名（id/file 不变 ⇒ URL 稳定），重名自动加 `(2)` | `bad-name`(400) / `not-found`(404) |
+| POST | `/api/backgrounds/delete` | 删除：`{id}`，文件进 `.trash/` | `not-found`(404) |
+| GET | `/api/backgrounds/file/<id>` | 出图：`<id>` 只查索引，索引没有就 404（不拼路径，防穿越） | `not-found`(404) |
+
+> **背景图是部署侧数据**：换机或备份时要单独把 `data/backgrounds/` 一起带走（该目录已在 `.gitignore` 中，
+> 用户上传的图片不会进版本库）。
+
 ## 六、自测方式
 
 ### 测试脚本的前置条件（跑之前先看这张表）

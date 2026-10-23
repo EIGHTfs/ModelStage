@@ -26,6 +26,7 @@ import { createStaticRoutes, sendFile } from './http/static.mjs';
 import { createDiag } from './http/diag.mjs';
 import { createReady } from './http/ready.mjs';
 import { createWriteApi, toRootView } from './http/write.mjs';
+import { createBackgrounds } from './http/backgrounds.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const WEB_ROOT = path.join(ROOT, 'src', 'web');
@@ -37,6 +38,8 @@ const data = createServerData({ root: ROOT });
 // 静态/资源类路由（/plugins、/spine-runtimes、src/web 静态）单独成模块
 const staticRoutes = createStaticRoutes({ root: ROOT, webRoot: WEB_ROOT, runtimeDir: RUNTIME_DIR, pluginsDir: PLUGINS_DIR });
 const diag = createDiag(data.paths);
+// 自定义背景图存储：落盘在 data/backgrounds/（运行时数据，换机/备份需单独带走）
+const backgrounds = createBackgrounds(data.paths);
 // 就绪信号通道（契约 就绪信号契约.md）：与 diag 完全分离的状态机，不进调试面板
 const ready = createReady();
 // 写接口（资源根增删改名启停 / 导入配置）：读路径与写路径共用同一份 config/models/names 实例
@@ -349,6 +352,55 @@ const server = http.createServer((req, res) => {
           .then((r) => sendJson(res, r.status, r.body))
           .catch((e) => sendJson(res, 500, { ok: false, error: `导入配置异常: ${(e && e.message) || e}` }));
       }, 5e6);
+    }
+    // ---------------------------------------------------------------- 自定义背景图（5 个接口）
+    // 上传走原始二进制 + x-filename 头（零依赖，不解析 multipart）；上限与类型在模块内校验。
+    if (p === '/api/backgrounds' && req.method === 'GET') {
+      return sendJson(res, 200, backgrounds.list());
+    }
+    if (p === '/api/backgrounds' && req.method === 'POST') {
+      // 注意：这条**不能**用 readBody——它会把整个请求体读进内存；
+      //   backgrounds 自己边读边计数，超限立刻断开（小内存机 + 5MB×并发会 OOM）。
+      return backgrounds.uploadStream(req)
+        .then((r) => {
+          sendJson(res, r.status, r.body);
+          // 超限/中断：响应先发出去，再断开剩下的上传流（顺序反了客户端只看到连接重置）
+          if (r.destroy) req.destroy();
+        })
+        .catch((e) => sendJson(res, 500, { ok: false, reason: 'server-error', error: String((e && e.message) || e) }));
+    }
+    if (p === '/api/backgrounds/rename' && req.method === 'POST') {
+      return readBody(req, res, (raw) => {
+        let body = {};
+        try { body = raw ? JSON.parse(raw) : {}; } catch {
+          return sendJson(res, 400, { ok: false, reason: 'bad-json', error: '请求体不是合法 JSON' });
+        }
+        backgrounds.rename(body.id, body.name)
+          .then((r) => sendJson(res, r.status, r.body))
+          .catch((e) => sendJson(res, 500, { ok: false, reason: 'server-error', error: String((e && e.message) || e) }));
+      });
+    }
+    if (p === '/api/backgrounds/delete' && req.method === 'POST') {
+      return readBody(req, res, (raw) => {
+        let body = {};
+        try { body = raw ? JSON.parse(raw) : {}; } catch {
+          return sendJson(res, 400, { ok: false, reason: 'bad-json', error: '请求体不是合法 JSON' });
+        }
+        backgrounds.remove(body.id)
+          .then((r) => sendJson(res, r.status, r.body))
+          .catch((e) => sendJson(res, 500, { ok: false, reason: 'server-error', error: String((e && e.message) || e) }));
+      });
+    }
+    if (p.startsWith('/api/backgrounds/file/') && req.method === 'GET') {
+      // id 只用于查索引，绝不拼进路径（用户可控输入）
+      const id = decodeURIComponent(p.slice('/api/backgrounds/file/'.length));
+      const hit = backgrounds.fileOf(id);
+      if (!hit) return sendJson(res, 404, { ok: false, reason: 'not-found', error: `没有这张背景图：${id}` });
+      return sendFile(req, res, hit.abs, {
+        'Content-Type': hit.mime,
+        // 同一个 id 的文件内容不会变（重命名只改显示名），可以长缓存
+        'Cache-Control': 'public, max-age=31536000, immutable',
+      });
     }
     if (apiBasics(res, p)) return;
     if (apiData(res, p, url)) return;

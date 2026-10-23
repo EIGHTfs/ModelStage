@@ -36,6 +36,9 @@ src/spine-runtimes/
 /data/diag.jsonl.*
 /data/bug-shots/
 /data/export/
+# 用户上传的主题背景图（运行时数据）：内容由用户产生、体积不可控，
+#   属部署侧数据而非源码，不入库；换机/备份需单独带走该目录。
+/data/backgrounds/
 
 # ---- 刻意排除：部署侧本地配置 .env ----
 # 原因：.env 按约定是"本机部署差异"的载体（顶部栏标题/图标等），且该文件名会被审计规则
