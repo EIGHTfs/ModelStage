@@ -22,13 +22,20 @@ tmp/
 # 由 tool/resolve-runtimes.mjs 在构建时自动探测获取（环境变量 / 项目内 / 工作区共享 / 基线兜底）。
 src/spine-runtimes/
 
-# ---- 刻意排除：运行时诊断数据 ----
+# ---- 刻意排除：运行时诊断数据（只忽略运行产物，不整目录忽略）----
 # data/diag.jsonl 是前端诊断探针经 POST /api/diag 追加写入的运行期日志（8 MB 轮转，可随时重建），
 # 属运行产物不入库；需要取证时直接读本机文件即可。
-# 必须带前导斜杠：只忽略**仓库根**的运行期 data/。不带斜杠会匹配任意层级的 data 目录，
-#   把源码目录 src/server/data/ 一起忽略掉（实测会导致该目录的改动无法提交：
-#   git add 打印 "src/server/data is ignored" 并返回非零）。
-/data/
+#
+# 为什么不用 `data/` 或 `/data/` 整目录忽略：
+#   ① 不带前导斜杠的 `data/` 会匹配任意层级的 data 目录，把源码目录 `src/server/data/` 一起忽略，
+#      实测导致该目录的改动提交时报 "src/server/data is ignored" 并返回非零；
+#   ② 即便加上前导斜杠（`/data/`），也会盖住**已入库**的 `data/upstream/`（上游数据快照），
+#      使它们的后续修改不被 git add 捕获（`git ls-files -ci --exclude-standard` 可查出来）。
+#   所以只逐项忽略真正属于运行产物的路径。
+/data/diag.jsonl
+/data/diag.jsonl.*
+/data/bug-shots/
+/data/export/
 
 # ---- 刻意排除：部署侧本地配置 .env ----
 # 原因：.env 按约定是"本机部署差异"的载体（顶部栏标题/图标等），且该文件名会被审计规则

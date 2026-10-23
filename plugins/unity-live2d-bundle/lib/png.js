@@ -119,7 +119,7 @@
    *   压缩后约 6 MB（与参考导出件同量级），内存与解码耗时都降一个数量级。
    *
    * deflate 来源：浏览器用 CompressionStream('deflate')（产出 zlib 流，正好是 IDAT 需要的格式）；
-   *   Node 侧由调用方注入（setDeflate，见 self-test）。都没有时退回 stored 版本（仍可用，只是更大）。
+   *   Node 侧由调用方注入（调用方在需要时 setDeflate）。都没有时退回 stored 版本（仍可用，只是更大）。
    */
   let deflateImpl = null;
   function setDeflate(fn) { deflateImpl = fn; }

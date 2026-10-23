@@ -18,7 +18,6 @@ lib/typetree.js      类型树
 lib/errors.js        错误码与 fail()
 lib/common-strings.js
 profiles/            容器族规则（按容器类型命名，不绑定具体游戏）
-self-test.mjs        自检脚本（node 直接跑，覆盖解析与产物形态）
 ```
 
 ## 契约要点（照这些实现，不要自创）
@@ -79,11 +78,13 @@ UnityFS 的 `blocksInfo` 有两种布局，**必须都支持**（这是踩过的
 
 ## 自检
 
+插件自身的判定/解析/产物形态由仓库统一检查工具覆盖（带契约条款号）：
+
 ```bash
-node plugins/unity-live2d-bundle/self-test.mjs
+node tool/check-plugin.mjs plugins/unity-live2d-bundle
 ```
 
-覆盖：容器魔数判定、两种 `blocksInfo` 布局、结构自洽、产物三键形状、错误码路径。
+覆盖：清单与角色合法性、register 形态、`canHandle` 同步布尔、`resolve` 错误码、PL1–PL8 契约条目。
 
 ## 边界
 
