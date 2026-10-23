@@ -35,6 +35,8 @@ function unwirePending(node, title) {
 
 /** 单个控件（按钮 / 下拉） */
 function renderControl(ctl) {
+  // 自绘下拉：返回 {root, setOptions...} 句柄由调用方登记（不在这里建，避免丢句柄）
+  if (ctl.custom === 'picker') return null;
   if (ctl.kind === 'select') {
     const sel = document.createElement('select');
     sel.className = 'transport-select';
@@ -97,6 +99,179 @@ const ICONS = {
   'transport-motion': '<circle cx="12" cy="12" r="9"/><polygon points="10 8 16 12 10 16 10 8"/>',
 };
 
+/**
+ * 自绘下拉的键盘语义（WAI-ARIA combobox 惯用法）：
+ *   Esc      关闭并把焦点还给触发按钮
+ *   ↑/↓      打开（若关闭）或移动高亮
+ *   Enter/空格 确认当前高亮项并关闭
+ * 抽成模块级函数是为了让 createPicker 本体保持可读（单函数长度门禁）。
+ * @param {KeyboardEvent} ev
+ * @param {{isOpen:Function, open:Function, close:Function, count:Function,
+ *          activeIndex:Function, setActive:Function, pickActive:Function}} api
+ */
+/**
+ * 按选项清单重建列表项（纯 DOM 构建，便于测试与复用）。
+ * @param {Array<{text:string,value:string}>} options
+ * @param {(value:string) => void} onPickItem 点某项时回调
+ * @param {HTMLElement} list 目标 <ul>
+ * @returns {Array<{value:string, text:string, node:HTMLLIElement}>}
+ */
+function buildPickerItems(options, onPickItem, list) {
+  list.replaceChildren();
+  const items = [];
+  for (const opt of options || []) {
+    const li = el('li', 'transport-picker-item', opt.text);
+    li.setAttribute('role', 'option');
+    li.dataset.value = String(opt.value);
+    li.tabIndex = -1;
+    li.addEventListener('click', () => onPickItem(String(opt.value)));
+    items.push({ value: String(opt.value), text: opt.text, node: li });
+    list.append(li);
+  }
+  return items;
+}
+
+function handlePickerKey(ev, api) {
+  const key = ev.key;
+  if (key === 'Escape') { if (api.isOpen()) { api.close(); ev.preventDefault(); } return; }
+  if (key === 'ArrowDown' || key === 'ArrowUp') {
+    if (!api.isOpen()) { api.open(); ev.preventDefault(); return; }
+    const step = key === 'ArrowDown' ? 1 : -1;
+    const next = Math.max(0, Math.min(api.count() - 1, (api.activeIndex() < 0 ? 0 : api.activeIndex()) + step));
+    api.setActive(next);
+    ev.preventDefault();
+    return;
+  }
+  if (key === 'Enter' || key === ' ') {
+    if (!api.isOpen()) return;
+    api.pickActive();
+    ev.preventDefault();
+  }
+}
+
+/**
+ * 自绘下拉（替代原生 <select>）：触发按钮 + 弹出列表。
+ *
+ * 为什么不用原生 select：视觉无法与新端设计语言统一（旧端的动作/皮肤也是自绘面板），
+ *   而且原生 select 的键盘行为在各浏览器不一致，无法保证"上下键移动高亮、Esc 关闭并回焦"。
+ *
+ * 结构（无障碍语义照 WAI-ARIA combobox/listbox）：
+ *   .transport-picker[data-ctl]
+ *     button.transport-picker-btn[aria-haspopup=listbox][aria-expanded]
+ *       span.picker-label（显示当前项文案）+ svg chevron
+ *     ul.transport-picker-list[role=listbox] > li[role=option][aria-selected]
+ *
+ * @param {{id:string, label:string, title?:string, options:Array<{text:string,value:string}>, value:string}} ctl
+ * @param {(value:string) => void} onPick 选中回调（只有真实选中才触发，与原生 select 的 change 同义）
+ */
+function createPicker(ctl, onPick) {
+  const root = el('div', 'transport-picker');
+  root.dataset.ctl = ctl.id;
+  const btn = el('button', 'transport-picker-btn');
+  btn.type = 'button';
+  btn.setAttribute('aria-haspopup', 'listbox');
+  btn.setAttribute('aria-expanded', 'false');
+  btn.setAttribute('aria-label', ctl.label || '选择');
+  if (ctl.title) btn.title = ctl.title;
+  const labelEl = el('span', 'picker-label', '');
+  btn.append(labelEl);
+  const list = el('ul', 'transport-picker-list');
+  list.setAttribute('role', 'listbox');
+  list.hidden = true;
+  root.append(btn, list);
+
+  let items = [];
+  let activeIndex = -1;
+  let current = ctl.value || '';
+
+  /** 更新触发按钮上的文案 */
+  function paintLabel() {
+    const hit = items.find((it) => it.value === current);
+    labelEl.textContent = hit ? hit.text : (items[0] ? items[0].text : '');
+  }
+
+  /** 高亮某一项（-1 = 不高亮） */
+  function paintActive() {
+    items.forEach((it, i) => {
+      it.node.classList.toggle('is-active', i === activeIndex);
+      it.node.setAttribute('aria-selected', String(it.value === current));
+    });
+  }
+
+  function close(returnFocus = false) {
+    if (list.hidden) return;
+    list.hidden = true;
+    btn.setAttribute('aria-expanded', 'false');
+    root.classList.remove('is-open');
+    activeIndex = -1;
+    paintActive();
+    if (returnFocus) { try { btn.focus(); } catch { /* 忽略 */ } }
+  }
+
+  function open() {
+    // 影院模式下底栏整体被收起，不自作主张弹出
+    if (document.documentElement.dataset.cinema === 'on') return;
+    list.hidden = false;
+    btn.setAttribute('aria-expanded', 'true');
+    root.classList.add('is-open');
+    const cur = items.findIndex((it) => it.value === current);
+    activeIndex = cur >= 0 ? cur : 0;
+    paintActive();
+    try { (items[activeIndex] || {}).node.focus(); } catch { /* 忽略 */ }
+  }
+
+  /** 选中（真实选择）：更新显示 + 通知调用方（与原生 change 一致，不重复触发同值） */
+  function pick(value, { silent = false } = {}) {
+    const hit = items.find((it) => it.value === value);
+    if (!hit) return false;
+    const changed = value !== current;
+    current = value;
+    paintLabel();
+    paintActive();
+    if (!silent && changed) onPick(value);
+    return true;
+  }
+
+  /** 重建选项（换模型/换面时调用）：建行细节在模块级 buildPickerItems */
+  function setOptions(next, value) {
+    items = buildPickerItems(next, (v) => { pick(v); close(true); }, list);
+    if (typeof value === 'string') current = value;
+    if (!items.some((it) => it.value === current)) current = items[0] ? items[0].value : '';
+    paintLabel();
+    paintActive();
+    return items.length;
+  }
+
+  // 触发按钮：点击开合
+  btn.addEventListener('click', () => { if (list.hidden) open(); else close(); });
+  // 键盘：↓/↑ 移动高亮、Enter 确认、Esc 关闭并回焦（逻辑在模块级 handlePickerKey）
+  root.addEventListener('keydown', (ev) => handlePickerKey(ev, {
+    isOpen: () => !list.hidden,
+    open,
+    close: () => close(true),
+    count: () => items.length,
+    activeIndex: () => activeIndex,
+    setActive: (i) => { activeIndex = i; paintActive(); try { (items[i] || {}).node.focus(); } catch { /* 忽略 */ } },
+    pickActive: () => { const hit = items[activeIndex]; if (hit) { pick(hit.value); close(true); } },
+  }));
+  // 点外部收起
+  document.addEventListener('click', (ev) => { if (!root.contains(ev.target)) close(); });
+
+  setOptions(ctl.options && ctl.options.length
+    ? ctl.options.map((o) => (typeof o === 'string' ? { text: o, value: o } : o))
+    : [], current);
+
+  return {
+    root,
+    setOptions,
+    setValue: (v) => { current = String(v); paintLabel(); paintActive(); },
+    open,
+    close: () => close(false),
+    isOpen: () => !list.hidden,
+    value: () => current,
+  };
+}
+
 /** 给按钮前置一个图标（非按钮/未配图标则原样返回） */
 function withIcon(node, id) {
   const body = ICONS[id];
@@ -121,12 +296,35 @@ export function mountTransport(footerEl, handlers = {}) {
   ];
   const byId = new Map(TRANSPORT_CONTROLS.map((c) => [c.id, c]));
   const nodes = new Map();
+  /** 自绘下拉的句柄（id → picker），setOptions/setSelectValue 走它 */
+  const pickers = new Map();
 
   for (const ids of groups) {
     const box = el('div', 'transport-group');
     for (const id of ids) {
       const ctl = byId.get(id);
       if (!ctl) continue;
+      if (ctl.custom === 'picker') {
+        // 自绘下拉：回调直接接到 handlers[id]（与原生 select 的 change 同义）
+        const picker = createPicker(
+          { ...ctl, options: (ctl.options || []).map((o) => (typeof o === 'string' ? { text: o, value: o } : o)) },
+          (value) => {
+            const h = handlers[id];
+            if (typeof h !== 'function') { document.documentElement.dataset.pickerError = `no-handler:${id}`; return; }
+            try {
+              h(value);
+              document.documentElement.dataset.pickerError = '';
+            } catch (err) {
+              // 不再静默：把错误留痕，验收脚本可读（选择本身已更新，不至于"点了没反应"却查不出原因）
+              document.documentElement.dataset.pickerError = String((err && err.message) || err);
+            }
+          },
+        );
+        pickers.set(id, picker);
+        nodes.set(id, picker.root);
+        box.append(picker.root);
+        continue;
+      }
       const node = withIcon(renderControl(ctl), id);
       nodes.set(id, node);
       box.append(node);
@@ -139,6 +337,7 @@ export function mountTransport(footerEl, handlers = {}) {
   for (const [id, node] of nodes) {
     const handler = handlers[id];
     if (typeof handler !== 'function') continue;
+    if (pickers.has(id)) { wired.push(id); continue; }   // picker 的选中回调已在构造时接好
     const ctl = byId.get(id);
     unwirePending(node, ctl ? (ctl.title || ctl.label) : '');
     if (node.tagName === 'SELECT') {
@@ -155,6 +354,8 @@ export function mountTransport(footerEl, handlers = {}) {
 
   /** 重建下拉选项（动作/皮肤在模型加载后填充） */
   function setOptions(id, options, value) {
+    const pk = pickers.get(id);
+    if (pk) return pk.setOptions(options, value) > 0;
     const node = nodes.get(id);
     if (!node || node.tagName !== 'SELECT' || !Array.isArray(options)) return false;
     node.replaceChildren();
@@ -201,6 +402,8 @@ export function mountTransport(footerEl, handlers = {}) {
 
   /** 下拉当前值（不再触发回调） */
   function setSelectValue(id, value) {
+    const pk = pickers.get(id);
+    if (pk) { pk.setValue(value); return; }
     const node = nodes.get(id);
     if (node && node.tagName === 'SELECT' && typeof value === 'string') node.value = value;
   }
@@ -221,6 +424,8 @@ export function mountTransport(footerEl, handlers = {}) {
     setOptions,
     setPressed,
     setIcon,
+    /** 自绘下拉句柄（测试/断言用：isOpen / value） */
+    picker: (id) => pickers.get(id) || null,
     setSelectValue,
     pressed,
   };

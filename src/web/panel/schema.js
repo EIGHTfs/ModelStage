@@ -221,13 +221,14 @@ export const PANEL_GROUPS = [
 /** 底部播放条的控件（顺序与旧前端可见控件一致；皮肤/动作用下拉表达） */
 export const TRANSPORT_CONTROLS = [
   { kind: 'button', id: 'transport-prev', label: '上一个', title: '上一个' },
-  { kind: 'select', id: 'transport-skin', label: '皮肤', value: 'default', options: ['default'] },
+  { kind: 'select', custom: 'picker', id: 'transport-skin', label: '皮肤', value: 'default', options: ['default'] },
   // 文案与图标同义（写“点了会做什么”）：初始为播放中 ⇒ 图标是暂停符号、文案「暂停」；
   // 运行时由 transport.setIcon 随状态同步，不再写死“播放/暂停”。
   { kind: 'button', id: 'transport-play', label: '暂停', title: '暂停' },
   // 动作下拉不预置任何真实动作：选项由模型动作列表填充（meta.motions / skeletonData.animations）。
   // 这里的单条是**占位文案**（value 为空，不会被当成可播动作），M6 接线时整体替换 options。
-  { kind: 'select', id: 'transport-motion', label: '动作', value: '', options: ['（选中模型后列出动作）'] },
+  // 自绘下拉（custom:'picker'）：原生 select 无法统一视觉与键盘语义
+  { kind: 'select', custom: 'picker', id: 'transport-motion', label: '动作', value: '', options: ['（选中模型后列出动作）'] },
   { kind: 'button', id: 'transport-next', label: '下一个', title: '下一个' },
   { kind: 'button', id: 'transport-reset-view', label: '重置视图', title: '重置视图' },
   { kind: 'button', id: 'transport-bg', label: '背景', title: '背景' },

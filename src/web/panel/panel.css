@@ -553,3 +553,81 @@
 
 /* 删除线：有可见文字的控件划自己的文字（分段按钮逐项精确）；
    开关与下拉没有可见文字，则划掉所在行的 .ctl-label（见上一条规则组）。 */
+
+/* ---- 底栏自绘下拉（替代原生 select）----
+   结构与交互见 panel/transport.js 的 createPicker：触发按钮 + 弹出列表。
+   视觉沿用底栏行内控件的底色/圆角/描边，选中项用主色。 */
+.transport-picker {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.transport-picker-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 96px;
+  max-width: 220px;
+  padding: 4px 8px;
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.12));
+  border-radius: 6px;
+  background: var(--color-secondary, rgba(255, 255, 255, 0.06));
+  color: var(--color-foreground, #e9ebed);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.transport-picker-btn:hover { border-color: var(--color-primary, #1fc0c5); }
+
+.transport-picker-btn .picker-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.transport-picker-btn::after {
+  content: '';
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg) translateY(-2px);
+  opacity: 0.7;
+}
+
+.transport-picker-list {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  min-width: 100%;
+  max-width: 260px;
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.12));
+  border-radius: 8px;
+  background: var(--color-panel, #14181a);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.transport-picker-item {
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--color-foreground, #e9ebed);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.transport-picker-item:hover { background: var(--color-secondary, rgba(255, 255, 255, 0.06)); }
+.transport-picker-item.is-active { outline: 1px solid var(--color-primary, #1fc0c5); }
+.transport-picker-item[aria-selected='true'] { color: var(--color-primary, #1fc0c5); font-weight: 600; }

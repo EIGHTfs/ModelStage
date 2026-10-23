@@ -182,14 +182,17 @@ function rebuildPanelFor(renderer) {
     },
     wiredIds: WIRED_IDS,
   });
+  // 先把句柄补完，再暴露 state.panel。
+  //   为什么顺序重要：设置下拉的同步会**触发面板重建**，重建期间若 state.panel 指向
+  //   一个"还没挂 refreshAnimations"的半成品，调用方一检查 typeof 就跳过，表现为
+  //   "点了底栏、右栏高亮不动，且没有任何报错"（实测踩过）。
+  info.refreshAnimations = () => refreshPanelAnimations();
   state.panel = info;
   // 暴露"实际构建出来的已接线控件"：能力不支持的项根本不构建（契约 §3.1），
   //   所以 panelWired 不能直接给全量 WIRED_IDS，否则断言会拿面板里不存在的 id 去比。
   const builtIds = [...document.querySelectorAll('#right-panel [data-ctl]')].map((n) => n.dataset.ctl);
   state.panelWired = WIRED_IDS.filter((id) => builtIds.includes(id));
   exposePanelWired();
-  // 底栏/循环推进需要"重绘右栏动作列表"：挂在面板句柄上，避免互相 import
-  info.refreshAnimations = () => refreshPanelAnimations();
   startFpsReadout(info);
   refreshSkinHook();
   state.panelSnapshot = panelSnapshot();
@@ -201,6 +204,13 @@ function rebuildPanelFor(renderer) {
   }
   return check;
 }
+// 应用层请求"重绘动作列表"（如底栏自绘下拉选中后）——用事件解耦，避免 app⇄panel 循环依赖。
+if (typeof document !== 'undefined') {
+  document.addEventListener('panel:refresh-animations', () => {
+    try { refreshPanelAnimations(); } catch { /* 重绘失败不影响播放 */ }
+  });
+}
+
 /**
  * 底栏下拉变化 → 右栏高亮跟随（契约 §七：当前动作的唯一真相是下拉的值）。
  * 为什么不只在应用层回调里刷：change 事件派发时下拉的值可能尚未落定，
@@ -253,8 +263,11 @@ function buildAnimRow(anim, currentId) {
 
 export function refreshPanelAnimations() {
   const box = document.querySelector('#right-panel [data-ctl="ctl-anim-list"]');
+  // 诊断：记录"进来了/box 是否存在/清单条数"，出现"调了没反应"时一眼看出卡在哪一步
+  document.documentElement.dataset.refreshEnter = box ? '1' : '0';
   if (!box) return 0;
   const list = buildAnimationList();
+  document.documentElement.dataset.refreshListLen = String(list.length);
   const currentId = currentAnimationId();
   box.replaceChildren();
   box.classList.add('ctl-list'); // 容器行样式（旧端 space-y-1 / max-h-48 / overflow-y-auto）
@@ -271,6 +284,8 @@ export function refreshPanelAnimations() {
   bindTransportMotionWatcher();
   // 下拉可能刚被填好（首次打开时为空）——按最终值补一次高亮，避免"首屏没有当前项"
   const finalId = currentAnimationId();
+  // 记录"这次重绘用的 id"：出现"高亮被刷回去"时，看一眼最后一次用的值就能定性
+  document.documentElement.dataset.lastRefreshId = String(finalId || '');
   if (finalId) {
     // 选中态统一用 aria-pressed（样式在 panel.css 的 .ctl-list-row[aria-pressed='true']）
     for (const btn of box.querySelectorAll('[data-anim]')) {

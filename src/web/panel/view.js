@@ -210,6 +210,20 @@ export function mountPanel({ headEl, bodyEl, onSetting, wiredIds, groups }) {
   // schema 可由调用方按渲染器能力过滤后传入；缺省用全量 PANEL_GROUPS（保持原有行为）
   const schema = Array.isArray(groups) && groups.length ? groups : PANEL_GROUPS;
   headEl.replaceChildren();
+  /**
+   * 现查容器：面板可能在切面/重建时被换成新 DOM，
+   *   闭包里捕获的 bodyEl 会变成"不在文档里的旧节点"——刷上去看不到任何变化（实测过的坑）。
+   *   所有访问器一律用时就查；查不到（面板未构建/被隐藏）就安全返回。
+   * @param {string} selector 相对容器的选择器
+   * @returns {Element|null}
+   */
+  function find(selector) {
+    const host = (typeof document !== 'undefined' && document.querySelector('#right-panel [data-ctl]'))
+      ? document.querySelector('#right-panel') : bodyEl;
+    if (!host) return null;
+    return host.querySelector(selector);
+  }
+
   bodyEl.replaceChildren();
   // 接线集合来自接线方（main.js 的映射表），与 schema 的 values 解耦：
   // 这样"schema 加了取值域但还没接生效"的控件会保持 disabled，不会出现点了没反应。
@@ -254,13 +268,13 @@ export function mountPanel({ headEl, bodyEl, onSetting, wiredIds, groups }) {
 
   /** 只读行写入（运行时版本等信息由接线方给） */
   function setReadonly(id, text) {
-    const node = bodyEl.querySelector(`[data-readout="${id}"]`);
+    const node = find(`[data-readout="${id}"]`);
     if (node) node.textContent = text || '—';
   }
 
   /** 动态重建预设按钮组（皮肤列表在换模型后要用新数据重建） */
   function setOptions(id, options, selected) {
-    const box = bodyEl.querySelector(`[data-ctl="${id}"]`);
+    const box = find(`[data-ctl="${id}"]`);
     if (!box || !Array.isArray(options)) return false;
     // 该项可能因"当前渲染面未声明该能力"而禁用：重建选项时必须**保留禁用态**，
     //   否则装载模型后刷新皮肤列表会把禁用按钮换成可点按钮（表现为"换面后又能点了"）。
@@ -300,14 +314,14 @@ export function mountPanel({ headEl, bodyEl, onSetting, wiredIds, groups }) {
 
   /** 设置开关显示态（两处共用同一状态的开关要同步） */
   function setChecked(id, on) {
-    const box = bodyEl.querySelector(`[data-ctl="${id}"]`);
+    const box = find(`[data-ctl="${id}"]`);
     const btn = box ? box.querySelector('[role="switch"]') : null;
     if (btn) btn.setAttribute('aria-checked', String(!!on));
   }
 
   /** 回填控件显示值（启动时按存储恢复：主题 / 背景模式等） */
   function setValue(id, value) {
-    const box = bodyEl.querySelector(`[data-ctl="${id}"]`);
+    const box = find(`[data-ctl="${id}"]`);
     if (box) {
       const opts = [...box.children];
       const idx = opts.findIndex((b) => b.dataset.value === String(value));
@@ -316,13 +330,13 @@ export function mountPanel({ headEl, bodyEl, onSetting, wiredIds, groups }) {
         return;
       }
     }
-    const sel = bodyEl.querySelector(`select[data-ctl-select="${id}"]`);
+    const sel = find(`select[data-ctl-select="${id}"]`);
     if (sel && [...sel.options].some((o) => o.value === String(value))) sel.value = String(value);
   }
 
   /** 帧率读数（实测值；null 表示暂无数据），由接线方按需刷新 */
   function setFps(fps) {
-    const node = bodyEl.querySelector('[data-readout="ctl-fps"]');
+    const node = find('[data-readout="ctl-fps"]');
     if (!node) return;
     // 说明写进 title：设备渲染能力不足时，60/30 两档的实测帧率会看不出差异，这是性能而非接线问题
     node.title = '实测帧率。受设备性能限制：渲染上限低于所选上限时，60/30 两档看不出差异';

@@ -112,14 +112,25 @@ export function syncTransportOptions() {
   if (!transport || typeof transport.setOptions !== 'function') return 0;
   const list = cached.length ? cached : buildAnimationList();
   if (!list.length) return 0;
-  const cur = document.getElementById('transport-motion');
-  const keep = cur && cur.value && list.some((x) => x.id === cur.value) ? cur.value : list[0].id;
+  const picker = transport.picker ? transport.picker('transport-motion') : null;
+  const curVal = picker && typeof picker.value === 'function' ? picker.value() : (document.getElementById('transport-motion') || {}).value;
+  const keep = curVal && list.some((x) => x.id === curVal) ? curVal : list[0].id;
   transport.setOptions('transport-motion', list.map((x) => ({ text: labelWithDuration(x), value: x.id })), keep);
   return list.length;
 }
 
 /** 当前播放项 id：唯一真相是底栏下拉的值（契约 §七） */
 export function currentAnimationId() {
+  // 唯一真相 = state.transportMotion（底栏自绘下拉没有 <select>.value，句柄也可能刚被重建）
+  if (state && state.transportMotion) return String(state.transportMotion);
+  const transport = state && state.transport;
+  if (transport && typeof transport.picker === 'function') {
+    const pk = transport.picker('transport-motion');
+    if (pk && typeof pk.value === 'function') {
+      const v = pk.value();
+      if (v) return v;
+    }
+  }
   const sel = typeof document !== 'undefined' ? document.querySelector('#transport-motion') : null;
   return sel && sel.value ? sel.value : '';
 }

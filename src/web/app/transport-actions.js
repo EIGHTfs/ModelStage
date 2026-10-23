@@ -95,11 +95,21 @@ function cycleBackground() {
 /** 动作下拉选择：切动画并回填 dataset；右栏高亮与下拉互相跟随（同一份清单） */
 function applyTransportMotion(id) {
   if (!id) return;
-  const ok = playAnimation(id);
+  // ① 先立真相：任何"读当前动作"的地方（面板重绘、底栏回显）都必须先看到新值，
+  //    否则播放过程中触发的重绘会用旧值把高亮刷回去（实测过的坑）。
+  state.transportMotion = String(id);
   document.documentElement.dataset.transportMotion = String(id);
+  // ② 再播放：playAnimation 只负责让引擎播，不碰面板（职责分离）
+  const ok = playAnimation(id);
   // 当前动作的唯一真相是底栏下拉（契约 §七）：不管从哪一处触发，都把下拉同步到这条
   if (state.transport) state.transport.setSelectValue('transport-motion', id);
-  if (typeof state.panel && state.panel.refreshAnimations === 'function') state.panel.refreshAnimations();
+  // 用自定义事件请求重绘，而不是 import 面板模块：
+  //   ① 面板句柄在重建瞬间可能是"半成品"（state.panel 尚未挂 refreshAnimations）；
+  //   ② app 与 panel 互相 import 会形成**循环依赖**，实测会让页面脚本异常。
+  //   事件解耦：谁关心谁监听，app 层不需要知道面板内部结构。
+  if (typeof document !== 'undefined') {
+    document.dispatchEvent(new CustomEvent('panel:refresh-animations'));
+  }
   stageStatus(`transport 动作 → ${id}${ok ? '' : '（引擎拒绝，保持原动作）'}`, ok ? 'info' : 'warn');
 }
 /**
