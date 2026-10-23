@@ -24,7 +24,7 @@
   /* 布局尺寸（与旧前端实测一致） */
   --header-h: 3rem;      /* 48px */
   --left-w: 19rem;       /* 304px */
-  --right-w: 11rem;      /* 176px */
+  --right-w: 15rem;      /* 240px（176px 太窄：控件名被压成一个字、按钮竖排） */
   --footer-h: 2.625rem;  /* 42px */
   --panel-bottom: 4rem;  /* 侧栏底边留 64px（旧 aside bottom:64px） */
   --radius: 8px;
@@ -239,9 +239,11 @@ button:disabled {
   /* 窄屏收窄，避免浮条宽度超过视口造成横向溢出 */
   width: min(720px, calc(100vw - 2rem));
   height: var(--footer-h);
-  display: flex;
+  /* 三块布局用 grid：左右各 1fr、中间 auto ⇒ 中间块天然落在浮条（=视口）正中。
+     不用 position:absolute：那会脱离文档流，窄屏时压住两侧控件。 */
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   padding: 0 9px;
   background: var(--color-card);

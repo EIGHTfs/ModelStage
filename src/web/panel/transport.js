@@ -183,6 +183,15 @@ function createPicker(ctl, onPick, hooks = {}) {
   btn.setAttribute('aria-expanded', 'false');
   btn.setAttribute('aria-label', ctl.label || '选择');
   if (ctl.title) btn.title = ctl.title;
+  // 图标：与按钮控件同一套（ICONS 按 id 取），窄屏只显示图标时也有东西可看
+  const iconBody = ICONS[ctl.id];
+  if (iconBody) {
+    const wrap = el('span', 'btn-icon');
+    wrap.setAttribute('aria-hidden', 'true');
+    wrap.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${iconBody}</svg>`;
+    btn.append(wrap);
+    btn.classList.add('has-icon');
+  }
   const labelEl = el('span', 'picker-label', '');
   btn.append(labelEl);
   const list = el('ul', 'transport-picker-list');
@@ -388,11 +397,12 @@ function bindBgSync(picker) {
 export function mountTransport(footerEl, handlers = {}) {
   footerEl.replaceChildren();
 
-  // 分三组摆位，与旧前端一致：左（循环/上一个）· 中（皮肤/播放/动作）· 右（下一个/重置/背景）
+  // 三块布局（配合 .app-footer 的 grid 1fr auto 1fr）：
+  //   左＝翻页、中＝播放/暂停（必须落在视口正中）、右＝内容与视图相关的一组。
   const groups = [
-    ['transport-prev'],
-    ['transport-skin', 'transport-play', 'transport-motion'],
-    ['transport-next', 'transport-reset-view', 'transport-bg'],
+    ['transport-prev', 'transport-next'],
+    ['transport-play'],
+    ['transport-skin', 'transport-motion', 'transport-reset-view', 'transport-bg'],
   ];
   const byId = new Map(TRANSPORT_CONTROLS.map((c) => [c.id, c]));
   const nodes = new Map();
