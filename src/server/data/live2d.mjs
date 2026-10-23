@@ -7,6 +7,7 @@
 // 与 Spine 的关键差异：Live2D 定义文件内部用**相对路径**引用同目录文件，
 //   因此对外必须给**路径式** URL（/files/<rootId>/<相对路径>）——查询串式会在相对解析时丢掉。
 import fs from 'node:fs';
+import { dirSignature, signatureMatches } from './manifest-stamp.mjs';
 import path from 'node:path';
 import { encodePath } from '../assets/probe.mjs';
 import { resolveLive2DRuntimes } from '../../../tool/resolve-live2d-runtimes.mjs';
@@ -196,7 +197,11 @@ export function getLive2DModels(configFile, cfg, force) {
     try {
       const payload = JSON.parse(fs.readFileSync(file, 'utf8'));
       if (payload.version === LIVE2D_MANIFEST_VERSION && Array.isArray(payload.models)) {
-        return { models: payload.models, cached: true, ts: payload.ts };
+        // 与 spine 清单同口径：先比对目录签名，目录增删后自动重建（不必等 ?refresh=1）
+        if (signatureMatches(payload.dirStamps, cfg.path)) {
+          return { models: payload.models, cached: true, ts: payload.ts };
+        }
+        console.log(`[live2d] 目录已变化，清单失效重建: ${cfg.id}`);
       }
     } catch {
       /* 缓存损坏则重扫 */
@@ -205,7 +210,13 @@ export function getLive2DModels(configFile, cfg, force) {
   const models = scanLive2DRootServer(cfg);
   const ts = Date.now();
   try {
-    fs.writeFileSync(file, JSON.stringify({ version: LIVE2D_MANIFEST_VERSION, rootId: cfg.id, ts, models }), 'utf8');
+    fs.writeFileSync(file, JSON.stringify({
+      version: LIVE2D_MANIFEST_VERSION,
+      rootId: cfg.id,
+      ts,
+      dirStamps: dirSignature(cfg.path),   // 同上：目录签名供下次读清单时比对
+      models,
+    }), 'utf8');
   } catch (e) {
     console.warn(`[live2d] 清单写入失败（不影响使用）: ${e.message}`);
   }

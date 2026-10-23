@@ -5,6 +5,7 @@
 // 「建索引 → 收集目录条目 → 按 base name 分组 → 组装模型」，便于阅读与单独测试；
 // 路径依赖（清单文件位置）改成显式入参，模块内不持有全局路径。
 import fs from 'node:fs';
+import { dirSignature, signatureMatches } from './manifest-stamp.mjs';
 import path from 'node:path';
 import { MIME, encodePath, parseAtlasPages } from '../assets/probe.mjs';
 
@@ -277,7 +278,12 @@ export function getModels(configFile, root, force, deps) {
     try {
       const j = JSON.parse(fs.readFileSync(f, 'utf8'));
       if (j && Array.isArray(j.models)) {
-        return { models: j.models, cached: true, ts: j.ts || Date.now() };
+        // 读之前先比对目录签名：资源文件增删后清单要能自动失效，不必等 ?refresh=1
+        //   （边界：只感知目录增删，改文件内容不触发 —— 见 manifest-stamp.mjs 的说明）
+        if (signatureMatches(j.dirStamps, root.path)) {
+          return { models: j.models, cached: true, ts: j.ts || Date.now() };
+        }
+        console.log(`[models] 目录已变化，清单失效重建: ${root.id}`);
       }
     } catch (e) {
       console.warn(`[models] 清单 ${f} 读取失败，将重新扫描: ${e.message}`);
@@ -291,6 +297,8 @@ export function getModels(configFile, root, force, deps) {
     rootPath: root.path,
     ts: Date.now(),
     count: models.length,
+    // 生成时的目录签名：下次读清单先比对它，目录增删即自动重建（详见 manifest-stamp.mjs）
+    dirStamps: dirSignature(root.path),
     models,
   };
   // 原子写入，避免写到一半被读到损坏内容
