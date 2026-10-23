@@ -53,6 +53,8 @@ const SUITES = [
   //   不用等到跑完几十分钟的交互套件才发现。
   { name: 'renderer-contract', runner: 'node-test', file: 'test/renderer-contract.test.mjs' },
   { name: 'live2d-lifecycle', runner: 'node-test', file: 'test/live2d-lifecycle.test.mjs' },
+  // 测试单实例锁的回归：锁坏了会让**所有人**跑不了测试，属基础设施，必须有保护
+  { name: 'test-lock', runner: 'node-test', file: 'test/lib/test-lock.test.mjs' },
   // 引擎冒烟（3.8 ↔ 4.1 版本往返 + samplePixels().ratio + lastError 判据）：
   //   它验证的是"引擎能不能出画"，是所有交互套件的前置
   { name: 'engine-b1', wait: 4500 },
@@ -70,6 +72,7 @@ const SUITES = [
 const EST_SEC = {
   'renderer-contract': 1,
   'live2d-lifecycle': 1,
+  'test-lock': 3,
   'engine-b1': 18,
   'f1-controls': 24, 'f2-topbar': 14, 'f3-reveal': 11, 'f4-roots': 13,
   'spine-actions': 62, 'panel-actions': 17, 'roster-actions': 18, 'anim-list': 34,
