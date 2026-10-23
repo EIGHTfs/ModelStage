@@ -114,6 +114,8 @@ export function applyBackground(mode) {
     else stageEl.dataset.bg = m;
   } catch { stageEl.dataset.bg = m; }
   state.viewBg = m;
+  // 广播一次：右栏档位与底栏下拉都靠它同步（谁改的都能收敛到同一状态）
+  try { document.dispatchEvent(new CustomEvent('panel:bg-applied', { detail: { mode: m } })); } catch { /* 忽略 */ }
   const cur = readViewSettings();
   saveViewSettings({
     background: {

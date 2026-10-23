@@ -7,6 +7,9 @@
 // 动态选项：动作/皮肤下拉的选项由模型数据填充（setOptions），渲染时的 options 只是占位文案。
 
 import { TRANSPORT_CONTROLS } from './schema.js';
+import { listBackgrounds } from '../app/backgrounds.js';
+import { applyBackground, readViewSettings, setCustomBackground } from '../app/view-settings.js';
+import { stageStatus } from '../app/status.js';
 
 /** 元素工厂 */
 function el(tag, className, text) {
@@ -120,6 +123,13 @@ function buildPickerItems(options, onPickItem, list) {
   list.replaceChildren();
   const items = [];
   for (const opt of options || []) {
+    // 分组标题：只做视觉分隔（role=presentation），不进可选项数组，键盘不会停在它上面
+    if (opt.group) {
+      const head = el('li', 'transport-picker-group', opt.text);
+      head.setAttribute('role', 'presentation');
+      list.append(head);
+      continue;
+    }
     const li = el('li', 'transport-picker-item', opt.text);
     li.setAttribute('role', 'option');
     li.dataset.value = String(opt.value);
@@ -164,7 +174,7 @@ function handlePickerKey(ev, api) {
  * @param {{id:string, label:string, title?:string, options:Array<{text:string,value:string}>, value:string}} ctl
  * @param {(value:string) => void} onPick 选中回调（只有真实选中才触发，与原生 select 的 change 同义）
  */
-function createPicker(ctl, onPick) {
+function createPicker(ctl, onPick, hooks = {}) {
   const root = el('div', 'transport-picker');
   root.dataset.ctl = ctl.id;
   const btn = el('button', 'transport-picker-btn');
@@ -211,6 +221,8 @@ function createPicker(ctl, onPick) {
   function open() {
     // 影院模式下底栏整体被收起，不自作主张弹出
     if (document.documentElement.dataset.cinema === 'on') return;
+    // 打开前刷新（背景图列表会随上传/删除变化，不刷新就会列出过期项）
+    if (typeof hooks.onBeforeOpen === 'function') { try { hooks.onBeforeOpen(); } catch { /* 刷新失败就用现有选项 */ } }
     list.hidden = false;
     btn.setAttribute('aria-expanded', 'true');
     root.classList.add('is-open');
@@ -272,6 +284,83 @@ function createPicker(ctl, onPick) {
   };
 }
 
+/** 底栏「背景」的内置模式（与右栏「背景模式」四个档位一一对应） */
+const BG_MODES = [
+  { text: '棋盘格', value: 'mode:checkerboard' },
+  { text: '纯色', value: 'mode:solid' },
+  { text: '透明', value: 'mode:transparent' },
+  { text: '自定义（选本地图片）', value: 'mode:custom' },
+];
+
+/**
+ * 当前背景在列表里的值：内置模式用 `mode:<模式>`，服务端自定义图用 `img:<url>`。
+ * @param {Array<{url: string}>} images 服务端已有的自定义图
+ * @returns {string} 当前值
+ */
+function currentBgValue(images) {
+  const bg = readViewSettings().background || {};
+  if (bg.mode === 'custom' && bg.imageUrl) {
+    const hit = (images || []).find((it) => it.url === bg.imageUrl);
+    return hit ? `img:${hit.url}` : 'mode:custom';
+  }
+  return `mode:${bg.mode || 'checkerboard'}`;
+}
+
+/**
+ * 应用一个背景选择值。
+ * @param {string} value `mode:<模式>` 或 `img:<url>`
+ * @returns {boolean} 是否落地
+ */
+/** url → 自定义图名字（切图时状态行要显示人话，而不是一串 url） */
+const bgImageNames = new Map();
+
+/**
+ * 应用一个背景选择值，并写一条状态（与皮肤/动作切换保持一致：让用户看到"切成了什么"）。
+ * @param {string} value `mode:<模式>` 或 `img:<url>`
+ * @returns {boolean} 是否落地
+ */
+function applyBgValue(value) {
+  const v = String(value || '');
+  if (v.startsWith('img:')) {
+    const url = v.slice(4);
+    const ok = setCustomBackground(url);
+    document.dispatchEvent(new CustomEvent('panel:bg-applied', { detail: { mode: 'custom' } }));
+    stageStatus(`背景 → ${bgImageNames.get(url) || '自定义图片'}${ok ? '' : '（舞台未就绪）'}`, ok ? 'info' : 'warn', { show: true });
+    return ok;
+  }
+  if (v.startsWith('mode:')) {
+    const mode = v.slice(5);
+    applyBackground(mode);   // 内部会广播 panel:bg-applied，底栏/右栏据此同步
+    const text = (BG_MODES.find((m) => m.value === `mode:${mode}`) || {}).text || mode;
+    stageStatus(`背景 → ${text}`, 'info', { show: true });
+    return true;
+  }
+  return false;
+}
+
+/**
+ * 重新拉取背景选项（内置 4 模式 + 服务端自定义图，自定义图带分组标题）。
+ * 没有自定义图时只列内置 4 项——不出现空的「自定义图片」分组。
+ * @param {object} picker createPicker 句柄
+ * @returns {Promise<number>} 选项条数
+ */
+async function refreshBgOptions(picker) {
+  if (!picker) return 0;
+  const r = await listBackgrounds();
+  const images = r && r.ok ? (r.items || []) : [];
+  const opts = BG_MODES.slice();
+  if (images.length) {
+    opts.push({ text: '自定义图片', group: true });
+    bgImageNames.clear();
+    for (const it of images) {
+      bgImageNames.set(it.url, it.name);
+      opts.push({ text: it.name, value: `img:${it.url}` });
+    }
+  }
+  picker.setOptions(opts, currentBgValue(images));
+  return opts.length;
+}
+
 /** 给按钮前置一个图标（非按钮/未配图标则原样返回） */
 function withIcon(node, id) {
   const body = ICONS[id];
@@ -283,6 +372,17 @@ function withIcon(node, id) {
   node.prepend(wrap);
   node.classList.add('has-icon');
   return node;
+}
+
+/**
+ * 任何来源（右栏档位 / 右栏列表 / 底栏自己）改了背景，都让底栏下拉重新对齐。
+ * 只刷新自己、不再往回广播，避免来回触发。
+ */
+function bindBgSync(picker) {
+  if (typeof document === 'undefined') return;
+  document.addEventListener('panel:bg-applied', () => {
+    refreshBgOptions(picker).catch(() => { /* 刷新失败保持现状 */ });
+  });
 }
 
 export function mountTransport(footerEl, handlers = {}) {
@@ -304,6 +404,21 @@ export function mountTransport(footerEl, handlers = {}) {
     for (const id of ids) {
       const ctl = byId.get(id);
       if (!ctl) continue;
+      if (id === 'transport-bg') {
+        // 背景：内置 4 模式 + 服务端自定义图，选中即应用（不再"点一次换一个"的循环切换）。
+        //   这里不接 handlers['transport-bg']：那个是旧的循环切换动作，接了就会"选了又跳下一项"。
+        const bgPicker = createPicker(
+          { ...ctl, options: BG_MODES.slice(), value: currentBgValue([]) },
+          (value) => applyBgValue(value),
+          { onBeforeOpen: () => { refreshBgOptions(bgPicker).catch(() => { /* 刷新失败沿用现有选项 */ }); } },
+        );
+        pickers.set(id, bgPicker);
+        nodes.set(id, bgPicker.root);
+        box.append(bgPicker.root);
+        refreshBgOptions(bgPicker).catch(() => { /* 首次拉取失败：保留内置 4 项 */ });
+        bindBgSync(bgPicker);
+        continue;
+      }
       if (ctl.custom === 'picker') {
         // 自绘下拉：回调直接接到 handlers[id]（与原生 select 的 change 同义）
         const picker = createPicker(

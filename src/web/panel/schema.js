@@ -238,7 +238,8 @@ export const TRANSPORT_CONTROLS = [
   { kind: 'select', custom: 'picker', id: 'transport-motion', label: '动作', value: '', options: ['（选中模型后列出动作）'] },
   { kind: 'button', id: 'transport-next', label: '下一个', title: '下一个' },
   { kind: 'button', id: 'transport-reset-view', label: '重置视图', title: '重置视图' },
-  { kind: 'button', id: 'transport-bg', label: '背景', title: '背景' },
+  // 背景：自绘下拉（内置 4 模式 + 自定义图，选项由 panel/transport.js 按服务端列表填充）
+  { kind: 'select', custom: 'picker', id: 'transport-bg', label: '背景', title: '选择舞台背景（内置模式或已上传的自定义图）', value: 'mode:checkerboard', options: [] },
 ];
 
 /**
