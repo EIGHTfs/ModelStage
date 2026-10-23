@@ -67,4 +67,6 @@ export const state = {
   selectedModel: null,
   // 当前渲染器：核心不再直接持有相机，统一从它取（现阶段只有 2D 一个实现）
   currentRenderer: null,
+  /** 播放状态唯一真相（true=播放中）：UI 与引擎都从它派生，不许各存一份 */
+  playing: true,
 };

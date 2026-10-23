@@ -254,6 +254,23 @@ if (typeof live2d.syncSize === 'function') {
         try { live2d.syncSize({ size: { width: cssW, height: cssH }, dpr: res }); } catch { /* 忽略 */ }
       }
     },
+    /**
+     * 暂停：停掉 PIXI ticker。
+     * 为什么用 ticker：Live2D 的时间推进完全由 ticker 驱动（模型 update 在 ticker 回调里），
+     *   停 ticker 才是"真的不动"；只改标志位模型照样每帧更新。
+     * 与 frame-gate 的关系：门控只决定"这帧要不要渲染"，ticker 停了连门控都不会被调用，
+     *   恢复时直接 start() 即可，不需要额外补帧。
+     */
+    pause() {
+      try { const app = live2d.getApp && live2d.getApp(); if (app && app.ticker && app.ticker.stop) { app.ticker.stop(); return true; } } catch { /* 忽略 */ }
+      return false;
+    },
+    /** 继续：重启 ticker */
+    resume() {
+      try { const app = live2d.getApp && live2d.getApp(); if (app && app.ticker && app.ticker.start) { app.ticker.start(); return true; } } catch { /* 忽略 */ }
+      return false;
+    },
+
     /** DPR 变化：与引擎保持同口径（Live2D 自身不决定像素比） */
     setDpr() { /* 由 resize() 统一按引擎口径同步 */ },
 

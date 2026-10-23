@@ -5,6 +5,7 @@
 // 同时打 dataset 供自动化断言读。
 
 import { dom, stage, state } from './context.js';
+import { setPlaybackPaused } from '../render/playback.js';
 import { getRendererSetting, setRendererSetting } from './renderer-setting.js';
 import { stageStatus } from './status.js';
 import { formatError, getJson } from '../infra/api.js';
@@ -14,15 +15,42 @@ import {
 } from './anim-list.js';
 
 /** 播放/暂停：切换引擎播放并同步按钮按下态与 dataset（进 CAMERA 之外的状态日志） */
+/**
+ * 播放/暂停统一入口（render/playback.js）：按当前渲染面派发，
+ * 调用方不判断"现在是哪一面"，也不直连 stage（stage 恒为 Spine 舞台）。
+ * @param {boolean} paused
+ */
+function applyPlaybackPaused(paused) {
+  try { return setPlaybackPaused(state.surface, paused); } catch { return 'none'; }
+}
+
+/**
+ * 播放状态的唯一真相 = state.playing。
+ * UI（图标 / title / aria-pressed / dataset）与引擎状态都由它派生，不各存一份。
+ * @param {boolean} on true=播放中，false=已暂停
+ * @param {{silent?: boolean}} [opts]
+ */
+function setPlaying(on, opts = {}) {
+  const next = !!on;
+  const prev = state.playing === true;
+  state.playing = next;
+  state.playbackPath = applyPlaybackPaused(!next);   // 记账：便于验收贴"走了哪条通路"
+  syncPlayUi();
+  if (!opts.silent && prev !== next) stageStatus(next ? '继续播放' : '已暂停（画面与动作都停住）', 'info');
+  return next;
+}
+
+/** UI 派生：图标（播放中显示"暂停"语义）、title、aria-pressed、dataset 全部跟随 state.playing */
+function syncPlayUi() {
+  const playing = state.playing !== false;
+  if (state.transport) state.transport.setPressed('transport-play', playing);
+  if (state.transport && state.transport.setIcon) state.transport.setIcon('transport-play', playing ? 'pause' : 'play');
+  document.documentElement.dataset.transportPlaying = playing ? 'on' : 'off';
+}
+
+/** 底栏「播放/暂停」：切换 */
 function toggleTransportPlay() {
-  if (!stage) return;
-  const stats = stage.stats();
-  const playing = !!(stats && stats.playing);
-  if (playing) stage.pause(); else stage.play();
-  const next = !playing;
-  if (state.transport) state.transport.setPressed('transport-play', next);
-  document.documentElement.dataset.transportPlaying = next ? 'on' : 'off';
-  stageStatus(`transport 播放${next ? '' : '暂停'}`, 'info');
+  setPlaying(state.playing === false);
 }
 /** 单动循环：切换 settings.loop（引擎 setLoop 走通用 setter） */
 async function stepVariant(dir) {
@@ -81,6 +109,8 @@ function applyAnimLoop(on) {
 function fillTransportOptions(info) {
   const transport = state.transport;
   if (!transport) return;
+  // 首次填充顺带刷一次播放 UI：dataset / 图标 / 文案都由 state.playing 派生（幂等）
+  syncPlayUi();
   // 与右栏同一份清单（同顺序、同文案、同时长）：契约 §一/§三
   const list = buildAnimationList();
   if (list.length) {
@@ -89,8 +119,9 @@ function fillTransportOptions(info) {
     transport.setOptions('transport-motion', list.map((x) => ({ text: labelWithDuration(x), value: x.id })), startId);
     notePlaying(startId);
   }
-  const stats = stage ? stage.stats() : null;
-  document.documentElement.dataset.transportPlaying = stats && stats.playing ? 'on' : 'off';
+  // 不在这里直读 stage.stats().playing：stage 恒为 Spine 舞台，Live2D 面会被它带偏，
+  //   而且暂停状态只能有一个来源（state.playing）→ 统一走 syncPlayUi 派生。
+  syncPlayUi();
 }
 /** 混合模式：两处开关指向同一状态，点任一处都要同步另一处的显示 */
 /**
@@ -136,6 +167,6 @@ function skinSwitchMixTime(fn) {
 }
 
 export {
-  toggleTransportPlay, stepVariant, cycleBackground, applyAnimLoop,
+  toggleTransportPlay, setPlaying, syncPlayUi, stepVariant, cycleBackground, applyAnimLoop,
   applyTransportMotion, fillTransportOptions, applyMixMode, applySkinMix, skinSwitchMixTime,
 };

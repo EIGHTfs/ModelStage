@@ -49,7 +49,9 @@ function renderControl(ctl) {
     sel.setAttribute('aria-label', ctl.label);
     return sel;
   }
-  const btn = el('button', 'mini-btn', ctl.label);
+  // 文字放进独立 span：播放/暂停按钮的文字要能随状态换（图标与文字必须同义）
+  const btn = el('button', 'mini-btn');
+  btn.append(el('span', 'btn-label', ctl.label));
   btn.type = 'button';
   markPending(btn, ctl.id, ctl.title || ctl.label);
   return btn;
@@ -68,6 +70,22 @@ function renderControl(ctl) {
  *   pressed: (id: string) => boolean|null,
  * }} 播放条能力
  */
+/**
+ * 播放/暂停按钮的双态图标（lucide Play / Pause 的 path 原文）。
+ * 语义同 8803：**播放中显示"暂停"图标**（点它=暂停），暂停后显示"播放"三角。
+ */
+const PLAY_ICONS = {
+  play: '<polygon points="6 3 20 12 6 21 6 3"/>',
+  pause: '<rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/>',
+};
+
+/**
+ * 图标对应的文案（与图标同义：写的是"点它会做什么"，不是"当前是什么状态"）。
+ * 播放中 → 图标是暂停符号 → 文案「暂停」；已暂停 → 图标是三角 → 文案「播放」。
+ * 两者必须同源派生，否则会出现"图标说暂停、tooltip 说播放/暂停"的错位。
+ */
+const PLAY_LABELS = { play: '播放', pause: '暂停' };
+
 /** 底栏按钮图标（内联 SVG，与顶栏同一套线条风格；不引图标库） */
 const ICONS = {
   'transport-prev': '<polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/>',
@@ -152,6 +170,29 @@ export function mountTransport(footerEl, handlers = {}) {
   }
 
   /** 按钮按下态（播放暂停这类开关型按钮） */
+  /**
+   * 换图标（仅播放/暂停这种双态按钮用）：清空 svg 子节点后写入新 path。
+   * 图标与 aria-pressed 一起由 app 层同一份状态派生，面板不自己判断播放状态。
+   * @param {string} id 控件 id
+   * @param {'play'|'pause'} name 变体名
+   */
+  function setIcon(id, name) {
+    const node = nodes.get(id);
+    const body = PLAY_ICONS[name];
+    if (!node || !body) return false;
+    const svg = node.querySelector('svg');
+    if (!svg) return false;
+    svg.innerHTML = body;   // 与 withIcon 同一套包装，只换 path 内容
+    const label = PLAY_LABELS[name];
+    if (label) {
+      node.title = label;                          // tooltip：点了会发生什么
+      node.setAttribute('aria-label', label);       // 无障碍名与之一致
+      const text = node.querySelector('.btn-label');
+      if (text) text.textContent = label;           // 按钮上的可见文字同源（否则会"图标变、文字不动"）
+    }
+    return true;
+  }
+
   function setPressed(id, on) {
     const node = nodes.get(id);
     if (!node) return;
@@ -170,11 +211,16 @@ export function mountTransport(footerEl, handlers = {}) {
     return node ? node.getAttribute('aria-pressed') === 'true' : null;
   }
 
+  // 初始为"播放中"：按 8803 语义，播放中显示暂停图标 + aria-pressed=true
+  setIcon('transport-play', 'pause');
+  setPressed('transport-play', true);
+
   return {
     controls: footerEl.querySelectorAll('button, select').length,
     wired,
     setOptions,
     setPressed,
+    setIcon,
     setSelectValue,
     pressed,
   };

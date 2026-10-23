@@ -82,6 +82,19 @@ export function createSpineRenderer({ stage, onMsaa } = {}) {
 
   return {
     id: 'spine',
+    /**
+     * 暂停：停掉引擎时间推进（动作与渲染循环都不再走）。
+     * 走 stage.pause()：舞台层的暂停是唯一实现（引擎 stopp），渲染器不重复实现一套。
+     */
+    pause() {
+      try { if (stage && typeof stage.pause === 'function') { stage.pause(); return true; } } catch { /* 忽略 */ }
+      return false;
+    },
+    /** 继续：恢复引擎推进 */
+    resume() {
+      try { if (stage && typeof stage.play === 'function') { stage.play(); return true; } } catch { /* 忽略 */ }
+      return false;
+    },
     capabilities: {
       settings: SETTINGS.slice(),
       debugDraw: DEBUG_DRAW.slice(),

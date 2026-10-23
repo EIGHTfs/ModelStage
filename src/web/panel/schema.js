@@ -213,7 +213,9 @@ export const PANEL_GROUPS = [
 export const TRANSPORT_CONTROLS = [
   { kind: 'button', id: 'transport-prev', label: '上一个', title: '上一个' },
   { kind: 'select', id: 'transport-skin', label: '皮肤', value: 'default', options: ['default'] },
-  { kind: 'button', id: 'transport-play', label: '播放/暂停', title: '播放/暂停' },
+  // 文案与图标同义（写“点了会做什么”）：初始为播放中 ⇒ 图标是暂停符号、文案「暂停」；
+  // 运行时由 transport.setIcon 随状态同步，不再写死“播放/暂停”。
+  { kind: 'button', id: 'transport-play', label: '暂停', title: '暂停' },
   // 动作下拉不预置任何真实动作：选项由模型动作列表填充（meta.motions / skeletonData.animations）。
   // 这里的单条是**占位文案**（value 为空，不会被当成可播动作），M6 接线时整体替换 options。
   { kind: 'select', id: 'transport-motion', label: '动作', value: '', options: ['（选中模型后列出动作）'] },
