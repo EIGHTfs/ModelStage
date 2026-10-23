@@ -163,11 +163,46 @@ function createRenderer({ log, list, countEl, state }) {
   /**
    * 用户当前是否停在底部。
    * **必须在改 DOM 之前测**：改完 scrollHeight 就变了，再测永远为 false/true 失真。
+   *
+   * 三种情况都要算「在底部」，否则首次渲染就判 false、stick 从此固定为 false，
+   *   表现为「刷新后日志永远停在顶部」：
+   *   ① 还没布局（隐藏/刚创建，clientHeight=0）：无法判断 ⇒ 视为应跟随；
+   *   ② 内容不足以滚动（maxScroll≈0，容器 padding 让 scrollHeight 略大）：顶就是底；
+   *   ③ 正常情形：距底 ≤ 容差。
    * @returns {boolean}
    */
   function isAtBottom() {
-    return list.scrollHeight - list.scrollTop - list.clientHeight <= BOTTOM_TOLERANCE;
+    if (list.clientHeight === 0) return true;
+    const maxScroll = list.scrollHeight - list.clientHeight;
+    if (maxScroll <= BOTTOM_TOLERANCE) return true;
+    return maxScroll - list.scrollTop <= BOTTOM_TOLERANCE;
   }
+
+  /**
+   * 「是否跟随最新」的显式状态。
+   * 为什么不每次现算 isAtBottom()：面板隐藏时 clientHeight=0、内容不足以滚动时顶=底，
+   *   这两种情况下现算都只能得到"在底部"，但用户**明确向上翻看过**这件事会丢；
+   *   用滚动事件把用户意图记下来，隐藏→显示时才能恢复正确的跟随行为。
+   */
+  let followLatest = true;
+  list.addEventListener('scroll', () => { followLatest = isAtBottom(); }, { passive: true });
+
+  /**
+   * 面板从隐藏变可见（clientHeight 0 → 非 0）时补一次跟随。
+   * 为什么需要：隐藏期间追加的日志不会触发滚动（scrollTop 赋值在不可见元素上无效），
+   *   展开后就会停在顶部——这也是"刷新/展开后看不到最新"的一个来源。
+   */
+  let lastClientHeight = 0;
+  function watchListResize() {
+    if (typeof ResizeObserver !== 'function') return;
+    const ro = new ResizeObserver(() => {
+      const h = list.clientHeight;
+      if (lastClientHeight === 0 && h > 0 && followLatest) scrollToBottom();
+      lastClientHeight = h;
+    });
+    ro.observe(list);
+  }
+  watchListResize();
 
   function updateCount(n) {
     countEl.textContent = `${n} 条`;
@@ -196,7 +231,7 @@ function createRenderer({ log, list, countEl, state }) {
    */
   function renderAll(opts = {}) {
     const forceBottom = opts.forceBottom === true;
-    const stick = forceBottom || isAtBottom();   // ← 必须在 replaceChildren 之前测
+    const stick = forceBottom || followLatest;   // ← 必须在 replaceChildren 之前测
     const records = log.entries().filter(levelPass);
     list.replaceChildren();
     if (!records.length) list.append(el('div', 'dbg-empty', '暂无日志'));
@@ -222,7 +257,7 @@ function createRenderer({ log, list, countEl, state }) {
       const batch = pending;
       pending = [];
       if (!batch.length) return;
-      const stick = isAtBottom();   // 先测：append 之后 scrollHeight 变大，就判断不出用户原本在底部
+      const stick = followLatest;   // 先测：append 之后 scrollHeight 变大，就判断不出用户原本在底部
       const hasEmpty = !!list.querySelector('.dbg-empty');
       if (hasEmpty) list.replaceChildren();
       for (const record of batch) if (levelPass(record)) list.append(renderEntry(record, state));
