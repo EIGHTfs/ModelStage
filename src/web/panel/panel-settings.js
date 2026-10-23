@@ -142,6 +142,28 @@ function panelSnapshot() {
   return { enabled: [...new Set(on)], disabled: [...new Set(off)], hidden: [...new Set(hidden)] };
 }
 /** 按当前渲染器能力重建面板三态，并跑一次能力自检（契约 §四、§五） */
+/**
+ * 把「实建的已接线集合」挂给自动化断言。
+ * 用 getter 覆盖而不是直接赋值：`__WEB__` 由 main.js 在 boot 后段才建好、并且会用全量
+ *   WIRED_IDS 再赋一次；直接赋值会被那次覆盖（断言因此拿到已隐藏的 ctl-mix-mode）。
+ * @param {number} [tries] 剩余重试次数（等 __WEB__ 出现）
+ */
+function exposePanelWired(tries = 20) {
+  if (typeof window === 'undefined') return;
+  const web = window.__WEB__;
+  if (!web) {
+    if (tries > 0) setTimeout(() => exposePanelWired(tries - 1), 0);
+    return;
+  }
+  try {
+    Object.defineProperty(web, 'panelWired', {
+      configurable: true,
+      get: () => state.panelWired || [],
+      set: () => { /* 外部整体赋值忽略：真相在 state.panelWired */ },
+    });
+  } catch { /* 无法覆盖就保持原样 */ }
+}
+
 function rebuildPanelFor(renderer) {
   const groups = applyCapabilities(PANEL_GROUPS, renderer && renderer.capabilities, {
     onWarn: (message) => stageStatus(message, 'warn'),
@@ -159,7 +181,7 @@ function rebuildPanelFor(renderer) {
   //   所以 panelWired 不能直接给全量 WIRED_IDS，否则断言会拿面板里不存在的 id 去比。
   const builtIds = [...document.querySelectorAll('#right-panel [data-ctl]')].map((n) => n.dataset.ctl);
   state.panelWired = WIRED_IDS.filter((id) => builtIds.includes(id));
-  if (typeof window !== 'undefined' && window.__WEB__) window.__WEB__.panelWired = state.panelWired;
+  exposePanelWired();
   // 底栏/循环推进需要"重绘右栏动作列表"：挂在面板句柄上，避免互相 import
   info.refreshAnimations = () => refreshPanelAnimations();
   startFpsReadout(info);

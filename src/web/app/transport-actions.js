@@ -48,6 +48,19 @@ function syncPlayUi() {
   document.documentElement.dataset.transportPlaying = playing ? 'on' : 'off';
 }
 
+/**
+ * 动作混合（过渡渐变）默认开启，且**面板里没有这个开关**（schema 标了 hidden）。
+ * 没有开关就没人会去打开它，所以由应用层在首次装载时显式落地一次；
+ * 已生效则不重复下发（幂等，避免每次换模型都改一次引擎设置）。
+ */
+function ensureMixModeOn() {
+  if (state.mixModeEnsured === true) return;
+  state.mixModeEnsured = true;
+  try { setRendererSetting('mixMode', true); } catch { /* 该面不支持就跳过 */ }
+  state.mixMode = true;
+  document.documentElement.dataset.mixMode = 'on';
+}
+
 /** 底栏「播放/暂停」：切换 */
 function toggleTransportPlay() {
   setPlaying(state.playing === false);
@@ -107,6 +120,7 @@ function applyAnimLoop(on) {
 
 /** 模型加载完成后填充播放条：动作下拉 + 播放状态 */
 function fillTransportOptions(info) {
+  ensureMixModeOn();   // 混合模式默认开启（面板已隐藏该开关，必须由应用层落地）
   const transport = state.transport;
   if (!transport) return;
   // 首次填充顺带刷一次播放 UI：dataset / 图标 / 文案都由 state.playing 派生（幂等）

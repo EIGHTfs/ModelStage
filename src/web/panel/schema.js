@@ -25,6 +25,13 @@
 export const RENDERER_INDEPENDENT = [
   'ctl-theme', 'ctl-bg-mode', 'ctl-bg-color', 'ctl-bg-image',
   'ctl-hang-guard', 'ctl-show-status', 'ctl-debug-log', 'ctl-settings-io',
+  // 动作组的两个：循环开关由应用层定时器推进、动作列表内容由应用层填，
+  //   与"渲染器是否声明某项能力"无关（两面都要有）。
+  'ctl-anim-loop', 'ctl-anim-list',
+  // 皮肤组的混合过渡：由应用层在切皮肤时对两次渲染做交叉淡化，属面板侧行为。
+  'ctl-skin-mix',
+  // 运行时版本读数：只读文本，跟着渲染器自己报的值走，不参与能力判断。
+  'ctl-runtime',
 ];
 
 /** 占位说明（M3 不接线；M6 会把动态内容填进这些分组） */
@@ -39,7 +46,9 @@ export const PANEL_GROUPS = [
     controls: [
       // 动作组并列两个开关，各自管一件事（契约 §四，正交、不合并）：
       //   混合模式 = 切换那一瞬间的过渡；循环播放 = 播完之后接谁
-      { kind: 'switch', label: '混合模式', id: 'ctl-mix-mode', capabilityKey: 'mixMode', core: true, title: '切换动作时的过渡：开=约 0.2s 渐变，关=硬切' },
+      // 手动隐藏（优先级最高）：动作过渡由引擎默认值决定（默认开启 ≈0.2s 渐变），
+      //   面板不再暴露这个开关——手动维护 > 自动按能力声明判断。
+      { kind: 'switch', label: '混合模式', id: 'ctl-mix-mode', hidden: true, capabilityKey: 'mixMode', core: true, title: '切换动作时的过渡：开=约 0.2s 渐变，关=硬切' },
       { kind: 'switch', label: '循环播放', id: 'ctl-anim-loop', core: true, title: '播完之后接谁：开=按列表顺序连播、末尾回到第一条；关=停留当前动作重复播' },
       { kind: 'dynamic-list', label: '动作列表', id: 'ctl-anim-list', core: true, note: '选中模型后逐条列出动作，点一条即播放' },
     ],
@@ -65,7 +74,7 @@ export const PANEL_GROUPS = [
       {
         kind: 'chips',
         label: '关键字',
-        id: 'ctl-part-filter-reset', core: true,
+        id: 'ctl-part-filter-reset', capabilityKey: 'partFilter', core: true,
         defaultValue: 'reset',
         options: [{ text: '恢复默认关键字', value: 'reset' }],
       },
@@ -291,6 +300,10 @@ export function applyCapabilities(groups, capabilities, options = {}) {
     .map((group) => {
       const controls = [];
       for (const ctl of group.controls || []) {
+        // ① 手动隐藏（最高优先级）：隐藏即**永不构建**，两面都不出现，不再看能力声明。
+        //   设计意图：有些开关产品上就不想让用户改（如动作混合时长），
+        //   与"这一面不支持"是两件事，所以它排在最前、且不受 capabilities 影响。
+        if (ctl && ctl.hidden === true) continue;
         // 回落策略（契约 §五）：拿不到能力信息 ⇒ 按「无渲染器」处理，只保留与渲染器无关的项。
         //   判据用显式清单而不是 core 标记：皮肤/部件筛除这类也标了 core，但它们依赖渲染器。
         //   旧行为是"默认全支持"，会让"声明了却没实现"的缺陷静默存在。
