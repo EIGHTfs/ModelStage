@@ -20,15 +20,33 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
+import { acquireTestLock, releaseOnExit, describeHolder, EXIT_SKIPPED, HELD_ENV } from './lib/test-lock.mjs';
 
 // 必须用 fileURLToPath：项目路径含中文/空格，URL.pathname 是百分号编码，直接当路径会找不到文件
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(HERE, '..');
 const PROJECT = path.resolve(HERE, '..');
 const PROFILE_PREFIX = '/tmp/check-console-profile-';
 /** 单套超时：正常一套 10～60s，180s 足够；超时视为"未产出结果"并重试一次 */
 const SUITE_TIMEOUT_MS = 180000;
 
 /** 套件清单：顺序固定（从"接线自检"到"重交互回归"） */
+// 并发互斥（任务 15）：同一项目同时只允许一个测试实例。
+//   第二个实例直接**跳过**并说清谁在跑——继续跑只会产出假红，误导修错地方。
+//   跳过用退出码 75，与 0=通过 / 1=失败 明确区分，CI 可据此判定"没跑"而不是"挂了"。
+const TEST_LOCK = acquireTestLock({ root: REPO_ROOT, label: 'test-all', tool: 'node tool/test-all.mjs' });
+if (!TEST_LOCK.acquired) {
+  console.error('[test-all] ⏭️  跳过：已有测试实例在跑（并发互斥，退出码 75）');
+  console.error(`           持有者：${describeHolder(TEST_LOCK.holder)}`);
+  console.error(`           锁文件：${TEST_LOCK.file}`);
+  console.error('           如确认对方已死（崩溃残留），删掉该锁文件即可；活着的进程不会被抢占。');
+  process.exit(EXIT_SKIPPED);
+}
+if (TEST_LOCK.tookOver) console.warn(`[test-all] ⚠ 接管陈旧锁（原持有者 ${describeHolder(TEST_LOCK.holder)}）`);
+releaseOnExit(TEST_LOCK);
+// 子工具（check-console 等）继承本锁，不再重复加锁
+process.env[HELD_ENV] = '1';
+
 const SUITES = [
   // 静态契约套件（node --test + 最小 DOM 垫片，秒级、无需浏览器）：
   //   放最前——契约级回归（卸载语义/画布挂载/分派规则）一旦破了，先在这里红，

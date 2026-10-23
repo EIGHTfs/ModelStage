@@ -33,6 +33,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+import { acquireTestLock as acquireLock, releaseOnExit as releaseLockOnExit, describeHolder as describeLockHolder, EXIT_SKIPPED as EXIT_LOCK_SKIPPED } from './lib/test-lock.mjs';
 
 // ---------------------------------------------------------------- 参数解析
 const argv = process.argv.slice(2);
@@ -48,6 +49,18 @@ const argOf = (name, def) => {
 const flag = (name) => argv.includes(name);
 const WAIT_MS = Number(argOf('--wait', '3000'));
 const SCRIPT_FILE = argOf('--script', null);
+
+// 并发互斥：单独跑本工具也算"一个测试实例"（它会起浏览器、跑页面脚本）。
+//   被 test-all 调用时环境里有 DSH_TEST_LOCK_HELD=1，不会重复加锁。
+const CONSOLE_LOCK = acquireLock({ root: ROOT, label: 'check-console', tool: `node tool/check-console.mjs ${process.argv.slice(2).join(' ')}` });
+if (!CONSOLE_LOCK.acquired) {
+  console.error('⏭️  跳过：已有测试实例在跑（并发互斥，退出码 75）');
+  console.error(`   持有者：${describeLockHolder(CONSOLE_LOCK.holder)}`);
+  console.error(`   锁文件：${CONSOLE_LOCK.file}`);
+  process.exit(EXIT_LOCK_SKIPPED);
+}
+if (CONSOLE_LOCK.tookOver) console.warn(`⚠ 接管陈旧锁（原持有者 ${describeLockHolder(CONSOLE_LOCK.holder)}）`);
+releaseLockOnExit(CONSOLE_LOCK);
 const SHOT = argOf('--shot', null);
 const JSON_ONLY = flag('--json');
 const WARN_IS_ERROR = flag('--allow-warn');
