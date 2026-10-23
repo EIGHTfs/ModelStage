@@ -31,10 +31,15 @@ function motionNameOf(mo) {
   return String(mo.Name || mo.File || '');
 }
 
-/** 动作标签：`group / 文件名去后缀`（.motion3 / .motion3.json / .json 都算） */
-function motionLabel(group, name) {
-  const base = String(name || '').split('/').pop().replace(/\.motion3(\.json)?$/i, '').replace(/\.json$/i, '');
-  return `${group} / ${base}`;
+/**
+ * 动作标签 = **动作名**（文件名去后缀；.motion3 / .motion3.json / .json 都算）。
+ *
+ * 为什么不带 group 前缀：Cubism 的动作文件名通常与 group 同名，拼出来就是
+ *   `idle / idle` 这种自我重复，与 Spine 面的"名称"不一致；group 仍保留在
+ *   motionMap 的 value 里用于播放，不丢信息。
+ */
+function motionLabel(_group, name) {
+  return String(name || '').split('/').pop().replace(/\.motion3(\.json)?$/i, '').replace(/\.json$/i, '');
 }
 
 /** 采样点统计：总数与非透明点数 */
@@ -71,8 +76,11 @@ function buildMotionMap(st, meta) {
   groups.sort((a, b) => (a === 'idle' ? -1 : b === 'idle' ? 1 : 0));
   for (const group of groups) {
     (motions[group] || []).forEach((mo, index) => {
-      let label = motionLabel(group, motionNameOf(mo));
-      if (st.motionMap.has(label)) label = `${label} #${index + 1}`;
+      // 同名动作（不同 group 或同 group 多个 motion）用 _2/_3 区分，**不丢条目**
+      const base = motionLabel(group, motionNameOf(mo));
+      let label = base;
+      let n = 2;
+      while (st.motionMap.has(label)) label = `${base}_${n++}`;
       st.motionMap.set(label, { group: String(group), index });
     });
   }

@@ -5,6 +5,7 @@
 //   与 Spine 共用同一套相机语义（render/camera）。
 // 成员语义见各方法注释；成员集合属于对外契约，增删需同步渲染器与面板。
 import { ZOOM_MIN, ZOOM_MAX, isAbsoluteRef } from './stage-ctx.js';
+import { createViewProbe } from './playback-probe.js';
 
 /**
  * 创建桥对象。
@@ -40,6 +41,28 @@ function createMotionApi(ctx) {
     //   根绝对（/xxx）也原样保留。
     const joined = isAbsoluteRef(file) || file.startsWith('/') ? file : `${dir}${file}`;
     try { return ctx.resolveAsset(joined); } catch { return joined; }
+  }
+
+  /**
+   * 标签解析：先按规范标签精确匹配；不中再兼容旧格式 `group / name`（历史持久化里存过这种值）。
+   * 都查不到返回 null（调用方按"未知标签"处理）。
+   * @param {string} label
+   * @returns {{label:string, group:string, index:number}|null}
+   */
+  function resolveLabel(label) {
+    const map = st.motionMap || new Map();
+    const key = String(label || '');
+    if (map.has(key)) {
+      const hit = map.get(key);
+      return { label: key, group: hit.group, index: hit.index };
+    }
+    // 旧格式兜底：`group / motionName` → 用 motionName 段匹配（同名多条取第一条）
+    const legacyName = key.includes(' / ') ? key.split(' / ').pop() : '';
+    if (legacyName && map.has(legacyName)) {
+      const hit = map.get(legacyName);
+      return { label: legacyName, group: hit.group, index: hit.index };
+    }
+    return null;
   }
 
   return {
@@ -83,15 +106,21 @@ function createMotionApi(ctx) {
     },
     /** 动作切换：标签 → (group, index) */
     playLabel(label) {
-      const hit = st.motionMap.get(label);
+      const hit = resolveLabel(label);
       if (!hit || !st.model) {
         note(`Live2D 未知动作标签：${label}`, 'warn');
         return false;
       }
       try {
+        // Cubism 的动作队列是**顺序播放**语义：直接 motion() 只会把新动作排到队尾，
+        //   正在播的那条不结束就不会切过去（引擎侧表现为队列实例不变、时间轴一直推进在旧动作上）。
+        //   因此先 stopAllMotions() 清空队列再起新的 —— 这才是"切换即打断"。
+        const mm = st.model.internalModel && st.model.internalModel.motionManager;
+        if (mm && typeof mm.stopAllMotions === 'function') mm.stopAllMotions();
         st.model.motion(hit.group, hit.index);
-        st.currentLabel = label;      // 供 renderer.getSetting('animation') 回显生效值
-        note(`Live2D 播动作：${label}`);
+        // 回显用解析后的**规范标签**（旧格式 "group / name" 也能落到同一条）
+        st.currentLabel = hit.label || label;
+        note(`Live2D 播动作：${st.currentLabel}`);
         return true;
       } catch (err) {
         note(`Live2D 播动作失败：${err && err.message}`, 'warn');
@@ -103,9 +132,14 @@ function createMotionApi(ctx) {
 
 export function createBridge(ctx) {
   const { st, note } = ctx;
+  const probe = createViewProbe(st);
+
+
 
   const bridge = {
     isActive: () => st.active,
+    /** 引擎侧播放探针（验收用：读引擎真实状态，不拿我们自己的 currentLabel 自证） */
+    playbackProbe: probe.playbackProbe,
     hide: () => ctx.api.overlay.hide(),
     currentModelId: () => st.modelId,
     ...createMotionApi(ctx),
@@ -169,14 +203,7 @@ export function createBridge(ctx) {
     },
     /** 只读诊断快照 */
     readState() {
-      let motion = null;
-      try {
-        const mm = st.model && st.model.internalModel && st.model.internalModel.motionManager;
-        if (mm) {
-          const holder = mm.state && (mm.state.currentGroup !== undefined || mm.state.currentIndex !== undefined) ? mm.state : mm;
-          motion = { group: holder.currentGroup ?? null, index: holder.currentIndex ?? null };
-        }
-      } catch { /* 忽略 */ }
+      const motion = probe.currentMotion();
       return {
         active: st.active,
         modelId: st.modelId,
@@ -186,6 +213,11 @@ export function createBridge(ctx) {
       };
     },
   };
+
+  // 验收探针挂到页面上（与 lead 共用同一套引擎侧判据）
+  try {
+    if (typeof globalThis !== 'undefined' && globalThis.__WEB__) globalThis.__WEB__.playbackProbe = () => bridge.playbackProbe();
+  } catch { /* 忽略 */ }
 
   return bridge;
 }
