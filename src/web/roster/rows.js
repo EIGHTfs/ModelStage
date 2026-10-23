@@ -131,8 +131,9 @@ export function renderVariantRow(game, c, v, selectedId) {
   }
 
   const label = variantLabel(m);
-  const kind = label === 'Live2D' ? 'live2d' : (label === '资源包' ? 'bundle' : 'spine');
-  row.append(el('span', `tree-type tree-type-${kind}`, label));
+  // 样式类按"条目性质"取（容器单文件用 bundle 类，颜色与普通模型区分），与 label 文案解耦
+  const kindClass = m.container ? 'bundle' : (m.kind === 'live2d' ? 'live2d' : 'spine');
+  row.append(el('span', `tree-type tree-type-${kindClass}`, label));
   row.append(el('span', 'tree-variant-text', text));
   if (origName && origName !== text) row.append(el('span', 'tree-variant-orig', ` · ${origName}`));
   row.title = `${origName}${m.srcDir && m.srcDir !== origName ? `  ·  ${m.srcDir}` : ''}`;

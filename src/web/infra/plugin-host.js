@@ -122,6 +122,13 @@ export function createPluginHost(opts = {}) {
       if (!plugin || typeof plugin !== 'object') { say.warn('register 收到非对象，已忽略'); return false; }
       const id = String(plugin.id || '').trim();
       if (!id) { say.warn('register 缺少 id，已忽略'); return false; }
+      // 契约 PL2：id 重复必须**拒绝**且不覆盖已注册的那个。
+      //   静默 providers.set 覆盖会让"后加载的插件顶掉先加载的"，且排障时看不出发生过覆盖。
+      //   保留先注册的实例（先到先得）：它可能已经参与过解析，换掉会留下"半新半旧"的对象。
+      if (providers.has(id)) {
+        say.warn(`插件 ${id} 重复注册，已忽略（保留先注册的实例）`);
+        return false;
+      }
       // 角色以**清单**为准（契约 插件契约 §二）：register 上来的对象不覆盖它
       const declared = manifestProvides.get(id) || [];
       const rec = { ...plugin, id, provides: declared.slice() };

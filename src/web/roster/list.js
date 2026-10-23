@@ -12,10 +12,9 @@
 //   4. 本模块只做数据，不碰 DOM（DOM 在 roster-view.js），便于单独验证归并结果。
 //
 // 数据源选择（实测依据）：
-//   · kind==='bundle'：资源包根，/api/models 与 /api/live2d/models 都扫不到，
-//     条目只能从 /api/tree 的 files（kind='bundle'）来；
-//   · kind==='spine' 且 /api/models 有结果：Spine 模型；
-//   · kind==='spine' 但 /api/models 为 0：目录里其实是 Live2D（碧蓝 root=azurlane 实测 119 个），
+//   · 统一走 /api/catalog：它把 spine 模型、live2d 模型、容器单文件合并成一份清单，
+//     所以发现阶段不再按"根的 kind"猜该问哪个扫描器（同一个根可以混合内容）；
+//   · 容器单文件（资源包）由列举层用魔数标记 `container`，kind 取插件声明的产出类型；
 //     改取 /api/live2d/models。
 
 import { getJson } from '../infra/api.js';
@@ -109,37 +108,15 @@ export function lookupName(index, assetName) {
  */
 export async function loadRootModels(root) {
   const id = encodeURIComponent(root.id);
-  if ((root.kind || 'spine') === 'bundle') {
-    const tree = await getJson(`/api/tree?root=${id}&path=`);
-    const models = (tree.files || [])
-      .filter((f) => f.kind === 'bundle')
-      .map((f) => ({
-        id: `bundle-${root.id}-${f.rel || f.name}`,
-        kind: 'bundle',
-        name: f.name,
-        srcDir: f.rel || f.name,
-        rel: f.rel || f.name,
-        size: f.size,
-        container: f.container || null,
-        rootId: root.id,
-        rootName: root.name,
-      }));
-    return { models, source: 'bundle-tree' };
-  }
-
-  const spine = await getJson(`/api/models?root=${id}`);
-  const spineModels = Array.isArray(spine.models) ? spine.models : [];
-  if (spineModels.length) {
-    // 语义上报：资源包/目录的清单解析结果
-    diagEvent('bundle.parse', { root: id, source: 'spine-models', models: spineModels.length }, { level: 'info', src: 'app' });
-    return { models: spineModels, source: 'spine-models' };
-  }
-
-  // Spine 扫描为空：该目录可能装的是 Live2D（目录型），改用 Live2D 清单
-  const l2d = await getJson(`/api/live2d/models?root=${id}`);
-  const l2dModels = Array.isArray(l2d.models) ? l2d.models : [];
-  diagEvent('bundle.parse', { root: id, source: 'live2d-models', models: l2dModels.length }, { level: 'info', src: 'app' });
-  return { models: l2dModels, source: 'live2d-models' };
+  // 单一发现路径：/api/catalog 一次给出该根下的**全部**模型条目
+  //   （spine 模型 + live2d 模型 + 容器单文件），所以不必再"按根类型猜该问哪个扫描器"，
+  //   同一个根里既能放普通模型目录、也能放容器文件。
+  //   容器条目的 kind 由插件声明（解包后是什么内容），并带 `container` 标记供装载层解包用。
+  const data = await getJson(`/api/catalog?root=${id}`);
+  const models = Array.isArray(data.entries) ? data.entries : [];
+  const containers = models.filter((m) => m.container).length;
+  diagEvent('bundle.parse', { root: id, source: 'catalog', models: models.length, containers }, { level: 'info', src: 'app' });
+  return { models, source: 'catalog' };
 }
 
 /**
@@ -161,8 +138,10 @@ export async function loadRootNames(rootId) {
 /** 变体标签：Spine / Live2D / 资源包（与 char-tree.js 的 variantLabel 语义一致） */
 export function variantLabel(m) {
   if (!m) return 'Spine';
+  // 先判"是不是容器单文件"：它的 kind 现在是内容类型（live2d），
+  //   若先判 kind 就会把资源包标成 Live2D，用户看不出它是包。
+  if (m.container) return '资源包';
   if (m.kind === 'live2d') return 'Live2D';
-  if (m.kind === 'bundle') return '资源包';
   return 'Spine';
 }
 

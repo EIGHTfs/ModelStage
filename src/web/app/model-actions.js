@@ -43,75 +43,115 @@ function showRootsError(message) {
   dom.rosterList.replaceChildren(banner);
 }
 /**
- * 撤掉不再使用的资源包前缀（幂等；只撤自己注册过的那个）。
- * V5 的实质：连开多个 bundle 模型时，旧前缀必须释放，否则 createdUrls/prefixes 会一路涨。
- * @param {string|null} keep 要保留的前缀（换到别的资源包时传新前缀；切到非 bundle 时传 null）
+ * 释放当前 Document 持有的 VFS 前缀（幂等；只撤自己注册过的那个）。
+ *
+ * 为什么不再叫 bundle 前缀：前缀是「当前 Document 的资产来源」带来的，与来源是容器还是目录无关
+ *   —— 目录型模型将来若也走 VFS（或插件产出别的容器类型）同样适用。
+ * @param {string|null} keep 要保留的前缀（换到另一个容器时传新前缀；切到不再用 VFS 的模型时传 null）
  */
-function releaseBundlePrefix(keep) {
-  const prev = state.bundlePrefix;
+function releaseVfsPrefix(keep) {
+  const prev = state.vfsPrefix;
   if (!prev || prev === keep) return;
   try { getSharedVirtualFS().revoke(prev); } catch { /* 已撤销或不存在：忽略 */ }
-  state.bundlePrefix = null;
+  state.vfsPrefix = null;
 }
 
 /**
- * 资源包装载：插件管线 → VirtualFS → Document → 渲染器。
- *
- * 为什么入口地址用 vfs:// 而不是解析后的 blob：Document 组装与 Live2D 内部相对引用解析
- *   都要经 VirtualFS（hits 才会增量）；blob 不能当基址（new URL(rel, 'blob:…') 直接非法）。
- *
- * @param {object} model roster 产出的 bundle 条目（含 rootId/rel/name/size）
- * @param {string} name 显示名
- * @returns {Promise<object|null>} 渲染器返回的 info（失败为 null）
+ * 把条目归一成 `{ kind, container? }`。
+ *   · kind      = 内容类型（spine / live2d）—— 只决定渲染分支
+ *   · container = 容器标记（如 'unityfs'）—— 只决定"要不要先解包"，由发现阶段给出
+ * 旧条目（localStorage 里存的"上次选中"可能仍是 kind:'bundle'）在这里就地纠正，
+ *   避免刷新恢复时走进已废弃的分支。
+ * @param {object} model 名册条目
+ * @returns {object} 归一后的条目（新对象）
  */
-async function loadBundleModel(model, name) {
+function normalizeEntry(model) {
+  const legacyBundle = model && model.kind === 'bundle';
+  const kind = model && (model.kind === 'spine' || model.kind === 'live2d')
+    ? model.kind
+    : (legacyBundle ? 'live2d' : 'spine');
+  const container = (model && model.container) || (legacyBundle ? 'unityfs' : null);
+  return { ...model, kind, ...(container ? { container } : {}) };
+}
+
+/**
+ * 解析资产来源（**全流程唯一按「是不是容器单文件」分流的地方**）。
+ *
+ * 容器单文件：插件解包 → 注册 VFS 前缀 → 入口地址用 `vfs://…`（Document 组装与 Live2D 内部相对引用
+ *   都要经 VirtualFS；blob 不能当基址，`new URL(rel, 'blob:…')` 直接非法）。
+ * 普通条目：直接用条目里的地址。
+ * 下游（Document 组装 / 渲染装载 / 动作列表 / 清理）**一律不知道"这是资源包"**。
+ *
+ * @returns {Promise<{ok:boolean, entryUrl:string|null, prefix:string|null, provider:string|null, message:string}>}
+ */
+async function resolveAssetSource(model, name) {
+  // 发现阶段给的是"这个条目是不是容器单文件"（container 标记），不是内容类型：
+  //   是容器 ⇒ 先解包注册 VFS 前缀；否则直接用条目自带地址。
+  if (!model.container) {
+    const url = (model.entry && model.entry.url) || model.modelUrl || null;
+    if (!url) return { ok: false, entryUrl: null, prefix: null, provider: null, message: '条目缺少资产地址' };
+    return { ok: true, entryUrl: url, prefix: null, provider: null, message: '' };
+  }
   const host = state.pluginHost;
   if (!host) {
-    stageStatus(`无法装载 ${name}：插件宿主未就绪（页面刚启动时可稍等再试）`, 'error');
-    return null;
+    return { ok: false, entryUrl: null, prefix: null, provider: null, message: '插件宿主未就绪（页面刚启动时可稍等再试）' };
   }
-  // 宿主对象在启动时就已创建，但插件脚本可能还在注入（启动即自动恢复时尤其明显）。
-  //   装载入口自己等一次：loadAll 幂等，已装载完成时立即返回，不会重复请求清单。
+  // 宿主对象启动时就创建了，但插件脚本可能还在注入：装载入口自己等一次。
+  //   loadAll 幂等（已装载直接返回，进行中复用同一个 Promise），热路径上就是立即 resolve。
   await host.loadAll();
-  // 等完之后仍无 bundle 提供者 ⇒ 是真的没有能处理它的插件（配置/目录问题），
-  //   与"宿主未就绪"分开报，别让用户对着错误提示猜。
-  const bundleProviders = typeof host.providersFor === 'function' ? host.providersFor(['bundle']) : [];
-  if (!bundleProviders.length) {
-    stageStatus(`无法装载 ${name}：没有能处理 bundle 的插件（检查 config/plugins.json 与 plugins/ 目录）`, 'error');
-    return null;
+  const providers = typeof host.providersFor === 'function' ? host.providersFor(['bundle']) : [];
+  if (!providers.length) {
+    // 与"宿主未就绪"分开报：此时是真的没有能处理容器的插件（配置/目录问题）
+    return {
+      ok: false, entryUrl: null, prefix: null, provider: null,
+      message: '没有能处理 bundle 容器的插件（检查 config/plugins.json 与 plugins/ 目录）',
+    };
   }
-  // 解包 + 转码实测 3~4 秒：必须有可见状态，不能让用户点了没反应
   stageStatus(`正在解包 ${name}…（首次约 3~4 秒）`, 'info');
   const mat = await host.materialize({
     rootId: model.rootId,
     rel: model.rel,
     name: model.name,
     size: model.size,
-    rootKind: 'bundle',
+    rootKind: 'bundle',   // 容器类型（插件能力声明用它判"能不能读"），不是内容类型
   });
-  if (!mat.ok) {
+  if (!mat.ok) return { ok: false, entryUrl: null, prefix: null, provider: null, message: mat.message || '解包失败' };
+  const entryUrl = `${mat.prefix}${String(mat.entry).replace(/^\.?\//, '')}`;
+  return { ok: true, entryUrl, prefix: mat.prefix, provider: mat.provider, message: '' };
+}
+
+/**
+ * **唯一的装载通路**：解析资产来源 → 组装 Document → 交给当前渲染器。
+ *
+ * 用户定的原则：资源包解包后文件就在 VFS 里，`buildDocument + mount` 只该有一条路，
+ *   差异只存在于「资产地址是 vfs:// 还是 http://」。所以本函数不再按 kind 分支，
+ *   kind 只作为 Document 的内容类型（选渲染面）。
+ *
+ * @param {object} model 名册条目（已归一）
+ * @param {string} name 显示名
+ * @returns {Promise<object|null>} 渲染器返回的 info（失败为 null）
+ */
+async function loadModel(model, name) {
+  const src = await resolveAssetSource(model, name);
+  if (!src.ok) {
     stage.unload();
-    stageStatus(`无法装载 ${name}：${mat.message}`, 'error');
+    stageStatus(`无法装载 ${name}：${src.message}`, 'error');
     return null;
   }
-  const entryUrl = `${mat.prefix}${String(mat.entry).replace(/^\.?\//, '')}`;
   const doc = await buildDocument({
-    kind: 'live2d',
-    id: model.id,
-    name,
-    rootId: model.rootId,
-    rootName: model.rootName,
-    source: 'bundle',
-    provider: mat.provider,
-    entry: { url: entryUrl },
+    ...model,
+    kind: model.kind,                                   // 只表达内容类型
+    provider: src.provider || model.provider || null,
+    entry: { url: src.entryUrl },                       // 是 vfs:// 还是 http:// 由发现阶段决定
   });
   if (!doc || doc.state !== 'ready') {
     const why = (doc && (doc.warnings || []).join('；')) || '原因未知';
     stageStatus(`无法装载 ${name}：${why}`, 'error');
     return null;
   }
-  releaseBundlePrefix(mat.prefix);      // 换包：先撤旧的（同前缀由 materialize 内部先撤再注册）
-  state.bundlePrefix = mat.prefix;
+  // 统一清理：新 Document 不用旧前缀就释放（换容器/切到目录型模型都走这一句）
+  releaseVfsPrefix(src.prefix);
+  state.vfsPrefix = src.prefix || null;
   return state.currentRenderer ? state.currentRenderer.mount(doc) : stage.load({ document: doc });
 }
 
@@ -122,8 +162,9 @@ function onSelectModel(model) {
   if (!stage) { stageStatus(`已选中 ${name}（渲染器不可用）`, 'error'); return; }
   if (!model) { stage.unload(); return; }
 
-  const kind = model.kind || 'spine';
-  if (kind !== 'spine' && kind !== 'live2d' && kind !== 'bundle') {
+  const entry = normalizeEntry(model);
+  const kind = entry.kind;
+  if (kind !== 'spine' && kind !== 'live2d') {
     stage.unload();
     stageStatus(`已选中 ${name}（未知内容类型：${kind}）`, 'warn');
     return;
@@ -135,26 +176,14 @@ function onSelectModel(model) {
   // 走当前渲染器装载：Live2D 必须由 renderer 分流到覆盖层，
   //   否则会落到舞台的 Spine 前置流程（取骨架/图集）并 404。
   const loadDoc = {
-    ...model,
-    kind,
-    rootId: model.rootId,
-    rootName: model.rootName,
-    entry: model.entry || (model.modelUrl ? { url: model.modelUrl } : null),
+    ...entry,
+    rootId: entry.rootId,
+    rootName: entry.rootName,
+    entry: entry.entry || (entry.modelUrl ? { url: entry.modelUrl } : null),
   };
-  // 切到非资源包模型：先撤掉上一个资源包前缀（V5：不持续增长）
-  if (kind !== 'bundle') releaseBundlePrefix(null);
 
-  // 装载前先组装 Document（Assets 层）：非 ready 就不进渲染层，把原因直接告诉用户
-  const loadPromise = (kind === 'bundle'
-    ? loadBundleModel(model, name)
-    : buildDocument(loadDoc).then((doc) => {
-      if (!doc || doc.state !== 'ready') {
-        const why = (doc && (doc.warnings || []).join('；')) || '原因未知';
-        stageStatus(`无法装载 ${name}：${why}`, 'error');
-        return null;
-      }
-      return state.currentRenderer ? state.currentRenderer.mount(doc) : stage.load({ document: doc });
-    }));
+  // 唯一的装载通路：来源解析在 loadModel 内部完成，这里不再按 kind/source 分支
+  const loadPromise = loadModel(entry, name);
   loadPromise
     .then((info) => {
       // null = 本次请求被排队/被更新的选择取代（Surface 的 last-wins 语义）：

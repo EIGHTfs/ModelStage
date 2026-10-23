@@ -138,15 +138,18 @@ const motionDurationCache = new Map();
  * 取不到就**不写这个键**（不填 0 冒充），前端自然显示为"无时长"。
  * @param {object} doc Document（就地写 doc.meta.motionDurations）
  * @param {object} ref model3.json 的 FileReferences
+ * @param {string} baseRef **解析前**的模型定义地址（vfs:// 或 http://）——
+ *   动作文件的相对路径必须以它为基址拼接：拿解析后的 blob 当基址会拼出
+ *   `blob:…/motions/x.motion3.json` 这种永不命中的地址（资源包时长整片 null 的真因）。
  * @param {string} entryUrl 定义文件地址（用于把相对 File 拼成可读地址）
  * @param {object} vfs VirtualFS
  */
-async function fillMotionDurations(doc, ref, entryUrl, vfs) {
+async function fillMotionDurations(doc, ref, baseRef, vfs) {
   // 同一模型反复组装（切模型来回点、测试反复装载）时不必重复预取：按定义地址缓存一份。
   //   14 个动作文件就是 14 次请求，重复预取既慢又给测试增加时序抖动。
-  const cached = motionDurationCache.get(entryUrl);
+  const cached = motionDurationCache.get(baseRef);
   if (cached) { doc.meta.motionDurations = { ...cached }; return; }
-  const base = String(entryUrl || '').replace(/[^/]*$/, '');
+  const base = String(baseRef || '').replace(/[^/]*$/, '');
   const files = [];
   for (const group of Object.keys(ref.Motions || {})) {
     for (const mo of (ref.Motions[group] || [])) {
@@ -168,7 +171,7 @@ async function fillMotionDurations(doc, ref, entryUrl, vfs) {
   });
   await Promise.all(jobs);
   doc.meta.motionDurations = out;
-  motionDurationCache.set(entryUrl, out);
+  motionDurationCache.set(baseRef, out);
 }
 
 /** Live2D：入口 model3.json 定义（地址已解析；内部引用由 live2d/vfs-settings 在装载时解析） */
@@ -191,11 +194,15 @@ async function buildLive2dAssets(doc, entry, vfs) {
     const ref = (json && json.FileReferences) || {};
     const motions = ref.Motions || {};
     doc.meta.version = json && json.Version ? Number(json.Version) : doc.meta.version;
-    doc.meta.motions = Object.keys(motions);
+    // meta.motions 必须是**完整映射** { 组: [{ File, ... }] }，不是组名数组：
+    //   渲染层要凭 File 去查预取时长表（live2d/bridge.js 的 motionFileOf），
+    //   只留组名的话 duration 一律取不到 ⇒ 动作列表时长整片 null（冷缓存下 34/34 全空）。
+    doc.meta.motions = motions;
     doc.meta.expressions = (ref.Expressions || []).map((e) => (e && e.Name) || '');
-    doc.skeleton.animations = doc.meta.motions.slice();
+    doc.skeleton.animations = Object.keys(motions);
     doc.meta.extras = { moc: ref.Moc || null, textures: (ref.Textures || []).slice(), json };
-    await fillMotionDurations(doc, ref, url, vfs);
+    // 传 raw（解析前地址）而不是 url（blob）：相对路径要相对"来源"拼，不是相对 blob
+    await fillMotionDurations(doc, ref, raw, vfs);
   } catch (e) {
     warn.push(`模型定义解析失败：${(e && e.message) || e}（${url}）`);
   }

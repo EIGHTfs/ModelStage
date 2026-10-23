@@ -26,6 +26,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createSandbox, loadIntoContext, badInputs, isThenable } from './check-plugin-host.mjs';
+import { runContractChecks, printCoverageTable, findDefaultSample } from './lib/contract-checks.mjs';
 import { parseJsonc } from './parse-jsonc.mjs';
 
 /** 契约 §一 的五类角色（A4 值域） */
@@ -238,7 +239,9 @@ export async function checkPlugin(dir, options = {}) {
     if (samplePath && fs.existsSync(samplePath)) {
       try {
         const bytes = new Uint8Array(fs.readFileSync(samplePath));
-        const out = rf({ name: path.basename(samplePath), size: bytes.length, bytes });
+        // 插件契约 §3.4：file 至少要有 rootId / rel / name / size / bytes
+        //   （缺 rootId/rel 时合规插件会抛 ULB_ERR_BAD_ARGS —— 那不是插件的问题，是调用方漏传）
+        const out = rf({ rootId: 'probe-root', rel: path.basename(samplePath), name: path.basename(samplePath), size: bytes.length, bytes });
         const ret = isThenable(out) ? await out : out;
         const keys = ret && ret.files
           ? (ret.files instanceof Map ? [...ret.files.keys()] : Object.keys(ret.files))
@@ -283,6 +286,9 @@ export async function checkPlugin(dir, options = {}) {
   const naked = logs.filter((l) => l.level.startsWith('console.'));
   if (naked.length) rep.warn('N1', `检测到 ${naked.length} 条裸 console 调用（§3.4 要求走 host.log）`, '§3.4');
 
+  // ---------------- PL1–PL8（契约条目视角，见 tool/lib/contract-checks.mjs） ----------------
+  await runContractChecks({ rep, abs, manifest, options });
+
   const counts = rep.counts();
   return { dir: abs, rows: rep.rows, counts, failed: counts.fail > 0 };
 }
@@ -304,7 +310,8 @@ async function main(argv) {
   const args = argv.slice(2);
   const jsonMode = args.includes('--json');
   const sampleIdx = args.indexOf('--sample');
-  const samplePath = sampleIdx >= 0 ? args[sampleIdx + 1] : null;
+  // 没显式给样本时自动找一个：PL7 要求"happy path 真的跑"，拿不到才允许 SKIP
+  const samplePath = sampleIdx >= 0 ? args[sampleIdx + 1] : findDefaultSample();
   const allIdx = args.indexOf('--all');
   let targets = [];
   if (allIdx >= 0) {
@@ -326,6 +333,8 @@ async function main(argv) {
 
   const results = [];
   for (const d of targets) results.push(await checkPlugin(d, { samplePath }));
+  // 覆盖表每轮都打：让"PL1–PL8 各自被哪项检查覆盖"自证，不靠口头说明
+  if (!jsonMode) printCoverageTable();
   if (jsonMode) {
     console.log(JSON.stringify({ results: results.map((r) => ({
       dir: r.dir, counts: r.counts, failed: r.failed, rows: r.rows,
@@ -339,7 +348,7 @@ async function main(argv) {
     // 别让人以为"全绿就万事大吉"：B7/B8 没样本时只是跳过，不是通过
     const unverified = results.filter((r) => r.rows.some((x) => (x.code === 'B7' || x.code === 'B8') && x.kind === 'warn'));
     if (unverified.length) {
-      console.log(`提示：${unverified.length} 个插件的 B7/B8 未验证（缺合法容器样本），可用 --sample <包文件> 补验`);
+      console.log(`提示：${unverified.length} 个插件的 B7/B8 未验证 —— 具体原因见其 B7 行（缺样本时可用 --sample <包文件> 指定；垫片缺 DOM 时属环境限制）`);
     }
   }
   process.exit(results.some((r) => r.failed) ? 1 : 0);

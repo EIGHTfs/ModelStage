@@ -9,7 +9,7 @@
 //       iconUrl, warnings }
 //
 // 三条硬规则：
-//   1. kind 必填（spine / live2d / bundle）—— 名册据此分流；
+//   1. kind = 内容类型（spine / live2d），只用于选渲染分支；容器单文件另用 `container` 标记；
 //   2. 私有字段一律进 meta.extras，不进公共层；
 //   3. 缺陷显式化：动作取不到时进 warnings，不用"空数组"隐式表达。
 //
@@ -243,11 +243,14 @@ export function toBundleEntry(cfg, file, provider) {
   return {
     id: `bundle-${cfg.id}-${file.name}`,
     kind: provider.kind, // 可能为 null：宁可显式空，也不按插件 id 猜
-    source: 'bundle',
+    container: file.container || 'unityfs',   // 装载层据此决定先解包（不是内容类型）
     provider: provider.id,
     rootId: cfg.id,
     rootName: cfg.name,
     name: file.name,
+    // rel 是容器在根内的相对路径：装载时要凭它让插件去解包（缺了插件无从定位）
+    rel,
+    size: file.size,          // 顶层 size：插件解包前据此判断是否超限/是否需要流式处理
     srcDir: '',
     entry: { url: filesUrl(cfg.id, rel), name: file.name, size: file.size },
     assets: [],
@@ -275,7 +278,8 @@ export function listBundleEntries(cfg, { tree, plugins }) {
     return { entries: [], warnings: [`目录列举失败：${listed.body.error || listed.status}`], skipped: 0 };
   }
   const provider = resolveBundleProvider(plugins);
-  const containers = (listed.body.files || []).filter((f) => f.kind === 'bundle');
+  // 容器单文件由列举层用魔数标记（`container`），与根类型无关
+  const containers = (listed.body.files || []).filter((f) => f.container);
   const entries = containers.map((f) => toBundleEntry(cfg, f, provider));
   const warnings = provider.warning ? [provider.warning] : [];
   return { entries, warnings, skipped: countSkippedFiles(cfg.path, containers.length) };
@@ -310,21 +314,6 @@ export function createCatalog({ config, models, live2d, tree, plugins }) {
     const entries = [];
     const warnings = [];
 
-    // 资源包根：容器里的内容类型由提供者插件声明，不由根类型决定
-    if (cfg.kind === 'bundle') {
-      const bundle = listBundleEntries(cfg, { tree, plugins });
-      return {
-        status: 200,
-        body: {
-          root: { id: cfg.id, name: cfg.name },
-          count: bundle.entries.length,
-          entries: bundle.entries,
-          ...(bundle.skipped ? { skipped: bundle.skipped } : {}),
-          ...(bundle.warnings.length ? { warnings: bundle.warnings } : {}),
-        },
-      };
-    }
-
     try {
       for (const m of models.getModels(cfg, false).models) entries.push(toSpineEntry(cfg, m));
     } catch (e) {
@@ -336,12 +325,20 @@ export function createCatalog({ config, models, live2d, tree, plugins }) {
       warnings.push(`live2d 扫描失败：${e.message}`);
     }
 
+    // 容器单文件（资源包本质是打包来的模型）：与普通模型一起出现在同一份清单里，
+    //   所以"同一个根里既有普通模型又有容器"能被同时识别。
+    //   条目 kind 取插件声明的 produces.kind（内容类型），容器标记另行保留给装载层解包用。
+    const bundle = listBundleEntries(cfg, { tree, plugins });
+    entries.push(...bundle.entries);
+    if (bundle.warnings.length) warnings.push(...bundle.warnings);
+
     return {
       status: 200,
       body: {
         root: { id: cfg.id, name: cfg.name },
         count: entries.length,
         entries,
+        ...(bundle.skipped ? { skipped: bundle.skipped } : {}),
         ...(warnings.length ? { warnings } : {}),
       },
     };

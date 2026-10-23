@@ -62,7 +62,6 @@ export function toRootView(list) {
     name: r.name,
     path: r.path,
     kind: r.kind || 'spine',
-    profile: r.profile || null,
     enabled: r.enabled !== false,
     exists: isDir(r.path),
   }));
@@ -426,10 +425,9 @@ export function createWriteApi({ paths, config, models, names }) {
       if (name.length > MAX_NAME_CHARS) {
         return { ok: false, status: 400, error: `name 超过 ${MAX_NAME_CHARS} 个字符` };
       }
-      // kind / profile 是可选声明，原样透传（渲染器按 kind 分组、按 profile 选扫描策略）
+      // kind 是可选声明，原样透传（只有它影响扫描策略；旧端遗留的选配置字段已删除）
       const root = { id, name, path: dir, enabled: payload.enabled !== false };
       if (payload.kind) root.kind = String(payload.kind);
-      if (payload.profile) root.profile = String(payload.profile);
       next.push(root);
       return { ok: true, next, changed: { root, merged: next.filter((r) => r.name === name).length > 1 } };
     }
@@ -470,7 +468,7 @@ export function createWriteApi({ paths, config, models, names }) {
    * POST /api/roots —— 资源根增 / 删 / 改名 / 启停。
    *
    * 请求体：`{ action: 'add'|'remove'|'rename'|'toggle', ... }`
-   *   add    `{ path, name?, id?, kind?, profile?, enabled? }`
+   *   add    `{ path, name?, id?, kind?, enabled? }`
    *   remove `{ id }`
    *   rename `{ id, name }`
    *   toggle `{ id, enabled: boolean }`

@@ -127,8 +127,9 @@ bash web.sh start|stop|restart|status     # 默认 8804（独立服务）
       碧蓝航线的 3 个根（azurlane / azurlane_spine / azurlane_bundle）合并成 **1 个游戏节点**，
       节点上标「N 根」（title 列出根 id）。二级 = 角色，三级 = 变体
 - [x] **按游戏懒加载**：启动只拉 `/api/roots`；首次展开某游戏才请求它名下各根的
-      `/api/names?root=` + `/api/models?root=`（Live2D 根回落到 `/api/live2d/models`，
-      bundle 根走 `/api/tree` 的 `kind:'bundle'` 条目）；已加载过的游戏再展开不再发请求
+      `/api/names?root=` + `/api/catalog?root=`（catalog 把 spine 模型、live2d 模型、
+      容器单文件合并成一份清单，所以不再按"根的 kind"猜该问哪个扫描器）；
+      已加载过的游戏再展开不再发请求
 - [x] **角色跨根归并**：同一游戏下把各根模型并成一个数组再归并，同一角色来自不同根的变体
       落在**同一个角色节点**下（实测：阿尔比恩 = Live2D `aerbien_3` + Spine `aerbien_4`）
 - [x] 归并规则逐条照 `legacy/patches/char-tree.js`：`charKeyOf`（去 `cutscene_` / `_hx` / `_N`）、
