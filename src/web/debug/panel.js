@@ -12,6 +12,7 @@
 // 结构：图标 / 时间格式 / 样式注入 / 骨架 / 渲染器 / 编排，各自独立成函数（每函数 ≤50 行）。
 
 import { DEBUG_LEVELS } from './log.js';
+import { createPanelDrag } from './drag.js';
 
 const CSS_FILE = './panel.css';
 const CSS_LINK_ATTR = 'data-debug-panel-css';
@@ -447,13 +448,24 @@ export function mountDebugPanel({ log, container } = {}) {
   };
   shell.filter.addEventListener('change', onFilter);
 
+  // 浮层可拖动 + 记住位置（只移动，不做缩放）
+  const drag = createPanelDrag({ root: shell.root, head: shell.head });
+  drag.restore();
+
   view.renderAll();
 
+  // 把拖动句柄挂到 __WEB__（供自动化读节流计数；不存在就下次挂载再挂）
+  try {
+    if (typeof window !== 'undefined' && window.__WEB__) window.__WEB__.debugPanelDrag = drag;
+  } catch { /* 忽略 */ }
+
   return {
+    drag,
     element: shell.root,
     destroy() {
       try { wired.unsubscribe(); } catch { /* 忽略 */ }
       try { unwatchVisibility(); } catch { /* 忽略 */ }
+      try { drag.dispose(); } catch { /* 忽略 */ }
       shell.btnClear.removeEventListener('click', wired.onClear);
       shell.btnCollapse.removeEventListener('click', wired.onCollapse);
       try { sinkOff(); } catch { /* 忽略 */ }

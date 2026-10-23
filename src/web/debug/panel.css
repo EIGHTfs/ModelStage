@@ -56,7 +56,21 @@
   gap: 8px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--dbg-border);
+  /* 标题栏是拖动抓手：给抓取光标，拖动时禁用文本选中（否则会选中标题文字） */
+  cursor: grab;
+  user-select: none;
 }
+
+.dbg-panel.is-dragging .dbg-head { cursor: grabbing; }
+
+/* 拖动期间：提到合成层（改 transform 不重排），并关掉过渡避免跟手出现"追帧"延迟 */
+.dbg-panel.is-dragging {
+  transition: none;
+  will-change: transform;
+}
+
+/* 标题栏是抓手：触屏上不让浏览器把拖动解释成滚页面，否则手感会"跟不上" */
+.dbg-head { touch-action: none; }
 
 .dbg-head-left,
 .dbg-head-right {
