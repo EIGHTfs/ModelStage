@@ -9,7 +9,6 @@ import { setPlaybackPaused } from '../render/playback.js';
 import { getRendererSetting, setRendererSetting } from './renderer-setting.js';
 import { stageStatus } from './status.js';
 import { formatError, getJson } from '../infra/api.js';
-import { applyBackground } from './view-settings.js';
 import {
   buildAnimationList, isCycleLoop, labelWithDuration, notePlaying, playAnimation, setCycleLoop,
 } from './anim-list.js';
@@ -81,16 +80,6 @@ async function stepVariant(dir) {
   } catch (err) {
     stageStatus(`切换变体失败：${formatError(err)}`, 'error');
   }
-}
-/** 背景：底栏快捷入口，循环切换 棋盘 → 纯色 → 透明（与主题背景组的 bg-mode 同一状态） */
-function cycleBackground() {
-  const order = ['checkerboard', 'solid', 'transparent'];
-  const cur = state.viewBg || 'checkerboard';
-  const next = order[(order.indexOf(cur) + 1) % order.length];
-  applyBackground(next);
-  if (state.panel && state.panel.setValue) state.panel.setValue('ctl-bg-mode', next);
-  document.documentElement.dataset.transportBg = next;
-  stageStatus(`transport 背景 → ${next}`, 'info');
 }
 /** 动作下拉选择：切动画并回填 dataset；右栏高亮与下拉互相跟随（同一份清单） */
 function applyTransportMotion(id) {
@@ -191,6 +180,6 @@ function skinSwitchMixTime(fn) {
 }
 
 export {
-  toggleTransportPlay, setPlaying, syncPlayUi, stepVariant, cycleBackground, applyAnimLoop,
+  toggleTransportPlay, setPlaying, syncPlayUi, stepVariant, applyAnimLoop,
   applyTransportMotion, fillTransportOptions, applyMixMode, applySkinMix, skinSwitchMixTime,
 };

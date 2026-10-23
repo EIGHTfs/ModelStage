@@ -40,7 +40,7 @@ import {
   bindCinemaKeys, bindSidebarStateSync, exportScreenshot, syncSidebarButtons, toggleCinema, toggleRightPanel,
 } from './app/topbar-actions.js';
 import {
-  applyTransportMotion, cycleBackground, stepVariant, toggleTransportPlay,
+  applyTransportMotion, stepVariant, toggleTransportPlay,
 } from './app/transport-actions.js';
 
 // 页面级第一件事：装诊断探针（幂等，重复调用不会重复包装 console）
@@ -370,7 +370,6 @@ function boot() {
     'transport-play': () => toggleTransportPlay(),
     'transport-prev': () => stepVariant(-1),
     'transport-next': () => stepVariant(1),
-    'transport-bg': () => cycleBackground(),
     'transport-motion': (name) => applyTransportMotion(name),
     'transport-skin': (name) => { if (stage && stage.setSkin) stage.setSkin(name); },
   });

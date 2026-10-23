@@ -398,6 +398,8 @@ export function mountTransport(footerEl, handlers = {}) {
   const nodes = new Map();
   /** 自绘下拉的句柄（id → picker），setOptions/setSelectValue 走它 */
   const pickers = new Map();
+  /** 自带回调的 picker（不依赖 handlers 即可用）：背景选择器属于这一类 */
+  const selfWired = new Set();
 
   for (const ids of groups) {
     const box = el('div', 'transport-group');
@@ -413,6 +415,7 @@ export function mountTransport(footerEl, handlers = {}) {
           { onBeforeOpen: () => { refreshBgOptions(bgPicker).catch(() => { /* 刷新失败沿用现有选项 */ }); } },
         );
         pickers.set(id, bgPicker);
+        selfWired.add(id);
         nodes.set(id, bgPicker.root);
         box.append(bgPicker.root);
         refreshBgOptions(bgPicker).catch(() => { /* 首次拉取失败：保留内置 4 项 */ });
@@ -450,9 +453,14 @@ export function mountTransport(footerEl, handlers = {}) {
   // 接线：只有提供 handler 的控件才解锁
   const wired = [];
   for (const [id, node] of nodes) {
+    // 自绘下拉的"已接线"判定：自带回调的（背景）不依赖 handlers；
+    //   其余（动作/皮肤）的选中回调会转调 handlers[id]，没有 handler 仍算未接线。
+    if (pickers.has(id)) {
+      if (selfWired.has(id) || typeof handlers[id] === 'function') wired.push(id);
+      continue;
+    }
     const handler = handlers[id];
     if (typeof handler !== 'function') continue;
-    if (pickers.has(id)) { wired.push(id); continue; }   // picker 的选中回调已在构造时接好
     const ctl = byId.get(id);
     unwirePending(node, ctl ? (ctl.title || ctl.label) : '');
     if (node.tagName === 'SELECT') {
