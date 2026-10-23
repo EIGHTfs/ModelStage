@@ -157,6 +157,18 @@ function createRenderer({ log, list, countEl, state }) {
     list.scrollTop = list.scrollHeight;
   }
 
+  /** 容差（px）：离底部这么近就算"用户在看最新" */
+  const BOTTOM_TOLERANCE = 4;
+
+  /**
+   * 用户当前是否停在底部。
+   * **必须在改 DOM 之前测**：改完 scrollHeight 就变了，再测永远为 false/true 失真。
+   * @returns {boolean}
+   */
+  function isAtBottom() {
+    return list.scrollHeight - list.scrollTop - list.clientHeight <= BOTTOM_TOLERANCE;
+  }
+
   function updateCount(n) {
     countEl.textContent = `${n} 条`;
   }
@@ -175,14 +187,22 @@ function createRenderer({ log, list, countEl, state }) {
     return (LEVEL_RANK[record.level] === undefined ? 1 : LEVEL_RANK[record.level]) >= floor;
   }
 
-  /** 全量重绘（初始化 / 清空后 / 切换过滤 / 样式就绪后） */
-  function renderAll() {
+  /**
+   * 全量重绘（初始化 / 清空后 / 切换过滤 / 样式就绪后）。
+   *
+   * 滚动语义（标准日志面板）：只有"用户本来就在底部"时才跟着滚到最新一条；
+   *   正在向上翻阅时**一律不打断**——否则切过滤/点空白/来一条新日志都会把视线拽回底部。
+   * @param {{forceBottom?: boolean}} [opts] forceBottom：清空后无内容可看，回底属合理
+   */
+  function renderAll(opts = {}) {
+    const forceBottom = opts.forceBottom === true;
+    const stick = forceBottom || isAtBottom();   // ← 必须在 replaceChildren 之前测
     const records = log.entries().filter(levelPass);
     list.replaceChildren();
     if (!records.length) list.append(el('div', 'dbg-empty', '暂无日志'));
     else for (const record of records) list.append(renderEntry(record, state));
     updateCount(records.length);
-    scrollToBottom();
+    if (stick) scrollToBottom();
   }
 
   /**
@@ -193,7 +213,7 @@ function createRenderer({ log, list, countEl, state }) {
   let pending = [];
   let scheduled = false;
   function scheduleRender(entry) {
-    if (entry === null) { pending = []; renderAll(); return; }
+    if (entry === null) { pending = []; renderAll({ forceBottom: true }); return; }
     pending.push(entry);
     if (scheduled) return;
     scheduled = true;
@@ -202,17 +222,18 @@ function createRenderer({ log, list, countEl, state }) {
       const batch = pending;
       pending = [];
       if (!batch.length) return;
+      const stick = isAtBottom();   // 先测：append 之后 scrollHeight 变大，就判断不出用户原本在底部
       const hasEmpty = !!list.querySelector('.dbg-empty');
       if (hasEmpty) list.replaceChildren();
       for (const record of batch) if (levelPass(record)) list.append(renderEntry(record, state));
       updateCount(list.childElementCount);
-      scrollToBottom();
+      if (stick) scrollToBottom();
     };
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
     else setTimeout(run, 16);
   }
 
-  return { renderAll, appendEntry: scheduleRender, scrollToBottom };
+  return { renderAll, appendEntry: scheduleRender, scrollToBottom, isAtBottom, list };
 }
 
 /**
