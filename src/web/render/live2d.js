@@ -17,6 +17,16 @@ export function createLive2DRenderer({ live2d } = {}) {
   if (!live2d) throw new Error('createLive2DRenderer: 需要 live2d 实现');
   /** 当前生效的纹理过滤与限帧（回显用） */
   let filterMode = 'linear';
+  /** 暂停标记：暂停期间相机/设置变化后必须自己补一帧（ticker 停着不会自动画） */
+  let pausedRef = false;
+  /** 立刻画一帧（暂停时的按需渲染） */
+  function repaintFrame() {
+    try {
+      const app = live2d.getApp && live2d.getApp();
+      if (app && app.renderer && app.stage) { app.renderer.render(app.stage); return true; }
+    } catch { /* 忽略 */ }
+    return false;
+  }
   let fpsLimit = 60;
   /**
    * 收集舞台上全部 PIXI 纹理（实测挂点是 model.textures 数组，模型对象没有 _texture）。
@@ -41,9 +51,9 @@ export function createLive2DRenderer({ live2d } = {}) {
       /** 当前缩放（bridge 是唯一真相） */
       getScale: () => { try { return live2d.bridge.readState().zoom; } catch { return null; } },
       /** 写入缩放（bridge 内部仍会按 CAMERA 常量夹取） */
-      setScale: (v) => { try { live2d.bridge.setZoomRatio(v); } catch { /* 忽略 */ } },
+      setScale: (v) => { try { live2d.bridge.setZoomRatio(v); } catch { /* 忽略 */ } if (pausedRef) repaintFrame(); },
       /** 平移：屏幕像素增量，1:1 交给覆盖层 */
-      pan: (dx, dy) => { try { live2d.bridge.pan(dx, dy); } catch { /* 忽略 */ } },
+      pan: (dx, dy) => { try { live2d.bridge.pan(dx, dy); } catch { /* 忽略 */ } if (pausedRef) repaintFrame(); },
       /** 复位：bridge 归 1 并重排 */
       resetView: () => { try { live2d.bridge.resetView(); } catch { /* 忽略 */ } },
     },
@@ -254,6 +264,11 @@ if (typeof live2d.syncSize === 'function') {
         try { live2d.syncSize({ size: { width: cssW, height: cssH }, dpr: res }); } catch { /* 忽略 */ }
       }
     },
+    /** 按需渲染一帧（暂停中交互/改设置后调用；ticker 停着不会自动画） */
+    render() { return repaintFrame(); },
+    /** 显式补一帧（统一入口 repaintActive 用） */
+    repaint() { return repaintFrame(); },
+
     /**
      * 暂停：停掉 PIXI ticker。
      * 为什么用 ticker：Live2D 的时间推进完全由 ticker 驱动（模型 update 在 ticker 回调里），
@@ -262,11 +277,13 @@ if (typeof live2d.syncSize === 'function') {
      *   恢复时直接 start() 即可，不需要额外补帧。
      */
     pause() {
+      pausedRef = true;
       try { const app = live2d.getApp && live2d.getApp(); if (app && app.ticker && app.ticker.stop) { app.ticker.stop(); return true; } } catch { /* 忽略 */ }
       return false;
     },
     /** 继续：重启 ticker */
     resume() {
+      pausedRef = false;
       try { const app = live2d.getApp && live2d.getApp(); if (app && app.ticker && app.ticker.start) { app.ticker.start(); return true; } } catch { /* 忽略 */ }
       return false;
     },

@@ -7,7 +7,7 @@
 
 import { attachAssetApi, attachRenderApi, attachSettingSetters, attachViewApi } from './canvas-api-groups.js';
 import { abortedError } from './canvas-document.js';
-import { applySettings, loadIntoStage, unloadModel } from './canvas-engine.js';
+import { applySettings, loadIntoStage, unloadModel , startFrameTick, stopFrameTick, repaintOnce } from './canvas-engine.js';
 import { samplePixels } from './canvas-pixels.js';
 import { statsOf } from './canvas-view.js';
 
@@ -46,8 +46,18 @@ const api = {
   stats: () => statsOf(st),
   samplePixels: () => samplePixels(st),
   applySettings: (patch) => applySettings(st, patch),
-  play() { if (st.engine && st.engine.start) { try { st.engine.start(); } catch { /* 已在播放 */ } } },
-  pause() { if (st.engine && st.engine.stop) { try { st.engine.stop(); } catch { /* 已暂停 */ } } },
+  play() {
+    if (st.engine && st.engine.start) { try { st.engine.start(); } catch { /* 已在播放 */ } }
+    st.paused = false;      // 恢复：重启帧计数循环（单实例由 startFrameTick 保证）
+    startFrameTick(st);
+  },
+  pause() {
+    if (st.engine && st.engine.stop) { try { st.engine.stop(); } catch { /* 已暂停 */ } }
+    st.paused = true;       // 暂停：停掉帧计数循环，避免空转重绘同一张静止画面
+    stopFrameTick(st);
+    repaintOnce(st);        // 停循环前补一帧，保证"按下瞬间"的画面是最新的
+  },
+  repaint: () => repaintOnce(st),
   seek(t) { if (st.engine && st.engine.seek) { try { st.engine.seek(t); } catch { /* 越界忽略 */ } } },
   setAnimation(name, loop) {
     if (!st.engine || !name) return false;

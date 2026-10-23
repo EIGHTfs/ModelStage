@@ -59,6 +59,50 @@ export function ensureStageEngineWith(st, Engine, antialias, canvasOverride) {
   return true;
 }
 
+/**
+ * 帧计数循环（验收口径：stats().frames 必须真实反映"画面在推进"）。
+ *
+ * 为什么可暂停：暂停后仍每帧跑一遍这条 rAF 纯烧 CPU（部署机无 GPU、纯软件 WebGL），
+ *   而它只是计数循环，与引擎是否绘制无关。暂停时**停掉循环本身**，恢复时重启。
+ * 单实例保证：用 st.frameRaf 记录句柄，已在跑就直接返回，避免重复排帧。
+ * @param {object} st 舞台内部状态
+ */
+export function startFrameTick(st) {
+  if (st.frameRaf) return;               // 已在跑：绝不重复启动
+  const tick = () => {
+    st.frameRaf = 0;
+    if (!st.model || st.model !== st.frameInfo) return;   // 模型已换/卸载：自然结束
+    if (st.paused) return;                                // 暂停：不再排帧（resume 时重启）
+    st.frames++;
+    st.frameRaf = requestAnimationFrame(tick);
+  };
+  st.frameRaf = requestAnimationFrame(tick);
+}
+
+/**
+ * 单帧重绘（暂停中按需渲染的唯一入口）。
+ * 引擎在 stop() 之后不会自己画，而交互/改设置/切动作都改了状态 ⇒ 必须显式补一帧，
+ * 否则"暂停"会变成"点了没反应"。
+ * @param {object} st 舞台内部状态
+ * @returns {boolean} 是否成功请求到一次绘制
+ */
+export function repaintOnce(st) {
+  const e = st && st.engine;
+  if (!e) return false;
+  try {
+    // 按需渲染也算一帧：frames 的语义是"真的画了一次"，暂停期间的交互/改设置都体现在这里
+    if (typeof e.requestRender === 'function') { e.requestRender(); st.frames += 1; return true; }
+    if (typeof e.presentFirstFrame === 'function') { e.presentFirstFrame(); st.frames += 1; return true; }
+  } catch { /* 引擎不支持就放弃 */ }
+  return false;
+}
+
+/** 停掉帧计数循环（暂停/卸载时调用） */
+export function stopFrameTick(st) {
+  if (st.frameRaf) { try { cancelAnimationFrame(st.frameRaf); } catch { /* 忽略 */ } }
+  st.frameRaf = 0;
+}
+
 /** 播第一个动作 + 启动渲染循环 + 帧计数（验收用） */
 function startPlayback(st, info, loop) {
   const e = st.engine;
@@ -68,12 +112,8 @@ function startPlayback(st, info, loop) {
   try { e.start(); } catch { /* 循环已在跑 */ }
   try { if (e.presentFirstFrame) e.presentFirstFrame(); } catch { /* 留给下一帧 */ }
   st.frames = 0;
-  const tick = () => {
-    if (st.model !== info) return;
-    st.frames++;
-    requestAnimationFrame(tick);
-  };
-  requestAnimationFrame(tick);
+  st.frameInfo = info;
+  startFrameTick(st);
   return { animations: anims, motion };
 }
 

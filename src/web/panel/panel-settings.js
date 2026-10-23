@@ -14,6 +14,7 @@ import { applyDebugLog, applyHangGuard, applyShowStatus, connectShellControls, r
 import { applyBackground, applyTheme, readViewSettings, saveViewSettings } from '../app/view-settings.js';
 import { DEFAULT_PART_FILTER_KEYWORDS, applyPartFilter } from '../app/part-filter.js';
 import { applyAnimLoop, applyMixMode, applySkinMix, applyTransportMotion } from '../app/transport-actions.js';
+import { repaintActive } from '../render/playback.js';
 import {
   buildAnimationList, currentAnimationId, durationText, labelWithDuration, onCycleAdvance,
   primeAnimationDurations, syncTransportOptions,
@@ -173,7 +174,12 @@ function rebuildPanelFor(renderer) {
     groups,
     headEl: dom.panelHead,
     bodyEl: dom.panelBody,
-    onSetting: applyPanelSetting,
+    // 面板控件回调统一入口 + 暂停补帧：面板里的设置是**直调 renderer.setSetting**（不经
+    //   app/renderer-setting.js），所以补帧必须挂在这一层，否则暂停中改设置"改了看不见"。
+    onSetting: (id, value) => {
+      applyPanelSetting(id, value);
+      if (state.playing === false) { try { repaintActive(state.surface); } catch { /* 忽略 */ } }
+    },
     wiredIds: WIRED_IDS,
   });
   state.panel = info;

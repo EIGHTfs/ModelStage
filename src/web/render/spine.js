@@ -36,6 +36,8 @@ const STAGE_SETTERS = {
  * @param {{stage: object}} options stage 为舞台（提供 load/unload/dispose/stats/camera）
  */
 export function createSpineRenderer({ stage, onMsaa } = {}) {
+  /** 暂停标记（渲染器自己维护：相机/设置变更后需要判断"是否要补一帧"） */
+  let pausedRef = false;
   if (!stage || typeof stage.load !== 'function') {
     throw new Error('createSpineRenderer: 需要提供 load 能力的 stage');
   }
@@ -63,10 +65,12 @@ export function createSpineRenderer({ stage, onMsaa } = {}) {
     setScale(v) {
       const engine = engineOf();
       try { if (engine && typeof engine.setCameraZoom === 'function') engine.setCameraZoom(v); } catch { /* 忽略 */ }
+      if (pausedRef) { try { stage.repaint && stage.repaint(); } catch { /* 忽略 */ } }
     },
     pan(dx, dy) {
       const engine = engineOf();
       try { if (engine && typeof engine.applyPan === 'function') engine.applyPan(dx, dy); } catch { /* 忽略 */ }
+      if (pausedRef) { try { stage.repaint && stage.repaint(); } catch { /* 忽略 */ } }
     },
     resetView() {
       // 走舞台的 resetView：它除了相机归位，还会重取"平移基准"(viewBaseScale/viewPan)，
@@ -87,12 +91,20 @@ export function createSpineRenderer({ stage, onMsaa } = {}) {
      * 走 stage.pause()：舞台层的暂停是唯一实现（引擎 stopp），渲染器不重复实现一套。
      */
     pause() {
+      pausedRef = true;   // 之后相机/设置变化都要显式补帧（引擎自己不再画）
       try { if (stage && typeof stage.pause === 'function') { stage.pause(); return true; } } catch { /* 忽略 */ }
       return false;
     },
     /** 继续：恢复引擎推进 */
     resume() {
+      pausedRef = false;
       try { if (stage && typeof stage.play === 'function') { stage.play(); return true; } } catch { /* 忽略 */ }
+      return false;
+    },
+
+    /** 显式补一帧（暂停中截图前调用，保证拿到的是最新画面） */
+    repaint() {
+      try { if (stage && typeof stage.repaint === 'function') { stage.repaint(); return true; } } catch { /* 忽略 */ }
       return false;
     },
     capabilities: {

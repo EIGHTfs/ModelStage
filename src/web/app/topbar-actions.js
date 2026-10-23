@@ -11,6 +11,7 @@
 
 import { stage } from './context.js';
 import { stageStatus } from './status.js';
+import { repaintActive } from '../render/playback.js';
 
 /** 影院模式下静止多久把播放条淡出（毫秒）；鼠标一动就回来 */
 const CINEMA_IDLE_MS = 3000;
@@ -98,11 +99,12 @@ function composeStageCanvas() {
  * 内容同时留在 __WEB__.screenshotExport 供自动化断言（无头环境无法确认真实落盘）。
  */
 export function exportScreenshot() {
-  // 先请引擎再画一帧：确保这次读到的就是"当前画面"
+  // 先让**当前渲染面**补一帧：暂停时引擎/渲染循环都停着，不补就会截到旧帧或空帧
+  try { repaintActive(state.surface); } catch { /* 画不出新帧就用现成缓冲 */ }
   try {
     const engine = stage && stage.debug ? stage.debug().engine : null;
     if (engine && typeof engine.presentFirstFrame === 'function') engine.presentFirstFrame();
-  } catch { /* 画不出新帧就用现成缓冲 */ }
+  } catch { /* 引擎不支持就用现成缓冲 */ }
   const composed = composeStageCanvas();
   if (!composed) {
     stageStatus('截图失败：舞台画布尚未就绪', 'error');

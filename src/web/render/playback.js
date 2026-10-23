@@ -24,3 +24,24 @@ export function setPlaybackPaused(surface, paused) {
     return 'none';
   }
 }
+
+/**
+ * 按需渲染一帧（暂停期间的交互/改设置/切动作/截图都走这里）。
+ *
+ * 为什么也要收口：门面（renderer-2d）不转发渲染器自有方法（repaint/render），
+ *   直接 `state.currentRenderer.repaint()` 是空操作——实测 frames 增量 0。
+ *   这里按当前渲染器取真实实例，再退到它的 render()。
+ * @param {object|null} surface 舞台表面（提供 activeRenderer()）
+ * @returns {'renderer.repaint'|'renderer.render'|'none'|'no-renderer'} 实际通路
+ */
+export function repaintActive(surface) {
+  const renderer = surface && typeof surface.activeRenderer === 'function' ? surface.activeRenderer() : null;
+  if (!renderer) return 'no-renderer';
+  if (typeof renderer.repaint === 'function') {
+    try { renderer.repaint(); return 'renderer.repaint'; } catch { return 'none'; }
+  }
+  if (typeof renderer.render === 'function') {
+    try { renderer.render(); return 'renderer.render'; } catch { return 'none'; }
+  }
+  return 'none';
+}

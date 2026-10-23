@@ -12,6 +12,7 @@
 // 注意：同一条键只警告一次（Set 去重）。否则"恢复上次偏好"这类路径会在每次装载时刷屏。
 import { state } from './context.js';
 import { stageStatus } from './status.js';
+import { repaintActive } from '../render/playback.js';
 
 /** 已警告过的键（避免同一条能力缺失反复刷日志） */
 const warned = new Set();
@@ -48,6 +49,8 @@ export function setRendererSetting(key, value) {
   }
   let ok = false;
   try { ok = renderer.setSetting(key, value) === true; } catch { ok = false; }
+  // 暂停中改设置：引擎/渲染循环都停着，必须显式补一帧，否则"改了看不见"
+  if (state.playing === false) { try { repaintActive(state.surface); } catch { /* 忽略 */ } }
   let applied = null;
   try { applied = renderer.getSetting ? renderer.getSetting(key) : null; } catch { applied = null; }
   if (!ok) {
