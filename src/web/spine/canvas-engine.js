@@ -72,6 +72,7 @@ export function startFrameTick(st) {
   const tick = () => {
     st.frameRaf = 0;
     if (!st.model || st.model !== st.frameInfo) return;   // 模型已换/卸载：自然结束
+    st.tickCalls = (st.tickCalls || 0) + 1;               // 打点：验收直接看"循环被调了几次"
     if (st.paused) return;                                // 暂停：不再排帧（resume 时重启）
     st.frames++;
     st.frameRaf = requestAnimationFrame(tick);

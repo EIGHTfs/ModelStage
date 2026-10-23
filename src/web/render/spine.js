@@ -35,6 +35,24 @@ const STAGE_SETTERS = {
  * 创建 Spine 渲染器。
  * @param {{stage: object}} options stage 为舞台（提供 load/unload/dispose/stats/camera）
  */
+/**
+ * 画面指纹：对 2D canvas 采样求和，用于断言"截到的是哪一面、内容是否变化"。
+ * 采样步长取质数，避免与行宽成整数比导致漏采。
+ * @param {HTMLCanvasElement} canvas
+ * @returns {number} 指纹（0 表示取不到）
+ */
+function digestOf(canvas) {
+  try {
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return 0;
+    const { width, height } = canvas;
+    const data = ctx.getImageData(0, 0, width, height).data;
+    let sum = 0;
+    for (let i = 0; i < data.length; i += 997) sum = (sum + data[i]) % 1000003;
+    return sum;
+  } catch { return 0; }
+}
+
 export function createSpineRenderer({ stage, onMsaa } = {}) {
   /** 暂停标记（渲染器自己维护：相机/设置变更后需要判断"是否要补一帧"） */
   let pausedRef = false;
@@ -100,6 +118,45 @@ export function createSpineRenderer({ stage, onMsaa } = {}) {
       pausedRef = false;
       try { if (stage && typeof stage.play === 'function') { stage.play(); return true; } } catch { /* 忽略 */ }
       return false;
+    },
+
+    /**
+     * 截图取像素：读 Spine 舞台画布的 WebGL 缓冲（缓冲不保留，只能 readPixels），
+     * 逐行翻转后画进一张 2D canvas 返回。
+     * 这段逻辑原在 app/topbar-actions.js 里写死 `#stage-canvas`，搬到渲染器后
+     * **行为不变**，只是让"当前面是谁"由渲染器自己决定。
+     * @returns {{canvas: HTMLCanvasElement, width: number, height: number, nonEmpty: number}|null}
+     */
+    capture() {
+      const canvas = typeof document !== 'undefined' ? document.getElementById('stage-canvas') : null;
+      if (!canvas || !canvas.width || !canvas.height) return null;
+      const w = canvas.width;
+      const h = canvas.height;
+      const out = document.createElement('canvas');
+      out.width = w;
+      out.height = h;
+      const outCtx = out.getContext('2d');
+      if (!outCtx) return null;
+      let nonEmpty = 0;
+      const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+      if (gl && typeof gl.readPixels === 'function') {
+        try {
+          const buf = new Uint8Array(w * h * 4);
+          gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+          const img = outCtx.createImageData(w, h);
+          // WebGL 原点在左下：逐行翻转，否则导出上下颠倒
+          for (let y = 0; y < h; y += 1) {
+            const src = (h - 1 - y) * w * 4;
+            img.data.set(buf.subarray(src, src + w * 4), y * w * 4);
+          }
+          for (let i = 3; i < img.data.length; i += 4) if (img.data[i] > 8) nonEmpty += 1;
+          outCtx.putImageData(img, 0, 0);
+        } catch { /* 读不到就走 drawImage 兜底 */ }
+      }
+      if (nonEmpty === 0) {
+        try { outCtx.drawImage(canvas, 0, 0); } catch { /* 兜底失败就返回空白 */ }
+      }
+      return { canvas: out, width: w, height: h, nonEmpty, digest: digestOf(out) };
     },
 
     /** 显式补一帧（暂停中截图前调用，保证拿到的是最新画面） */

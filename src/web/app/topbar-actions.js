@@ -9,9 +9,10 @@
 //   ② 影院模式只是切 <html data-cinema>，显隐与位移全在 style.css 里；JS 只负责状态切换
 //      与"静止数秒淡出播放条"（data-idle），不碰任何几何。
 
-import { stage } from './context.js';
+import { stage, state } from './context.js';
 import { stageStatus } from './status.js';
 import { repaintActive } from '../render/playback.js';
+import { captureActive } from '../render/capture.js';
 
 /** 影院模式下静止多久把播放条淡出（毫秒）；鼠标一动就回来 */
 const CINEMA_IDLE_MS = 3000;
@@ -35,66 +36,6 @@ function stamp(d) {
 }
 
 /**
- * 把舞台画布读成 2D 画布（含 Live2D 覆盖层）。
- * @returns {{canvas: HTMLCanvasElement, width: number, height: number, nonEmpty: number}|null}
- */
-function composeStageCanvas() {
-  const stageCanvas = document.getElementById('stage-canvas');
-  if (!stageCanvas) return null;
-  const w = stageCanvas.width;
-  const h = stageCanvas.height;
-  if (!w || !h) return null;
-  const out = document.createElement('canvas');
-  out.width = w;
-  out.height = h;
-  const ctx = out.getContext('2d');
-  if (!ctx) return null;
-  let nonEmpty = 0;
-  // 主画布：优先读像素（WebGL 缓冲不保留，readPixels 是唯一可靠取法）
-  const gl = stageCanvas.getContext('webgl2') || stageCanvas.getContext('webgl');
-  if (gl && typeof gl.readPixels === 'function') {
-    try {
-      const buf = new Uint8Array(w * h * 4);
-      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-      const img = ctx.createImageData(w, h);
-      // WebGL 原点在左下：逐行翻转，否则导出的图是上下颠倒的
-      for (let y = 0; y < h; y += 1) {
-        const src = (h - 1 - y) * w * 4;
-        img.data.set(buf.subarray(src, src + w * 4), y * w * 4);
-      }
-      for (let i = 3; i < img.data.length; i += 4) if (img.data[i] > 8) nonEmpty += 1;
-      ctx.putImageData(img, 0, 0);
-    } catch { /* 读像素失败继续尝试 drawImage 兜底 */ }
-  }
-  if (nonEmpty === 0) {
-    try { ctx.drawImage(stageCanvas, 0, 0); } catch { /* 兜底也失败就导出空白图 */ }
-  }
-  // Live2D 覆盖层：可见时叠上去（同一坐标系，origin 都在左上）
-  const overlay = document.getElementById('live2d-overlay-canvas');
-  if (overlay && overlay.width && overlay.height && overlay.offsetParent !== null) {
-    try {
-      const tmp = document.createElement('canvas');
-      tmp.width = overlay.width;
-      tmp.height = overlay.height;
-      const tctx = tmp.getContext('2d');
-      const ogl = overlay.getContext('webgl2') || overlay.getContext('webgl');
-      if (tctx && ogl) {
-        const obuf = new Uint8Array(overlay.width * overlay.height * 4);
-        ogl.readPixels(0, 0, overlay.width, overlay.height, ogl.RGBA, ogl.UNSIGNED_BYTE, obuf);
-        const oimg = tctx.createImageData(overlay.width, overlay.height);
-        for (let y = 0; y < overlay.height; y += 1) {
-          const src = (overlay.height - 1 - y) * overlay.width * 4;
-          oimg.data.set(obuf.subarray(src, src + overlay.width * 4), y * overlay.width * 4);
-        }
-        tctx.putImageData(oimg, 0, 0);
-        ctx.drawImage(tmp, 0, 0, out.width, out.height);
-      }
-    } catch { /* 覆盖层叠加失败不影响主画布 */ }
-  }
-  return { canvas: out, width: w, height: h, nonEmpty };
-}
-
-/**
  * 截图导出：canvas → blob → 触发下载；文件名带模型名与时间戳。
  * 内容同时留在 __WEB__.screenshotExport 供自动化断言（无头环境无法确认真实落盘）。
  */
@@ -105,9 +46,10 @@ export function exportScreenshot() {
     const engine = stage && stage.debug ? stage.debug().engine : null;
     if (engine && typeof engine.presentFirstFrame === 'function') engine.presentFirstFrame();
   } catch { /* 引擎不支持就用现成缓冲 */ }
-  const composed = composeStageCanvas();
+  // 画面来源交给**当前渲染器**（以前这里写死 #stage-canvas，Live2D 面会导到上次 Spine 的残留帧）
+  const composed = captureActive(state.surface);
   if (!composed) {
-    stageStatus('截图失败：舞台画布尚未就绪', 'error');
+    stageStatus('截图失败：当前渲染面尚未就绪', 'error');
     return false;
   }
   // 模型名优先取名册选中的那个；直连 stage.load（脚本/恢复）时没有 selectedModel，
@@ -124,7 +66,8 @@ export function exportScreenshot() {
   const filename = `modelstage-${safeName(model)}-${stamp(new Date())}.png`;
   const finish = (bytes) => {
     window.__WEB__ && (window.__WEB__.screenshotExport = {
-      filename, bytes, width: composed.width, height: composed.height, nonEmpty: composed.nonEmpty,
+      filename, bytes, width: composed.width, height: composed.height,
+      source: composed.source, digest: composed.digest, nonEmpty: composed.nonEmpty, model,
     });
     document.documentElement.dataset.screenshot = `${filename}|${bytes}`;
     stageStatus(`已导出截图：${filename}（${composed.width}×${composed.height}，${bytes} 字节）`, 'info', { show: true });

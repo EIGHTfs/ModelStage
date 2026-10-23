@@ -76,7 +76,7 @@ const api = {
     st.disposes++;
   },
   // debug 同时给出统计字段（验收脚本从 debug() 读 frames 等）
-  debug: () => ({ ...statsOf(st), engine: st.engine }),
+  debug: () => ({ ...statsOf(st), engine: st.engine, tickCalls: st.tickCalls || 0, paused: !!st.paused }),
 };
   return api;
 }

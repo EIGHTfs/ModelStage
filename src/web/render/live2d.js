@@ -13,6 +13,72 @@ import { DEFAULT_FILTER, FILTER_PRESETS } from '../engine/filters.js';
  * 创建 Live2D 渲染器。
  * @param {{live2d: object}} options live2d 为覆盖层实现（提供 mount/dispose/isActive/bridge）
  */
+/**
+ * 把任意尺寸的图等比居中贴到**画布尺寸**的 2D canvas 上。
+ * 为什么需要：extract 给的是模型包围盒（例如 1058×1058），直接导出会与常态的
+ *   1920×1080 不一致——用户拿到一张尺寸不同的图会以为出错。
+ * @param {HTMLCanvasElement} src 源图
+ * @param {object} app PIXI app（取 view 的画布尺寸）
+ * @returns {{canvas: HTMLCanvasElement, width: number, height: number, source: string, digest: number}}
+ */
+function fitIntoCanvas(src, app) {
+  const view = app && app.view;
+  const w = Math.max(1, Math.round((view && view.width) || app.screen.width || src.width));
+  const h = Math.max(1, Math.round((view && view.height) || app.screen.height || src.height));
+  const out = document.createElement('canvas');
+  out.width = w;
+  out.height = h;
+  const ctx = out.getContext('2d');
+  if (!ctx) return null;
+  const scale = Math.min(w / src.width, h / src.height);
+  const dw = Math.max(1, Math.round(src.width * scale));
+  const dh = Math.max(1, Math.round(src.height * scale));
+  ctx.drawImage(src, Math.round((w - dw) / 2), Math.round((h - dh) / 2), dw, dh);
+  return { canvas: out, width: w, height: h, source: 'extract-fit', digest: digestOf(out) };
+}
+
+/** 从 PIXI 画布缓冲直接取一张 2D canvas（整画布尺寸）；读不到有效像素返回 null */
+function captureFromView(app) {
+  const view = app && app.view;
+  if (!view || !view.width || !view.height) return null;
+  const w = view.width;
+  const h = view.height;
+  const gl = view.getContext('webgl2') || view.getContext('webgl');
+  if (!gl || typeof gl.readPixels !== 'function') return null;
+  try {
+    const buf = new Uint8Array(w * h * 4);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    let alpha = 0;
+    for (let i = 3; i < buf.length; i += 4 * 37) if (buf[i] > 8) alpha += 1;   // 抽样：确认不是空缓冲
+    if (alpha === 0) return null;
+    const out = document.createElement('canvas');
+    out.width = w;
+    out.height = h;
+    const ctx = out.getContext('2d');
+    if (!ctx) return null;
+    const img = ctx.createImageData(w, h);
+    for (let y = 0; y < h; y += 1) {           // WebGL 原点在左下 → 逐行翻转
+      const src = (h - 1 - y) * w * 4;
+      img.data.set(buf.subarray(src, src + w * 4), y * w * 4);
+    }
+    ctx.putImageData(img, 0, 0);
+    return { canvas: out, width: w, height: h, source: 'buffer', digest: digestOf(out) };
+  } catch { return null; }
+}
+
+/** 画面指纹（同 spine 侧实现，用于断言截的是哪一面） */
+function digestOf(canvas) {
+  try {
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return 0;
+    const { width, height } = canvas;
+    const data = ctx.getImageData(0, 0, width, height).data;
+    let sum = 0;
+    for (let i = 0; i < data.length; i += 997) sum = (sum + data[i]) % 1000003;
+    return sum;
+  } catch { return 0; }
+}
+
 export function createLive2DRenderer({ live2d } = {}) {
   if (!live2d) throw new Error('createLive2DRenderer: 需要 live2d 实现');
   /** 当前生效的纹理过滤与限帧（回显用） */
@@ -265,6 +331,59 @@ if (typeof live2d.syncSize === 'function') {
       }
     },
     /** 按需渲染一帧（暂停中交互/改设置后调用；ticker 停着不会自动画） */
+    /**
+     * 截图取像素：从**当前 Live2D 画布**取（覆盖层自己的 canvas / PIXI 舞台）。
+     *
+     * 两条路，按可靠性排序：
+     *   ① PIXI 的 extract.canvas(stage)：直接把舞台渲染成一张 2D canvas（不依赖 GL 缓冲保留）；
+     *   ② 读 app.view 的 WebGL 缓冲：必须在 repaintFrame() 之后**同一任务内**取，
+     *      因为 WebGL 默认不保留绘制缓冲（换任务就可能是空/旧内容）。
+     * @returns {{canvas: HTMLCanvasElement, width: number, height: number, source: string}|null}
+     */
+    capture() {
+      const app = (() => { try { return live2d.getApp && live2d.getApp(); } catch { return null; } })();
+      if (!app) return null;
+      repaintFrame();   // 先画一帧，保证拿到的是当前姿态（暂停时尤其必要）
+      // ① 优先读**画布缓冲**：尺寸与屏幕所见一致（整画布，含透明背景）；
+      //    PIXI 默认不保留绘制缓冲，所以必须在上面 repaintFrame() 的**同一任务内**读，
+      //    读不到（全 0）再退到 extract。
+      const direct = captureFromView(app);
+      if (direct) return direct;
+      // ② extract 兜底：PIXI 的 extract 返回的是**模型包围盒**尺寸，
+      //    直接用会让导出图忽大忽小（用户会当成 bug）。这里按画布尺寸等比居中贴一张，
+      //    保证"任何状态下截图尺寸都等于当前画布尺寸"。
+      try {
+        const ext = app.renderer && app.renderer.extract;
+        if (ext && typeof ext.canvas === 'function' && app.stage) {
+          const c = ext.canvas(app.stage);
+          const sized = c && c.width && c.height ? fitIntoCanvas(c, app) : null;
+          if (sized) return sized;
+        }
+      } catch { /* 落到读缓冲 */ }
+      // ② 读缓冲（含逐行翻转）
+      const view = app.view;
+      if (!view || !view.width || !view.height) return null;
+      const w = view.width;
+      const h = view.height;
+      const out = document.createElement('canvas');
+      out.width = w;
+      out.height = h;
+      const ctx = out.getContext('2d');
+      const gl = view.getContext('webgl2') || view.getContext('webgl');
+      if (!ctx || !gl || typeof gl.readPixels !== 'function') return null;
+      try {
+        const buf = new Uint8Array(w * h * 4);
+        gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+        const img = ctx.createImageData(w, h);
+        for (let y = 0; y < h; y += 1) {
+          const src = (h - 1 - y) * w * 4;
+          img.data.set(buf.subarray(src, src + w * 4), y * w * 4);
+        }
+        ctx.putImageData(img, 0, 0);
+        return { canvas: out, width: w, height: h, source: 'buffer', digest: digestOf(out) };
+      } catch { return null; }
+    },
+
     render() { return repaintFrame(); },
     /** 显式补一帧（统一入口 repaintActive 用） */
     repaint() { return repaintFrame(); },
