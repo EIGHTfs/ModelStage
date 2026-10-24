@@ -35,8 +35,19 @@ export function releaseLive2DResources({ st, note, stopDiag, doc } = {}) {
   if (st.app) {
     // destroy(true) 的第一个参数是 removeView：会顺带把 canvas 从容器里摘掉。
     //   下面立刻把容器也移除，避免"容器在、canvas 不在"的中间态被下游复用判断吃进去。
+    // 记住 canvas：destroy(true) 的 removeView 会把它从容器摘掉
+    const deadCanvas = (st.app.view && st.app.view.canvas) || st.app.view || null;
     try { st.app.destroy(true, { children: true }); } catch { /* 销毁失败不阻塞释放 */ }
     st.app = null;
+    // **显式释放上下文**：PIXI 的 destroy 只放掉 JS 引用，浏览器不会立刻回收 WebGL 上下文；
+    //   而 live2d 的 unmount 与 dispose 走同一条路径（stage.js 有意如此），
+    //   所以每次 live2d→live2d 切换都会新建 PIXI.Application ⇒ 若不显式释放，上下文累积到
+    //   浏览器上限（~16）后最旧的被丢弃 ⇒ 画布黑（实测每切一次净增 2 个存活上下文）。
+    try {
+      const gl = deadCanvas && (deadCanvas.getContext('webgl2') || deadCanvas.getContext('webgl'));
+      const ext = gl && gl.getExtension && gl.getExtension('WEBGL_lose_context');
+      if (ext && typeof ext.loseContext === 'function') ext.loseContext();
+    } catch { /* 拿不到就算了，不阻塞释放 */ }
   }
   const el = d && d.getElementById ? d.getElementById(OVERLAY_ID) : null;
   if (el && el.parentElement) el.parentElement.removeChild(el);

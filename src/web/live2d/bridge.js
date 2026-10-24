@@ -130,66 +130,33 @@ function createMotionApi(ctx) {
   };
 }
 
-export function createBridge(ctx) {
-  const { st, note } = ctx;
-  const probe = createViewProbe(st);
-
-
-
-  const bridge = {
+/**
+ * 状态组：是否激活 / 当前模型 id。
+ * 拆成小组的理由：单个 createBridge 曾涨到 119 行（审计 max-function-length），
+ *   而它本质只是"把若干能力拼起来"。按能力分组后每块都能单独读、单独测。
+ */
+function createStateGroup(st) {
+  return {
     isActive: () => st.active,
+    currentModelId: () => st.modelId,
+  };
+}
+
+/**
+ * 播放组：引擎侧探针 + 「动作播完一次」订阅。
+ * 注意事件源是 **motionManager**，不是 model（实测 model._events 只有 'destroy'）。
+ */
+function createPlaybackGroup(st, probe) {
+  return {
     /** 引擎侧播放探针（验收用：读引擎真实状态，不拿我们自己的 currentLabel 自证） */
     playbackProbe: probe.playbackProbe,
-    hide: () => ctx.api.overlay.hide(),
-    currentModelId: () => st.modelId,
-    ...createMotionApi(ctx),
-    expressions: () => ((st.meta && st.meta.expressions) || []).map((e) => e.name),
-    /**
-     * 装载入口：复用或加载，返回与 Spine 同形的摘要。
-     * @param {object} model
-     * @returns {Promise<{animations: string[], skins: string[], durations: object, version: string}>}
-     */
-    /**
-     * 只读诊断：动作完成事件到底挂在哪个对象上（验收/排障用，不参与逻辑）。
-     * 为什么需要它：库内 `emit("motionFinish")` 的目标对象与文档描述不一定一致，
-     *   只能实测确认（model 级 / motionManager 级 / 都不转发）。
-     */
-    debugMotion() {
-      const model = st.model;
-      const mm = model && model.internalModel && model.internalModel.motionManager;
-      const state = mm && mm.state;
-      const probeKeys = (o) => (o ? Object.keys(o).slice(0, 12) : null);
-      return {
-        hasModel: !!model,
-        modelOn: !!(model && typeof model.on === 'function'),
-        modelEvents: model && model._events ? Object.keys(model._events) : null,
-        hasManager: !!mm,
-        managerOn: !!(mm && typeof mm.on === 'function'),
-        managerKeys: probeKeys(mm),
-        managerStateOn: !!(state && typeof state.on === 'function'),
-        managerStateKeys: probeKeys(state),
-        currentLabel: st.currentLabel || null,
-        // 动作定义里的 Loop 标记（验收"循环动作是否上报"要看它）
-        definitions: mm && mm.definitions
-          ? Object.keys(mm.definitions).reduce((acc, g) => {
-            acc[g] = (mm.definitions[g] || []).map((d) => ({ File: d.File, Loop: d.Loop }));
-            return acc;
-          }, {})
-          : null,
-      };
-    },
-
     /**
      * 订阅「当前动作播完一次」（Live2D 侧）。
-     * 事件源是 `st.model`（PIXI.live2d.Live2DModel）的 `motionFinish`；
-     * 注意该事件在**循环动作**上永远不触发（库内 `isFinished()` 恒为 false），与 Spine 的 complete 语义一致。
+     * 循环动作永远不触发（库内 `isFinished()` 恒为 false），与 Spine 的 complete 语义一致。
      * @param {(e: {name: string, source: string}) => void} cb
      * @returns {() => void} 取消订阅
      */
     onMotionComplete(cb) {
-      // 事件源是 **motionManager**，不是 model：
-      //   本版 pixi-live2d-display 里 `emit("motionFinish")` 发生在 internalModel.motionManager 上，
-      //   而 model 自身只发 'destroy'（实测 model._events = ['destroy']）⇒ 订 model 永远收不到。
       const model = st.model;
       const mm = model && model.internalModel && model.internalModel.motionManager;
       const target = (mm && typeof mm.on === 'function') ? mm : model;
@@ -197,8 +164,8 @@ export function createBridge(ctx) {
       const handler = () => {
         let name = '';
         // 事件不带名字（库内 emit 无参）⇒ 从 playback probe 读当前动作。
-        //   ⚠ probe.currentMotion() 返回的是**对象**（含 label/group/index），直接 String() 会得到
-        //   "[object Object]"（实测踩过）⇒ 按 label → name → String 的顺序取值。
+        //   ⚠ probe.currentMotion() 返回**对象**（label/group/index），直接 String() 会得到
+        //   "[object Object]"（实测踩过）⇒ 按 label → name → String 顺序取值。
         try {
           const cur = probe.currentMotion && probe.currentMotion();
           if (cur && typeof cur === 'object') name = String(cur.label || cur.name || '');
@@ -210,45 +177,20 @@ export function createBridge(ctx) {
       try { target.on('motionFinish', handler); } catch { return () => {}; }
       return () => { try { target.off('motionFinish', handler); } catch { /* 忽略 */ } };
     },
+  };
+}
 
-    async loadForEngine(model) {
-      const reusable = st.active && st.modelId === model.id && st.model;
-      if (!reusable) {
-        note(`Live2D 装载：${model.name}`);
-        await ctx.api.model.loadModel(model);
-      } else {
-        note(`Live2D 复用已加载模型：${model.name}`);
-      }
-      return {
-        animations: ctx.api.model.motionLabels(),
-        skins: ((st.meta && st.meta.expressions) || []).map((e) => e.name),
-        durations: {},
-        version: `Live2D Cubism ${(model && model.cubism) || 3}`,
-      };
-    },
-    /** 表情切换：表情名 → expression 下标 */
-    setExpressions(names) {
-      if (!st.model) return false;
-      const list = (names || []).filter(Boolean);
-      try {
-        if (!list.length) { st.model.expression(); return true; }
-        const exprs = (st.meta && st.meta.expressions) || [];
-        const idx = exprs.findIndex((e) => e.name === list[0]);
-        if (idx >= 0) st.model.expression(idx);
-        note(`Live2D 切表情：${list[0]}${idx >= 0 ? '' : '（未找到，保持原表情）'}`, idx >= 0 ? 'info' : 'warn');
-        return idx >= 0;
-      } catch (err) {
-        note(`Live2D 切表情失败：${err && err.message}`, 'warn');
-        return false;
-      }
-    },
+/** 视图组：显隐 / 复位 / 缩放 / 平移 / 只读快照 */
+function createViewGroup(ctx, st, probe) {
+  return {
+    hide: () => ctx.api.overlay.hide(),
     /** 相机复位 */
     resetView() {
       st.zoomRatio = 1;
       st.panX = 0;
       st.panY = 0;
       ctx.api.view.applyZoom();
-      note('Live2D 视图复位');
+      ctx.note('Live2D 视图复位');
     },
     /** 相机缩放：值越大模型越大 */
     setZoomRatio(ratio) {
@@ -266,14 +208,116 @@ export function createBridge(ctx) {
     /** 只读诊断快照 */
     readState() {
       const motion = probe.currentMotion();
+      return { active: st.active, modelId: st.modelId, zoom: st.zoomRatio, pan: { x: st.panX, y: st.panY }, motion };
+    },
+  };
+}
+
+/** 装载与表情组：装载入口（复用或加载）+ 表情列表/切换 */
+function createLoadGroup(ctx, st, note) {
+  return {
+    /**
+     * 装载入口：复用或加载，返回与 Spine 同形的摘要。
+     * @param {object} model
+     * @returns {Promise<{animations: string[], skins: string[], durations: object, version: string}>}
+     */
+    async loadForEngine(model) {
+      const reusable = st.active && st.modelId === model.id && st.model;
+      if (!reusable) {
+        note(`Live2D 装载：${model.name}`);
+        await ctx.api.model.loadModel(model);
+      } else {
+        note(`Live2D 复用已加载模型：${model.name}`);
+      }
       return {
-        active: st.active,
-        modelId: st.modelId,
-        zoom: st.zoomRatio,
-        pan: { x: st.panX, y: st.panY },
-        motion,
+        animations: ctx.api.model.motionLabels(),
+        skins: ((st.meta && st.meta.expressions) || []).map((e) => e.name),
+        durations: {},
+        version: `Live2D Cubism ${(model && model.cubism) || 3}`,
       };
     },
+    expressions: () => ((st.meta && st.meta.expressions) || []).map((e) => e.name),
+    /** 表情切换：表情名 → expression 下标 */
+    setExpressions(names) {
+      if (!st.model) return false;
+      const list = (names || []).filter(Boolean);
+      try {
+        if (!list.length) { st.model.expression(); return true; }
+        const exprs = (st.meta && st.meta.expressions) || [];
+        const idx = exprs.findIndex((e) => e.name === list[0]);
+        if (idx >= 0) st.model.expression(idx);
+        note(`Live2D 切表情：${list[0]}${idx >= 0 ? '' : '（未找到，保持原表情）'}`, idx >= 0 ? 'info' : 'warn');
+        return idx >= 0;
+      } catch (err) {
+        note(`Live2D 切表情失败：${err && err.message}`, 'warn');
+        return false;
+      }
+    },
+  };
+}
+
+/**
+ * 只读诊断：动作完成事件到底挂在哪个对象上（排障用，不参与逻辑）。
+ * 为什么需要它：库内 `emit("motionFinish")` 的目标对象与文档描述不一定一致，
+ *   只能实测确认（本次就是靠它发现事件在 motionManager 而不是 model 上）。
+ */
+function debugMotionOf(st) {
+  const model = st.model;
+  const mm = model && model.internalModel && model.internalModel.motionManager;
+  const state = mm && mm.state;
+  const keysOf = (o) => (o ? Object.keys(o).slice(0, 12) : null);
+  return {
+    hasModel: !!model,
+    modelOn: !!(model && typeof model.on === 'function'),
+    modelEvents: model && model._events ? Object.keys(model._events) : null,
+    hasManager: !!mm,
+    managerOn: !!(mm && typeof mm.on === 'function'),
+    managerKeys: keysOf(mm),
+    managerStateOn: !!(state && typeof state.on === 'function'),
+    managerStateKeys: keysOf(state),
+    currentLabel: st.currentLabel || null,
+    // 动作定义里的 Loop 标记（验收"循环动作是否上报"要看它）
+    definitions: mm && mm.definitions
+      ? Object.keys(mm.definitions).reduce((acc, g) => {
+        acc[g] = (mm.definitions[g] || []).map((d) => ({ File: d.File, Loop: d.Loop }));
+        return acc;
+      }, {})
+      : null,
+  };
+}
+
+/**
+ * 组装 Live2D bridge（供 app 层调用）。
+ *
+ * **导出键集合与顺序必须与原实现逐字一致**（调用方按 key 取能力）：
+ *   拆分组时用显式键序拼装，而不是简单 spread 各组 —— 否则 Object.keys 顺序变了，
+ *   依赖顺序的断言/快照就会假红。
+ *
+ * @param {object} ctx {{st, note, api}}
+ */
+export function createBridge(ctx) {
+  const { st, note } = ctx;
+  const probe = createViewProbe(st);
+  const stateGroup = { ...createStateGroup(st), debugMotion: () => debugMotionOf(st) };
+  const playbackGroup = createPlaybackGroup(st, probe);
+  const viewGroup = createViewGroup(ctx, st, probe);
+  const loadGroup = createLoadGroup(ctx, st, note);
+
+  const bridge = {
+    isActive: stateGroup.isActive,
+    playbackProbe: playbackGroup.playbackProbe,
+    hide: viewGroup.hide,
+    currentModelId: stateGroup.currentModelId,
+    ...createMotionApi(ctx),
+    expressions: loadGroup.expressions,
+    debugMotion: stateGroup.debugMotion,
+    onMotionComplete: playbackGroup.onMotionComplete,
+    loadForEngine: loadGroup.loadForEngine,
+    setExpressions: loadGroup.setExpressions,
+    resetView: viewGroup.resetView,
+    setZoomRatio: viewGroup.setZoomRatio,
+    pan: viewGroup.pan,
+    readState: viewGroup.readState,
   };
 
   // 验收探针挂到页面上（与 lead 共用同一套引擎侧判据）

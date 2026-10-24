@@ -113,7 +113,34 @@ export function createLive2DStage({ vfs, getOverlayHost, log } = {}) {
    * spine 相反：重建引擎要重注入运行时源码并按版本选运行时，代价高，所以那边保留引擎。
    */
   function unmount() {
+    // **只卸内容、保留引擎**（与 spine 同语义）：surface-switch 对"同一渲染器换内容"选 unmount，
+    //   本意就是复用引擎/PIXI 覆盖层。
+    //
+    // 为什么改（实测依据）：原来 unmount 与 dispose 走同一条 release 路径 ⇒ 每次 live2d→live2d
+    //   都 `app.destroy(true)` 再新建 PIXI.Application ⇒ 每切一次净增 2 个存活 WebGL 上下文
+    //   （1 个匿名 0x0 探测画布 + 1 个 overlay canvas），累积到浏览器上限（~16）后最旧上下文被丢弃
+    //   ⇒ 画布黑（现场："加载过那个角色的 Live2D/资源包之后，后续请求全挂"）。
+    //   而"容器在、canvas 不在"的旧坑是 **destroy(true) 的 removeView** 造成的——只要 unmount 不销毁 app，
+    //   这个中间态就不会出现。
+    if (ctx.st.app) {
+      try { if (ctx.st.model) { ctx.st.app.stage.removeChild(ctx.st.model); } } catch { /* 忽略 */ }
+      try { if (ctx.st.model) ctx.st.model.destroy({ children: true }); } catch { /* 忽略 */ }
+      ctx.st.model = null;
+      ctx.st.modelId = null;
+      try { if (typeof ctx.st.app.stop === 'function') ctx.st.app.stop(); } catch { /* 忽略 */ }
+      try { if (ctx.st.overlay) ctx.st.overlay.style.display = 'none'; } catch { /* 忽略 */ }
+      ctx.st.active = false;
+      stopDiagOnUnmount();
+      return true;
+    }
+    // 没有 app（异常时序）：退回完整释放，保证不留半截状态
     releaseLive2DResources({ st: ctx.st, note: ctx.note, stopDiag: takeDiagStop() });
+    return true;
+  }
+
+  /** 停诊断 HUD（unmount 走轻路径时也要停，否则 HUD 会在隐藏的覆盖层上空转） */
+  function stopDiagOnUnmount() {
+    try { const stop = takeDiagStop(); if (typeof stop === 'function') stop(); } catch { /* 忽略 */ }
   }
 
   /** 彻底释放：与 unmount 同一路径（渲染器实例是否丢弃由调用方决定） */

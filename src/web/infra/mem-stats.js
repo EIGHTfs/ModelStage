@@ -26,9 +26,16 @@ export function installMemStats() {
     const ctx = orig.call(this, type, ...rest);
     try {
       if (ctx && /webgl2?$/i.test(String(type))) {
+        // ⚠ 只统计**新创建**的上下文：同一 canvas 重复 getContext 会返回同一个上下文，
+        //   若按调用次数累加就会把"特征探测/像素读取"误记成泄漏（我第一版就错了，差点误判根因）。
+        const already = st.contexts.find((r) => r.canvas === this && r.type === String(type));
+        if (already) return ctx;
         st.created += 1;
         st.byType[type] = (st.byType[type] || 0) + 1;
-        const rec = { type: String(type), at: Date.now(), canvas: this };
+        const rec = { type: String(type), at: Date.now(), canvas: this,
+          // 记录身份特征，便于指认"这些 canvas 是谁建的"
+          id: this.id || '', cls: (this.className && String(this.className).slice(0, 40)) || '',
+          w: this.width, h: this.height };
         st.contexts.push(rec);
         // 包装 loseContext：真被释放了就记一笔（用于算"仍存活"）
         const lose = ctx.getExtension && ctx.getExtension('WEBGL_lose_context');
@@ -78,6 +85,11 @@ export function memStats() {
     canvases,
     canvasesWithGl,
     orphanGl,
+    // 逐条明细（排障用）：哪些 canvas 拿了上下文、是否仍在文档里
+    records: st.contexts.map((r) => ({
+      type: r.type, id: r.id, cls: r.cls, w: r.w, h: r.h,
+      lost: !!r.lost, connected: !!(r.canvas && r.canvas.isConnected),
+    })),
     jsHeapMB,
   };
 }
