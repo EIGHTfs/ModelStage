@@ -146,6 +146,9 @@ const STAGE_SELECTORS = {
 
 /** 各阶段当前的跟踪句柄（stop()）：重置前必须先停掉，否则两个跟踪器叠着跑 */
 const stageHandles = new Map();
+/** 待重新起算的阶段（同帧合并用）与其 rAF 句柄 */
+const pendingRetrack = new Set();
+let rafId = 0;
 
 /**
  * 过渡开始时重新起算某阶段的就绪状态。
@@ -164,12 +167,34 @@ export function retrackStage(name) {
 
 /**
  * 批量版：一次交互牵动多个阶段时用它——**整批只上报一次**就绪快照。
+ *
+ * **延到下一帧执行**（不是立即）：调用点都是"改完 class/dataset 就调"，
+ *   若同一帧里既做样式重算又做就绪上报（resetStage → flushNow → fetch 的序列化+发起），
+ *   两者会抢同一帧；而且就绪信号的语义本来就是"等布局稳定"，早一帧上报反而更容易抓到中间态。
+ *   先把 class 变化交还浏览器去重算，下一帧再起算就绪状态。
+ *   同帧内多次调用会合并成一次（连点仍以最后一次为准，不叠加跟踪器）。
  * @param {string[]} names 阶段名数组
- * @returns {number} 实际重新起了跟踪的阶段数
+ * @returns {number} 已受理的阶段数（实际执行在下一帧）
  */
 export function retrackStages(names) {
   const list = (Array.isArray(names) ? names : []).filter((n) => STAGE_SELECTORS[n]);
   if (!list.length) return 0;
+  for (const n of list) pendingRetrack.add(n);
+  if (!rafId) {
+    // 无 rAF 的环境（测试垫片/极老浏览器）就同步执行，保证功能不丢
+    rafId = typeof requestAnimationFrame === 'function'
+      ? requestAnimationFrame(runPendingRetrack)
+      : (runPendingRetrack(), 0);
+  }
+  return list.length;
+}
+
+/** 同帧合并后的真正执行体（原先 retrackStages 的实现） */
+function runPendingRetrack() {
+  rafId = 0;
+  const list = [...pendingRetrack];
+  pendingRetrack.clear();
+  if (!list.length) return;
   // ① 先停旧句柄（连点以最后一次为准，不叠跟踪器）
   for (const n of list) {
     const prev = stageHandles.get(n);
@@ -189,7 +214,6 @@ export function retrackStages(names) {
   }
   // 兜底：元素不在（或跟踪没起来）就没人触发上报，此时必须自己把 reset 发出去
   if (!started) flushNow();
-  return started;
 }
 
 /**
