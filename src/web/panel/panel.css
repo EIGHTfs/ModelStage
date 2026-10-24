@@ -418,6 +418,7 @@
   --color-secondary: #2a2f33;
   --color-muted: #23272a;
   --color-muted-foreground: #9ca3af;
+  --color-text-secondary: #9ca3af;
   --color-border: #353a3e;
 }
 
@@ -431,6 +432,7 @@
   --color-secondary: #3a3936;
   --color-muted: #2e2d2b;
   --color-muted-foreground: #b0aea5;
+  --color-text-secondary: #b0aea5;
   --color-border: #4a4843;
 }
 
@@ -444,6 +446,7 @@
   --color-secondary: #e7e2d7;
   --color-muted: #ece8de;
   --color-muted-foreground: #5c574b;
+  --color-text-secondary: #5c574b;
   --color-border: #d8d2c4;
 }
 
@@ -457,6 +460,7 @@
   --color-secondary: #221a30;
   --color-muted: #1a1426;
   --color-muted-foreground: #b0a6cc;
+  --color-text-secondary: #b0a6cc;
   --color-border: #352b49;
 }
 
@@ -470,6 +474,7 @@
   --color-secondary: #e2e8f0;
   --color-muted: #e6ebf2;
   --color-muted-foreground: #4f5e78;
+  --color-text-secondary: #4f5e78;
   --color-border: #cbd5e1;
 }
 
@@ -573,7 +578,7 @@
   border: 1px solid var(--color-border, rgba(255, 255, 255, 0.12));
   border-radius: 6px;
   background: var(--color-secondary, rgba(255, 255, 255, 0.06));
-  color: var(--color-foreground, #e9ebed);
+  color: var(--color-foreground);
   font-size: 13px;
   cursor: pointer;
 }
@@ -621,7 +626,7 @@
   padding: 5px 8px;
   border-radius: 6px;
   font-size: 13px;
-  color: var(--color-foreground, #e9ebed);
+  color: var(--color-foreground);
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
@@ -643,7 +648,7 @@
   border: 1px solid var(--color-border, rgba(255, 255, 255, 0.12));
   border-radius: 6px;
   background: var(--color-secondary, rgba(255, 255, 255, 0.06));
-  color: var(--color-foreground, #e9ebed);
+  color: var(--color-foreground);
   font-size: 12px;
   cursor: pointer;
 }
@@ -697,7 +702,7 @@
   border: 1px solid var(--color-primary, #1fc0c5);
   border-radius: 4px;
   background: var(--color-panel, #14181a);
-  color: var(--color-foreground, #e9ebed);
+  color: var(--color-foreground);
   font-size: 13px;
 }
 
@@ -781,4 +786,56 @@
   max-width: none;
   overflow: visible;
   text-overflow: clip;
+}
+
+/* ---- PMA 预乘：档位 2×2 + 四行只读诊断（照搬旧端布局与信息量）----
+   旧端是 grid-cols-2 的四个档位 + text-[11px] 的一组 space-y-0.5 小字。
+   四行的意义：让人（和 AI）一眼看出"这个模型到底按哪种预乘在渲染"——
+   Atlas 声明 / 像素检测 是输入证据，直通支持 是运行时能力，实际生效 是最终结论。 */
+#right-panel .ctl-seg[data-layout='grid-2'] {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+
+#right-panel .ctl-seg[data-layout='grid-2'] .seg-btn {
+  /* 旧端是 h-8（32px）+ rounded-md(6px) + text-xs(12px) + px-3：比默认 chip 大一档，才像按钮 */
+  justify-content: center;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+/* 四行小字：只读、不可点（纯诊断，不抢控件的视觉层级） */
+#right-panel .ctl-diag {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.45;
+  /* 用专门的诊断文字令牌：每个主题块都有定义，切主题自动跟随（不写字面色值）。
+     之前误用 --color-muted —— 那是"深色底"的名字，当文字色就是黑字压深底、标签看不见。 */
+  color: var(--color-text-secondary);
+}
+
+#right-panel .ctl-diag-row {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+}
+
+#right-panel .ctl-diag-value {
+  overflow: hidden;
+  color: var(--color-foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 实际生效 = 最终结论：主色 + 加重（旧端 text-primary font-medium） */
+#right-panel .ctl-diag-value.is-primary {
+  font-weight: 500;
+  color: var(--color-primary);
 }

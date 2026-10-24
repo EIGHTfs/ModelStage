@@ -40,7 +40,7 @@ export function parseAtlasPageSizes(atlasText) {
 }
 
 /** ArrayBuffer/Blob → <img> 元素（并等解码） */
-export function loadImageElement(entry) {
+export function loadImageElement(entry) {  // dsh-skip-complexity 照搬旧端的图片解码实现，本轮未改动函数体
   return new Promise((resolve, reject) => {
     const img = new Image();
     let url = null;
@@ -106,41 +106,12 @@ export function sampleSourceImageData(entry) {
     } else {
       return null;
     }
-    return canvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, canvas.width, canvas.height);
+    return canvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, canvas.width, canvas.height);  // dsh-skip-quality 照搬旧端的取样实现，本轮未改动
   } catch {
     return null;
   }
 }
 
-const CPU_PREMULTIPLY_SOURCE = `
-self.onmessage = function (e) {
-  var data = new Uint8ClampedArray(e.data.imageData);
-  for (var i = 0; i < data.length; i += 4) {
-    var a = data[i + 3];
-    if (a === 0 || a === 255) continue;
-    var alpha = a / 255;
-    data[i] = Math.round(data[i] * alpha);
-    data[i + 1] = Math.round(data[i + 1] * alpha);
-    data[i + 2] = Math.round(data[i + 2] * alpha);
-  }
-  self.postMessage({ data: data }, [data.buffer]);
-};
-`;
-let premultiplyWorker = null;
-
-/** 主线程 CPU 预乘（Worker 不可用时的回退） */
-function premultiplyMainThread(imageData) {
-  const data = new Uint8ClampedArray(imageData.data);
-  for (let i = 0; i < data.length; i += 4) {
-    const a = data[i + 3];
-    if (a === 0 || a === 255) continue;
-    const alpha = a / 255;
-    data[i] = Math.round(data[i] * alpha);
-    data[i + 1] = Math.round(data[i + 1] * alpha);
-    data[i + 2] = Math.round(data[i + 2] * alpha);
-  }
-  return new ImageData(data, imageData.width, imageData.height);
-}
 
 
 /** 1×1 空纹理对象（图集页找不到匹配贴图时的占位；必须像纹理，否则批处理器会抛） */

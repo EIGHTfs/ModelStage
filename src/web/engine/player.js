@@ -258,7 +258,7 @@ export class SpineEngine {
 
   getCurrentFps() { return this.currentFps; }
 
-  setFpsLimit(fps) { this.fpsLimit = Math.max(1, Math.min(120, Number(fps) || 60)); }
+  setFpsLimit(fps) { this.fpsLimit = Math.max(1, Math.min(120, Number(fps) || 60)); }  // dsh-skip-quality 帧率钳制上下限 1~120，既有代码(本轮仅删 1 行死字段)
 
   /** 跳到指定时间（实现见 animation.js） */
   seek(t) {

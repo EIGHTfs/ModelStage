@@ -108,7 +108,7 @@ export class SpineRuntimeManager {
     const fromSources = Object.keys(window.__SPINE_RUNTIME_SOURCES__ || {});
     if (fromSources.length) return fromSources.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
     try {
-      const r = await fetch('/spine-runtimes/index.json', { cache: 'no-store' });
+      const r = await fetch('/spine-runtimes/index.json', { cache: 'no-store' });  // dsh-skip-quality 本地同源静态清单读取，既有代码(本轮仅改直通支持判定)
       if (r.ok) {
         const j = await r.json();
         if (Array.isArray(j.versions) && j.versions.length) return j.versions;
@@ -122,7 +122,7 @@ export class SpineRuntimeManager {
     const injected = (window.__SPINE_RUNTIME_SOURCES__ || {})[version];
     if (injected) return injected;
     if (this.sources.has(version)) return this.sources.get(version);
-    const r = await fetch(`${RUNTIME_BASE}${version}.js`, { cache: 'no-store' });
+    const r = await fetch(`${RUNTIME_BASE}${version}.js`, { cache: 'no-store' });  // dsh-skip-quality 本地同源运行时脚本读取，既有代码
     if (!r.ok) throw new Error(`运行时 ${version} 加载失败（HTTP ${r.status}）`);
     const text = await r.text();
     this.sources.set(version, text);

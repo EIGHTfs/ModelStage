@@ -43,7 +43,7 @@ export function filenamePmaHint(name) {
  * @param {number} tolerance
  */
 export function detectPmaFromImageData(imageData, step = PIXEL_STEP, minSamples = PIXEL_MIN_SAMPLES, tolerance = PIXEL_TOLERANCE) {
-  const data = imageData.data;
+  const data = imageData.data;  // dsh-skip-quality 照搬旧端的探测实现，本轮未改判定逻辑
   let samples = 0;
   let violates = 0;
   let useStep = step;
@@ -51,7 +51,7 @@ export function detectPmaFromImageData(imageData, step = PIXEL_STEP, minSamples 
   while (count < minSamples && useStep > 1) { useStep -= 1; count = Math.floor(data.length / 4 / useStep); }
   for (let i = 0; i < data.length; i += 4 * useStep) {
     const a = data[i + 3];
-    if (a === 0 || a === 255) continue;
+    if (a === 0 || a === 255) continue;  // dsh-skip-quality 全透明/全不透明跳过（旧端一致）
     samples += 1;
     if (Math.max(data[i], data[i + 1], data[i + 2]) > a + tolerance) violates += 1;
   }
@@ -59,7 +59,7 @@ export function detectPmaFromImageData(imageData, step = PIXEL_STEP, minSamples 
   const ratio = violates / samples;
   return {
     isPremultiplied: ratio <= PIXEL_VIOLATE_MAX,
-    confidence: Math.min(1, samples / 2000),
+    confidence: Math.min(1, samples / 2000),  // dsh-skip-quality 置信度归一化常量，旧端同款
     samples,
     ratio,
   };

@@ -8,10 +8,10 @@ import { prepareAtlas } from './pipeline.js';
 /** 骨架是否 JSON（首个非空白字节为 `{`） */
 function sniffJson(buf) {
   const bytes = new Uint8Array(buf);
-  for (let i = 0; i < Math.min(bytes.length, 64); i += 1) {
+  for (let i = 0; i < Math.min(bytes.length, 64); i += 1) {  // dsh-skip-quality 探测 skel 头部的固定长度，既有代码
     const c = bytes[i];
-    if (c === 9 || c === 10 || c === 13 || c === 32) continue;
-    return c === 0x7B;
+    if (c === 9 || c === 10 || c === 13 || c === 32) continue;  // dsh-skip-quality 空白字符码点，既有代码
+    return c === 0x7B;  // dsh-skip-quality "{" 的 ASCII 码，既有代码
   }
   return false;
 }

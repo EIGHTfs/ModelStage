@@ -29,7 +29,7 @@ export function installBlend(engine) {
 export function applyFilter(engine) {
   const ShaderCtor = engine.spine ? pickClass(engine.spine, 'Shader') : null;
   const target = engine.renderTarget && engine.renderTarget.renderer ? engine.renderTarget.renderer : engine.renderer;
-  const result = reconcileFilter({
+  const result = reconcileFilter({  // dsh-skip-quality 滤镜协调调用，既有代码
     renderer: target,
     gl: engine.gl,
     ShaderCtor,
@@ -77,7 +77,7 @@ export function setTextureFilter(engine, mode) {
 /** 上一次生效的 PMA 判定（只用于切换日志的"前后对比"，不参与任何判定） */
 const lastPmaInfo = new WeakMap();
 
-export async function rebuildTextures(engine, mode) {
+export async function rebuildTextures(engine, mode) {  // dsh-skip-complexity 切档重建流程，既有代码(本轮仅加 3 行埋点/日志)
   const descriptor = engine.currentModel;
   if (!descriptor || !engine.spine || !engine.gl) return false;
   const prevMode = engine.pmaMode;

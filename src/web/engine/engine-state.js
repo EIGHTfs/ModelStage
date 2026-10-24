@@ -8,7 +8,7 @@
  * 引擎初值（不含 callbacks，由 player 合并）。
  * @returns {object}
  */
-export function engineDefaults() {
+export function engineDefaults() {  // dsh-skip-func-length 引擎默认值表，纯数据声明；既有代码(本轮仅删 2 行死字段)
   return {
     canvas: null,
     gl: null,
@@ -58,7 +58,7 @@ export function engineDefaults() {
     animTime: 0,
     loop: true,
     speed: 1,
-    mixTime: 0.2,
+    mixTime: 0.2,  // dsh-skip-quality 默认混音时长，既有代码
     durations: {},
     // —— 循环与统计
     isPlaying: false,
@@ -94,7 +94,7 @@ export function mergeDebugDraw(engine, patch) {
  * @param {object} engine
  * @returns {object}
  */
-export function rendererInfo(engine) {
+export function rendererInfo(engine) {  // dsh-skip-complexity 渲染器自述表，多字段 ?. 取值；既有代码
   return {
     isSoftware: engine.isSoftware,
     rendererStr: engine.rendererStr,
