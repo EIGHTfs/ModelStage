@@ -382,6 +382,10 @@ function runSuite(suite) {
     problems: parsed ? parsed.problemCount : null,
     ms: Date.now() - started,
     failing: (result && result.results ? result.results.filter((r) => !r.ok).map((r) => r.name) : []),
+    // 失败明细（断言名 + 实际值）：只留断言名时，排障还得再跑一遍才知道 actual 是什么
+    failingDetail: (result && result.results
+      ? result.results.filter((r) => !r.ok).map((r) => ({ name: r.name, actual: r.actual, expect: r.expect }))
+      : []),
     raw: res.stdout,
     // 没产出结果时把 stderr 尾巴带出来：否则只看到 failed=null，不知道是 chrome 起不来还是脚本炸了
     stderrTail: (res.stderr || '').trim().split('\n').slice(-4).join(' | ').slice(0, 400),
@@ -444,7 +448,8 @@ for (const suite of CHOSEN) {
   const bad = r.failed === null || r.failed > 0;
   if (bad) report.ok = false;
   say(`  ${r.name.padEnd(16)} ${bad ? '❌' : '✅'} failed=${r.failed} total=${r.total} problems=${r.problems} ${r.ms}ms`
-    + (r.failing.length ? `\n      未通过：${r.failing.join(' / ')}` : ''));
+    + (r.failing.length ? `\n      未通过：${r.failing.join(' / ')}` : '')
+    + ((r.failingDetail || []).map((d) => `\n         · ${d.name}\n           actual: ${String(d.actual).slice(0, 220)}\n           expect: ${String(d.expect).slice(0, 160)}`).join('')));
 }
 
 say(`\n[test-all] ${report.ok ? '✅ 全部通过' : '❌ 存在失败'}（${report.suites.length} 套）`);
