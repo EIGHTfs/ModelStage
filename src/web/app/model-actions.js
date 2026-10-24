@@ -155,6 +155,12 @@ async function loadModel(model, name) {
   // 统一清理：新 Document 不用旧前缀就释放（换容器/切到目录型模型都走这一句）
   releaseVfsPrefix(src.prefix);
   state.vfsPrefix = src.prefix || null;
+  // 形态 C 的空闲预热：装载成功后让服务端把这个**容器包**解包落盘，供下次命中。
+  //   放在装载之后（不是之前）：预热要给首屏让路；warmup 内部自己找 idle + 延迟 2s，且带 12MB 上限。
+  //   仅容器单文件需要（目录型模型没有解包这件事）。
+  if (model && model.container && state.pluginHost && typeof state.pluginHost.warmup === 'function') {
+    try { state.pluginHost.warmup({ rootId: model.rootId, rel: model.rel, size: model.size }); } catch { /* 预热失败不影响播放 */ }
+  }
   return state.currentRenderer ? state.currentRenderer.mount(doc) : stage.load({ document: doc });
 }
 

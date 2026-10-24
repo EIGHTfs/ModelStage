@@ -62,6 +62,22 @@ export function createUnpackRoutes(deps) {
       if (!rootId || !rel) return sendJson(res, 400, { ok: false, reason: 'bad-args', message: '需要 rootId 与 rel' });
       const r = resolveRequest(rootId, rel);
       if (r.error) return sendJson(res, 404, { ok: false, reason: 'not-found', message: r.error });
+      // hitOnly：**只查缓存，绝不在这里解包**（形态 C 的前台路径）。miss 时返回 hit:false，
+      //   前端据此走本地解包；真正的解包由「空闲预热」另一次请求触发。
+      if (body.hitOnly === true) {
+        const p = store.peek({ rootId, rel, absPath: r.abs });
+        if (!p.ok) return sendJson(res, 404, { ok: false, reason: p.reason || 'peek-failed' });
+        return sendJson(res, 200, {
+          ok: true,
+          hit: p.hit,
+          fingerprint: p.fingerprint,
+          missReason: p.hit ? null : (p.reason || 'no-index'),
+          prefix: p.prefix || null,
+          entry: p.entry || null,
+          unpackMs: 0,
+          files: (p.files || []).map((f) => ({ path: f.path, size: f.size, url: fileUrl(p.fingerprint, f.path) })),
+        });
+      }
       try {
         const out = await store.resolve({ rootId, rel, absPath: r.abs });
         if (!out.ok) {

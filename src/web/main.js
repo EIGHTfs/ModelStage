@@ -25,6 +25,7 @@ import { createLive2DRenderer } from './render/live2d.js';
 import { createLive2DStage } from './live2d/stage.js';
 import { attachStageInteraction } from './render/interaction.js';
 import { dom, setStage, stage, state } from './app/context.js';
+import { diagEvent } from './app/status.js';
 import { stageStatus } from './app/status.js';
 import { VIEW_SETTINGS_KEY, applyBackground, applyTheme, readViewSettings, saveViewSettings } from './app/view-settings.js';
 import { DEFAULT_PART_FILTER_KEYWORDS, applyPartFilter } from './app/part-filter.js';
@@ -459,7 +460,11 @@ function boot() {
   //   顺序关键：createPluginHost 内部先挂 window.SpineViewerPlugins 再注入 <script>，
   //   插件顶层读宿主时才拿得到。
   try {
-    pluginHost = createPluginHost({ log: (level, msg) => stageStatus(msg, level) });
+    pluginHost = createPluginHost({
+      log: (level, msg) => stageStatus(msg, level),
+      // 解包来源（命中缓存/服务端解包/回落前端）必须进 diag：验收与排障都靠它取证
+      diagEvent: (name, data) => diagEvent(name, data),
+    });
     state.pluginHost = pluginHost;   // app 层（选模型分流）经 state 取用，不反向 import
 
     // 这里只是**启动预热**：不 await，不阻塞首屏。真正需要插件的能力入口

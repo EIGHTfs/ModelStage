@@ -76,6 +76,7 @@ export function createUnpackStore(opts) {
     unpackCount: 0, hits: 0, misses: 0, failures: 0, lastUnpackMs: 0, peakRss: 0,
     // miss 的具体原因（验收"改 mtime → 重新解包"时要能看出是 source-changed 而不是别的原因）
     lastMissReason: null,
+    peekHits: 0, // 前台只查缓存命中的次数（形态 C 的主指标）
   };
   /** fp → Promise（同一包的并发只解一次） */
   const inflight = new Map();
@@ -88,7 +89,26 @@ export function createUnpackStore(opts) {
   });
   let lastCleanupAt = 0;
 
-  /** 采样 RSS 峰值（验收要给数字；回归时能看出是否退化） */
+  /**
+   * 读当前 RSS 与**内核记录的峰值**（/proc/self/status 的 VmHWM）。
+   *
+   * 为什么用 VmHWM：解包的峰值是**瞬时**的（插件 resolve 里一次性产出整包文件），
+   * 300ms 轮询采样会系统性漏掉它——实测采样说 171MB，而内核 VmHWM 是 491MB（差 2.9 倍）。
+   * 验收内存必须用内核峰值，不能用抽样最小值。
+   * @returns {{rss: number, peak: number, source: 'vmhwm'|'sample'}}
+   */
+  function rssNow() {
+    try {
+      const txt = fs.readFileSync('/proc/self/status', 'utf8');
+      const hwm = /VmHWM:\s+(\d+)\s+kB/.exec(txt);
+      const rss = /VmRSS:\s+(\d+)\s+kB/.exec(txt);
+      if (hwm) return { rss: rss ? Number(rss[1]) * 1024 : process.memoryUsage().rss, peak: Number(hwm[1]) * 1024, source: 'vmhwm' };
+    } catch { /* 非 Linux：退回抽样 */ }
+    const rss = process.memoryUsage().rss;
+    return { rss, peak: Math.max(counters.peakRss, rss), source: 'sample' };
+  }
+
+  /** 采样 RSS 峰值（VMHWM 不可用时的兜底；同时保留抽样序列的最大值） */
   function sampleRss() {
     const rss = process.memoryUsage().rss;
     if (rss > counters.peakRss) counters.peakRss = rss;
@@ -214,24 +234,48 @@ export function createUnpackStore(opts) {
   }
 
   /**
-   * 没命中时判断"是不是插件版本变了"：版本在指纹里，变了就是**另一个目录**，
-   * 所以单看本 fp 只能报 no-index。这里跨目录比一次：同一源文件（rootId+rel+size+mtime）存在旧版本目录 ⇒ plugin-version-changed。
+   * 未命中原因推断（跨目录比对）：指纹里含 mtime/size/pluginVersion，
+   * 这三者任一变化都会**指向一个全新的目录**，所以单看本 fp 永远只能报 no-index。
+   * 这里扫一遍已有目录里"同一个源文件"的旧记录，把原因说清楚：
+   *   · 同源 stat、版本不同 → plugin-version-changed（旧 1 → 新 2）
+   *   · 同源 rel、stat 不同   → source-changed（mtime 或 size 变了）
    * @param {{rootId: string, rel: string, stat: fs.Stats}} req
    * @returns {string|null}
    */
-  function detectVersionChanged({ rootId, rel, stat }) {
+  function detectMissCause({ rootId, rel, stat }) {
     try {
       for (const e of fs.readdirSync(rootDir, { withFileTypes: true })) {
         if (!e.isDirectory() || e.name.startsWith('.tmp-')) continue;
         const idx = readIndex(e.name);
         const src = idx && idx.source;
         if (!src || src.rootId !== rootId || src.rel !== rel) continue;
-        if (src.size !== stat.size || Math.round(src.mtimeMs) !== Math.round(stat.mtimeMs)) continue;
-        if (String(idx.pluginVersion) !== String(version)) return `plugin-version-changed（旧 ${idx.pluginVersion} → 新 ${version}）`;
-        return null; // 同版本同源：那是 file-missing 之类，交给 hitCheck 报
+        const sameStat = src.size === stat.size && Math.round(src.mtimeMs) === Math.round(stat.mtimeMs);
+        const sameVersion = String(idx.pluginVersion) === String(version);
+        if (sameStat && !sameVersion) return `plugin-version-changed（${idx.pluginVersion} → ${version}）`;
+        if (!sameStat) return `source-changed（size ${src.size}→${stat.size}，mtime ${Math.round(src.mtimeMs)}→${Math.round(stat.mtimeMs)}）`;
       }
     } catch { /* 目录未建 */ }
     return null;
+  }
+
+  /**
+   * 只查缓存、**绝不触发解包**（形态 C 的前台路径用它：miss 就让前端走本地，绝不在这里抢 CPU）。
+   * @param {{rootId: string, rel: string, absPath: string}} req
+   */
+  function peek(req) {
+    let stat;
+    try {
+      stat = fs.statSync(req.absPath);
+    } catch {
+      return { ok: false, hit: false, reason: 'source-missing' };
+    }
+    const fp = fingerprintOf({ ...req, stat });
+    const idx = readIndex(fp);
+    const verdict = hitCheck(idx, stat);
+    if (!verdict.hit) return { ok: true, hit: false, fingerprint: fp, reason: verdict.reason || 'no-index' };
+    counters.peekHits += 1;
+    touch(fp, idx);
+    return { ok: true, hit: true, fingerprint: fp, prefix: idx.prefix, entry: idx.entry, files: idx.files, unpackMs: 0 };
   }
 
   /**
@@ -252,7 +296,7 @@ export function createUnpackStore(opts) {
     if (inflight.has(fp)) return inflight.get(fp); // 并发去重：同一 fp 只解一次
     counters.misses += 1;
     // 未命中原因：优先报"插件版本变了"（跨目录比对），否则报 hitCheck 给的具体原因
-    counters.lastMissReason = detectVersionChanged({ ...req, stat }) || verdict.reason || 'no-index';
+    counters.lastMissReason = detectMissCause({ ...req, stat }) || verdict.reason || 'no-index';
     const task = enqueue(async () => {
       const t0 = Date.now();
       sampleRss();
@@ -280,7 +324,7 @@ export function createUnpackStore(opts) {
 
   /** 状态（/api/unpack/stats 用；peakRss 给验收与回归看） */
   function stats() {
-    const rss = process.memoryUsage().rss;
+    const mem = rssNow();
     let dirs = 0;
     let bytes = 0;
     try {
@@ -292,8 +336,11 @@ export function createUnpackStore(opts) {
     } catch { /* 目录未建 */ }
     return {
       ...counters,
-      peakRssMb: Math.round((counters.peakRss || 0) / 1048576),
-      rssMb: Math.round(rss / 1048576),
+      // peakRssMb 用内核 VmHWM（真峰值）；sampledPeakRssMb 保留旧抽样值，便于看出"抽样会漏多少"
+      peakRssMb: Math.round(mem.peak / 1048576),
+      peakSource: mem.source,
+      sampledPeakRssMb: Math.round((counters.peakRss || 0) / 1048576),
+      rssMb: Math.round(mem.rss / 1048576),
       dirs,
       bytesMb: Math.round(bytes / 1048576),
       inflight: inflight.size,
@@ -302,5 +349,5 @@ export function createUnpackStore(opts) {
     };
   }
 
-  return { resolve, readIndex, filePathOf, stats, cleanup, fingerprintOf };
+  return { resolve, peek, readIndex, filePathOf, stats, cleanup, fingerprintOf };
 }

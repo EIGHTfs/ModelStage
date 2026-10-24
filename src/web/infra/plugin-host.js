@@ -16,6 +16,7 @@
 //   ③ canHandle 由宿主调用、宿主兜异常：插件内部抛错一律当"不认这个文件"，不冒泡到调用方
 
 import { getSharedVirtualFS } from './vfs.js';
+import { postJson } from './api.js';
 
 /** 宿主提示通道：优先用注入的 log（项目调试日志），否则退回 console */
 function makeLogger(log) {
@@ -79,6 +80,9 @@ function injectScript(src) {
  */
 export function createPluginHost(opts = {}) {
   const say = makeLogger(opts.log);
+  // diag 事件通道（由 main.js 注入 app/status.js 的 diagEvent）：解包来源是**验收要读**的事实，
+  //   不能只写 console —— 页面上层与测试都靠 diag 取证。
+  const emit = typeof opts.diagEvent === 'function' ? opts.diagEvent : () => {};
   const base = String(opts.baseUrl || '').replace(/\/$/, '');
 
   /** id → provider（插件 register 上来的对象） */
@@ -284,29 +288,163 @@ export function createPluginHost(opts = {}) {
    * @param {{vfs?: object}} [opts]
    * @returns {Promise<object>} { ok, reason?, message?, provider?, prefix?, entry?, entryUrl?, files? }
    */
+  /** 产物文件的 MIME（按扩展名；未知一律 octet-stream） */
+const MIME_BY_EXT = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
+  '.json': 'application/json', '.moc3': 'application/octet-stream', '.wav': 'audio/wav', '.mp3': 'audio/mpeg',
+};
+
+/** 产物文件数（跨 realm 鸭子类型：Map 看 size，普通对象看键数） */
+  function filesCount(files) {
+    if (!files) return 0;
+    if (typeof files.size === 'number') return files.size;
+    return Object.keys(files).length;
+  }
+
+  /**
+   * 竞速取"第一个成功"的（注意：不是第一个 settle 的——先失败的那条不该让我们提前放弃）。
+   * @param {Array<Promise<any>>} ps
+   * @returns {Promise<any>} 首个 fulfilled 的值；全失败则抛最后一个错误
+   */
+  function firstFulfilled(ps) {
+    return new Promise((resolve, reject) => {
+      let left = ps.length;
+      let lastErr = null;
+      for (const p of ps) {
+        p.then((v) => resolve(v), (e) => {
+          lastErr = lastErr || e;
+          left -= 1;
+          if (left === 0) reject(lastErr);
+        });
+      }
+    });
+  }
+
+  /**
+   * 服务端**命中查询**（形态 C 的前台路径）：`hitOnly` ⇒ 服务端只读索引，**绝不在这里解包**。
+   * miss 会抛 reason='server-miss'，调用方据此走本地解包（首次绝不因此变慢）。
+   * 真正的解包由 warmup() 在页面空闲时触发。
+   * @param {{rootId: string, rel: string}} file
+   * @returns {Promise<{prefix: string, entry: string, files: Map<string, Uint8Array>, hit: boolean, provider: string, src: string}>}
+   */
+  async function resolveFromServer(file) {
+    const j = await postJson('/api/unpack/resolve',
+      { rootId: file.rootId, rel: file.rel, hitOnly: true }, { timeoutMs: 1500 });
+    if (!j || !j.ok) throw new Error((j && (j.message || j.reason)) || '服务端查询失败');
+    if (!j.hit) throw Object.assign(new Error(`未命中（${j.missReason || 'no-index'}）`), { reason: 'server-miss' });
+    // **并行**取产物：实测 19 个文件顺序 145ms vs 并行 57ms（39 个文件 413ms vs 174ms）。
+    //   顺序取会让"命中路径"慢 2.5 倍，从而在竞速里输给本地解包 —— 那 17b 就白做了。
+    const list = j.files || [];
+    const got = await Promise.all(list.map(async (f) => {
+      const res = await fetch(f.url);
+      if (!res.ok) throw new Error(`取产物失败 HTTP ${res.status}: ${f.path}`);
+      // VFS 只接受 Blob/字符串（本地路径上插件给的就是 Blob）→ 这里转成带 MIME 的 Blob，
+      //   MIME 影响 blob URL 的消费方（<img>/WebGL 纹理、fetch 后 JSON.parse 都看它）
+      const type = MIME_BY_EXT[(/\.[a-z0-9]+$/i.exec(f.path) || [''])[0].toLowerCase()] || 'application/octet-stream';
+      return [f.path, new Blob([await res.arrayBuffer()], { type })];
+    }));
+    const files = new Map(got);
+    if (!files.size) throw new Error('服务端返回的产物为空');
+    return { prefix: j.prefix, entry: j.entry, files, hit: true, provider: 'server', src: 'server-hit' };
+  }
+
+  /** 预热上限（MB）：超过不解包 —— 实测 19MB→VmHWM 451MB、42MB→479MB，只有 ≤12MB 才安全（176MB） */
+  const MAX_WARMUP_MB = 12;
+
+  /**
+   * 空闲预热（形态 C）：ready 之后 requestIdleCallback(带 timeout 兜底) + 再延迟 2s，
+   * 让服务端把**当前这一个包**解包落盘，供**下次**命中。绝不预热整个根（19 个包 × 10s 白烧）。
+   *
+   * 三条必须：
+   *   · 带 timeout：某些环境 idle 回调可能永远不来（页面一直在动）；
+   *   · 只预热当前包；
+   *   · **必打 diag 日志** `unpack.warmup {rootId, rel, sizeMb, skipped?, ms}`，否则"为什么这个包没预热"无从查证。
+   * @param {{rootId: string, rel: string, size?: number}} file
+   */
+  function warmup(file) {
+    const sizeMb = Number(file && file.size) / 1048576;
+    const emitWarm = (extra) => emit('unpack.warmup', { rootId: file && file.rootId, rel: file && file.rel, sizeMb: +sizeMb.toFixed(1), ...extra });
+    if (!file || !file.rootId || !file.rel) return;
+    if (sizeMb > MAX_WARMUP_MB) {
+      emitWarm({ skipped: 'too-large' });
+      say.info(`跳过预热：${file.rel} ${sizeMb.toFixed(1)}MB > 上限 ${MAX_WARMUP_MB}MB（大包解包峰值 451~479MB）`);
+      return;
+    }
+    const idle = typeof requestIdleCallback === 'function'
+      ? (fn) => requestIdleCallback(fn, { timeout: 3000 })
+      : (fn) => setTimeout(fn, 800);
+    idle(() => setTimeout(async () => {
+      const t0 = performance.now();
+      try {
+        const j = await postJson('/api/unpack/resolve', { rootId: file.rootId, rel: file.rel }, { timeoutMs: 30000 });
+        emitWarm({ ok: !!j.ok, hit: !!(j && j.hit), ms: Math.round(performance.now() - t0) });
+        say.info(`预热完成：${file.rel}（${j && j.hit ? '已有缓存' : '已落盘'}，${Math.round(performance.now() - t0)}ms）`);
+      } catch (e) {
+        emitWarm({ ok: false, error: String((e && e.message) || e).slice(0, 120) });
+      }
+    }, 2000));
+  }
+
   async function materialize(file, opts = {}) {
     const vfs = opts.vfs || getSharedVirtualFS();
     const skip = prefilterReason(file);
     if (skip) return { ok: false, reason: 'prefilter', message: `跳过：${skip}` };
 
-    const read = await bytesOf(file);
-    if (!read.ok) return { ok: false, reason: 'read-failed', message: read.message };
+    const tMat = performance.now();
+    // 运行时开关：?unpack=off 关掉服务端命中查询与预热（性能基线用；同一份代码只差开关）
+    const unpackOn = (() => {
+      try { return new URLSearchParams(location.search).get('unpack') !== '0'; } catch { return true; }
+    })();
+    if (!unpackOn) emit('unpack.race', { enabled: false, reason: 'URL 参数 unpack=0' });
 
-    const got = await resolveViaProvider(file, read.bytes);
-    if (!got.ok) return got;
+    // 本地通道：原逻辑一字未改（readFile → 插件 resolve）
+    const localPath = async () => {
+      const read = await bytesOf(file);
+      if (!read.ok) throw Object.assign(new Error(read.message), { reason: 'read-failed' });
+      const got = await resolveViaProvider(file, read.bytes);
+      if (!got.ok) throw Object.assign(new Error(got.message || '本地解包失败'), { reason: got.reason, passthrough: got });
+      return { ...got.res, provider: got.provider, src: 'local' };
+    };
 
-    const reg = registerResolved(vfs, got.res);
+    // 形态 C：**只问服务端"有没有命中"**（hitOnly），miss 就本地解包。
+    //   前台绝不让服务端解包 —— 那会与本地解包抢 CPU，实测把冷加载从 1.4~2.1s 拖到 2.9~5.7s。
+    let won = null;
+    if (unpackOn && !file.bytes && file.rootId && file.rel) {
+      try {
+        won = await resolveFromServer(file); // 命中才会返回，否则抛 server-miss
+      } catch (e) {
+        if (e && e.reason && e.reason !== 'server-miss') say.warn(`服务端命中查询失败（走本地）：${e.message}`);
+        won = null;
+      }
+    }
+    if (!won) {
+      try {
+        won = await localPath();
+      } catch (e) {
+        if (e && e.passthrough) return e.passthrough; // 本地失败保持原有返回形状
+        return { ok: false, reason: (e && e.reason) || 'unpack-failed', message: String((e && e.message) || e) };
+      }
+    }
+
+    const reg = registerResolved(vfs, won);
     if (!reg.ok) return { ok: false, reason: 'register-failed', message: reg.message };
 
-    const entryUrl = vfs.resolve(got.res.prefix + String(got.res.entry).replace(/^\.?\//, ''));
+    const entryUrl = vfs.resolve(won.prefix + String(won.entry).replace(/^\.?\//, ''));
+    // 三态日志口径：命中缓存 / 服务端解包 / 回落或本地解包
+    // 三态 + 落败原因（验收"回落可用"就靠这条能被读到）
+    const source = won.src === 'server-hit' ? '解包命中缓存' : '回落前端解包';
+    const detail = { rootId: file.rootId, rel: file.rel, source, files: filesCount(won.files), ms: Math.round(performance.now() - tMat) };
+    say.info(`${source}：${file.rootId}/${file.rel}（${detail.files} 个文件，${detail.ms}ms）`);
+    emit('unpack.source', detail);
     return {
       ok: true,
-      provider: got.provider,
-      prefix: got.res.prefix,
-      entry: got.res.entry,
+      provider: won.provider,
+      prefix: won.prefix,
+      entry: won.entry,
       entryUrl,
-      files: got.res.files instanceof Map ? got.res.files.size : Object.keys(got.res.files).length,
+      files: filesCount(won.files),
       reRegistered: reg.reRegistered,
+      source, // 供上层/诊断断言：解包命中缓存 | 服务端解包 | 回落前端解包
     };
   }
 
@@ -427,6 +565,7 @@ export function createPluginHost(opts = {}) {
     fetchFile,
     /** 资源包 → VirtualFS（预筛 → 读全量 → resolve → register），不碰渲染 */
     materialize,
+    warmup,
     /** 预筛判定（排障用：为什么某个文件没被当成资源包） */
     prefilterReason,
     report,
