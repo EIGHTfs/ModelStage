@@ -13,6 +13,7 @@ import { stage, state } from './context.js';
 import { stageStatus } from './status.js';
 import { repaintActive } from '../render/playback.js';
 import { captureActive } from '../render/capture.js';
+import { resetStage, trackElementStage } from '../infra/ready.js';
 
 /** 影院模式下静止多久把播放条淡出（毫秒）；鼠标一动就回来 */
 const CINEMA_IDLE_MS = 3000;
@@ -136,6 +137,43 @@ function stopIdleWatch() {
   document.documentElement.dataset.idle = 'off';
 }
 
+/** 过渡相关的阶段 → 元素选择器（只这三处会"事后过渡"） */
+const STAGE_SELECTORS = {
+  topbar: '#app-header',
+  sidebarLeft: '#left-panel',
+  sidebarRight: '#right-panel',
+};
+
+/** 各阶段当前的跟踪句柄（stop()）：重置前必须先停掉，否则两个跟踪器叠着跑 */
+const stageHandles = new Map();
+
+/**
+ * 过渡开始时重新起算某阶段的就绪状态。
+ *
+ * 为什么需要：topbar / sidebarLeft / sidebarRight 在启动时走到 interactive 就 stop() 了，
+ *   之后影院模式、侧栏收展**不再上报任何状态**；于是 `waitStage(name,'settled')` 会拿启动时
+ *   的旧 interactive 立刻返回（rank 已够），等于没等——这是测试里那些"事后过渡等待"换不掉 sleep 的根因。
+ * 做法：先停旧句柄（连续快点以最后一次为准，不叠跟踪器）→ resetStage 回到初始态 →
+ *   用与启动时同一套判据重新跟踪（无动画 + 两次包围盒一致 ⇒ settled），不另写一套。
+ * @param {string} name 阶段名
+ * @returns {boolean} 是否重新起了跟踪
+ */
+export function retrackStage(name) {
+  const selector = STAGE_SELECTORS[name];
+  if (!selector) return false;
+  const prev = stageHandles.get(name);
+  if (prev) {
+    try { prev(); } catch { /* 旧句柄已停 */ }
+    stageHandles.delete(name);
+  }
+  resetStage(name);
+  const el = document.querySelector(selector);
+  if (!el) return false;
+  const stop = trackElementStage({ name, el });
+  if (typeof stop === 'function') stageHandles.set(name, stop);
+  return true;
+}
+
 /**
  * 影院模式开/关：只切 <html data-cinema>，显隐与位移全交给 style.css。
  * @param {boolean} [force] 传 true/false 强制设值；不传则翻转
@@ -145,6 +183,10 @@ export function toggleCinema(force) {
   const root = document.documentElement;
   const next = typeof force === 'boolean' ? force : root.dataset.cinema !== 'on';
   root.dataset.cinema = next ? 'on' : 'off';
+  // 顶栏与两侧栏一起做位移过渡 ⇒ 三个阶段的就绪状态重新起算（进入/退出都算）
+  retrackStage('topbar');
+  retrackStage('sidebarLeft');
+  retrackStage('sidebarRight');
   const btn = document.getElementById('btn-cinema');
   if (btn) btn.setAttribute('aria-pressed', String(next));
   syncSidebarButtons(); // 影院模式隐藏了两侧栏，两个开关的高亮也要跟着灭/亮
@@ -226,6 +268,8 @@ export function toggleRightPanel(force) {
   const root = document.documentElement;
   const open = typeof force === 'boolean' ? force : root.dataset.right === 'off';
   root.dataset.right = open ? 'on' : 'off';
+  // 右栏位移是一次过渡 ⇒ 它的就绪状态重新起算（只重置右栏，别的阶段不受影响）
+  retrackStage('sidebarRight');
   syncSidebarButtons(); // 高亮跟随真实显隐（不在这里自己写 class）
   stageStatus(`右侧控制面板：${open ? '显示' : '收起（顶栏「菜单」可再打开）'}`, 'info', { show: true });
   return open;
