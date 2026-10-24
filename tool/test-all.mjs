@@ -22,6 +22,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { acquireTestLock, releaseOnExit, describeHolder, EXIT_SKIPPED, HELD_ENV } from './lib/test-lock.mjs';
 import { findBadPerms, summarizeBadPerms } from './lib/check-perms.mjs';
+import { memAvailableMB, tailLines, classifyOutcome, openRun, writeSuiteResult, updateSummary, finishRun } from './lib/test-report.mjs';
 
 // 必须用 fileURLToPath：项目路径含中文/空格，URL.pathname 是百分号编码，直接当路径会找不到文件
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -29,7 +30,9 @@ const REPO_ROOT = path.resolve(HERE, '..');
 const PROJECT = path.resolve(HERE, '..');
 const PROFILE_PREFIX = '/tmp/check-console-profile-';
 /** 单套超时：正常一套 10～60s，180s 足够；超时视为"未产出结果"并重试一次 */
-const SUITE_TIMEOUT_MS = 180000;
+const SUITE_TIMEOUT_MS = Number(process.env.TEST_SUITE_TIMEOUT_MS) > 0
+  ? Number(process.env.TEST_SUITE_TIMEOUT_MS)
+  : 180000;
 
 /** 套件清单：顺序固定（从"接线自检"到"重交互回归"） */
 // 并发互斥（任务 15）：同一项目同时只允许一个测试实例。
@@ -44,6 +47,25 @@ if (BAD_PERMS.files.length || BAD_PERMS.dirs.length) {
   console.error('[test-all] ❌ 源码权限预检失败 —— 不跑测试（否则结果全是假红）：');
   console.error(summarizeBadPerms(BAD_PERMS));
   process.exit(1);
+}
+
+// **--bg 必须在 test-lock 之前分流**：父进程立刻退出，否则它会先拿锁、子进程反而被互斥挡掉(退出 75)。
+// 做法：detached 子进程 + 输出重定向到 runtime/test-bg-<时间戳>.log，父进程只回报 PID 与日志路径。
+if (process.argv.includes('--bg')) {
+  const { spawn } = await import('node:child_process');
+  const args = process.argv.slice(2).filter((a) => a !== '--bg');
+  const logDir = path.join(PROJECT, 'runtime');
+  fs.mkdirSync(logDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);   // yyyyMMddHHmmss
+  const logPath = path.join(logDir, `test-bg-${stamp}.log`);
+  const fd = fs.openSync(logPath, 'a');
+  const child = spawn(process.execPath, [fileURLToPath(import.meta.url), ...args], {
+    cwd: PROJECT, detached: true, stdio: ['ignore', fd, fd],
+  });
+  child.unref();
+  process.stdout.write(`[test-all] 后台启动：PID=${child.pid}\n[test-all] 日志：${logPath}\n`);
+  process.stdout.write(`[test-all] 结果：${path.resolve(PROJECT, 'runtime', 'test-results')}/latest.json\n`);
+  process.exit(0);
 }
 
 const TEST_LOCK = acquireTestLock({ root: REPO_ROOT, label: 'test-all', tool: 'node tool/test-all.mjs' });
@@ -244,6 +266,15 @@ function printPlan(files, plan) {
 
 const argv = process.argv.slice(2);
 const keepProfiles = argv.includes('--keep-profiles');
+// --out <dir>：结果落盘目录（每套一份 JSON + run-summary.json + latest.json）
+const outIdx = argv.indexOf('--out');
+const OUT_DIR = outIdx >= 0 && argv[outIdx + 1]
+  ? path.resolve(PROJECT, argv[outIdx + 1])
+  : path.join(PROJECT, 'runtime', 'test-results');
+// --bg：真后台（detached 子进程 + 输出重定向），立即返回 PID
+const WANT_BG = argv.includes('--bg');
+// 单套超时可用环境变量覆盖（验收"造超时场景"要用；正常不设）
+const SUITE_TIMEOUT_OVERRIDE = Number(process.env.TEST_SUITE_TIMEOUT_MS || 0);
 const wantAll = argv.includes('--all');
 const wantList = argv.includes('--list');
 const onlyIndex = argv.indexOf('--only');
@@ -381,6 +412,7 @@ function runNodeTestSuite(suite) {
     raw: out,
     stderrTail: (res.stderr || '').trim().split('\n').slice(-3).join(' | ').slice(0, 300),
     status: res.status,
+    signal: res.signal || null,
   };
 }
 
@@ -425,6 +457,7 @@ function runSuite(suite) {
     // 没产出结果时把 stderr 尾巴带出来：否则只看到 failed=null，不知道是 chrome 起不来还是脚本炸了
     stderrTail: (res.stderr || '').trim().split('\n').slice(-4).join(' | ').slice(0, 400),
     status: res.status,
+    signal: res.signal || null,
   };
 }
 
@@ -472,20 +505,58 @@ if (report.server === 'unreachable') {
 
 await new Promise((r) => setTimeout(r, 800)); // 刚杀过 chrome，给句柄/锁一点收敛时间
 say(`[test-all] 服务=${report.server} · 清理 chrome=${report.killedChrome} 个 · 清理 profile=${report.removedProfiles} 个`);
+// 结果落盘：开一轮（写 run-summary.json 且 running=true，跑完置 false）
+const runStartedAt = new Date().toISOString();
+const RUN = openRun({ outRoot: OUT_DIR, base: BASE, suites: CHOSEN.map((x) => x.name), startedAt: runStartedAt });
+say(`[test-all] 结果目录：${RUN.dir}`);
+
 for (const suite of CHOSEN) {
+  const memAtStart = memAvailableMB();
   const r = runSuiteWithRetry(suite);
   report.suites.push(r);
+  // 结局分类：真失败 / 超时被杀 / 无结果 —— 三者不能混为一谈（超时曾被当"红"报，浪费排查时间）
+  const outcome = classifyOutcome({ result: r.failed === null ? null : { failed: r.failed }, status: r.status, signal: r.signal, ms: r.ms, limitMs: SUITE_TIMEOUT_MS });
+  r.outcome = outcome.status;
+  if (outcome.hint) r.outcomeHint = outcome.hint;
+  r.memAtStart = memAtStart;
+  r.memAtEnd = memAvailableMB();
+  r.limitMs = SUITE_TIMEOUT_MS;
+  r.stdoutTail = tailLines(r.raw, 200);
+  delete r.raw;                       // 原文进 stdoutTail 就够，避免 JSON 里塞几十 MB
+  try {
+    writeSuiteResult(RUN.dir, {
+      suite: r.name,
+      startedAt: new Date(Date.now() - r.ms).toISOString(),
+      finishedAt: new Date().toISOString(),
+      ms: r.ms, failed: r.failed, total: r.total, problems: r.problems,
+      failing: r.failing || [], failingDetail: r.failingDetail || [],
+      exitCode: r.status, signal: r.signal || null,
+      outcome: r.outcome, outcomeHint: r.outcomeHint || '',
+      limitMs: r.limitMs, memAtStart: r.memAtStart, memAtEnd: r.memAtEnd,
+      stdoutTail: r.stdoutTail,
+    });
+    updateSummary(RUN.summaryPath, { suites: report.suites.map((x) => ({
+      suite: x.name, outcome: x.outcome, ms: x.ms, failed: x.failed, total: x.total,
+      problems: x.problems, memAtStart: x.memAtStart, memAtEnd: x.memAtEnd,
+    })) });
+  } catch (e) {
+    say(`[test-all] ⚠ 落盘失败（不影响测试结论）：${e && e.message}`);
+  }
   if (r.missing) { report.ok = false; say(`  ${r.name.padEnd(16)} ❌ 脚本缺失`); continue; }
   if (r.failed === null) {
     say(`  ${r.name.padEnd(16)} ⚠ 无结构化结果（status=${r.status} stdout=${(r.raw || '').length}B）`
       + ` stdout头=${String(r.raw || '').slice(0, 120).replace(/\n/g, ' ')} stderr: ${r.stderrTail || '（空）'}`);
   }
+  // 只有真失败/无结果算"红"；超时被杀单独标注（它也是红，但原因不同，要一眼看出来）
   const bad = r.failed === null || r.failed > 0;
   if (bad) report.ok = false;
+  if (r.outcomeHint) say(`      ⚠ ${r.outcome}：${r.outcomeHint}`);
   say(`  ${r.name.padEnd(16)} ${bad ? '❌' : '✅'} failed=${r.failed} total=${r.total} problems=${r.problems} ${r.ms}ms`
     + (r.failing.length ? `\n      未通过：${r.failing.join(' / ')}` : '')
     + ((r.failingDetail || []).map((d) => `\n         · ${d.name}\n           actual: ${String(d.actual).slice(0, 220)}\n           expect: ${String(d.expect).slice(0, 160)}`).join('')));
 }
 
 say(`\n[test-all] ${report.ok ? '✅ 全部通过' : '❌ 存在失败'}（${report.suites.length} 套）`);
+finishRun({ outRoot: OUT_DIR, dir: RUN.dir, summaryPath: RUN.summaryPath, exitCode: report.ok ? 0 : 1 });
+say(`[test-all] 结果：${path.join(OUT_DIR, 'latest.json')}`);
 process.exit(report.ok ? 0 : 1);
