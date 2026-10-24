@@ -89,7 +89,7 @@ export function createPixiApp(ctx) {
     if (!canvas && el) {
       canvas = document.createElement('canvas');
       canvas.id = OVERLAY_CANVAS_ID;
-      canvas.style.cssText = 'display:block;width:100%;height:100%;background:transparent';
+      canvas.classList.add('live2d-pixi-canvas');
       el.appendChild(canvas);
     }
     const opts = {

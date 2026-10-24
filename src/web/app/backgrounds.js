@@ -134,7 +134,7 @@ export function pickFile() {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = ACCEPT;
-    input.style.cssText = 'position:fixed;left:-9999px;';
+    input.classList.add('file-picker-hidden');
     document.body.append(input);
     input.addEventListener('change', () => {
       const file = (input.files && input.files[0]) || null;

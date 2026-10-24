@@ -90,15 +90,17 @@ export async function exportSettingsFile() {
  *   选完立刻移除，文本交给 importSettingsFromText 处理（该函数也可被自动化直接调用）。
  */
 export function openImportPicker() {
+  // <label> 包 <input type="file">：点 label 即触发选择框（原生行为，不靠 JS 绑 click）
+  const label = document.createElement('label');
+  label.classList.add('file-picker-hidden');
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = '.json,application/json';
-  // 同上：隐藏靠类名，不写内联样式
-  input.classList.add('file-picker-hidden');
-  document.body.append(input);
+  label.append(input);
+  document.body.append(label);
   input.addEventListener('change', async () => {
     const file = input.files && input.files[0];
-    input.remove();
+    label.remove();
     if (!file) return;
     let text = '';
     try { text = await file.text(); } catch (err) {
@@ -107,7 +109,7 @@ export function openImportPicker() {
     }
     await importSettingsFromText(text);
   }, { once: true });
-  input.click();
+  label.click();   // 点 label 等价于点 input（原生行为）
   stageStatus('已打开导入文件选择器：选一个之前导出的 JSON', 'info', { show: true });
   return true;
 }

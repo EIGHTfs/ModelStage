@@ -81,19 +81,16 @@ export function createRootManager({ els, onChanged, formatError } = {}) {
     row.className = 'root-row';
     row.dataset.rootId = root.id;
     row.dataset.enabled = String(root.enabled !== false);
-    row.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;align-items:center;padding:4px 0;'
-      + 'border-bottom:1px solid rgba(255,255,255,.06);';
 
     const title = document.createElement('span');
     title.dataset.role = 'name';
-    title.style.cssText = 'flex:1 1 100%;font-size:12px;';
+    title.className = 'root-name';
     title.textContent = `${root.name || root.id}${root.enabled === false ? '（已停用）' : ''}`;
     row.append(title);
 
     const pathEl = document.createElement('span');
     pathEl.dataset.role = 'path';
-    pathEl.className = 'muted-hint';
-    pathEl.style.cssText = 'flex:1 1 100%;font-size:11px;word-break:break-all;';
+    pathEl.className = 'muted-hint root-path';
     pathEl.textContent = root.path || '';
     row.append(pathEl);
 
@@ -101,8 +98,8 @@ export function createRootManager({ els, onChanged, formatError } = {}) {
       const input = document.createElement('input');
       input.type = 'text';
       input.dataset.role = 'rename-input';
+      input.className = 'root-rename-input';
       input.value = root.name || root.id;
-      input.style.cssText = 'flex:1 1 100%;';
       row.append(input);
       row.append(miniBtn('保存', 'rename-save', () => submitRename(root.id, input.value)));
       row.append(miniBtn('取消', 'rename-cancel', () => { state.editingId = null; render(); }));
@@ -116,8 +113,8 @@ export function createRootManager({ els, onChanged, formatError } = {}) {
     if (state.confirmingId === root.id) {
       const ask = document.createElement('span');
       ask.dataset.role = 'confirm';
-      ask.style.cssText = 'font-size:11px;color:#ffb4a2;';
-      ask.textContent = '确认删除？';
+      ask.className = 'root-confirm-ask';
+    ask.textContent = '确认删除？';
       row.append(ask);
       row.append(miniBtn('确认删除', 'remove-confirm', () => submitRemove(root.id)));
       row.append(miniBtn('取消', 'remove-cancel', () => { state.confirmingId = null; render(); }));

@@ -100,7 +100,10 @@ function createHeader(doc) {
   btnCollapse.type = 'button';
   btnCollapse.title = '收起';
   btnCollapse.setAttribute('aria-label', '收起日志面板');
-  btnCollapse.append(icon('chevron'));
+  // chevron 朝向由 CSS 按 data-collapsed 旋转（展开=向下，收起=向上），不写内联样式
+  const headChevron = icon('chevron');
+  headChevron.classList.add('dbg-chevron', 'dbg-chevron-head');
+  btnCollapse.append(headChevron);
 
   // 级别过滤：默认"信息及以上"，切到更低档才展开调试条目
   const filter = doc.createElement('select');
@@ -120,6 +123,27 @@ function createHeader(doc) {
 }
 
 /**
+ * 收起态的胶囊按钮（照旧端 8803 的收起态：info 图标 + 「日志」 + 计数徽标 + chevron）。
+ *
+ * 为什么单独做一颗按钮而不是"把面板缩到只剩标题栏"：旧端收起后是一个小胶囊浮在右下角，
+ *   用户点它就是"再打开"。这颗胶囊承载"已收起了多少条日志"的信息，比只剩一个图标更清楚。
+ * @param {Document} doc
+ * @returns {{pill: HTMLButtonElement, badge: HTMLElement}}
+ */
+function createPill(doc) {
+  const pill = el('button', 'dbg-pill');
+  pill.type = 'button';
+  pill.title = '展开调试日志';
+  pill.setAttribute('aria-label', '展开调试日志');
+  const text = el('span', 'dbg-pill-text', '日志');
+  const badge = el('span', 'dbg-pill-count', '0');
+  const chev = icon('chevron');
+  chev.classList.add('dbg-chevron', 'dbg-chevron-pill');
+  pill.append(icon('info'), text, badge, chev);
+  return { pill, badge };
+}
+
+/**
  * 建完整骨架。
  * 注意 container：挂载点**必须**用调用方给的容器（否则面板永远贴在 body 上，
  *   外面再怎么调定位都不生效——踩过：改宿主 left/bottom 完全没效果）。
@@ -130,9 +154,18 @@ function createShell(doc, container) {
   root.setAttribute('aria-label', '调试日志');
   const parts = createHeader(doc);
   const list = el('div', 'dbg-list');
-  root.append(parts.head, list);
+  const { pill, badge } = createPill(doc);
+  // 折叠动画用 grid 的 0fr→1fr 技巧（height:auto 不能 transition）：
+  //   .dbg-shell 是 grid 容器、.dbg-shell-inner 是唯一子项且 min-height:0 + overflow:hidden，
+  //   收起时把轨道压到 0fr ⇒ 内容高度平滑归零，不需要猜任何固定高度。
+  const shellInner = el('div', 'dbg-shell-inner');
+  shellInner.append(parts.head, list);
+  const shellBox = el('div', 'dbg-shell');
+  shellBox.append(shellInner);
+  root.dataset.collapsed = 'false';
+  root.append(pill, shellBox);
   (container || doc.body).append(root);
-  return { root, list, ...parts };
+  return { root, list, pill, badge, shellBox, ...parts };
 }
 
 /** 生成一条日志的 DOM */
@@ -166,7 +199,7 @@ function renderEntry(entry, { isCollapsed }) {
  * 渲染器：全量重绘 / 增量追加 / 条数 / 自动滚动。
  * @param {{log: object, list: HTMLElement, countEl: HTMLElement, state: {collapsed: boolean}}} ctx
  */
-function createRenderer({ log, list, countEl, state }) {
+function createRenderer({ log, list, countEl, badgeEl, state }) {
   /** 新增后自动滚到底（列表未溢出时无副作用） */
   function scrollToBottom() {
     if (state.collapsed) return;
@@ -222,6 +255,8 @@ function createRenderer({ log, list, countEl, state }) {
 
   function updateCount(n) {
     countEl.textContent = `${n} 条`;
+    // 收起态那颗胶囊上的徽标：收起后用户看不到标题栏，条数只能靠它
+    if (badgeEl) badgeEl.textContent = String(n);
   }
 
   /** 级别档位：阈值越高越严格（all = 不过滤，含 debug） */
@@ -316,19 +351,35 @@ function wireControls({ shell, view, log, state }) {
     try { log.clear(); } finally { view.renderAll(); }
   }
 
-  /** 折叠/展开：只切列表可见性与按钮语义 */
-  function onCollapse() {
-    state.collapsed = !state.collapsed;
-    shell.root.classList.toggle('is-collapsed', state.collapsed);
-    shell.list.hidden = state.collapsed;
+  /**
+   * 折叠/展开。
+   *
+   * 实现口径：只切 `data-collapsed`，动画全部交给 CSS（高度 0fr↔1fr + 透明度 + 位移）。
+   *   **不能再写 `list.hidden`** —— 那会让列表瞬间从布局里消失，高度过渡就没得可动，
+   *   动画会退化成"啪一下不见了"。列表留在文档里、由外层 .dbg-shell 把轨道压到 0，
+   *   内容被 overflow:hidden 裁掉，视觉上同样干净。
+   * @param {boolean} next 目标状态
+   */
+  function setCollapsed(next) {
+    state.collapsed = !!next;
+    shell.root.dataset.collapsed = String(state.collapsed);
     shell.btnCollapse.title = state.collapsed ? '展开' : '收起';
     shell.btnCollapse.setAttribute('aria-label', state.collapsed ? '展开日志面板' : '收起日志面板');
-    shell.btnCollapse.classList.toggle('is-collapsed', state.collapsed);
-    if (!state.collapsed) view.scrollToBottom();
+    shell.pill.setAttribute('aria-expanded', String(!state.collapsed));
+    if (!state.collapsed) {
+      // 收起期间新增的条目是按"收起态"渲染的（不建 DOM）；展开时整表重绘一次补齐
+      try { view.renderAll(); } catch { /* 渲染失败不影响展开 */ }
+      view.scrollToBottom();
+    }
   }
+
+  function onCollapse() { setCollapsed(!state.collapsed); }
+  /** 胶囊点击 = 展开（收起态下唯一可见的入口） */
+  function onPillOpen() { if (state.collapsed) setCollapsed(false); }
 
   shell.btnClear.addEventListener('click', onClear);
   shell.btnCollapse.addEventListener('click', onCollapse);
+  shell.pill.addEventListener('click', onPillOpen);
 
   // 订阅：新条目增量追加；null 表示「已清空」→ 整表重绘
   const unsubscribe = log.subscribe((entry) => {
@@ -340,7 +391,7 @@ function wireControls({ shell, view, log, state }) {
     }
   });
 
-  return { onClear, onCollapse, unsubscribe };
+  return { onClear, onCollapse, onPillOpen, setCollapsed, unsubscribe };
 }
 
 /** diag 条目的正文：event + 数据摘要（截断与 log.js 的 300 字规则一致） */
@@ -434,7 +485,7 @@ export function mountDebugPanel({ log, container } = {}) {
   //   link 出错或超时也放开，保证面板不会永久不可见。
   const revealWhenStyled = () => { try { shell.root.style.visibility = ''; } catch { /* 忽略 */ } };
   try { shell.root.style.visibility = 'hidden'; } catch { /* 忽略 */ }
-  const view = createRenderer({ log, list: shell.list, countEl: shell.countEl, state });
+  const view = createRenderer({ log, list: shell.list, countEl: shell.countEl, badgeEl: shell.badge, state });
   const wired = wireControls({ shell, view, log, state });
   const unwatchVisibility = syncVisibility({ root: shell.root, view, log });
 
@@ -499,6 +550,7 @@ export function mountDebugPanel({ log, container } = {}) {
       try { wired.unsubscribe(); } catch { /* 忽略 */ }
       try { unwatchVisibility(); } catch { /* 忽略 */ }
       try { drag.dispose(); } catch { /* 忽略 */ }
+      shell.pill.removeEventListener('click', wired.onPillOpen);
       shell.btnUpload.removeEventListener('click', onUpload);
       shell.btnClear.removeEventListener('click', wired.onClear);
       shell.btnCollapse.removeEventListener('click', wired.onCollapse);

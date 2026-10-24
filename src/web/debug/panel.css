@@ -35,6 +35,9 @@
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
   transform-origin: right bottom;
+  /* 收起/展开时宽度一并过渡：收起后只剩胶囊，宽度要跟着收（否则 width:auto 会被
+     仍在布局里的列表内容撑到 600+，胶囊看着像一条长条）。fixed 元素动 width 不影响页面布局。 */
+  transition: width 220ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 /* 关闭调试日志时只是隐藏（实例保留），作者样式里的 display:flex 会盖掉 [hidden]，故显式声明 */
@@ -42,9 +45,97 @@
   display: none;
 }
 
-.dbg-panel.is-collapsed {
+/* ---------------------------------------------------------------- 收起 / 展开
+   收起后由右下角一颗胶囊按钮承载（照旧端 8803）：info 图标 + 「日志」 + 计数徽标 + chevron-up。
+   动画口径（契约 doc/契约/禁止内联CSS与JS.md：只用 CSS transition，不写 element.style）：
+     · 高度用 grid 的 0fr ↔ 1fr（height:auto 不能 transition，也不必猜固定高度）
+     · 配合 opacity + 轻微位移/缩放，从右下角"长出来"（transform-origin: right bottom）
+     · 收起态 pointer-events:none，防止对着空气点
+   曲线 cubic-bezier(.16,1,.3,1) 是这类"先快后缓、不过冲"手感的标准值。 */
+.dbg-panel[data-collapsed='true'] {
+  /* 胶囊实测约 112px（info 14 + 日志 + 徽标 + chevron + 内边距），留 8px 余量避免被 overflow 裁右边缘 */
+  --dbg-pill-w: 120px;
+  width: var(--dbg-pill-w);
   max-height: none;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
 }
+
+.dbg-shell {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition:
+    grid-template-rows 220ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 180ms ease,
+    transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
+  transform-origin: right bottom;
+}
+
+/* 唯一子项：必须 min-height:0（否则 grid 轨道压不下去）+ overflow:hidden（裁掉溢出的列表） */
+.dbg-shell-inner {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.dbg-panel[data-collapsed='true'] .dbg-shell {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transform: translateY(8px) scale(0.98);
+  pointer-events: none;
+}
+
+/* ---- 收起态胶囊 ---- */
+.dbg-pill {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid var(--dbg-border);
+  border-radius: 999px;
+  background: var(--dbg-card);
+  color: var(--dbg-fg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+
+.dbg-panel[data-collapsed='true'] .dbg-pill {
+  display: inline-flex;
+  width: fit-content;
+  margin-left: auto;      /* 贴右：胶囊永远在右下角，和展开前的面板右边缘对齐 */
+  white-space: nowrap;
+}
+
+.dbg-pill:hover {
+  /* 旧端 hover:bg-accent —— 用 secondary 这一档（accent 在本项目里没有同名 token） */
+  background: color-mix(in srgb, var(--dbg-fg) 8%, var(--dbg-card));
+}
+
+/* 胶囊里的 info 图标用主色（旧端 text-primary） */
+.dbg-pill .dbg-icon-info {
+  width: 14px;
+  height: 14px;
+  color: var(--dbg-primary);
+}
+
+.dbg-pill-text { color: var(--dbg-fg); }
+
+/* 计数徽标：主色 10% 底 + 主色字（旧端 bg-primary/10 text-primary text-[10px]） */
+.dbg-pill-count {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--dbg-primary) 12%, transparent);
+  color: var(--dbg-primary);
+  font-size: 10px;
+  line-height: 16px;
+}
+
+.dbg-pill .dbg-icon-chevron { width: 12px; height: 12px; color: var(--dbg-muted); }
 
 /* ---------------------------------------------------------------- 头部 */
 
@@ -288,3 +379,17 @@
 .dbg-upload-status[data-state='fail'] {
   color: var(--color-danger);
 }
+
+/* ---- chevron 朝向与旋转 ----
+   展开态向下（点它会收起）、收起态向上（点它会展开）。
+   两处都带 transition，折叠瞬间能看到箭头"转过去"，而不是瞬切。 */
+.dbg-chevron {
+  transform-origin: center;
+  transition: transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.dbg-chevron-head { transform: rotate(0deg); }
+.dbg-chevron-pill { transform: rotate(180deg); }
+
+/* 展开过程中胶囊淡出，同时它的箭头转回向下 —— 视觉上是"同一个箭头翻了个面" */
+.dbg-panel[data-collapsed='false'] .dbg-chevron-pill { transform: rotate(0deg); }

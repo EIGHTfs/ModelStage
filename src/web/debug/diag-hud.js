@@ -26,26 +26,13 @@ export function installDiagHud({ getRendererInfo, readCanvasPixels, overlayCanva
 
     const box = document.createElement('div');
     box.id = 'l2d-diag';
-    box.style.cssText = [
-      'position:fixed',
-      'right:8px',
-      'bottom:8px',
-      'z-index:99999',
-      'max-width:480px',
-      'background:rgba(12,14,16,.93)',
-      'color:#e8e8e8',
-      'border:1px solid #3a3f45',
-      'border-radius:6px',
-      'font:11px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace',
-      'padding:8px 10px',
-      'white-space:pre-wrap',
-      'box-shadow:0 4px 16px rgba(0,0,0,.45)',
-    ].join(';');
+    // 样式改由 style.css 的 #l2d-diag 承担（契约：设计值不进 JS）
 
     const head = document.createElement('div');
-    head.style.cssText = 'cursor:pointer;color:#8fd;margin-bottom:4px;user-select:none';
+    head.className = 'l2d-diag-head';
     head.textContent = '【渲染诊断】点此折叠';
     const body = document.createElement('div');
+    body.className = 'l2d-diag-body';
     box.appendChild(head);
     box.appendChild(body);
     document.body.appendChild(box);
@@ -53,7 +40,7 @@ export function installDiagHud({ getRendererInfo, readCanvasPixels, overlayCanva
     let collapsed = false;
     head.addEventListener('click', () => {
       collapsed = !collapsed;
-      body.style.display = collapsed ? 'none' : 'block';
+      box.classList.toggle('is-collapsed', collapsed);   // 折叠态交给 CSS
       head.textContent = collapsed ? '【渲染诊断】已折叠（点此展开）' : '【渲染诊断】点此折叠';
     });
 

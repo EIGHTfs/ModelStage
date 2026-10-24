@@ -87,8 +87,7 @@ export function ensureDebugPanelHost() {
   if (state.debugPanelHost) return state.debugPanelHost;
   const host = document.createElement('div');
   host.id = 'debug-panel-host';
-  // 恢复最初的位置设定（面板自身另有 fixed 定位，实际按下一条 CSS 走）
-  host.style.cssText = 'position:fixed;right:200px;bottom:100px;z-index:40;width:288px;';
+  // 位置/尺寸在 style.css 的 #debug-panel-host（契约：设计值不进 JS）
   document.body.append(host);
   state.debugPanelHost = host;
   try {

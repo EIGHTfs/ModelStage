@@ -96,12 +96,9 @@ export function createStageSurface({ root, log } = {}) {
     if (!el) {
       el = document.createElement('div');
       el.id = OVERLAY_ID;
-      // pointer-events:none ⇒ 事件仍落到 Spine 画布，交互层路径完全不变
-      el.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;z-index:5;'
-        + 'display:none;pointer-events:none;background:transparent;overflow:hidden';
+      // 定位/尺寸/pointer-events 全在 style.css 的 #live2d-overlay（契约：不在 JS 里写设计值）
       const cv = document.createElement('canvas');
       cv.id = OVERLAY_CANVAS_ID;
-      cv.style.cssText = 'display:block;width:100%;height:100%';
       el.appendChild(cv);
       (rootEl() || document.body).appendChild(el);
     }
@@ -260,7 +257,8 @@ export function createStageSurface({ root, log } = {}) {
     if (el) el.dataset.stageMode = next;
     // 覆盖层只在 live2d 面显示；其它面一律隐藏（避免透明画布压在上面）
     const ov = document.getElementById(OVERLAY_ID);
-    if (ov) ov.style.display = next === 'live2d' ? 'block' : 'none';
+    // 显隐用类切换（样式在 style.css），避免 JS 写 display
+    if (ov) ov.classList.toggle('is-visible', next === 'live2d');
     return next;
   }
 

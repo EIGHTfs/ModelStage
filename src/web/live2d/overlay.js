@@ -53,15 +53,12 @@ export function createOverlay(ctx) {
     if (!el) {
       el = document.createElement('div');
       el.id = OVERLAY_ID;
-      // 关键：pointer-events:none ⇒ 事件下穿到 Spine 画布，交互层与相机路径完全不变
-      el.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;z-index:5;'
-        + 'display:none;pointer-events:none;background:transparent;overflow:hidden';
+      // 关键：pointer-events:none ⇒ 事件下穿到 Spine 画布（规则在 style.css 的 #live2d-overlay）
       host.appendChild(el);
     }
     if (!hasCanvas(el)) {
       const cv = document.createElement('canvas');
       cv.id = OVERLAY_CANVAS_ID;
-      cv.style.cssText = 'display:block;width:100%;height:100%;background:transparent';
       el.appendChild(cv);
     }
     st.overlay = el;

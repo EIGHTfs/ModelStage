@@ -62,15 +62,18 @@ const MAX_BG_IMAGE_BYTES = 4 * 1024 * 1024;
  */
 export function pickBackgroundImage() {
   return new Promise((resolve) => {
+    // 标准做法：<label> 包 <input type="file">，点 label 即触发选择框（不需要 JS 绑定 click）
+    const label = document.createElement('label');
+    label.classList.add('file-picker-hidden');
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*';
-    // 用类名而不是内联样式定位到视口外（契约《禁止内联CSS与JS》：样式写在 panel.css）
-    input.classList.add('file-picker-hidden');
-    document.body.append(input);
+    label.append(input);
+    document.body.append(label);
+    // 仍需要 change 才能拿到文件内容（这是数据回调，不是"点击代理"）
     input.addEventListener('change', () => {
       const file = input.files && input.files[0];
-      input.remove();
+      label.remove();
       if (!file) { resolve(false); return; }
       if (file.size > MAX_BG_IMAGE_BYTES) {
         document.documentElement.dataset.bgError = `图片过大（${Math.round(file.size / 1024)}KB > ${MAX_BG_IMAGE_BYTES / 1024 / 1024}MB）`;
@@ -86,7 +89,7 @@ export function pickBackgroundImage() {
       reader.addEventListener('error', () => { resolve(false); }, { once: true });
       reader.readAsDataURL(file);
     }, { once: true });
-    input.click();
+    label.click();   // 点 label 等价于点 input（原生行为）
     document.documentElement.dataset.bgPicker = 'open';
   });
 }
