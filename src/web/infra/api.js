@@ -207,7 +207,8 @@ attachRetryStats();
  *   退避与抖动必须只有一处实现——两份必然漂移（本项目已吃过"两套实现不一致"的亏）。
  *
  * @param {string} url 同源路径或绝对 URL
- * @param {{timeoutMs?: number, retries?: number, headers?: object, signal?: AbortSignal, label?: string}} [opts]
+ * @param {{method?: string, body?: any, timeoutMs?: number, retries?: number, headers?: object,
+ *   signal?: AbortSignal, label?: string, keepalive?: boolean}} [opts]
  * @returns {Promise<Response>} 成功（res.ok）的响应；4xx/重试耗尽会抛错
  */
 export async function fetchWithRetry(url, opts = {}) {
@@ -234,7 +235,13 @@ export async function fetchWithRetry(url, opts = {}) {
       const merged = opts.signal && typeof AbortSignal.any === 'function'
         ? AbortSignal.any([opts.signal, timeoutSignal])
         : (opts.signal || timeoutSignal);
-      const res = await fetch(url, { headers: opts.headers, signal: merged });
+      const res = await fetch(url, {
+        method: opts.method || 'GET',
+        headers: opts.headers,
+        ...(opts.body !== undefined ? { body: typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body) } : {}),
+        ...(opts.keepalive ? { keepalive: true } : {}),
+        signal: merged,
+      });
       if (res.ok) {
         retryStats.inflight -= 1;
         const okCost = Date.now() - startedAt;

@@ -342,14 +342,39 @@ const server = http.createServer((req, res) => {
     }
     if (p === '/api/ready' && req.method === 'POST') {
       // 注意：readBody 给的是**原始字符串**（diag 自己在内部 parse），这里必须自行解析
+      const arrivedAt = Date.now();
       return readBody(req, res, (raw) => {
+        // **到达日志**：这条通道以前完全不记录 ⇒ 出现 "Failed to fetch" 时无法区分
+        //   "请求没到达" / "到达后出错" / "返回了但回不到浏览器"。第一步必须能看见。
+        //   只记到达 + 字节数 + 耗时，不记 body 内容（会很吵）。
+        const logReady = (ok, extra) => {
+          try {
+            diag.appendDiag(JSON.stringify({
+              sid: 'server',
+              entries: [{
+                level: ok ? 'info' : 'warn',
+                at: arrivedAt,
+                event: ok ? 'ready.post' : 'ready.post.error',
+                data: { bytes: raw ? raw.length : 0, ms: Date.now() - arrivedAt, ...extra },
+              }],
+            }));
+          } catch { /* 日志失败不影响就绪通道 */ }
+        };
         let body = {};
         try {
           body = raw ? JSON.parse(raw) : {};
-        } catch {
+        } catch (e) {
+          logReady(false, { reason: 'bad-json', msg: String((e && e.message) || e).slice(0, 100) });
           return sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON' });
         }
-        return sendJson(res, 200, ready.apply(body));
+        try {
+          const out = ready.apply(body);
+          logReady(true, { updates: (body && body.updates && body.updates.length) || 0, clear: body && body.clear === true });
+          return sendJson(res, 200, out);
+        } catch (e) {
+          logReady(false, { reason: 'apply-threw', msg: String((e && e.message) || e).slice(0, 120) });
+          return sendJson(res, 500, { ok: false, error: String((e && e.message) || e) });
+        }
       });
     }
     // 资源根写操作（增 / 删 / 改名 / 启停）：校验 → 备份 → 写 → 失效缓存

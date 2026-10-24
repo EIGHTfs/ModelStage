@@ -32,26 +32,24 @@ export function releaseLive2DResources({ st, note, stopDiag, doc } = {}) {
 
   try { if (typeof stopDiag === 'function') stopDiag(); } catch { /* 停诊断失败不阻塞释放 */ }
   try { if (st.overlay && typeof st.overlay.style === 'object') st.overlay.style.display = 'none'; } catch { /* 忽略 */ }
+  // **app 常驻**：不 destroy（`destroy(true)` 的 removeView 会摘掉 canvas，那才是孤儿上下文的来源）。
+  //   每次 spine↔live2d 切换都 `new PIXI.Application()` 会新建 1 个匿名探测上下文且永不释放，
+  //   累积到浏览器上限（~16）就丢最旧 ⇒ 画布黑（实测：来回切 15 次即到顶）。
+  //   所以释放只做三件事：停渲染循环、释放纹理（GPU 内存大头）、隐藏覆盖层；app/canvas/context 保留，
+  //   下次切回来直接复用（只重建纹理，比 new Application 便宜得多）。
   if (st.app) {
-    // destroy(true) 的第一个参数是 removeView：会顺带把 canvas 从容器里摘掉。
-    //   下面立刻把容器也移除，避免"容器在、canvas 不在"的中间态被下游复用判断吃进去。
-    // 记住 canvas：destroy(true) 的 removeView 会把它从容器摘掉
-    const deadCanvas = (st.app.view && st.app.view.canvas) || st.app.view || null;
-    try { st.app.destroy(true, { children: true }); } catch { /* 销毁失败不阻塞释放 */ }
-    st.app = null;
-    // **显式释放上下文**：PIXI 的 destroy 只放掉 JS 引用，浏览器不会立刻回收 WebGL 上下文；
-    //   而 live2d 的 unmount 与 dispose 走同一条路径（stage.js 有意如此），
-    //   所以每次 live2d→live2d 切换都会新建 PIXI.Application ⇒ 若不显式释放，上下文累积到
-    //   浏览器上限（~16）后最旧的被丢弃 ⇒ 画布黑（实测每切一次净增 2 个存活上下文）。
+    try { if (st.model) { st.app.stage.removeChild(st.model); } } catch { /* 忽略 */ }
+    try { if (st.model) st.model.destroy({ children: true, texture: true, baseTexture: true }); } catch { /* 忽略 */ }
+    try { if (typeof st.app.stop === 'function') st.app.stop(); } catch { /* 忽略 */ }
+    // 释放纹理缓存（PIXI 的内存大头）；拿不到就跳过，不影响正确性
     try {
-      const gl = deadCanvas && (deadCanvas.getContext('webgl2') || deadCanvas.getContext('webgl'));
-      const ext = gl && gl.getExtension && gl.getExtension('WEBGL_lose_context');
-      if (ext && typeof ext.loseContext === 'function') ext.loseContext();
-    } catch { /* 拿不到就算了，不阻塞释放 */ }
+      const r = st.app.renderer;
+      if (r && r.textureGC && typeof r.textureGC.run === 'function') r.textureGC.run();
+    } catch { /* 忽略 */ }
+    try { if (st.overlay && typeof st.overlay.style === 'object') st.overlay.style.display = 'none'; } catch { /* 忽略 */ }
   }
-  const el = d && d.getElementById ? d.getElementById(OVERLAY_ID) : null;
-  if (el && el.parentElement) el.parentElement.removeChild(el);
-  st.overlay = null;
+  // 覆盖层 DOM 保留（app 常驻 ⇒ 它的 canvas 还得留着，摘掉就是旧坑"容器在、canvas 不在"）
+  st.overlay = (d && d.getElementById) ? (d.getElementById(OVERLAY_ID) || st.overlay) : st.overlay;
   st.libsReady = null;
   st.model = null;
   st.modelId = null;
@@ -61,6 +59,6 @@ export function releaseLive2DResources({ st, note, stopDiag, doc } = {}) {
   st.active = false;
 
   const did = hadApp || hadOverlay;
-  if (did && typeof note === 'function') note('Live2D 已释放（app 销毁、覆盖层移除、状态复位）');
+  if (did && typeof note === 'function') note('Live2D 已释放（纹理释放、渲染停止、覆盖层隐藏；app 常驻复用）');
   return did;
 }

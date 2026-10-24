@@ -121,8 +121,10 @@ const RULES = [
   { re: /^src\/web\/roster\//, suites: ['roster-actions', 'f3-reveal'] },
   { re: /^src\/web\/engine\//, suites: ['spine-actions'] },
   { re: /^src\/web\/spine\//, suites: ['spine-actions'] },
-  { re: /^src\/web\/live2d\//, suites: ['anim-list', 'f2-topbar'] },
-  { re: /^src\/web\/render\//, suites: ['spine-actions', 'anim-list', 'panel-actions'] },
+  // Live2D 生命周期（unmount/dispose/上下文）由 live2d-lifecycle 专测；漏了它就是"改了却没测"
+  { re: /^src\/web\/live2d\//, suites: ['live2d-lifecycle', 'anim-list', 'f2-topbar'] },
+  // 渲染器契约（能力声明/mount 形状）由 renderer-contract 专测
+  { re: /^src\/web\/render\//, suites: ['renderer-contract', 'spine-actions', 'anim-list', 'panel-actions'] },
   { re: /^src\/web\/infra\//, suites: ['spine-actions', 'anim-list', 'panel-actions'] },
   { re: /^src\/web\/debug\//, suites: ['panel-actions'] },
   // 测试脚本本身：改了哪套就跑哪套（名字不在 SUITES 里的按"无法映射"处理）

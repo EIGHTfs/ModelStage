@@ -29,7 +29,14 @@ const MODEL_POLL_MS = 80;
 /** DOM 阶段轮询间隔（ms）：读包围盒/动画状态，120ms 足够判断"稳定" */
 const ELEMENT_POLL_MS = 120;
 /** 上报去抖窗口（ms）：同一窗口内的多次变更合成一条请求 */
-const FLUSH_DEBOUNCE_MS = 120;
+// 复用模型文件那条重试实现（用户实测：同一时刻模型文件因有重试而成功、/api/ready 因裸 fetch 而失败）
+import { fetchWithRetry } from './api.js';
+
+// 上报合并窗口：模型装载完成会**连续**标记 model/panel/bottombar 三个阶段，
+//   窗口太短就会各发一条（现场：模型加载成功后 41ms 内连发 2~3 条 POST，全部 Failed to fetch，
+//   因为那一刻模型文件的几十个请求正占满同源连接槽）。400ms 足以把它们合成一条，
+//   又不会让就绪信号明显滞后。
+const FLUSH_DEBOUNCE_MS = 400;
 
 const st = {
   stages: {},          // stage → { state, at, detail?, reason? }
@@ -42,6 +49,7 @@ const st = {
   dropped: 0,          // 因 in-flight 被跳过的次数（可观测，便于判断"是不是报得太密"）
   fails: 0,            // 上报失败次数（限频记日志，不刷屏）
   lastFailAt: 0,
+  lastFail: null,   // {at,name,msg,attempts}：一次失败就能看出是网络层还是超时（排障唯一途径）
 };
 
 /**
@@ -101,7 +109,7 @@ function resetStageInternal(name) {
  */
 export function resetStage(name) {
   const ok = resetStageInternal(name);
-  if (ok) flushNow();
+  if (ok) scheduleFlush();
   return ok;
 }
 
@@ -122,7 +130,7 @@ export function resetStages(names, opts) {
   }
   // flush:false 时不在这里发：调用方紧接着会重新跟踪，跟踪的第一拍 markStage('mounted')
   //   会把 reset + mounted 一起进同一个去抖窗口 ⇒ 整次交互只发 1 个 POST。
-  if (done.length && flushNowAfter) flushNow();
+  if (done.length && flushNowAfter) scheduleFlush();
   return done;
 }
 
@@ -132,7 +140,7 @@ export function resetStages(names, opts) {
  *   上报次数 / 待发条数 / 本地 rev / 因 in-flight 被跳过的次数 / 失败次数 / 是否在飞
  */
 export function stats() {
-  return { flushes: st.flushes, pending: st.pending.size, rev: st.rev, dropped: st.dropped, fails: st.fails, inflight: st.inflight };
+  return { flushes: st.flushes, pending: st.pending.size, rev: st.rev, dropped: st.dropped, fails: st.fails, inflight: st.inflight, lastFail: st.lastFail };
 }
 
 /** 页面内直读快照（契约 §5.1）：ready() 全量，ready('model') 单阶段 */
@@ -179,31 +187,57 @@ function flush(opts) {
   st.pending.clear();
   st.flushes += 1;
   st.inflight = true;
+  const payload = JSON.stringify({ updates });
+  const headers = { 'Content-Type': 'application/json' };
+  const onFail = (e, attempts) => {
+    st.fails += 1;
+    // 记最后一次失败的结构化原因（不打印，避免刷屏；由 readyStats() 暴露）
+    st.lastFail = {
+      at: Date.now(),
+      name: (e && e.name) || null,
+      msg: String((e && e.message) || e).slice(0, 120),
+      attempts: attempts || 1,
+    };
+    const now = Date.now();
+    if (now - st.lastFailAt > 10000) {
+      st.lastFailAt = now;
+      try {
+        if (typeof console !== 'undefined' && console.warn) {
+          console.warn(`[ready] 上报失败 ${st.fails} 次（最近）: ${st.lastFail.msg}`);
+        }
+      } catch { /* 忽略 */ }
+    }
+  };
   try {
-    fetch('/api/ready', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ updates }),
-      keepalive,
-      // 就绪通道是旁路信号：服务端卡住不能把页面拖住（5s 超时，超时即放弃本次上报）
-      signal: AbortSignal.timeout(5000),
-    }).catch((e) => {
-      // 失败要能看见，但**不能刷屏**（用户上次看到的就是反复刷的一条）：
-      //   只在 ≥10s 间隔记一次，并记录累计次数。
-      st.fails += 1;
-      const now = Date.now();
-      if (now - st.lastFailAt > 10000) {
-        st.lastFailAt = now;
-        try {
-          if (typeof console !== 'undefined' && console.warn) {
-            console.warn(`[ready] 上报失败 ${st.fails} 次（最近）: ${String((e && e.message) || e)}`);
-          }
-        } catch { /* 忽略 */ }
-      }
-    }).finally(() => { st.inflight = false; });
+    if (keepalive) {
+      // 卸载前：**不重试**（页面已经在走，没时间退避），keepalive 保证尽力送达
+      fetch('/api/ready', { method: 'POST', headers, body: payload, keepalive: true, signal: AbortSignal.timeout(5000) })
+        .catch((e) => onFail(e, 1))
+        .finally(() => { st.inflight = false; });
+    } else {
+      // 常规上报：与模型文件走同一条重试实现（旁路信号 ⇒ 3s 超时 + 2 次快速重试）
+      fetchWithRetry('/api/ready', { method: 'POST', headers, body: payload, timeoutMs: 3000, retries: 2, label: 'ready-flush' })
+        .catch((e) => onFail(e, 3))
+        .finally(() => { st.inflight = false; });
+    }
   } catch {
     st.inflight = false;
   }
+}
+
+/**
+ * 安排一次合并上报（**常规路径都走这里**）。
+ *
+ * 为什么不是立刻发：模型装载完成那一刻，14 个 motion3.json + 纹理正占满同源连接槽（6 个），
+ *   此刻再发 POST 会**瞬间** Failed to fetch（实测：装载成功后 41ms 内两条同时失败，同一毫秒）。
+ *   所以：攒窗口 + 每次新阶段重置计时，等连接池冷下来再发。
+ */
+export function scheduleFlush() {
+  if (st.timer) clearTimeout(st.timer);
+  st.timer = setTimeout(() => {
+    st.timer = null;
+    flush();
+  }, FLUSH_DEBOUNCE_MS);
 }
 
 /**
@@ -277,7 +311,7 @@ export function trackModelStage(opts) {
   function stop() {
     if (stopped) return;
     stopped = true;
-    flushNow(); // 阶段推进完立刻落地，别等去抖窗口
+    scheduleFlush(); // 走合并窗口：装载完成会连标多个阶段，立刻发会撞上模型文件的连接占用
   }
 
   tick();
@@ -341,7 +375,7 @@ export function trackElementStage(opts) {
   let prevBox = null;
   let stableHits = 0;
 
-  const stop = () => { if (!stopped) { stopped = true; flushNow(); } };
+  const stop = () => { if (!stopped) { stopped = true; scheduleFlush(); } };
 
   const tick = () => {
     if (stopped) return;
