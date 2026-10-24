@@ -13,7 +13,7 @@
 import { el } from './dom.js';
 import { listBackgrounds } from '../app/backgrounds.js';
 import { applyBackground, readViewSettings, setCustomBackground } from '../app/view-settings.js';
-import { stageStatus } from '../app/status.js';
+import { stageLog, stageStatus } from '../app/status.js';
 
 /**
  * 自绘下拉的键盘语义（WAI-ARIA combobox 惯用法）：
@@ -247,7 +247,9 @@ export function applyBgValue(value) {
     const url = v.slice(4);
     const ok = setCustomBackground(url);
     document.dispatchEvent(new CustomEvent('panel:bg-applied', { detail: { mode: 'custom' } }));
-    stageStatus(`背景 → ${bgImageNames.get(url) || '自定义图片'}${ok ? '' : '（舞台未就绪）'}`, ok ? 'info' : 'warn', { show: true });
+    const bgName = bgImageNames.get(url) || '自定义图片';
+    if (ok) stageStatus(`背景 → ${bgName}`, 'info', { show: true });
+    else stageLog('warn', `背景 → ${bgName}（舞台未就绪）`, { url, reason: 'stage-not-ready' });
     return ok;
   }
   if (v.startsWith('mode:')) {

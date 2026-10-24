@@ -7,7 +7,7 @@
 //   笼统一句"上传失败"用户不知道该改什么；后端给了 reason + 具体数值，这里原样透出。
 
 import { el } from './dom.js';
-import { stageStatus } from '../app/status.js';
+import { stageLog, stageStatus } from '../app/status.js';
 import { applyBackground, readViewSettings, setCustomBackground } from '../app/view-settings.js';
 import {
   listBackgrounds, pickFile, removeBackground, renameBackground, uploadBackground,
@@ -34,7 +34,7 @@ function say(box, text, kind = 'ok') {
   hint.textContent = text;
   hint.dataset.kind = kind;
   box.dataset.bgMsg = text;
-  if (kind === 'error') stageStatus(text, 'error'); else stageStatus(text, 'info', { show: true });
+  if (kind === 'error') stageLog('error', text, { source: 'background-list' }); else stageStatus(text, 'info', { show: true });
 }
 
 /**

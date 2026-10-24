@@ -7,7 +7,7 @@
 import { dom, stage, state } from './context.js';
 import { setPlaybackPaused } from '../render/playback.js';
 import { getRendererSetting, setRendererSetting } from './renderer-setting.js';
-import { stageStatus } from './status.js';
+import { stageLog, stageStatus } from './status.js';
 import { formatError, getJson } from '../infra/api.js';
 import {
   buildAnimationList, isCycleLoop, labelWithDuration, notePlaying, playAnimation, setCycleLoop,
@@ -67,18 +67,18 @@ function toggleTransportPlay() {
 /** 单动循环：切换 settings.loop（引擎 setLoop 走通用 setter） */
 async function stepVariant(dir) {
   const cur = state.selectedModel;
-  if (!cur || !cur.rootId || !cur.directory) { stageStatus('切换变体失败：当前没有可用的兄弟变体', 'warn'); return; }
+  if (!cur || !cur.rootId || !cur.directory) { stageLog('warn', '切换变体失败：当前没有可用的兄弟变体', { reason: 'no-current-model' }); return; }
   try {
     const data = await getJson(`/api/models?root=${encodeURIComponent(cur.rootId)}`);
     const peers = (data.models || []).filter((m) => m.directory === cur.directory);
-    if (peers.length < 2) { stageStatus('切换变体失败：当前角色只有 1 个变体', 'warn'); return; }
+    if (peers.length < 2) { stageLog('warn', '切换变体失败：当前角色只有 1 个变体', { peers: peers.length }); return; }
     const at = peers.findIndex((m) => m.id === cur.id || m.name === cur.name);
     const next = peers[(at + dir + peers.length) % peers.length];
     document.documentElement.dataset.transportVariant = next.name;
-    stageStatus(`transport 切换变体 → ${next.name}`, 'info');
+    stageStatus(`切换变体 → ${next.name}`, 'info');
     onSelectModel(next);
   } catch (err) {
-    stageStatus(`切换变体失败：${formatError(err)}`, 'error');
+    stageLog('error', `切换变体失败：${formatError(err)}`, { err: formatError(err) });
   }
 }
 /** 动作下拉选择：切动画并回填 dataset；右栏高亮与下拉互相跟随（同一份清单） */
@@ -99,7 +99,8 @@ function applyTransportMotion(id) {
   if (typeof document !== 'undefined') {
     document.dispatchEvent(new CustomEvent('panel:refresh-animations'));
   }
-  stageStatus(`transport 动作 → ${id}${ok ? '' : '（引擎拒绝，保持原动作）'}`, ok ? 'info' : 'warn');
+  if (ok) stageStatus(`动作 → ${id}`, 'info');
+  else stageLog('warn', `动作 → ${id}（引擎拒绝，保持原动作）`, { id, reason: 'renderer-rejected' });
 }
 /**
  * 循环播放（右栏「动作」组开关，契约 §四）：

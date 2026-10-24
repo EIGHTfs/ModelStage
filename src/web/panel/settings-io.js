@@ -6,7 +6,7 @@
 // 依赖注入的原因：面板桥（重载名册/应用偏好）与状态行都在装配层，这里不反向 import，避免环。
 import { formatError } from '../infra/api.js';
 import { readViewSettings, VIEW_SETTINGS_KEY } from '../app/view-settings.js';
-import { stageStatus } from '../app/status.js';
+import { stageLog, stageStatus } from '../app/status.js';
 import { state } from '../app/context.js';
 
 /** 装配层注入：面板设置回放、导入后重载、偏好应用 */
@@ -79,7 +79,7 @@ export async function exportSettingsFile() {
       + `，${text.length} 字节`, 'info', { show: true });
     return true;
   } catch (err) {
-    stageStatus(`导出设置失败：${formatError(err)}`, 'error');
+    stageLog('error', `导出设置失败：${formatError(err)}`, { err: formatError(err) });
     return false;
   }
 }
@@ -104,7 +104,7 @@ export function openImportPicker() {
     if (!file) return;
     let text = '';
     try { text = await file.text(); } catch (err) {
-      stageStatus(`读取文件失败：${formatError(err)}`, 'error');
+      stageLog('error', `读取文件失败：${formatError(err)}`, { err: formatError(err) });
       return;
     }
     await importSettingsFromText(text);
@@ -159,7 +159,7 @@ function classifyImportPayload(parsed) {
     || (obj.view && obj.view[k] !== undefined) || (obj.viewer && obj.viewer[k] !== undefined));
   if (deprecated.length) {
     try {
-      stageStatus(`导入配置里含已下线字段（${deprecated.join('、')}），已忽略，其余设置照常导入`, 'warn');
+      stageLog('warn', `导入配置里含已下线字段（${deprecated.join('、')}），已忽略，其余设置照常导入`, { deprecated });
     } catch { /* 状态行不可用不影响导入 */ }
     document.documentElement.dataset.settingsImportDeprecated = deprecated.join(',');
   }
@@ -180,7 +180,7 @@ function rejectReason(res, data) {
 /** 统一的失败出口：状态行 + dataset 标记 + 返回值，三处口径一致 */
 function importFail(stage, error) {
   const msg = `导入失败：${error}`;
-  stageStatus(msg, 'error');
+  stageLog('error', msg, { source: 'import-config' });
   document.documentElement.dataset.settingsImport = `fail|${msg}`;
   return { ok: false, mode: stage, error: msg };
 }
@@ -227,7 +227,7 @@ function importPrefs(viewPrefs, panelPrefs) {
       else applyTheme(merged.uiTheme || 'dark-cyan');
       applied += Object.keys(viewPrefs).length;
     } catch (err) {
-      stageStatus(`前端偏好写入失败：${formatError(err)}`, 'warn');
+      stageLog('warn', `前端偏好写入失败：${formatError(err)}`, { err: formatError(err) });
     }
   }
   if (panelPrefs && typeof ioBridge.applyPanelSetting === 'function') {

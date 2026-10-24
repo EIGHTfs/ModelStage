@@ -14,7 +14,7 @@ import { mountDebugPanel } from '../debug/panel.js';
 import { formatError } from '../infra/api.js';
 import { dom, state, stage } from '../app/context.js';
 import { resetViewViaRenderer } from '../render/reset-view.js';
-import { stageStatus } from '../app/status.js';
+import { stageLog, stageStatus } from '../app/status.js';
 import { VIEW_SETTINGS_KEY, applyBackground, applyTheme, readViewSettings, saveViewSettings } from '../app/view-settings.js';
 import {
   connectSettingsIo, exportSettingsFile, importSettingsFromText, openImportPicker,
@@ -95,7 +95,7 @@ export function ensureDebugPanelHost() {
     state.debugPanel = mountDebugPanel({ log: state.debugLogHandle, container: host });
     window.__WEB__ && (window.__WEB__.debugLog = state.debugLogHandle);
   } catch (err) {
-    stageStatus(`调试日志面板不可用：${formatError(err)}`, 'warn');
+    stageLog('warn', `调试日志面板不可用：${formatError(err)}`, { err: formatError(err) });
     state.debugLogHandle = null;
   }
   return state.debugPanelHost;
@@ -141,7 +141,7 @@ function hangGuardTick() {
   if (stats.stalls >= hangGuardConfig.stallLimit) {
     stats.stalls = 0;
     stats.recoveries += 1;
-    stageStatus(`检测到渲染停滞（${hangGuardConfig.stallLimit}s 无新帧），已尝试恢复`, 'warn');
+    stageLog('warn', `检测到渲染停滞（${hangGuardConfig.stallLimit}s 无新帧），已尝试恢复`, { stallLimit: hangGuardConfig.stallLimit });
     try { stage.pause(); stage.play(); } catch { /* 自愈失败不影响主流程 */ }
   }
   document.documentElement.dataset.hangGuardStats =
@@ -159,7 +159,7 @@ export function runSettingsAction(action) {
   if (action === '导出设置') return exportSettingsFile();
   if (action === '导入设置') return openImportPicker();
   if (action === '恢复默认') return restoreDefaultSettings();
-  stageStatus(`设置动作不可用：${action}`, 'warn');
+  stageLog('warn', `设置动作不可用：${action}`, { action });
   return false;
 }
 

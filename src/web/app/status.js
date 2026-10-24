@@ -16,15 +16,25 @@ import { createLogger } from '../infra/log.js';
 const logStage = createLogger('stage');
 
 /**
- * 写一条状态行。
- * 注意：日志不能走 console.error，否则页面错误统计会把正常状态当成异常。
- * @param {string} text
- * @param {'info'|'warn'|'error'} [level]
- * @param {{show?: boolean}} [opts] show=true 表示这条 info 也要显示在状态行上
+ * 记录一条状态行（**无条件执行**，与"显不显示"完全无关）。
+ *
+ * 记录有三个去处，缺一不可：
+ *   ① `window.__WEB__.stageLog` —— 自动化断言的唯一真相
+ *   ② 调试日志浮层的缓冲（面板看得到）
+ *   ③ 统一日志工厂（"上传日志"导出）—— 只有 `toLog` 为真的调用才进
+ *
+ * 为什么要单独抽出来：以前这条记录写在显示分支之后，两处 early return（没有 stageHint、
+ *   或「显示状态信息」被关掉）会**连日志一起跳过**。后果是：用户为了少看 UI 噪音关掉状态行，
+ *   真出问题想上传日志时恰好是空的——最需要日志的时刻没有日志。
+ *   现在记录在前、显示在后，开关只影响"看不看得见"，不影响"有没有记"。
+ *
+ * @param {'info'|'warn'|'error'} level
+ * @param {string} line 已转成字符串的文本
+ * @param {object} [detail] 结构化上下文（仅 toLog 时进工厂）
+ * @param {{toLog?: boolean}} [flags] toLog=true ⇒ 同时写入统一日志工厂
  */
-export function stageStatus(text, level = 'info', opts = {}) {
-  const line = String(text == null ? '' : text);
-  if (window.__WEB__) {
+function record(level, line, detail, flags) {
+  if (typeof window !== 'undefined' && window.__WEB__) {
     const bag = (window.__WEB__.stageLog = window.__WEB__.stageLog || []);
     bag.push({ at: Date.now(), level, line });
     if (bag.length > 200) bag.shift();
@@ -32,19 +42,32 @@ export function stageStatus(text, level = 'info', opts = {}) {
   try {
     console.info(`%c[STAGE:${level}]`, 'color:#8b8b8b', line);
   } catch { /* 控制台不可用时忽略 */ }
-  // 调试日志浮层：状态行同时进日志缓冲（关掉显示不影响采集，采集在 applyDebugLog 里控制）
   if (state.debugLogHandle && typeof state.debugLogHandle.log === 'function') {
     try { state.debugLogHandle.log('STAGE', line, { level }); } catch { /* 日志失败不影响业务 */ }
   }
-  // "显示状态信息"关掉时只保留日志与控制台，不再占用状态行（切回来的那一瞬间由 applyShowStatus 恢复）
+  if (!flags || flags.toLog !== true) return;
+  try {
+    const lv = level === 'warn' || level === 'error' ? level : 'info';
+    logStage[lv](line, detail);
+  } catch { /* 工厂异常不影响状态行 */ }
+}
+
+/**
+ * 按「显示状态信息」开关与级别决定要不要写舞台顶部那一行。
+ * 只碰 DOM，不碰任何日志通路。
+ * @param {string} line
+ * @param {'info'|'warn'|'error'} level
+ * @param {{show?: boolean}} opts
+ */
+function renderStatusLine(line, level, opts) {
   const visible = state.showStatus !== false;
-  const show = visible && (opts.show === true || level === 'error' || level === 'warn');
-  if (!dom.stageHint) return line;
+  if (!dom.stageHint) return;
   if (!visible) {
     dom.stageHint.textContent = '';
     dom.stageHint.hidden = true;
-    return line;
+    return;
   }
+  const show = opts.show === true || level === 'error' || level === 'warn';
   if (show) {
     dom.stageHint.textContent = line;
     dom.stageHint.hidden = false;
@@ -52,13 +75,40 @@ export function stageStatus(text, level = 'info', opts = {}) {
     dom.stageHint.textContent = '';
     dom.stageHint.hidden = true;
   }
-  // 适配层：状态行同时记进统一工厂（级别沿用调用方给的 info/warn/error）。
-  //   `show` 只是"要不要占用状态行"的显示开关，与"记不记日志"无关，所以不因它决定是否记录；
-  //   把它作为 detail 留下，排查时能区分"当时是否可见"。
-  try {
-    const lv = level === 'warn' || level === 'error' ? level : 'info';
-    logStage[lv](line, opts && opts.show === true ? { show: true } : undefined);
-  } catch { /* 工厂异常不影响状态行 */ }
+}
+
+/**
+ * 写一条状态行（**只上状态行**，不额外记日志）。
+ * 注意：日志不能走 console.error，否则页面错误统计会把正常状态当成异常。
+ * @param {string} text
+ * @param {'info'|'warn'|'error'} [level]
+ * @param {{show?: boolean}} [opts] show=true 表示这条 info 也要显示在状态行上
+ * @returns {string} 写进状态行的文本
+ */
+export function stageStatus(text, level = 'info', opts = {}) {
+  const line = String(text == null ? '' : text);
+  record(level, line, undefined, { toLog: false });
+  renderStatusLine(line, level, opts || {});
+  return line;
+}
+
+/**
+ * 写状态行 + 记一条**带结构化 detail** 的日志（(a) 类：既要人看见，也要进面板与上传）。
+ *
+ * 为什么单开一个入口：失败类与"预期内不可用"要进日志，而且必须带可排查上下文
+ *   （错误对象、输入、当前模型…）——纯文本的 stageStatus 记不出结构化字段。
+ *   **状态行的可见性策略不变**（error/warn 始终可见），日志记录也不受显示开关影响。
+ * @param {'info'|'warn'|'error'} level
+ * @param {string} text 人话（同时写进状态行与日志的 msg）
+ * @param {object} [detail] 结构化上下文（对象原样保留，不会被字符串化成 [object Object]）
+ * @param {{show?: boolean}} [opts] 同 stageStatus
+ * @returns {string} 写进状态行的文本
+ */
+export function stageLog(level, text, detail, opts) {
+  const lv = level === 'warn' || level === 'error' ? level : 'info';
+  const line = String(text == null ? '' : text);
+  record(lv, line, detail, { toLog: true });
+  renderStatusLine(line, lv, opts || {});
   return line;
 }
 

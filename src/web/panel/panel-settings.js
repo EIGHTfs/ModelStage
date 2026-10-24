@@ -8,7 +8,7 @@
 import { dom, stage, state } from '../app/context.js';
 import { resetStage, trackElementStage } from '../infra/ready.js';
 import { rendererSupports, setRendererSetting } from '../app/renderer-setting.js';
-import { stageStatus } from '../app/status.js';
+import { stageLog, stageStatus } from '../app/status.js';
 import { PANEL_GROUPS, applyCapabilities, selfCheck, settingKeyOf } from './schema.js';
 import { mountPanel } from './view.js';
 import { applyDebugLog, applyHangGuard, applyShowStatus, connectShellControls, runSettingsAction } from './shell-controls.js';
@@ -102,7 +102,7 @@ function applyPanelSetting(id, value) {
     const cap = settingKeyOf(id);
     const needKey = cap ? (cap.kind === 'debug' ? `debug:${cap.capabilityKey}` : cap.settingKey) : null;
     if (needKey && !rendererSupports(needKey)) {
-      stageStatus(`当前渲染面未声明能力「${needKey}」，${id} 不可用`, 'warn');
+      // 同上：能力不支持时该控件不会出现在面板里，这条告警没有可对应的用户操作 ⇒ 静默拒绝
       return;
     }
     shell(value);
@@ -113,7 +113,7 @@ function applyPanelSetting(id, value) {
   const renderer = state.currentRenderer;
   const key = cap ? (cap.kind === 'debug' ? `debug:${cap.capabilityKey}` : cap.settingKey) : null;
   if (!key || !renderer || typeof renderer.setSetting !== 'function') {
-    stageStatus(`当前渲染器不支持该项设置：${id}`, 'warn');
+    stageLog('warn', `当前渲染器不支持该项设置：${id}`, { id, renderer: state.currentRenderer && state.currentRenderer.id, reason: !key ? 'no-setting-key' : 'renderer-cannot-set' });
     return;
   }
   let ok = false;
@@ -122,7 +122,7 @@ function applyPanelSetting(id, value) {
   let applied = null;
   try { applied = renderer.getSetting ? renderer.getSetting(key) : null; } catch { applied = null; }
   if (!ok) {
-    stageStatus(`渲染器不支持设置 ${key}（已回退到生效值 ${String(applied)}）`, 'warn');
+    stageLog('warn', `渲染器不支持设置 ${key}（已回退到生效值 ${String(applied)}）`, { id, key, requested: value, applied });
     if (state.panel && applied !== null) state.panel.setValue(id, applied);
     return;
   }
@@ -201,7 +201,7 @@ function trackPanelStage() {
 
 function rebuildPanelFor(renderer) {
   const groups = applyCapabilities(PANEL_GROUPS, renderer && renderer.capabilities, {
-    onWarn: (message) => stageStatus(message, 'warn'),
+    onWarn: (message) => stageLog('warn', message, { source: 'panel-selfcheck' }),
   });
   document.documentElement.dataset.panelGroups = String(groups.length);
   const info = mountPanel({
@@ -236,7 +236,7 @@ function rebuildPanelFor(renderer) {
   state.panelSelfCheck = check;
   document.documentElement.dataset.selfCheck = check.passed ? 'pass' : 'fail';
   if (!check.passed) {
-    stageStatus(`能力自检未通过：${check.violations.map((v) => `${v.key}（${v.actual}）`).join('、')}`, 'error');
+    stageLog('error', `能力自检未通过：${check.violations.map((v) => `${v.key}（${v.actual}）`).join('、')}`, { violations: check.violations });
   }
   trackPanelStage();   // 就绪信号：面板构建完毕 → 三级跟踪（mount/稳定/可交互）
   return check;

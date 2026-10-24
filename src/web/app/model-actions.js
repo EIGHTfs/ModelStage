@@ -7,7 +7,7 @@ import { dom, stage, state } from './context.js';
 import { markModelFailed } from '../infra/ready.js';
 import { buildDocument } from '../infra/document.js';
 import { getSharedVirtualFS } from '../infra/vfs.js';
-import { diagEvent, stageStatus } from './status.js';
+import { diagEvent, stageLog, stageStatus } from './status.js';
 import { formatError, getJson } from '../infra/api.js';
 import { createRootManager } from './root-manager.js';
 import { createDirPicker } from './dir-picker.js';
@@ -154,7 +154,7 @@ async function loadModel(model, name) {
   const src = await resolveAssetSource(model, name);
   if (!src.ok) {
     stage.unload();
-    stageStatus(`无法装载 ${name}：${src.message}`, 'error');
+    stageLog('error', `无法装载 ${name}：${src.message}`, { model: name, kind: model && model.kind, reason: src.message });
     markModelFailed(`无法装载 ${name}：${src.message}`);
     return null;
   }
@@ -166,7 +166,7 @@ async function loadModel(model, name) {
   });
   if (!doc || doc.state !== 'ready') {
     const why = (doc && (doc.warnings || []).join('；')) || '原因未知';
-    stageStatus(`无法装载 ${name}：${why}`, 'error');
+    stageLog('error', `无法装载 ${name}：${why}`, { model: name, kind, reason: why });
     markModelFailed(`无法装载 ${name}：${why}`);
     return null;
   }
@@ -192,7 +192,7 @@ function mountEntry(entry, name) {
   const kind = entry.kind;
   if (kind !== 'spine' && kind !== 'live2d') {
     stage.unload();
-    stageStatus(`已选中 ${name}（未知内容类型：${kind}）`, 'warn');
+    stageLog('warn', `已选中 ${name}（未知内容类型：${kind}）`, { model: name, kind });
     return;
   }
 
@@ -246,7 +246,7 @@ function mountEntry(entry, name) {
       // 渲染失败属业务错误：显示在舞台提示与 __WEB__ 里，不抛到控制台（验收要求零错误）
       const msg = formatError(err);
       state.stageError = msg;
-      stageStatus(`渲染失败：${msg}`, 'error');
+      stageLog('error', `渲染失败：${msg}`, { model: name, err: msg });
       document.documentElement.dataset.stageReady = 'error';
     });
 }
@@ -256,7 +256,7 @@ function onSelectModel(model) {
 
   state.selectedModel = model;
   const name = model ? (model.name || model.id) : '无';
-  if (!stage) { stageStatus(`已选中 ${name}（渲染器不可用）`, 'error'); return; }
+  if (!stage) { stageLog('error', `已选中 ${name}（渲染器不可用）`, { model: name, reason: 'no-stage' }); return; }
   if (!model) { stage.unload(); return; }
 
   const entry = normalizeEntry(model);
@@ -270,7 +270,7 @@ function onSelectModel(model) {
     const msg = `该模型缺纹理文件 ${missingTex.join('、')}（资产残缺，无法渲染）。`
       + '可选：① 改用该角色的资源包版本（若有）② 补齐上述文件后重试';
     state.stageError = msg;
-    stageStatus(msg, 'error');
+    stageLog('error', msg, { source: 'model-actions' });
     document.documentElement.dataset.stageReady = 'error';
     diagEvent('model.incomplete', { model: entry.name || entry.id, missing: missingTex }, { level: 'warn', src: 'app' });
     return;
@@ -345,7 +345,6 @@ async function loadRoots(opts = {}) {
     document.documentElement.dataset.rootsReady = '1';
     document.documentElement.dataset.restore = JSON.stringify(state.restore);
     if (!state.restore.restored) {
-      stageStatus(autoRestore ? `M2 名册 · ${roots.length} 个资源根 · 暂无上次选中的模型` : `M2 名册 · ${roots.length} 个资源根 · 已按配置关闭自动恢复`, 'info');
     }
   } catch (err) {
     state.rootsError = formatError(err);

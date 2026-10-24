@@ -27,7 +27,7 @@ import { createLive2DStage } from './live2d/stage.js';
 import { attachStageInteraction } from './render/interaction.js';
 import { dom, setStage, stage, state } from './app/context.js';
 import { diagEvent } from './app/status.js';
-import { stageStatus } from './app/status.js';
+import { stageLog, stageStatus } from './app/status.js';
 import { VIEW_SETTINGS_KEY, applyBackground, applyTheme, readViewSettings, saveViewSettings } from './app/view-settings.js';
 import {
   WIRED_IDS, applyPanelSetting, panelSnapshot, rebuildPanelFor, restorePanelSettings,
@@ -290,7 +290,7 @@ async function applyMsaa(mode) {
   // 让未接线=disabled+pending 的口径在顶栏也成立（index.html 不在本模块范围）
 
   } catch (err) {
-    stageStatus(`切换抗锯齿失败：${formatError(err)}`, 'error');
+    stageLog('error', `切换抗锯齿失败：${formatError(err)}`, { err: formatError(err) });
   }
 }
 
@@ -370,7 +370,7 @@ function boot() {
     document.documentElement.dataset.stageContext = 'webgl';
   } catch (err) {
     state.stageError = formatError(err);
-    stageStatus(`渲染器不可用：${state.stageError}`, 'error');
+    stageLog('error', `渲染器不可用：${state.stageError}`, { reason: String(state.stageError || '') });
     document.documentElement.dataset.stageContext = 'none';
   }
 
@@ -419,7 +419,7 @@ function boot() {
   suspendPanelPersist(false);
   state.panelDefaults = { ...((state.panel && state.panel.defaults) || {}) };
   // 刷新后保持：把上次保存的面板设置重新应用一遍（主题/背景/MSAA 有各自恢复通道，跳过）
-  try { restorePanelSettings(STARTUP_SKIP); } catch (err) { stageStatus(`恢复上次面板设置失败：${formatError(err)}`, 'warn'); }
+  try { restorePanelSettings(STARTUP_SKIP); } catch (err) { stageLog('warn', `恢复上次面板设置失败：${formatError(err)}`, { err: formatError(err) }); }
   document.documentElement.dataset.panelReady = '1';
   document.documentElement.dataset.panelControls = String((state.panel && state.panel.controls) || 0);
   document.documentElement.dataset.transportControls = String(transportInfo.controls);
@@ -489,9 +489,9 @@ function boot() {
     // 这里只是**启动预热**：不 await，不阻塞首屏。真正需要插件的能力入口
     //   （如资源包装载 loadBundleModel）会自己 await 一次 loadAll（幂等，已装载则立即返回），
     //   所以插件注册晚于首屏也安全。
-    pluginHost.loadAll().catch((e) => stageStatus(`插件加载异常：${(e && e.message) || e}`, 'warn'));
+    pluginHost.loadAll().catch((e) => stageLog('warn', `插件加载异常：${(e && e.message) || e}`, { err: String((e && e.message) || e) }));
   } catch (e) {
-    stageStatus(`插件宿主初始化失败（页面其余功能不受影响）：${(e && e.message) || e}`, 'warn');
+    stageLog('warn', `插件宿主初始化失败（页面其余功能不受影响）：${(e && e.message) || e}`, { err: String((e && e.message) || e) });
   }
 }
 

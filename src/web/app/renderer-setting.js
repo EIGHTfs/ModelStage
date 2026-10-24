@@ -11,7 +11,7 @@
 //
 // 注意：同一条键只警告一次（Set 去重）。否则"恢复上次偏好"这类路径会在每次装载时刷屏。
 import { state } from './context.js';
-import { stageStatus } from './status.js';
+import { stageLog, stageStatus } from './status.js';
 import { repaintActive } from '../render/playback.js';
 
 /** 已警告过的键（避免同一条能力缺失反复刷日志） */
@@ -21,7 +21,7 @@ const warned = new Set();
 function warnOnce(key, message) {
   if (warned.has(key)) return;
   warned.add(key);
-  stageStatus(message, 'warn');
+  stageLog('warn', message, { key: String(key || ''), source: 'renderer-setting' });
 }
 
 /** 渲染器是否声明了某能力键（未声明 ⇒ 面板置灰，这里不硬发） */
@@ -44,7 +44,9 @@ export function setRendererSetting(key, value) {
     return { ok: false, applied: null };
   }
   if (!rendererSupports(key)) {
-    warnOnce(key, `当前渲染面未声明能力「${key}」，该项不可用（面板应置灰）`);
+    // 这里**故意不记日志**：能力不支持的控件在 applyCapabilities 阶段就根本不构建，
+    //   "该项不可用（面板应置灰）"指向一个用户看不到的东西；同类告警在面板侧也已删除。
+    //   能力是否支持属于自检结论（selfCheck 的 checked/violations），不该每次运行时刷一条。
     return { ok: false, applied: null };
   }
   let ok = false;

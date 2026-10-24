@@ -10,7 +10,7 @@
 //      与"静止数秒淡出播放条"（data-idle），不碰任何几何。
 
 import { stage, state } from './context.js';
-import { stageStatus } from './status.js';
+import { stageLog, stageStatus } from './status.js';
 import { repaintActive } from '../render/playback.js';
 import { captureActive } from '../render/capture.js';
 import { flushNow, resetStages, trackElementStage } from '../infra/ready.js';
@@ -50,7 +50,7 @@ export function exportScreenshot() {
   // 画面来源交给**当前渲染器**（以前这里写死 #stage-canvas，Live2D 面会导到上次 Spine 的残留帧）
   const composed = captureActive(state.surface);
   if (!composed) {
-    stageStatus('截图失败：当前渲染面尚未就绪', 'error');
+    stageLog('error', '截图失败：当前渲染面尚未就绪', { renderer: String(state.currentRenderer && state.currentRenderer.id || '') });
     return false;
   }
   // 模型名优先取名册选中的那个；直连 stage.load（脚本/恢复）时没有 selectedModel，
@@ -102,7 +102,7 @@ export function exportScreenshot() {
     finish(href.length);
     return true;
   } catch (err) {
-    stageStatus(`截图失败：${(err && err.message) || err}`, 'error');
+    stageLog('error', `截图失败：${(err && err.message) || err}`, { err: String((err && err.message) || err) });
     return false;
   }
 }
