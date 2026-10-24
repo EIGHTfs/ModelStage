@@ -16,7 +16,7 @@
 //   ③ canHandle 由宿主调用、宿主兜异常：插件内部抛错一律当"不认这个文件"，不冒泡到调用方
 
 import { getSharedVirtualFS } from './vfs.js';
-import { postJson, fetchWithRetry } from './api.js';
+import { postJson, fetchWithRetry, mapLimit } from './api.js';
 
 /** 宿主提示通道：优先用注入的 log（项目调试日志），否则退回 console */
 function makeLogger(log) {
@@ -288,7 +288,10 @@ export function createPluginHost(opts = {}) {
    * @param {{vfs?: object}} [opts]
    * @returns {Promise<object>} { ok, reason?, message?, provider?, prefix?, entry?, entryUrl?, files? }
    */
-  /** 产物文件的 MIME（按扩展名；未知一律 octet-stream） */
+  /** 解包产物并发上限：留出槽位给模型文件与就绪上报（同源只有 6 个连接槽） */
+const UNPACK_FETCH_CONCURRENCY = 4;
+
+/** 产物文件的 MIME（按扩展名；未知一律 octet-stream） */
 const MIME_BY_EXT = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
   '.json': 'application/json', '.moc3': 'application/octet-stream', '.wav': 'audio/wav', '.mp3': 'audio/mpeg',
@@ -335,14 +338,16 @@ const MIME_BY_EXT = {
     // **并行**取产物：实测 19 个文件顺序 145ms vs 并行 57ms（39 个文件 413ms vs 174ms）。
     //   顺序取会让"命中路径"慢 2.5 倍，从而在竞速里输给本地解包 —— 那 17b 就白做了。
     const list = j.files || [];
-    const got = await Promise.all(list.map(async (f) => {
+    // **限流 4 并发**：39 个文件一次全发会吃满同源 6 个连接槽，
+    //   把 Spine 模型文件与 /api/ready 挤到队列里超时（现场："加载资源包之后全挂"）。
+    const got = await mapLimit(list, UNPACK_FETCH_CONCURRENCY, async (f) => {
       // 服务端解包产物同样属于"模型文件"，失败要重试（keep-alive race 会打中这里）
-      const res = await fetchWithRetry(f.url, { timeoutMs: 15000, label: 'unpack-file' });
+      const res = await fetchWithRetry(f.url, { timeoutMs: 8000, label: 'unpack-file' });
       // VFS 只接受 Blob/字符串（本地路径上插件给的就是 Blob）→ 这里转成带 MIME 的 Blob，
       //   MIME 影响 blob URL 的消费方（<img>/WebGL 纹理、fetch 后 JSON.parse 都看它）
       const type = MIME_BY_EXT[(/\.[a-z0-9]+$/i.exec(f.path) || [''])[0].toLowerCase()] || 'application/octet-stream';
       return [f.path, new Blob([await res.arrayBuffer()], { type })];
-    }));
+    });
     const files = new Map(got);
     if (!files.size) throw new Error('服务端返回的产物为空');
     return { prefix: j.prefix, entry: j.entry, files, hit: true, provider: 'server', src: 'server-hit' };

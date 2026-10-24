@@ -117,6 +117,9 @@ export const retryStats = {
   retried: 0,      // 走了重试（且最终成功）
   exhausted: 0,    // 重试耗尽仍失败
   attemptsTotal: 0, // 实际发出的 HTTP 尝试总数（对比 calls 可看出平均重试次数）
+  inflight: 0,      // 当前在飞的 fetchWithRetry 数
+  maxInflight: 0,   // 峰值并发（验收"解包期间在飞请求 ≤4"）
+  slowestMs: 0,     // 单个请求最长耗时（验收"无请求超过 8s"）
   byLabel: {},     // label → {calls, firstTryOk, retried, exhausted}
 };
 
@@ -134,7 +137,38 @@ export function resetRetryStats() {
   retryStats.retried = 0;
   retryStats.exhausted = 0;
   retryStats.attemptsTotal = 0;
+  retryStats.inflight = 0;
+  retryStats.maxInflight = 0;
+  retryStats.slowestMs = 0;
   retryStats.byLabel = {};
+}
+
+/**
+ * 并发受限的 map（不引依赖）。
+ *
+ * 为什么需要：资源包解包后要取 39 个文件，若一次全发会**吃满浏览器同源 6 个连接槽**，
+ *   后续请求（Spine 模型文件、/api/ready）全部排队直至超时 ⇒ 现场表现"资源包之后全挂"。
+ *   限到 4 个并发可让其它请求始终有槽可用。
+ *
+ * @param {Array} items
+ * @param {number} limit 并发上限
+ * @param {(item: any, index: number) => Promise<any>} fn
+ * @returns {Promise<Array>} 与 items 同序的结果
+ */
+export async function mapLimit(items, limit, fn) {
+  const list = Array.isArray(items) ? items : [];
+  const out = new Array(list.length);
+  const n = Math.max(1, Math.min(Number(limit) || 1, list.length || 1));
+  let cursor = 0;
+  await Promise.all(Array.from({ length: n }, async () => {
+    for (;;) {
+      const k = cursor;
+      cursor += 1;
+      if (k >= list.length) return;
+      out[k] = await fn(list[k], k);
+    }
+  }));
+  return out;
 }
 
 /**
@@ -145,12 +179,22 @@ let netlogOn = null;
 function netlogEnabled() {
   if (netlogOn === null) {
     try { netlogOn = typeof location !== 'undefined' && /[?&]netlog=1/.test(String(location.search || '')); } catch { netlogOn = false; }
-    try { if (typeof globalThis !== 'undefined' && globalThis.__WEB__) globalThis.__WEB__.retryStats = () => retryStats; } catch { /* 忽略 */ }
+    attachRetryStats();
   }
   return netlogOn;
 }
 
 let reqSeq = 0;
+
+/** 把统计挂到页面上（验收/排障用）。__WEB__ 可能晚于本模块创建 ⇒ 首次抓取时再挂一次。 */
+function attachRetryStats() {
+  try {
+    if (typeof globalThis !== 'undefined' && globalThis.__WEB__ && !globalThis.__WEB__.retryStats) {
+      globalThis.__WEB__.retryStats = () => retryStats;
+    }
+  } catch { /* 忽略 */ }
+}
+attachRetryStats();
 
 /**
  * 带重试的**原始 fetch**（返回 Response，不解析 body）。
@@ -178,6 +222,10 @@ export async function fetchWithRetry(url, opts = {}) {
   bucket.calls += 1;
   const reqId = (reqSeq += 1);
   const verbose = netlogEnabled();
+  attachRetryStats();
+  retryStats.inflight += 1;
+  if (retryStats.inflight > retryStats.maxInflight) retryStats.maxInflight = retryStats.inflight;
+  const startedAt = Date.now();
 
   for (let i = 0; i < maxAttempts; i += 1) {
     retryStats.attemptsTotal += 1;
@@ -188,6 +236,9 @@ export async function fetchWithRetry(url, opts = {}) {
         : (opts.signal || timeoutSignal);
       const res = await fetch(url, { headers: opts.headers, signal: merged });
       if (res.ok) {
+        retryStats.inflight -= 1;
+        const okCost = Date.now() - startedAt;
+        if (okCost > retryStats.slowestMs) retryStats.slowestMs = okCost;
         if (i === 0) { retryStats.firstTryOk += 1; bucket.firstTryOk += 1; }
         else { retryStats.retried += 1; bucket.retried += 1; }
         if (verbose) note(`net req#${reqId} ${label} attempt=${i + 1}/${maxAttempts} → ${res.status}`);
@@ -210,6 +261,9 @@ export async function fetchWithRetry(url, opts = {}) {
   }
   const status = lastErr && lastErr.status;
   const why = status ? `HTTP ${status}` : ((lastErr && lastErr.message) || '未知错误');
+  retryStats.inflight -= 1;
+  const costMs = Date.now() - startedAt;
+  if (costMs > retryStats.slowestMs) retryStats.slowestMs = costMs;
   if (maxAttempts > 1 && (status === undefined || retryableStatus(status))) { retryStats.exhausted += 1; bucket.exhausted += 1; }
   const err = new Error(`取文件失败（${label}）：${why}${maxAttempts > 1 && (status === undefined || retryableStatus(status)) ? `（重试 ${maxAttempts - 1} 次后仍失败）` : ''}`);
   err.status = status;

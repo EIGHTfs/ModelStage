@@ -14,6 +14,7 @@
 // 诊断探针必须最先装：后面的模块/渲染出问题时才有取证（API 与旧前端 legacy/patches/diag.js 一致）
 import { installDiag } from './infra/diag.js';
 import { markStage, installReadyApi, trackElementStage, trackElementWhenReady } from './infra/ready.js';
+import { installMemStats, memStats } from './infra/mem-stats.js';
 import { getJson, formatError } from './infra/api.js';
 import { getSharedVirtualFS } from './infra/vfs.js';
 import { createPluginHost } from './infra/plugin-host.js';
@@ -181,6 +182,9 @@ function initRenderer() {
   window.__WEB__ && (window.__WEB__.surface = surface);
   // 就绪信号（契约 §5.1）：__WEB__.ready() 全量、__WEB__.ready('model') 单阶段
   installReadyApi(window.__WEB__);
+  // 资源/上下文计数（只读观测，给"泄漏是否累积"提供数字；必须在渲染器创建上下文前安装）
+  installMemStats();
+  window.__WEB__.memStats = () => memStats();
   // 只读断言入口（summary/results/disable/enable/run）
   // 兼容层：对外仍是一个 renderer（camera 按当前面取，mount 走 Surface 的唯一入口）
   const facade = {

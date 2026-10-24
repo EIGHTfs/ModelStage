@@ -44,7 +44,7 @@ function resolveUrl(vfs, url) {
 async function readBytes(url, label, warnings) {
   try {
     // 带重试：网络错误 / 5xx 会退避重试（4xx 不重试）
-    const res = await fetchWithRetry(url, { timeoutMs: 15000, label: 'model-bytes' });
+    const res = await fetchWithRetry(url, { timeoutMs: 8000, label: 'model-bytes' });
     if (!res || !res.ok) {
       warnings.push(`${label} 读取失败：HTTP ${(res && res.status) || '?'}（${url}）`);
       return null;
@@ -166,7 +166,7 @@ async function fillMotionDurations(doc, ref, baseRef, vfs) {
     const abs = /^[a-z][a-z0-9+.-]*:/i.test(file) || file.startsWith('/') ? file : `${base}${file}`;
     const url = resolveUrl(vfs, abs);
     try {
-      const res = await fetchWithRetry(url, { timeoutMs: 12000, label: 'motion3' });
+      const res = await fetchWithRetry(url, { timeoutMs: 8000, label: 'motion3' });
       if (!res || !res.ok) return;
       const json = await res.json();
       const d = Number(json && json.Meta && json.Meta.Duration);
@@ -189,7 +189,7 @@ async function buildLive2dAssets(doc, entry, vfs) {
   //    motions/x.motion3.json 这类引用映射回已注册的前缀）。
   doc.assets.entry = { role: 'definition', name: raw.split('/').pop() || '', url, ref: raw, bytes: null };
   try {
-    const res = await fetchWithRetry(url, { timeoutMs: 12000, label: 'model-def' });
+    const res = await fetchWithRetry(url, { timeoutMs: 8000, label: 'model-def' });
     if (!res || !res.ok) {
       warn.push(`模型定义读取失败：HTTP ${(res && res.status) || '?'}（${url}）`);
       return doc;
