@@ -196,8 +196,15 @@ export function createBridge(ctx) {
       if (!target || typeof target.on !== 'function') return () => {};
       const handler = () => {
         let name = '';
-        // 事件不带名字（库内 emit 无参）⇒ 从 playback probe 读当前动作标签
-        try { name = String((probe.currentMotion && probe.currentMotion()) || st.currentLabel || ''); } catch { name = ''; }
+        // 事件不带名字（库内 emit 无参）⇒ 从 playback probe 读当前动作。
+        //   ⚠ probe.currentMotion() 返回的是**对象**（含 label/group/index），直接 String() 会得到
+        //   "[object Object]"（实测踩过）⇒ 按 label → name → String 的顺序取值。
+        try {
+          const cur = probe.currentMotion && probe.currentMotion();
+          if (cur && typeof cur === 'object') name = String(cur.label || cur.name || '');
+          else if (cur) name = String(cur);
+          if (!name) name = String(st.currentLabel || '');
+        } catch { name = ''; }
         try { cb({ name, trackIndex: 0, source: 'live2d' }); } catch { /* 忽略 */ }
       };
       try { target.on('motionFinish', handler); } catch { return () => {}; }
