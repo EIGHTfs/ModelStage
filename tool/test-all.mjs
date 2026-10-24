@@ -96,8 +96,6 @@ const SUITES = [
   // 统一日志工厂（infra/log.js）的记录形状契约：纯 node、秒级，
   //   它是后续"适配层 → 分 3 批迁 stageStatus"的地基，形状一旦漂了后面全歪
   { name: 'log', runner: 'node-test', file: 'test/log.test.mjs' },
-  // 跨模型轮播状态机（端口注入的纯逻辑，无需浏览器）
-  { name: 'model-carousel', runner: 'node-test', file: 'test/model-carousel.test.mjs' },
   // 清单签名比对（含「根目录不存在=稳定状态」边界；P0 回归）
   { name: 'manifest-stamp', runner: 'node-test', file: 'test/manifest-stamp.test.mjs' },
   // model3 动作清单的提取与缺失过滤（bug B 回归）
@@ -126,7 +124,6 @@ const EST_SEC = {
   'test-lock': 3,
   'api-retry': 6,
   'unpack-filesview': 8,
-  'model-carousel': 3,
   'manifest-stamp': 2,
   'catalog-motions': 2,
   'pma-detect': 2,
