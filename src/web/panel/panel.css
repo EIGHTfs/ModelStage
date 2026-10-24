@@ -267,6 +267,11 @@
   margin-bottom: 4px;
 }
 
+.root-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
 .root-add > #btn-add-root {
   align-self: flex-start;
 }

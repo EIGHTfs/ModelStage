@@ -81,6 +81,9 @@ export function setCustomBackground(url) {
   const stageEl = document.getElementById('stage');
   if (!stageEl) return false;
   stageEl.dataset.bg = url ? 'custom' : 'checkerboard';
+  // 内联例外（契约《禁止内联CSS与JS》§3.1 动态计算值）：
+  //   背景图 URL 属于运行时数据（从界面导入或粘贴产生），不可能预先写进 CSS；
+  //   size/position 是跟随该 URL 的联动值。颜色/边框/字体等设计令牌一律走 CSS 变量。
   stageEl.style.backgroundImage = url ? `url("${url}")` : '';
   // 没有图就不要留 cover（否则空 url 也会把棋盘图案拉伸）
   stageEl.style.backgroundSize = url ? 'cover' : '';
