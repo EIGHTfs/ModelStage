@@ -306,6 +306,15 @@ export class SpineEngine {
     return anim.snapshot(this);
   }
 
+  /**
+   * 订阅「当前动作播完一次」（跨模型轮播的推进源）。
+   * @param {(e: {name: string, source: string}) => void} cb
+   * @returns {() => void} 取消订阅
+   */
+  onMotionComplete(cb) {
+    return anim.onMotionComplete(this, cb);
+  }
+
   /** 皮肤名列表 */
   getSkins() {
     return skinList(this);

@@ -102,6 +102,70 @@ export function seek(engine, t) {
   } catch { /* 忽略 */ }
 }
 
+/**
+ * 订阅「当前动作播完一次」事件（跨模型轮播的推进源）。
+ *
+ * 为什么要有这层归一：两个渲染器的原生机制完全不同 ——
+ *   · Spine：`AnimationState.addListener({ complete })`，**每个 track 各报一次** ⇒ 必须过滤 trackIndex === 0；
+ *   · Live2D（pixi-live2d-display）：模型实例 emit `'motionFinish'`，**model 级一次**，且是 `isFinished()` 为真才报。
+ *
+ * 归一后的约定（三条，写死在实现里）：
+ *   1. **只报主轨/当前动作**（Spine 过滤 trackIndex === 0，与旧端 onAnimationComplete 同款判据）；
+ *   2. **循环动作不报**：Spine 的 Loop 条目没有 complete；Live2D 的 isFinished() 在循环动作上永远 false。
+ *      两边行为因此天然一致 —— 轮播要的是"播完一次"，循环动作没有这个时刻。
+ *   3. **多轨混合态不推进**由调用方判断（旧端用 `T.current` 为真时 return）；本函数只如实上报事件。
+ *
+ * @param {object} target Spine 的 engine（有 `.state.addListener`）或 Live2D 的模型实例（有 `.on/.off`）
+ * @param {(e: {name: string, trackIndex: number, source: 'spine'|'live2d'}) => void} cb 完成回调
+ * @returns {() => void} 取消订阅函数（重复调用安全）
+ */
+export function onMotionComplete(target, cb) {
+  const noop = () => {};
+  if (!target || typeof cb !== 'function') return noop;
+
+  // ① Spine：AnimationState 的 complete 事件
+  if (target.state && typeof target.state.addListener === 'function') {
+    const listener = {
+      complete(entry) {
+        try {
+          if (!entry) return;
+          if (entry.trackIndex !== 0) return;     // 其它轨道（表情/附加层）不算"当前动作播完"
+          if (entry.loop) return;                 // 循环条目没有终点（与 Live2D 的 isFinished 对齐）
+          const name = entry.animation && entry.animation.name ? String(entry.animation.name) : '';
+          cb({ name, trackIndex: 0, source: 'spine' });
+        } catch { /* 回调内部异常不能影响渲染循环 */ }
+      },
+    };
+    try {
+      target.state.addListener(listener);
+    } catch {
+      return noop;
+    }
+    return () => {
+      try { target.state.removeListener(listener); } catch { /* 已移除/引擎已销毁 */ }
+    };
+  }
+
+  // ② Live2D：模型实例的 motionFinish 事件（库内实现：isFinished() 为真时 emit）
+  if (typeof target.on === 'function' && typeof target.off === 'function') {
+    const handler = () => {
+      try {
+        cb({ name: String(target.animationName || ''), trackIndex: 0, source: 'live2d' });
+      } catch { /* 同上 */ }
+    };
+    try {
+      target.on('motionFinish', handler);
+    } catch {
+      return noop;
+    }
+    return () => {
+      try { target.off('motionFinish', handler); } catch { /* 同上 */ }
+    };
+  }
+
+  return noop;
+}
+
 /** 只读快照（对照脚本/诊断用） */
 export function snapshot(engine) {
   const track = trackOf(engine);

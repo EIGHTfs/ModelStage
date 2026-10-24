@@ -149,6 +149,61 @@ export function createBridge(ctx) {
      * @param {object} model
      * @returns {Promise<{animations: string[], skins: string[], durations: object, version: string}>}
      */
+    /**
+     * 只读诊断：动作完成事件到底挂在哪个对象上（验收/排障用，不参与逻辑）。
+     * 为什么需要它：库内 `emit("motionFinish")` 的目标对象与文档描述不一定一致，
+     *   只能实测确认（model 级 / motionManager 级 / 都不转发）。
+     */
+    debugMotion() {
+      const model = st.model;
+      const mm = model && model.internalModel && model.internalModel.motionManager;
+      const state = mm && mm.state;
+      const probeKeys = (o) => (o ? Object.keys(o).slice(0, 12) : null);
+      return {
+        hasModel: !!model,
+        modelOn: !!(model && typeof model.on === 'function'),
+        modelEvents: model && model._events ? Object.keys(model._events) : null,
+        hasManager: !!mm,
+        managerOn: !!(mm && typeof mm.on === 'function'),
+        managerKeys: probeKeys(mm),
+        managerStateOn: !!(state && typeof state.on === 'function'),
+        managerStateKeys: probeKeys(state),
+        currentLabel: st.currentLabel || null,
+        // 动作定义里的 Loop 标记（验收"循环动作是否上报"要看它）
+        definitions: mm && mm.definitions
+          ? Object.keys(mm.definitions).reduce((acc, g) => {
+            acc[g] = (mm.definitions[g] || []).map((d) => ({ File: d.File, Loop: d.Loop }));
+            return acc;
+          }, {})
+          : null,
+      };
+    },
+
+    /**
+     * 订阅「当前动作播完一次」（Live2D 侧）。
+     * 事件源是 `st.model`（PIXI.live2d.Live2DModel）的 `motionFinish`；
+     * 注意该事件在**循环动作**上永远不触发（库内 `isFinished()` 恒为 false），与 Spine 的 complete 语义一致。
+     * @param {(e: {name: string, source: string}) => void} cb
+     * @returns {() => void} 取消订阅
+     */
+    onMotionComplete(cb) {
+      // 事件源是 **motionManager**，不是 model：
+      //   本版 pixi-live2d-display 里 `emit("motionFinish")` 发生在 internalModel.motionManager 上，
+      //   而 model 自身只发 'destroy'（实测 model._events = ['destroy']）⇒ 订 model 永远收不到。
+      const model = st.model;
+      const mm = model && model.internalModel && model.internalModel.motionManager;
+      const target = (mm && typeof mm.on === 'function') ? mm : model;
+      if (!target || typeof target.on !== 'function') return () => {};
+      const handler = () => {
+        let name = '';
+        // 事件不带名字（库内 emit 无参）⇒ 从 playback probe 读当前动作标签
+        try { name = String((probe.currentMotion && probe.currentMotion()) || st.currentLabel || ''); } catch { name = ''; }
+        try { cb({ name, trackIndex: 0, source: 'live2d' }); } catch { /* 忽略 */ }
+      };
+      try { target.on('motionFinish', handler); } catch { return () => {}; }
+      return () => { try { target.off('motionFinish', handler); } catch { /* 忽略 */ } };
+    },
+
     async loadForEngine(model) {
       const reusable = st.active && st.modelId === model.id && st.model;
       if (!reusable) {
