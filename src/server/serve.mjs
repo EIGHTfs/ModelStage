@@ -27,6 +27,8 @@ import { createDiag } from './http/diag.mjs';
 import { createReady } from './http/ready.mjs';
 import { createWriteApi, toRootView } from './http/write.mjs';
 import { createBackgrounds } from './http/backgrounds.mjs';
+import { createUnpackStore } from './unpack/plugin-store.mjs';
+import { createUnpackRoutes } from './unpack/routes.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const WEB_ROOT = path.join(ROOT, 'src', 'web');
@@ -40,6 +42,19 @@ const staticRoutes = createStaticRoutes({ root: ROOT, webRoot: WEB_ROOT, runtime
 const diag = createDiag(data.paths);
 // 自定义背景图存储：落盘在 data/backgrounds/（运行时数据，换机/备份需单独带走）
 const backgrounds = createBackgrounds(data.paths);
+
+// 服务端解包 + 落盘缓存（17b）：产物在 data/unpacked/<fingerprint>/，前端命中后只 fetch 文件
+const unpackStore = createUnpackStore({
+  rootDir: path.join(data.paths.dataDir, 'unpacked'),
+  pluginDir: path.join(data.paths.pluginsDir, 'unity-live2d-bundle'),
+});
+const unpackRoutes = createUnpackRoutes({
+  store: unpackStore,
+  readConfig: () => data.config.readConfig(),
+  resolveSafe,
+  sendJson,
+  readBody,
+});
 // 就绪信号通道（契约 就绪信号契约.md）：与 diag 完全分离的状态机，不进调试面板
 const ready = createReady();
 // 写接口（资源根增删改名启停 / 导入配置）：读路径与写路径共用同一份 config/models/names 实例
@@ -302,6 +317,8 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const p = url.pathname;
   try {
+    // 解包缓存三条路由（/api/unpack/*）：与模型资源读取解耦，命中即返回
+    if (unpackRoutes(req, res, p, url)) return;
     // 写接口优先拦下（方法敏感，先判）；诊断落盘是只写 data/ 的旁路，按旧规则真实实现
     // 只读：取最近的诊断条目（页面自己记录的那份，供外部/AI 直接读现场）
     if (p === '/api/diag' && req.method === 'GET') {

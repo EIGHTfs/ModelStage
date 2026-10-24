@@ -35,6 +35,9 @@ src/spine-runtimes/
 /data/diag.jsonl
 /data/diag.jsonl.*
 /data/bug-shots/
+# 服务端解包落盘缓存（17b）：可重建（源包 + 插件版本变了就失效），不入库。
+#   注意逐项写死路径，不用 data/ 或 /data/ 通配 —— 那会连带忽略 src/server/data/ 与已入库的 data/upstream/
+/data/unpacked/
 /data/export/
 # 用户上传的主题背景图（运行时数据）：内容由用户产生、体积不可控，
 #   属部署侧数据而非源码，不入库；换机/备份需单独带走该目录。
