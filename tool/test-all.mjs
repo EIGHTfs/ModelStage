@@ -59,6 +59,13 @@ const SUITES = [
   { name: 'api-retry', runner: 'node-test', file: 'test/api-retry.test.mjs' },
   // 解包产物判型纪律（假成功防线）：服务端解包链路的入口，判错会把"没文件"当"有文件"
   { name: 'unpack-filesview', runner: 'node-test', file: 'test/unpack-filesview.test.mjs' },
+  // 统一日志工厂（infra/log.js）的记录形状契约：纯 node、秒级，
+  //   它是后续"适配层 → 分 3 批迁 stageStatus"的地基，形状一旦漂了后面全歪
+  { name: 'log', runner: 'node-test', file: 'test/log.test.mjs' },
+  // 跨模型轮播状态机（端口注入的纯逻辑，无需浏览器）
+  { name: 'model-carousel', runner: 'node-test', file: 'test/model-carousel.test.mjs' },
+  // 清单签名比对（含「根目录不存在=稳定状态」边界；P0 回归）
+  { name: 'manifest-stamp', runner: 'node-test', file: 'test/manifest-stamp.test.mjs' },
   // 引擎冒烟（3.8 ↔ 4.1 版本往返 + samplePixels().ratio + lastError 判据）：
   //   它验证的是"引擎能不能出画"，是所有交互套件的前置
   { name: 'engine-b1', wait: 4500 },
@@ -79,6 +86,8 @@ const EST_SEC = {
   'test-lock': 3,
   'api-retry': 6,
   'unpack-filesview': 8,
+  'model-carousel': 3,
+  'manifest-stamp': 2,
   'engine-b1': 18,
   'f1-controls': 24, 'f2-topbar': 14, 'f3-reveal': 11, 'f4-roots': 13,
   'spine-actions': 62, 'panel-actions': 17, 'roster-actions': 18, 'anim-list': 34,

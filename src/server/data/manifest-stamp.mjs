@@ -45,7 +45,13 @@ export function dirSignature(rootPath) {
 export function signatureMatches(sig, rootPath) {
   if (!sig || typeof sig !== 'object' || !sig.dirs || typeof sig.dirs !== 'object') return false;
   const now = dirSignature(rootPath);
-  if (now.root === null || now.root !== sig.root) return false;
+  // 「根目录不存在」也是**稳定状态**，不是"变了"：
+  //   配置里可能存在一个路径写错/尚未创建的根（实例：live2d 根指向 …/DestinyChildLive2D/assets/live2d，
+  //   该目录不存在）。若把 null 一律判为不一致，就会**每次请求都重建清单**（日志刷
+  //   「目录已变化，清单失效重建」），白白消耗 CPU 与磁盘写。
+  //   正确语义：上次也不存在（sig.root === null）⇒ 没变化 ⇒ 命中缓存。
+  if (now.root === null) return sig.root === null;
+  if (now.root !== sig.root) return false;
   const before = Object.keys(sig.dirs);
   const after = Object.keys(now.dirs);
   if (before.length !== after.length) return false; // 出现新目录 / 目录被删
