@@ -38,6 +38,10 @@ const st = {
   timer: null,
   installed: false,
   flushes: 0,          // 实际上报次数（每次真正发出 POST 计 1；供"批量重置只报一次"的断言用）
+  inflight: false,     // 上一次上报还没回来（并发保护：跳过一次，避免请求堆积）
+  dropped: 0,          // 因 in-flight 被跳过的次数（可观测，便于判断"是不是报得太密"）
+  fails: 0,            // 上报失败次数（限频记日志，不刷屏）
+  lastFailAt: 0,
 };
 
 /**
@@ -124,10 +128,11 @@ export function resetStages(names, opts) {
 
 /**
  * 上报统计（诊断/断言用）。
- * @returns {{flushes: number, pending: number, rev: number}} 上报次数、待发条数、本地 rev
+ * @returns {{flushes: number, pending: number, rev: number, dropped: number, fails: number, inflight: boolean}}
+ *   上报次数 / 待发条数 / 本地 rev / 因 in-flight 被跳过的次数 / 失败次数 / 是否在飞
  */
 export function stats() {
-  return { flushes: st.flushes, pending: st.pending.size, rev: st.rev };
+  return { flushes: st.flushes, pending: st.pending.size, rev: st.rev, dropped: st.dropped, fails: st.fails, inflight: st.inflight };
 }
 
 /** 页面内直读快照（契约 §5.1）：ready() 全量，ready('model') 单阶段 */
@@ -152,30 +157,63 @@ function schedule() {
   }, FLUSH_DEBOUNCE_MS);
 }
 
-/** 上报待发送的变更（失败静默：就绪通道坏掉不应影响页面） */
-function flush() {
+/**
+ * 上报待发送的变更（就绪通道是旁路信号，坏掉不影响页面）。
+ *
+ * `keepalive` **只允许在"页面即将卸载"时用**（flushNow → pagehide），因为浏览器对它有两条硬限制：
+ *   ① 所有 in-flight keepalive 请求的 body 总量 ≤ 64KB，超了直接 `Failed to fetch`；
+ *   ② 它**占用 fetch 连接槽**（HTTP/1.1 每主机 6 个），普通请求（如模型文件）会被挤出去。
+ * 曾经常规上报也带 keepalive：切换模型 → 每次 resetStage('panel') → flush() → keepalive 请求堆积
+ *   → 模型文件（几十个并发）被挤出连接池 → **所有模型加载失败、刷新页面才恢复**，日志里刷
+ *   `net.fail · POST /api/ready · Failed to fetch`。所以默认值必须是 false。
+ *
+ * @param {{keepalive?: boolean}} [opts]
+ */
+function flush(opts) {
+  const keepalive = !!(opts && opts.keepalive);
   if (!st.pending.size) return;
+  // 并发保护：上一次还没回来就跳过本次（丢一次上报是可接受的——就绪信号是旁路，
+  //   下一次会带全量阶段快照；而堆积的请求会挤占连接槽，代价大得多）。
+  if (st.inflight) { st.dropped += 1; return; }
   const updates = [...st.pending.values()].flat();
   st.pending.clear();
   st.flushes += 1;
+  st.inflight = true;
   try {
     fetch('/api/ready', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ updates }),
-      keepalive: true,
+      keepalive,
       // 就绪通道是旁路信号：服务端卡住不能把页面拖住（5s 超时，超时即放弃本次上报）
       signal: AbortSignal.timeout(5000),
-    }).catch(() => {});
+    }).catch((e) => {
+      // 失败要能看见，但**不能刷屏**（用户上次看到的就是反复刷的一条）：
+      //   只在 ≥10s 间隔记一次，并记录累计次数。
+      st.fails += 1;
+      const now = Date.now();
+      if (now - st.lastFailAt > 10000) {
+        st.lastFailAt = now;
+        try {
+          if (typeof console !== 'undefined' && console.warn) {
+            console.warn(`[ready] 上报失败 ${st.fails} 次（最近）: ${String((e && e.message) || e)}`);
+          }
+        } catch { /* 忽略 */ }
+      }
+    }).finally(() => { st.inflight = false; });
   } catch {
-    /* 忽略 */
+    st.inflight = false;
   }
 }
 
-/** 立刻上报（页面隐藏/卸载前调用，避免最后一批状态丢失） */
+/**
+ * 立刻上报。**这是唯一允许 keepalive 的路径**（页面隐藏/卸载前调用，避免最后一批状态丢失）。
+ * 注意：并发保护在这里不生效（卸载前必须尽力发出），所以显式绕过 inflight 检查。
+ */
 export function flushNow() {
   if (st.timer) { clearTimeout(st.timer); st.timer = null; }
-  flush();
+  st.inflight = false; // 卸载前不因"上一次还在飞"而丢最后一批
+  flush({ keepalive: true });
 }
 
 /**
@@ -373,12 +411,15 @@ export function installReadyApi(web) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ clear: true }),
-      keepalive: true,
+      // 这处是**页面加载时**发的（清上一轮阶段），不属于"卸载前送达"场景
+      //   ⇒ 刻意不传 keepalive（默认 false）
       // 就绪通道是旁路信号：服务端卡住不能把页面拖住（5s 超时，超时即放弃本次上报）
       signal: AbortSignal.timeout(5000),
     }).catch(() => {});
   } catch { /* 忽略 */ }
   web.ready = (stage) => snapshot(stage);
+  // 上报统计（自动化断言用：flushes / dropped / fails / inflight）
+  web.readyStats = () => stats();
   // 页面要走了：把最后一批状态落地
   try {
     if (typeof window !== 'undefined') window.addEventListener('pagehide', () => { try { flushNow(); } catch { /* 忽略 */ } });
