@@ -10,6 +10,10 @@ import {
 } from './textures.js';
 import { atlasDeclaredPma, filenamePmaHint, detectPma, resolvePmaInfo, gpuUnpackAvailable } from './pma.js';
 import { pickMember } from './runtime-capabilities.js';
+import { createLogger } from '../infra/log.js';
+
+/** PMA 诊断日志通道（debug 级：点分事件名 + 结构化 detail，机器可解析；不进 error 位、不刷屏） */
+const pmaLog = createLogger('pma');
 
 /** 透明占位页（保留尺寸，不上传真实像素） */
 function transparentEntry(file, size) {
@@ -100,6 +104,24 @@ export async function prepareAtlas(ctx) {
   const filenameHint = filenamePmaHint(firstName);
   const detection = detectPma({ atlasDeclared, filenameHint, samples }, log);
   const pmaInfo = resolvePmaInfo(pmaMode, detection, supportsStraight);
+  // 只读诊断：把"auto 到底判了什么、依据是什么"记下来（不改任何判定逻辑）。
+  //   为什么必须记：切模式时那条 info 只覆盖"用户手动切换"，而**首次装载/刷新后走 auto 的那一次**
+  //   以前完全没有记录——现场"刷新后自动档似乎没按预乘处理"就卡在这个盲区里。
+  pmaLog.debug('pma.resolve', {
+    model: descriptor && (descriptor.id || descriptor.rel || descriptor.name) || null,
+    mode: pmaMode,
+    detected: detection ? detection.finalIsPremultiplied : null,     // 探测最终结论
+    pixelDetected: detection ? detection.pixelDetected : null,       // 纯像素结论（null=像素不足）
+    atlasDeclared: detection ? detection.atlasDeclared : null,
+    filenameHint: detection ? detection.filenameHint : null,
+    reason: detection ? detection.reason : null,
+    effective: pmaInfo.effectiveMode,
+    needPremultiply: pmaInfo.needPremultiply,
+    blend: pmaInfo.blendMode,
+    degraded: !!pmaInfo.degraded,
+    supportsStraight,
+    runtimeSupportsStraight: pmaInfo.runtimeSupportsStraight,
+  });
   if (pmaInfo.degraded) log('warn', '运行时不支持非预乘直通混合，已自动转为转预乘', 'pma');
   const gpuUnpack = pmaInfo.needPremultiply && gpuUnpackAvailable(gl);
   // 与旧引擎同文案（生效口径 + 运行时是否支持直通），便于两引擎日志直接对拉

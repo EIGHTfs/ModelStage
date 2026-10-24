@@ -73,9 +73,15 @@ export function setTextureFilter(engine, mode) {
  * @param {string} mode auto | premultiplied | straight | upload
  * @returns {Promise<boolean>}
  */
+/** 上一次生效的 PMA 判定（只用于切换日志的"前后对比"，不参与任何判定） */
+const lastPmaInfo = new WeakMap();
+
 export async function rebuildTextures(engine, mode) {
   const descriptor = engine.currentModel;
   if (!descriptor || !engine.spine || !engine.gl) return false;
+  const prevMode = engine.pmaMode;
+  const prevInfo = lastPmaInfo.get(engine);
+  const prevNeedPremultiply = prevInfo ? prevInfo.needPremultiply : undefined;
   engine.loadingModel = true;
   try {
     // **先建新的**（旧纹理/骨架这时一根手指都没动）：建失败 ⇒ 现场完好，天然回滚，
@@ -104,7 +110,11 @@ export async function rebuildTextures(engine, mode) {
     engine.loadingModel = false;   // 允许出帧（下方 finally 再保证一次）
     engine.pendingPresent = true;
     engine.presentFirstFrame();
-    engine.log('info', `PMA 模式已切换为 ${mode}（生效: ${model.pmaInfo.effectiveMode}）`, 'pma');
+    lastPmaInfo.set(engine, model.pmaInfo);
+    // 带上"原档 → 新档 + needPremultiply 前后值"：现场"从自动直接点已预乘画面没变化"
+    //   就是靠这条判断 needPremultiply 到底有没有从 true 变成 false（只记日志，不改行为）
+    engine.log('info', `PMA 切换：${prevMode || '未知'} → ${mode}｜生效 ${model.pmaInfo.effectiveMode}`
+      + `｜needPremultiply ${prevNeedPremultiply === undefined ? '未知' : String(prevNeedPremultiply)} → ${String(model.pmaInfo.needPremultiply)}`, 'pma');
     return true;
   } catch (e) {
     engine.log('error', `重建纹理失败: ${e && e.message ? e.message : e}`, 'pma');

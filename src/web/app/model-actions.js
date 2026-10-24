@@ -183,13 +183,12 @@ async function loadModel(model, name) {
 }
 
 /** 选中变体的回调：M2 只记状态（M4 用它去渲染舞台） */
-function onSelectModel(model) {
-  state.selectedModel = model;
-  const name = model ? (model.name || model.id) : '无';
-  if (!stage) { stageStatus(`已选中 ${name}（渲染器不可用）`, 'error'); return; }
-  if (!model) { stage.unload(); return; }
-
-  const entry = normalizeEntry(model);
+/**
+ * 真正装载一个条目（**唯一装载实现**）：onSelectModel 判完资产残缺后交给它。
+ * @param {object} entry 已 normalizeEntry 的条目
+ * @param {string} name 展示名
+ */
+function mountEntry(entry, name) {
   const kind = entry.kind;
   if (kind !== 'spine' && kind !== 'live2d') {
     stage.unload();
@@ -228,7 +227,8 @@ function onSelectModel(model) {
       const anims = Array.isArray(info.animations) ? info.animations : [];
       const motion = info.motion || anims[0] || '（无动作）';
       const head = isL2D ? String(info.version) : `Spine ${info.version}`;
-      stageStatus(`${model.name} · ${head} · ${anims.length} 动作 · 播放 ${motion}`, 'info');
+      // 抽成 mountEntry 后没有 model 参数：这里用 name（调用方传入的展示名）
+      stageStatus(`${name} · ${head} · ${anims.length} 动作 · 播放 ${motion}`, 'info');
       // 运行时组只读：显示本次实际使用的运行时版本（引擎按骨架版本自动选，不可手切）
       if (state.panel) state.panel.setReadonly('ctl-runtime', `Spine ${info.version}`);
       refreshSkinList();
@@ -249,6 +249,35 @@ function onSelectModel(model) {
       stageStatus(`渲染失败：${msg}`, 'error');
       document.documentElement.dataset.stageReady = 'error';
     });
+}
+
+/** 选中模型：先做资产残缺预判，再交给 mountEntry 装载 */
+function onSelectModel(model) {
+
+  state.selectedModel = model;
+  const name = model ? (model.name || model.id) : '无';
+  if (!stage) { stageStatus(`已选中 ${name}（渲染器不可用）`, 'error'); return; }
+  if (!model) { stage.unload(); return; }
+
+  const entry = normalizeEntry(model);
+  const kind = entry.kind;
+
+  // 资产残缺预判（catalog 的 missingTextures）：声明了但磁盘缺失的纹理 ⇒ 渲染必失败。
+  //   **只报明确错误、不自动换源**：同名文件不等于同一份资源（目录版与容器版可能是不同版本），
+  //   自动换源会让用户以为"点哪个都一样"，也会掩盖真实的数据问题。
+  const missingTex = (entry.meta && entry.meta.missingTextures) || [];
+  if (missingTex.length) {
+    const msg = `该模型缺纹理文件 ${missingTex.join('、')}（资产残缺，无法渲染）。`
+      + '可选：① 改用该角色的资源包版本（若有）② 补齐上述文件后重试';
+    state.stageError = msg;
+    stageStatus(msg, 'error');
+    document.documentElement.dataset.stageReady = 'error';
+    diagEvent('model.incomplete', { model: entry.name || entry.id, missing: missingTex }, { level: 'warn', src: 'app' });
+    return;
+  }
+
+  // 无残缺（绝大多数情况）：直接走统一装载入口
+  return mountEntry(entry, name);
 }
 /** 拉资源根并把名册三级树挂到左栏（并按配置决定是否恢复上次选中） */
 /**

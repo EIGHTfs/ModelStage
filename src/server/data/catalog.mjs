@@ -41,6 +41,8 @@ function motionName(file) {
 // 定义文件解析缓存：absPath → { mtimeMs, size, result }
 // 为什么必须缓存：一次 catalog 请求要读 100+ 个 model3.json，逐个读盘会成为主要耗时。
 const motionCache = new Map();
+/** 纹理存在性缓存：key=定义文件绝对路径，按 mtime/size 失效（避免每次请求上千次 stat） */
+const textureCache = new Map();
 
 /**
  * 从 Cubism 定义文件读动作分组，展开成 [{ group, index, name, url, fadeIn, fadeOut }]。
@@ -65,11 +67,20 @@ export function readModel3Motions(absDef, toUrl, relPrefix) {
     const def = JSON.parse(fs.readFileSync(absDef, 'utf8'));
     const groups = (def.FileReferences && def.FileReferences.Motions) || def.motions || {};
     const motions = [];
+    const missingMotions = [];
+    // 定义文件**声明了**但磁盘上**不存在**的动作文件：不进 motions 清单（前端就不会去请求 ⇒ 不再产生 404），
+    //   单独放进 missingMotions 供上层以 warn 级暴露（"这个模型为什么少个动作"能直接看到）。
+    //   这类缺失属资产残缺，不是路径拼错——必须与原清单分开记录，别让 404 混在正常请求里。
+    const defDir = path.dirname(absDef);
     for (const [group, list] of Object.entries(groups)) {
       (Array.isArray(list) ? list : []).forEach((mo, index) => {
         const file = mo ? (mo.File || mo.file) : null;
         if (!file) return;
         const rel = relPrefix ? `${relPrefix}/${file}` : String(file);
+        if (!fs.existsSync(path.join(defDir, String(file)))) {
+          missingMotions.push({ group, index, name: motionName(file), file: String(file) });
+          return;
+        }
         motions.push({
           group,
           index,
@@ -80,9 +91,9 @@ export function readModel3Motions(absDef, toUrl, relPrefix) {
         });
       });
     }
-    result = motions.length
-      ? { motions, warnings: [] }
-      : { motions: [], warnings: ['motions 不可得：定义文件未声明 FileReferences.Motions'] };
+    result = motions.length || missingMotions.length
+      ? { motions, missingMotions, warnings: [] }
+      : { motions: [], missingMotions: [], warnings: ['motions 不可得：定义文件未声明 FileReferences.Motions'] };
   } catch (e) {
     result = { motions: [], warnings: [`motions 不可得：定义文件解析失败（${e.message}）`] };
   }
@@ -159,6 +170,37 @@ export function toSpineEntry(cfg, m) {
 }
 
 /**
+ * 读取 model3.json 声明的纹理并核对磁盘是否存在（按定义文件 mtime/size 缓存）。
+ *
+ * 为什么要做：扫描阶段只列**磁盘上有的**文件，不会发现"定义了但缺文件"的情况；
+ *   现场实例：aijier_3 的 Textures 声明 texture_00+texture_01，磁盘只有 texture_01
+ *   ⇒ 渲染时抛 "Texture loading error"（用户只看到这个，看不出是资产缺文件）。
+ *   这里提前判定，让上层能"预判 + 换源 + 给可执行提示"，而不是等渲染炸。
+ *
+ * @param {string} absDef 定义文件绝对路径
+ * @returns {{declared: string[], missing: string[]}}
+ */
+export function readModel3Textures(absDef) {
+  let st;
+  try {
+    st = fs.statSync(absDef);
+  } catch {
+    return { declared: [], missing: [] };
+  }
+  const cached = textureCache.get(absDef);
+  if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) return cached.result;
+  let result = { declared: [], missing: [] };
+  try {
+    const def = JSON.parse(fs.readFileSync(absDef, 'utf8'));
+    const declared = ((def.FileReferences && def.FileReferences.Textures) || []).map(String);
+    const dir = path.dirname(absDef);
+    result = { declared, missing: declared.filter((rel) => !fs.existsSync(path.join(dir, rel))) };
+  } catch { /* 解析失败按"无声明"处理，不制造噪音 */ }
+  textureCache.set(absDef, { mtimeMs: st.mtimeMs, size: st.size, result });
+  return result;
+}
+
+/**
  * Live2D 条目 → ModelEntry。
  * @param {object} cfg 资源根配置
  * @param {object} lm 扫描结果条目
@@ -181,7 +223,15 @@ export function toLive2DEntry(cfg, lm) {
     : { motions: [], warnings: ['motions 不可得：缺少定义文件路径'] };
   // 只把「动作取不到」这类真缺陷放进 warnings；
   //   iconUrl 缺失是这批资源的共性（Live2D 目录普遍没有 icon.png），不作为逐条告警刷屏。
+  const textureCheck = absDef ? readModel3Textures(absDef) : { declared: [], missing: [] };
   const warnings = [...fromDef.warnings];
+  if (textureCheck.missing.length) {
+    warnings.push(`纹理文件缺失（资产残缺，渲染会失败）：${textureCheck.missing.join('、')}——建议改用资源包版本或补齐文件`);
+  }
+  if (fromDef.missingMotions && fromDef.missingMotions.length) {
+    warnings.push(`动作文件缺失（资产残缺，已跳过 ${fromDef.missingMotions.length} 个）：${
+      fromDef.missingMotions.map((m) => `${m.group}/${m.name}`).join('、')}`);
+  }
 
   return {
     id: lm.id,
@@ -196,9 +246,12 @@ export function toLive2DEntry(cfg, lm) {
     meta: {
       version: toVersionNumber(lm.cubism),
       motions: fromDef.motions,
+      missingMotions: fromDef.missingMotions || [],
       skins: [],
       expressions: lm.expressions || [],
       textureCount: (lm.textureFiles || []).length,
+      // 声明了但磁盘缺失的纹理（前端据此预判 + 换源 + 提示，不必等渲染报错）
+      missingTextures: textureCheck.missing,
       fileSize: lm.fileSize,
       extras: {
         cubism: lm.cubism,

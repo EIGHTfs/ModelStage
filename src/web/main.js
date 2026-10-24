@@ -36,6 +36,7 @@ import {
 } from './panel/panel-settings.js';
 import { loadRoots } from './app/model-actions.js';
 import { installCameraLogger } from './app/camera-log.js';
+import { recent as recentLogs } from './infra/log.js';
 import { resetViewViaRenderer } from './render/reset-view.js';
 import { applyTopbarIcons } from './panel/icons.js';
 import {
@@ -185,6 +186,25 @@ function initRenderer() {
   // 资源/上下文计数（只读观测，给"泄漏是否累积"提供数字；必须在渲染器创建上下文前安装）
   installMemStats();
   window.__WEB__.memStats = () => memStats();
+  // PMA 诊断读取口（只读）：把"当前档位 / 生效判定 / 最近 pma.* 日志"一次取回，
+  //   便于在浏览器控制台或自动化探针里核对"auto 到底判了什么"，不必翻面板。
+  window.__WEB__.pmaDebug = () => {
+    try {
+      // 引擎实例从 stage 侧取（surface.debug() 不一定有）；两条路都试，取到即用
+      let eng = null;
+      try { eng = state.surface && state.surface.debug ? (state.surface.debug().engine || null) : null; } catch { /* 忽略 */ }
+      if (!eng) { try { eng = window.__WEB__.stage.debug().engine; } catch { /* 忽略 */ } }
+      const logs = recentLogs().filter((r) => {
+        const d = r && r.detail;
+        return (d && d.event && String(d.event).startsWith('pma.')) || String(r.tag || '') === 'pma';
+      }).slice(-10);
+      return {
+        mode: eng ? eng.pmaMode : null,
+        pmaInfo: eng ? eng.pmaInfo : null,
+        logs,
+      };
+    } catch (e) { return { error: String(e && e.message) }; }
+  };
   // 只读断言入口（summary/results/disable/enable/run）
   // 兼容层：对外仍是一个 renderer（camera 按当前面取，mount 走 Surface 的唯一入口）
   const facade = {
