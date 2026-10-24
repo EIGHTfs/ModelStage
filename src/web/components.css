@@ -367,3 +367,16 @@
   line-height: 1.5;
   word-break: break-all;
 }
+
+/* 资产残缺角标（catalog 里 missingTextures 非空的条目）
+   为什么显示而不是隐藏：这些条目点了会渲染失败，用户有权知道"为什么这个不行"，
+   并且有资源包版本时系统会自动改用（状态行会明确提示，不静默降级）。 */
+.tree-variant-warn {
+  color: #e8a33d;
+  margin-left: 4px;
+  font-size: 12px;
+  flex: none;
+}
+.tree-variant.is-incomplete .tree-variant-text {
+  opacity: 0.72;
+}

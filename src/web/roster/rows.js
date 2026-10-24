@@ -136,6 +136,16 @@ export function renderVariantRow(game, c, v, selectedId) {
   row.append(el('span', `tree-type tree-type-${kindClass}`, label));
   row.append(el('span', 'tree-variant-text', text));
   if (origName && origName !== text) row.append(el('span', 'tree-variant-orig', ` · ${origName}`));
-  row.title = `${origName}${m.srcDir && m.srcDir !== origName ? `  ·  ${m.srcDir}` : ''}`;
+  // 资产残缺预警：目录版声明了但磁盘缺失的纹理 ⇒ 列表里就标出来，别等用户点了才报错
+  //   （现场：azurlane 根 119 个模型里有 13 个缺 texture_00.png，逐个点着试体验很差）
+  const missingTex = (m.meta && m.meta.missingTextures) || [];
+  if (missingTex.length) {
+    const badge = el('span', 'tree-variant-warn', '⚠');
+    badge.title = `缺少纹理文件：${missingTex.join('、')}（该条目本身无法渲染；有资源包版本的会自动改用）`;
+    row.append(badge);
+    row.classList.add('is-incomplete');
+  }
+  row.title = `${origName}${m.srcDir && m.srcDir !== origName ? `  ·  ${m.srcDir}` : ''}${
+    missingTex.length ? `\n⚠ 缺纹理：${missingTex.join('、')}` : ''}`;
   return row;
 }

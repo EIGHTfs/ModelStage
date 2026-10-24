@@ -257,3 +257,34 @@
   opacity: 0.6;
   font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
 }
+
+/* ---- 上传日志按钮与三态反馈 ----
+   与其它头部按钮并排，但带文字：这个动作会产生服务端文件，需要让人一眼看懂。
+   uploading 时禁用（aria-busy），成功/失败文案写在 .dbg-upload-status 里，失败可再点重试。 */
+.dbg-btn-text {
+  width: auto;
+  min-width: 0;
+  padding: 0 8px;
+  gap: 4px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.dbg-btn-text:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.dbg-upload-status {
+  max-width: 42ch;
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--dbg-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 失败态用错误色，成功态保持弱化文字（不抢条数的视觉位置） */
+.dbg-upload-status[data-state='fail'] {
+  color: var(--color-danger);
+}

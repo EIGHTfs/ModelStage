@@ -14,6 +14,15 @@ set -u
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # 自身绝对路径：restart 分支要用它自调用（"$0" 在 `bash web.sh` 下只是相对名，直接执行会 command not found）
 SELF="$PROJECT_ROOT/$(basename "${BASH_SOURCE[0]}")"
+# 源码权限预检：服务端读不到模块时，日志里只有 404/空页面，很难联想到"文件权限"。
+#   这里是**启动前**的最后一道提醒（不阻止启动，只把原因直接打出来，省掉一轮瞎查）。
+if command -v node >/dev/null 2>&1; then
+  PERM_MSG="$(node "$PROJECT_ROOT/tool/lib/check-perms.mjs" "$PROJECT_ROOT" 2>&1)" || {
+    echo "[web.sh] ⚠️  源码权限预检警告：" >&2
+    echo "$PERM_MSG" >&2
+  }
+fi
+
 PORT="${PORT:-8804}"
 RUNTIME_DIR="$PROJECT_ROOT/runtime"
 mkdir -p "$RUNTIME_DIR"

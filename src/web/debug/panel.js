@@ -13,6 +13,7 @@
 
 import { DEBUG_LEVELS } from './log.js';
 import { createPanelDrag } from './drag.js';
+import { createUploader } from './upload.js';
 
 const CSS_FILE = './panel.css';
 const CSS_LINK_ATTR = 'data-debug-panel-css';
@@ -73,6 +74,10 @@ function createHeader(doc) {
   const left = el('div', 'dbg-head-left');
   const countEl = el('span', 'dbg-count', '0 条');
   left.append(icon('info'), el('span', 'dbg-title', '调试日志'), countEl);
+  // 上传结果就写在标题旁：成功给文件名+条数+体积，失败给原因（可见、可重试，不静默）
+  const uploadStatus = el('span', 'dbg-upload-status', '');
+  uploadStatus.hidden = true;
+  left.append(uploadStatus);
 
   const right = el('div', 'dbg-head-right');
   const btnClear = el('button', 'dbg-btn');
@@ -80,6 +85,16 @@ function createHeader(doc) {
   btnClear.title = '清空';
   btnClear.setAttribute('aria-label', '清空日志');
   btnClear.append(icon('x'));
+
+  // 上传日志：把当前内存里的日志交给服务端落盘（data/logs/），供 AI 事后读现场。
+  //   用带文字的小按钮而不是图标：这个动作有"副作用（产生文件）"，需要一眼看懂点的是什么。
+  const btnUpload = el('button', 'dbg-btn dbg-btn-text');
+  btnUpload.type = 'button';
+  btnUpload.title = '把当前日志上传到服务端（data/logs/）';
+  btnUpload.setAttribute('aria-label', '上传日志');
+  const uploadLabel = el('span', 'dbg-upload-label', '上传日志');
+  uploadLabel.dataset.uploadLabel = '1';
+  btnUpload.append(uploadLabel);
 
   const btnCollapse = el('button', 'dbg-btn');
   btnCollapse.type = 'button';
@@ -99,9 +114,9 @@ function createHeader(doc) {
     filter.append(opt);
   }
 
-  right.append(filter, btnClear, btnCollapse);
+  right.append(filter, btnUpload, btnClear, btnCollapse);
   head.append(left, right);
-  return { head, countEl, btnClear, btnCollapse, filter };
+  return { head, countEl, btnClear, btnCollapse, filter, btnUpload, uploadStatus };
 }
 
 /**
@@ -452,7 +467,25 @@ export function mountDebugPanel({ log, container } = {}) {
   const drag = createPanelDrag({ root: shell.root, head: shell.head });
   drag.restore();
 
+  // 上传日志：数据源统一从 infra/log.js 的 recent() 取（stageStatus 与 diag 事件都在里面）
+  const uploader = createUploader({
+    button: shell.btnUpload,
+    statusEl: shell.uploadStatus,
+    readState: () => ({
+      version: (typeof window !== 'undefined' && window.__WEB__ && window.__WEB__.version) || '',
+      selectedModel: state.selectedModel || null,
+      renderer: state.currentRenderer || null,
+    }),
+  });
+  const onUpload = () => { uploader.run(); };
+  shell.btnUpload.addEventListener('click', onUpload);
+
   view.renderAll();
+
+  // 把上传句柄挂到 __WEB__（供自动化断言三态；不存在就下次挂载再挂）
+  try {
+    if (typeof window !== 'undefined' && window.__WEB__) window.__WEB__.logUpload = uploader;
+  } catch { /* 忽略 */ }
 
   // 把拖动句柄挂到 __WEB__（供自动化读节流计数；不存在就下次挂载再挂）
   try {
@@ -466,6 +499,7 @@ export function mountDebugPanel({ log, container } = {}) {
       try { wired.unsubscribe(); } catch { /* 忽略 */ }
       try { unwatchVisibility(); } catch { /* 忽略 */ }
       try { drag.dispose(); } catch { /* 忽略 */ }
+      shell.btnUpload.removeEventListener('click', onUpload);
       shell.btnClear.removeEventListener('click', wired.onClear);
       shell.btnCollapse.removeEventListener('click', wired.onCollapse);
       try { sinkOff(); } catch { /* 忽略 */ }

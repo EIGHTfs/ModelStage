@@ -9,6 +9,11 @@
 //   而且 error/warn 必须始终可见，info 只在被要求时显示——这条策略只能有一份实现。
 
 import { dom, state } from './context.js';
+import { createLogger } from '../infra/log.js';
+
+// 适配层：状态行的文本同时进统一日志工厂（面板与"上传日志"只认工厂这一份）。
+//   注意：状态行的**展示策略**仍在本文件（什么时候写 stageHint），工厂只管"记一条"。
+const logStage = createLogger('stage');
 
 /**
  * 写一条状态行。
@@ -47,6 +52,13 @@ export function stageStatus(text, level = 'info', opts = {}) {
     dom.stageHint.textContent = '';
     dom.stageHint.hidden = true;
   }
+  // 适配层：状态行同时记进统一工厂（级别沿用调用方给的 info/warn/error）。
+  //   `show` 只是"要不要占用状态行"的显示开关，与"记不记日志"无关，所以不因它决定是否记录；
+  //   把它作为 detail 留下，排查时能区分"当时是否可见"。
+  try {
+    const lv = level === 'warn' || level === 'error' ? level : 'info';
+    logStage[lv](line, opts && opts.show === true ? { show: true } : undefined);
+  } catch { /* 工厂异常不影响状态行 */ }
   return line;
 }
 

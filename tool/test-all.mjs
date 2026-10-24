@@ -21,6 +21,7 @@ import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { acquireTestLock, releaseOnExit, describeHolder, EXIT_SKIPPED, HELD_ENV } from './lib/test-lock.mjs';
+import { findBadPerms, summarizeBadPerms } from './lib/check-perms.mjs';
 
 // 必须用 fileURLToPath：项目路径含中文/空格，URL.pathname 是百分号编码，直接当路径会找不到文件
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -34,6 +35,17 @@ const SUITE_TIMEOUT_MS = 180000;
 // 并发互斥（任务 15）：同一项目同时只允许一个测试实例。
 //   第二个实例直接**跳过**并说清谁在跑——继续跑只会产出假红，误导修错地方。
 //   跳过用退出码 75，与 0=通过 / 1=失败 明确区分，CI 可据此判定"没跑"而不是"挂了"。
+// **门禁：源码权限预检**（必须在 test-lock 之前、比任何测试都早）
+//   权限不对（600/777）时，Node 服务端读不到模块 ⇒ app 初始化即崩 ⇒ 所有 e2e 无法执行 ⇒
+//   超时被杀报一堆"未捕获异常"。那样的红**全是假红**，比不跑更贵（会让人去查业务代码）。
+//   所以这里**直接失败退出**，不继续跑出一堆误导性结果。已经反复发生三次，做成硬门禁。
+const BAD_PERMS = findBadPerms(PROJECT);
+if (BAD_PERMS.files.length || BAD_PERMS.dirs.length) {
+  console.error('[test-all] ❌ 源码权限预检失败 —— 不跑测试（否则结果全是假红）：');
+  console.error(summarizeBadPerms(BAD_PERMS));
+  process.exit(1);
+}
+
 const TEST_LOCK = acquireTestLock({ root: REPO_ROOT, label: 'test-all', tool: 'node tool/test-all.mjs' });
 if (!TEST_LOCK.acquired) {
   console.error('[test-all] ⏭️  跳过：已有测试实例在跑（并发互斥，退出码 75）');
@@ -66,6 +78,10 @@ const SUITES = [
   { name: 'model-carousel', runner: 'node-test', file: 'test/model-carousel.test.mjs' },
   // 清单签名比对（含「根目录不存在=稳定状态」边界；P0 回归）
   { name: 'manifest-stamp', runner: 'node-test', file: 'test/manifest-stamp.test.mjs' },
+  // model3 动作清单的提取与缺失过滤（bug B 回归）
+  { name: 'catalog-motions', runner: 'node-test', file: 'test/catalog-motions.test.mjs' },
+  // PMA 判定与兜底三态（检测不出 ⇒ 按已预乘）
+  { name: 'pma-detect', runner: 'node-test', file: 'test/pma-detect.test.mjs' },
   // 模型文件抓取的可控断连重试（P0：keep-alive race）
   { name: 'fetch-retry', runner: 'node-test', file: 'test/fetch-retry.test.mjs' },
   // 引擎冒烟（3.8 ↔ 4.1 版本往返 + samplePixels().ratio + lastError 判据）：
@@ -90,6 +106,8 @@ const EST_SEC = {
   'unpack-filesview': 8,
   'model-carousel': 3,
   'manifest-stamp': 2,
+  'catalog-motions': 2,
+  'pma-detect': 2,
   'fetch-retry': 2,
   'engine-b1': 18,
   'f1-controls': 24, 'f2-topbar': 14, 'f3-reveal': 11, 'f4-roots': 13,
@@ -297,11 +315,11 @@ function killStaleChrome() {
 function cleanProfiles() {
   let removed = 0;
   let dirs = [];
-  try { dirs = fs.readdirSync('/tmp').filter((d) => d.startsWith(path.basename(PROFILE_PREFIX))); } catch { dirs = []; }
+  try { dirs = fs.readdirSync('/tmp').filter((d) => d.startsWith(path.basename(PROFILE_PREFIX))); } catch { dirs = []; } // dsh-skip-residue
   for (const d of dirs) {
     const full = path.join('/tmp', d);
     if (keepProfiles) continue;
-    try { fs.rmSync(full, { recursive: true, force: true }); removed += 1; } catch { /* 占用中跳过 */ }
+    try { fs.rmSync(full, { recursive: true, force: true }); removed += 1; } catch { /* 占用中跳过 */ } // dsh-skip-residue
   }
   return removed;
 }

@@ -116,6 +116,9 @@ export const PANEL_GROUPS = [
         kind: 'segmented',
         label: 'PMA 预乘',
         id: 'ctl-pma', capabilityKey: 'pma',
+        // 2×2 网格（对齐旧端布局：用户已经习惯了那个排列），下方跟随四行只读诊断
+        layout: 'grid-2',
+        diag: 'pma',
         options: ['自动', '已预乘', '非预乘', '转预乘'],
         titles: ['按像素抽样自动推断', '强制按已预乘处理', '强制按非预乘处理（运行时 4.1+ 才原生支持，较早版本会降级为转预乘）', '上传时在 GPU 上转成预乘'],
         values: ['auto', 'premultiplied', 'straight', 'upload'],

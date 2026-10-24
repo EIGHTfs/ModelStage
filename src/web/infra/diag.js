@@ -1,3 +1,5 @@
+import { createLogger } from './log.js';
+
 // diag.js —— 前端内置诊断探针（window.__DIAG__）
 //
 // 目的：把"出问题时临时注入 console 探针"变成页面自带的能力 —— 前端自证、AI/工具直接读文件取证，
@@ -30,6 +32,39 @@ const MOTION_FAIL_RE = /\[MotionManager\]\s*Failed to load motion/i;
 
 /** 资源标签：这些元素的 error 事件代表"资源加载失败" */
 const RESOURCE_TAGS = ['IMG', 'SCRIPT', 'LINK', 'VIDEO', 'AUDIO'];
+
+// ---------------------------------------------------------------- 适配层（统一日志工厂）
+//
+// 探针仍然按自己的形状采集与落盘（/api/diag → data/diag.jsonl 那条链路不动），
+//   但**每一条事件同时送一份进 infra/log.js 的工厂**。这样"面板展示"和"上传"都能
+//   只认工厂这一份数据源，不会出现"面板有、上传缺"的半套日志。
+// 事件名归一：探针历史命名是 `category/event` 混 `a.b`，统一成点分（如 window/error → window.error），
+//   因为工厂的 debug 级要求点分事件名——机器要按前缀分组过滤。
+const logDiag = createLogger('diag');
+
+/** 把 `a/b.c` 这类名字归一成点分的 `a.b.c`（工厂 debug 级要求点分） */
+function dottedName(raw) {
+  const parts = String(raw || '').split(/[/.]/).filter(Boolean);
+  const name = parts.join('.');
+  return /^[a-z]/.test(name) ? name : `event.${name || 'unknown'}`;
+}
+
+/**
+ * 把一条探针事件镜像进统一工厂。
+ * 级别语义：debug 走事件名 + 结构化 detail（机器读）；其余三档用事件名当人话 + detail 当上下文。
+ * @param {string} level debug/info/warn/error
+ * @param {string} event 原始事件名
+ * @param {object} data 已摘要过的结构化数据
+ */
+function mirrorEventToFactory(level, event, data) {
+  try {
+    const detail = data && typeof data === 'object' ? data : undefined;
+    if (level === 'debug') logDiag.debug(dottedName(event), detail || {});
+    else if (level === 'warn') logDiag.warn(String(event || '事件'), detail);
+    else if (level === 'error') logDiag.error(String(event || '事件'), detail);
+    else logDiag.info(String(event || '事件'), detail);
+  } catch { /* 适配层异常不得影响探针采集 */ }
+}
 
 // ---------------------------------------------------------------- 状态
 
@@ -141,6 +176,8 @@ function push(st, level, src, event, data, extra) {
   if (st.pending.length > 400) st.pending.splice(0, st.pending.length - 400);
   scheduleFlush(st);
   notifySinks(st, e);
+  // 适配层：同一条事件也进统一工厂（面板/上传的唯一数据源）
+  mirrorEventToFactory(level, event, e.data);
   return e;
 }
 

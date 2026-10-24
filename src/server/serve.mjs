@@ -27,6 +27,7 @@ import { createDiag } from './http/diag.mjs';
 import { createReady } from './http/ready.mjs';
 import { createWriteApi, toRootView } from './http/write.mjs';
 import { createBackgrounds } from './http/backgrounds.mjs';
+import { createDiagUpload } from './http/diag-upload.mjs';
 import { createUnpackStore } from './unpack/plugin-store.mjs';
 import { createUnpackRoutes } from './unpack/routes.mjs';
 
@@ -42,6 +43,8 @@ const staticRoutes = createStaticRoutes({ root: ROOT, webRoot: WEB_ROOT, runtime
 const diag = createDiag(data.paths);
 // 自定义背景图存储：落盘在 data/backgrounds/（运行时数据，换机/备份需单独带走）
 const backgrounds = createBackgrounds(data.paths);
+// 调试日志上传：落盘在 data/logs/（页面把内存里的日志一次性交上来，供 AI 事后读现场）
+const diagUpload = createDiagUpload({ dataDir: data.paths.dataDir, configDir: path.join(ROOT, 'config') });
 
 // 服务端解包 + 落盘缓存（17b）：产物在 data/unpacked/<fingerprint>/，前端命中后只 fetch 文件
 const unpackStore = createUnpackStore({
@@ -329,6 +332,8 @@ const server = http.createServer((req, res) => {
     if (p === '/api/diag' && req.method === 'POST') {
       return readBody(req, res, (body) => sendJson(res, 200, diag.appendDiag(body)));
     }
+    // 调试日志上传（data/logs/）：先同步判命中，再异步处理（handle 是 async，直接判返回值会恒真截断后续路由）
+    if (diagUpload.matches(req.method, p)) { diagUpload.handle(req, res, p); return; }
     // 就绪信号（契约 §五）：快照幂等；SSE 先推全量再推增量；POST 是页面侧上报入口
     if (p === '/api/ready' && req.method === 'GET') {
       const stage = url.searchParams.get('stage') || '';

@@ -26,6 +26,156 @@ import { PANEL_GROUPS } from './schema.js';
  * @param {object} ctl
  * @param {{onSetting: Function}} ctx
  */
+/** 三态布尔 → 人话：null/undefined 是"没信息"，与明确的 false（判为非预乘）意义完全不同 */
+function triText(value, { yes, no, unknown }) {
+  if (value === true) return yes;
+  if (value === false) return no;
+  return unknown;
+}
+
+/** 实际生效的技术名 → 展示名（旧端用英文技术名，二者语义一致） */
+const EFFECTIVE_TEXT = { premultiplied: 'Premultiplied', straight: 'Straight', upload: 'Unpack' };
+
+/**
+ * 读当前 PMA 诊断数据（只读）。
+ *
+ * 数据分散在两处，必须合并（这是实测踩到的）：引擎的 `pmaInfo` 只带
+ *   `{effectiveMode, needPremultiply, blendMode, runtimeSupportsStraight, degraded}`，
+ *   **不含** `atlasDeclared` / `pixelDetected` —— 那两个在 `pma.resolve` 这条 debug 日志的 detail 里
+ *   （引擎装载时会打一条，记录"auto 到底判了什么、依据是什么"）。
+ * 所以：先取最新一条 `pma.resolve` 的 detail 补这两个字段，再用 pmaInfo 覆盖"生效"类字段。
+ * @returns {{mode: string|null, info: object|null}}
+ */
+function readPmaDebug() {
+  if (typeof window === 'undefined') return { mode: null, info: null };
+  const web = window.__WEB__ || {};
+  let mode = null;
+  let info = null;
+  let resolved = null;
+  try {
+    if (typeof web.pmaDebug === 'function') {
+      const d = web.pmaDebug() || {};
+      mode = d.mode || null;
+      info = d.pmaInfo || null;
+      const logs = Array.isArray(d.logs) ? d.logs : [];
+      // 数组按时间正序：从后往前找。**优先取"带像素结论"的那条**——
+      //   切档也会打一条 pma.resolve，但那时不会重新抽样，pixelDetected 是 null；
+      //   若只看"最新一条"就会把『像素检测』显示成"未检测"（实测踩过）。
+      //   像素结论只在装载时判定一次，所以"最近一条 pixelDetected !== null"才是当前模型的证据。
+      let anyResolve = null;
+      for (let i = logs.length - 1; i >= 0; i -= 1) {
+        const det = logs[i] && logs[i].detail;
+        if (!det || det.atlasDeclared === undefined) continue;
+        if (!anyResolve) anyResolve = det;
+        if (det.pixelDetected !== null && det.pixelDetected !== undefined) { resolved = det; break; }
+      }
+      if (!resolved) resolved = anyResolve;
+    }
+  } catch { /* 读不到就当没有 */ }
+  if (!mode && !info && !resolved) {
+    // 退路：stats().pma 只有 { mode, effective, blend, degraded }，没有 atlas/像素
+    try {
+      const st = typeof web.stage === 'object' && web.stage && typeof web.stage.stats === 'function' ? web.stage.stats() : null;
+      const pma = st && st.pma ? st.pma : null;
+      if (pma) { mode = pma.mode || null; info = { effectiveMode: pma.effective }; }
+    } catch { /* 忽略 */ }
+  }
+  const fromResolve = resolved
+    ? {
+      atlasDeclared: resolved.atlasDeclared === undefined ? null : resolved.atlasDeclared,
+      pixelDetected: resolved.pixelDetected === undefined ? null : resolved.pixelDetected,
+      // resolve 里叫 effective（不带 Mode 后缀），统一成 effectiveMode
+      effectiveMode: resolved.effective || null,
+      runtimeSupportsStraight: resolved.runtimeSupportsStraight === undefined ? null : resolved.runtimeSupportsStraight,
+    }
+    : {};
+  // pmaInfo 优先（它才是"当前实际生效"的权威）；它缺的字段由 resolve 那条补上
+  return { mode, info: Object.assign({}, fromResolve, info || {}) };
+}
+
+/**
+ * 生成 PMA 四行诊断块（只读，不可点）。
+ * 数据缺失时一律显示 '—'（未加载模型 / 引擎还没判定完），绝不抛错、绝不编值。
+ * @returns {HTMLElement} 带 data-ctl-diag="pma" 的容器（后续用 updatePmaDiag 原地刷新）
+ */
+function renderPmaDiag() {
+  const box = el('div', 'ctl-diag');
+  box.dataset.ctlDiag = 'pma';
+  // 固定四行：顺序与旧端一致（Atlas 声明 → 像素检测 → 直通支持 → 实际生效）
+  for (const key of ['atlas', 'pixel', 'straight', 'effective']) {
+    const row = el('div', 'ctl-diag-row');
+    row.dataset.diagKey = key;
+    const label = el('span', 'ctl-diag-label', { atlas: 'Atlas 声明：', pixel: '像素检测：', straight: '直通支持：', effective: '实际生效：' }[key]);
+    const value = el('span', 'ctl-diag-value', '—');
+    // "实际生效"是最终结论，最该被看到：主色 + 加重（旧端 text-primary font-medium）
+    if (key === 'effective') value.classList.add('is-primary');
+    row.append(label, value);
+    box.append(row);
+  }
+  updatePmaDiag(box);
+  return box;
+}
+
+/**
+ * 原地刷新四行（切换档位后立刻调用；模型装载/动作变化时由全局事件触发）。
+ * @param {Element|null} box renderPmaDiag 产出的容器
+ */
+export function updatePmaDiag(box) {
+  if (!box) return;
+  const { info } = readPmaDebug();
+  const set = (key, text) => {
+    const v = box.querySelector(`[data-diag-key="${key}"] .ctl-diag-value`);
+    if (v) v.textContent = text;
+  };
+  set('atlas', triText(info && info.atlasDeclared, { yes: '已预乘', no: '非预乘', unknown: '未知' }));
+  set('pixel', triText(info && info.pixelDetected, { yes: '已预乘', no: '非预乘', unknown: '未检测' }));
+  set('straight', triText(info && info.runtimeSupportsStraight, { yes: '支持', no: '不支持', unknown: '—' }));
+  const eff = info && info.effectiveMode ? String(info.effectiveMode) : '';
+  set('effective', EFFECTIVE_TEXT[eff] || '—');
+}
+
+/** 刷新页面上所有 PMA 诊断块（面板重建后可能有多个残留，全刷最省心） */
+export function refreshPmaDiag() {
+  if (typeof document === 'undefined') return;
+  for (const box of document.querySelectorAll('[data-ctl-diag="pma"]')) updatePmaDiag(box);
+}
+
+/** 切档后"期望生效的技术名"：给轮询一个停止条件（auto 无法预知，用固定次数） */
+const EXPECT_EFFECTIVE = { premultiplied: ['premultiplied'], straight: ['straight', 'upload'], upload: ['upload'] };
+
+/**
+ * 切档后刷新四行：**轮询到真正生效为止**。
+ *
+ * 为什么不能只刷一次：切档会触发贴图重传（引擎侧是异步的），`onSetting` 返回时
+ *   `pmaInfo.effectiveMode` 还是旧值——只刷一次就会显示"上一拍"的结论（实测：点「已预乘」后
+ *   仍显示 Unpack，再点「自动」才显示 Premultiplied，整整慢一步）。
+ * @param {Element|null} box 诊断块
+ * @param {string} value 刚点的档位（auto/premultiplied/straight/upload）
+ */
+function refreshPmaDiagUntil(box, value) {
+  const expect = EXPECT_EFFECTIVE[value] || null;
+  const t0 = Date.now();
+  let ticks = 0;
+  const tick = () => {
+    updatePmaDiag(box);
+    const info = readPmaDebug().info || {};
+    const eff = info.effectiveMode ? String(info.effectiveMode) : '';
+    ticks += 1;
+    // auto 的生效结果是推断出来的，无法预知 ⇒ 固定刷 5 拍（约 600ms）就够
+    const done = expect ? expect.includes(eff) || Date.now() - t0 > 2000 : ticks >= 5;
+    if (!done) setTimeout(tick, 120);
+  };
+  tick();
+}
+
+/** 全局只注册一次：模型装载/动作变化时（app 层派发 panel:refresh-animations）顺带刷新诊断行 */
+let pmaDiagWired = false;
+function ensurePmaDiagRefresh() {
+  if (pmaDiagWired || typeof document === 'undefined') return;
+  pmaDiagWired = true;
+  document.addEventListener('panel:refresh-animations', () => refreshPmaDiag());
+}
+
 function renderSegmented(ctl, ctx) {
   // 是否可点由**接线方**（映射表）决定：带 values 只说明"有机器值可取"，不代表已生效
   const wired = ctx.isWired(ctl.id) && Array.isArray(ctl.values) && ctl.values.length === ctl.options.length;
@@ -33,6 +183,10 @@ function renderSegmented(ctl, ctx) {
   row.append(el('span', 'ctl-label', ctl.label));
   const group = el('div', 'ctl-seg');
   group.dataset.ctl = ctl.id || '';
+  // 布局声明（目前只有 PMA 用 grid-2：四档排成 2×2，对齐旧端）
+  if (ctl.layout) group.dataset.layout = ctl.layout;
+  // 该控件带只读诊断块（目前只有 PMA）：在按钮组下方追加四行
+  ensurePmaDiagRefresh();
   group.setAttribute('role', 'group');
   group.setAttribute('aria-label', ctl.label);
   const defaultIdx = wired && ctl.defaultValue !== undefined ? ctl.values.indexOf(ctl.defaultValue) : -1;
@@ -51,6 +205,8 @@ function renderSegmented(ctl, ctx) {
         for (const other of group.children) other.setAttribute('aria-pressed', 'false');
         btn.setAttribute('aria-pressed', 'true');
         try { ctx.onSetting(ctl.id, ctl.values[i]); } catch { /* 接线失败不影响面板自身状态 */ }
+        // 诊断块跟着档位走：切换会重新判定（重新上传贴图），所以立刻刷新四行
+        if (ctl.diag === 'pma') refreshPmaDiagUntil(row.querySelector('[data-ctl-diag="pma"]'), String(ctl.values[i]));
       });
     } else if (optDisabled) {
       // 单个取值被禁（如"自定义背景"这类尚未接线的选项）：属开发中项，保持 pending 口径
@@ -63,6 +219,8 @@ function renderSegmented(ctl, ctx) {
     group.append(btn);
   });
   row.append(group);
+  // 只读诊断块（PMA）：档位按钮下方四行小字（Atlas 声明 / 像素检测 / 直通支持 / 实际生效）
+  if (ctl.diag === 'pma') row.append(renderPmaDiag());
   // 需要读数行的控件（当前只有帧率）：数值由 mountPanel 暴露的 setFps 更新
   if (ctl.readout) {
     const readout = el('span', 'ctl-readout', '—');

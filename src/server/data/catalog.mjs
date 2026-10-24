@@ -53,52 +53,104 @@ const textureCache = new Map();
  * @returns {{motions: Array, warnings: string[]}}
  */
 export function readModel3Motions(absDef, toUrl, relPrefix) {
-  let st;
-  try {
-    st = fs.statSync(absDef);
-  } catch (e) {
-    return { motions: [], warnings: [`motions 不可得：定义文件读取失败（${e.code || e.message}）`] };
-  }
+  const st = statOf(absDef);
+  if (!st) return { motions: [], missingMotions: [], warnings: [`motions 不可得：定义文件读取失败（ENOENT）`] };
   const cached = motionCache.get(absDef);
   if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) return cached.result;
+  const parsedMotions = parseMotionsFile(absDef, toUrl, relPrefix);
+  motionCache.set(absDef, { mtimeMs: st.mtimeMs, size: st.size, result: parsedMotions });
+  return parsedMotions;
+}
 
-  let result;
+/**
+ * 读并解析定义文件，产出 {motions, missingMotions, warnings}。
+ * 只做"解析 + 汇总"，具体提取与过滤各由下面两个小函数负责。
+ * @param {string} absDef 定义文件绝对路径
+ * @param {(rel: string) => string} toUrl 相对路径 → URL
+ * @param {string|null} relPrefix 模型目录前缀
+ */
+function parseMotionsFile(absDef, toUrl, relPrefix) {
+  let def;
   try {
-    const def = JSON.parse(fs.readFileSync(absDef, 'utf8'));
-    const groups = (def.FileReferences && def.FileReferences.Motions) || def.motions || {};
-    const motions = [];
-    const missingMotions = [];
-    // 定义文件**声明了**但磁盘上**不存在**的动作文件：不进 motions 清单（前端就不会去请求 ⇒ 不再产生 404），
-    //   单独放进 missingMotions 供上层以 warn 级暴露（"这个模型为什么少个动作"能直接看到）。
-    //   这类缺失属资产残缺，不是路径拼错——必须与原清单分开记录，别让 404 混在正常请求里。
-    const defDir = path.dirname(absDef);
-    for (const [group, list] of Object.entries(groups)) {
-      (Array.isArray(list) ? list : []).forEach((mo, index) => {
-        const file = mo ? (mo.File || mo.file) : null;
-        if (!file) return;
-        const rel = relPrefix ? `${relPrefix}/${file}` : String(file);
-        if (!fs.existsSync(path.join(defDir, String(file)))) {
-          missingMotions.push({ group, index, name: motionName(file), file: String(file) });
-          return;
-        }
-        motions.push({
-          group,
-          index,
-          name: motionName(file),
-          url: toUrl(rel),
-          fadeIn: mo.FadeIn !== undefined ? mo.FadeIn : mo.fade_in,
-          fadeOut: mo.FadeOut !== undefined ? mo.FadeOut : mo.fade_out,
-        });
-      });
-    }
-    result = motions.length || missingMotions.length
-      ? { motions, missingMotions, warnings: [] }
-      : { motions: [], missingMotions: [], warnings: ['motions 不可得：定义文件未声明 FileReferences.Motions'] };
+    def = JSON.parse(fs.readFileSync(absDef, 'utf8'));
   } catch (e) {
-    result = { motions: [], warnings: [`motions 不可得：定义文件解析失败（${e.message}）`] };
+    return { motions: [], missingMotions: [], warnings: [`motions 不可得：定义文件解析失败（${e.message}）`] };
   }
-  motionCache.set(absDef, { mtimeMs: st.mtimeMs, size: st.size, result });
-  return result;
+  const groups = (def.FileReferences && def.FileReferences.Motions) || def.motions || {};
+  const refs = listMotionRefs(groups);
+  const { existing, missing } = splitByExistence(refs, path.dirname(absDef));
+  const motions = existing.map((ref) => buildMotionItem(ref, toUrl, relPrefix));
+  if (!motions.length && !missing.length) {
+    return { motions: [], missingMotions: [], warnings: ['motions 不可得：定义文件未声明 FileReferences.Motions'] };
+  }
+  return { motions, missingMotions: missing.map(toMissingItem), warnings: [] };
+}
+
+/**
+ * 从 model3.json 的 Motions 提取引用清单（**不碰磁盘**）。
+ * @param {object} groups 形如 { idle: [{ File, FadeIn }] }
+ * @returns {Array<{group: string, index: number, file: string, raw: object}>}
+ */
+export function listMotionRefs(groups) {
+  const out = [];
+  for (const [group, list] of Object.entries(groups || {})) {
+    if (!Array.isArray(list)) continue;
+    list.forEach((raw, index) => {
+      const file = raw ? (raw.File || raw.file) : null;
+      if (file) out.push({ group, index, file: String(file), raw });
+    });
+  }
+  return out;
+}
+
+/**
+ * 按"文件是否真的在磁盘上"把引用分成两堆（bug B 的核心）。
+ *
+ * 为什么要有这一步：定义文件**声明了**但磁盘**不存在**的动作文件，如果照原样下发，
+ *   前端就会去请求它 ⇒ 404 进 problems（每次加载这类模型都红）。
+ *   这里直接把它们分出去，前端不会请求；缺失项单独返回，让上层以 warn 级说明"为什么少个动作"。
+ *   注意：这属于**资产残缺**，不是路径拼错——所以是"过滤 + 记录"，不是改路径。
+ *
+ * @param {Array<{group: string, index: number, file: string, raw: object}>} refs
+ * @param {string} baseDir 定义文件所在目录
+ * @returns {{existing: Array, missing: Array}}
+ */
+export function splitByExistence(refs, baseDir) {
+  const existing = [];
+  const missing = [];
+  for (const ref of (Array.isArray(refs) ? refs : [])) {
+    if (fs.existsSync(path.join(baseDir, ref.file))) existing.push(ref);
+    else missing.push(ref);
+  }
+  return { existing, missing };
+}
+
+/** 单条可用动作 → 前端动作清单项（含 URL 与淡入淡出） */
+function buildMotionItem(ref, toUrl, relPrefix) {
+  const rel = relPrefix ? `${relPrefix}/${ref.file}` : ref.file;
+  const raw = ref.raw || {};
+  return {
+    group: ref.group,
+    index: ref.index,
+    name: motionName(ref.file),
+    url: toUrl(rel),
+    fadeIn: raw.FadeIn !== undefined ? raw.FadeIn : raw.fade_in,
+    fadeOut: raw.FadeOut !== undefined ? raw.FadeOut : raw.fade_out,
+  };
+}
+
+/** 单条缺失动作 → 缺件记录（供上层 warn 级暴露） */
+function toMissingItem(ref) {
+  return { group: ref.group, index: ref.index, name: motionName(ref.file), file: ref.file };
+}
+
+/** stat 封装：拿不到返回 null（调用方据此给出"读取失败"的结论） */
+function statOf(absPath) {
+  try {
+    return fs.statSync(absPath);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -189,15 +241,15 @@ export function readModel3Textures(absDef) {
   }
   const cached = textureCache.get(absDef);
   if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) return cached.result;
-  let result = { declared: [], missing: [] };
+  let textureState = { declared: [], missing: [] };
   try {
     const def = JSON.parse(fs.readFileSync(absDef, 'utf8'));
     const declared = ((def.FileReferences && def.FileReferences.Textures) || []).map(String);
     const dir = path.dirname(absDef);
-    result = { declared, missing: declared.filter((rel) => !fs.existsSync(path.join(dir, rel))) };
+    textureState = { declared, missing: declared.filter((rel) => !fs.existsSync(path.join(dir, rel))) };
   } catch { /* 解析失败按"无声明"处理，不制造噪音 */ }
-  textureCache.set(absDef, { mtimeMs: st.mtimeMs, size: st.size, result });
-  return result;
+  textureCache.set(absDef, { mtimeMs: st.mtimeMs, size: st.size, result: textureState });
+  return textureState;
 }
 
 /**
@@ -207,31 +259,11 @@ export function readModel3Textures(absDef) {
  */
 export function toLive2DEntry(cfg, lm) {
   const fileUrl = (p) => filesUrl(cfg.id, p);
-  const assets = [];
-  if (lm.mocFile) {
-    assets.push({ role: 'moc3', name: lm.mocFile.name, url: fileUrl(lm.mocFile.path), size: lm.mocFile.size });
-  }
-  for (const t of lm.textureFiles || []) {
-    assets.push({ role: 'texture', name: t.name, url: fileUrl(t.path), size: t.size });
-  }
-
-  // 动作以定义文件为准（扫描阶段的 motions 不含 group/index，且可能为空）
-  const defRel = lm.defFile ? lm.defFile.path : null;
-  const absDef = defRel ? path.join(cfg.path, defRel) : null;
+  const absDef = lm.defFile ? path.join(cfg.path, lm.defFile.path) : null;
   const fromDef = absDef
     ? readModel3Motions(absDef, fileUrl, lm.srcDir)
-    : { motions: [], warnings: ['motions 不可得：缺少定义文件路径'] };
-  // 只把「动作取不到」这类真缺陷放进 warnings；
-  //   iconUrl 缺失是这批资源的共性（Live2D 目录普遍没有 icon.png），不作为逐条告警刷屏。
+    : { motions: [], missingMotions: [], warnings: ['motions 不可得：缺少定义文件路径'] };
   const textureCheck = absDef ? readModel3Textures(absDef) : { declared: [], missing: [] };
-  const warnings = [...fromDef.warnings];
-  if (textureCheck.missing.length) {
-    warnings.push(`纹理文件缺失（资产残缺，渲染会失败）：${textureCheck.missing.join('、')}——建议改用资源包版本或补齐文件`);
-  }
-  if (fromDef.missingMotions && fromDef.missingMotions.length) {
-    warnings.push(`动作文件缺失（资产残缺，已跳过 ${fromDef.missingMotions.length} 个）：${
-      fromDef.missingMotions.map((m) => `${m.group}/${m.name}`).join('、')}`);
-  }
 
   return {
     id: lm.id,
@@ -242,28 +274,62 @@ export function toLive2DEntry(cfg, lm) {
     name: lm.name,
     srcDir: lm.srcDir,
     entry: { url: lm.modelUrl, name: lm.defFile.name, size: lm.defFile.size },
-    assets,
-    meta: {
-      version: toVersionNumber(lm.cubism),
-      motions: fromDef.motions,
-      missingMotions: fromDef.missingMotions || [],
-      skins: [],
-      expressions: lm.expressions || [],
-      textureCount: (lm.textureFiles || []).length,
-      // 声明了但磁盘缺失的纹理（前端据此预判 + 换源 + 提示，不必等渲染报错）
-      missingTextures: textureCheck.missing,
-      fileSize: lm.fileSize,
-      extras: {
-        cubism: lm.cubism,
-        defFile: lm.defFile,
-        mocFile: lm.mocFile,
-      },
-    },
+    assets: buildLive2DAssets(lm, fileUrl),
+    meta: buildLive2DMeta(lm, fromDef, textureCheck),
     iconUrl: lm.iconUrl || null,
-    warnings,
+    warnings: buildLive2DWarnings(fromDef, textureCheck),
   };
 }
 
+/** Live2D 资产清单（moc3 + 磁盘上实际存在的纹理页） */
+function buildLive2DAssets(lm, fileUrl) {
+  const assets = [];
+  if (lm.mocFile) {
+    assets.push({ role: 'moc3', name: lm.mocFile.name, url: fileUrl(lm.mocFile.path), size: lm.mocFile.size });
+  }
+  for (const page of lm.textureFiles || []) {
+    assets.push({ role: 'texture', name: page.name, url: fileUrl(page.path), size: page.size });
+  }
+  return assets;
+}
+
+/**
+ * Live2D 元信息：动作清单 + 资产残缺标记。
+ * @param {object} lm 扫描结果条目
+ * @param {{motions: Array, missingMotions?: Array}} fromDef 定义文件解析结果
+ * @param {{missing: string[]}} textureCheck 纹理核对结果
+ */
+function buildLive2DMeta(lm, fromDef, textureCheck) {
+  return {
+    version: toVersionNumber(lm.cubism),
+    motions: fromDef.motions,
+    missingMotions: fromDef.missingMotions || [],
+    skins: [],
+    expressions: lm.expressions || [],
+    textureCount: (lm.textureFiles || []).length,
+    // 声明了但磁盘缺失的纹理（前端据此预判并给出明确提示，不必等渲染报错）
+    missingTextures: textureCheck.missing,
+    fileSize: lm.fileSize,
+    extras: { cubism: lm.cubism, defFile: lm.defFile, mocFile: lm.mocFile },
+  };
+}
+
+/**
+ * Live2D 告警：只收「真缺陷」（动作取不到、资产残缺）。
+ * iconUrl 缺失是这批资源的共性（Live2D 目录普遍没有 icon.png），不作为逐条告警刷屏。
+ */
+function buildLive2DWarnings(fromDef, textureCheck) {
+  const warnings = [...(fromDef.warnings || [])];
+  if (textureCheck.missing.length) {
+    warnings.push(`纹理文件缺失（资产残缺，渲染会失败）：${textureCheck.missing.join('、')}——建议改用资源包版本或补齐文件`);
+  }
+  const missingMotions = fromDef.missingMotions || [];
+  if (missingMotions.length) {
+    warnings.push(`动作文件缺失（资产残缺，已跳过 ${missingMotions.length} 个）：${
+      missingMotions.map((ref) => `${ref.group}/${ref.name}`).join('、')}`);
+  }
+  return warnings;
+}
 
 /**
  * 解析资源包提供者：取「已启用的、声明了 fileKinds 含 bundle」的插件。
