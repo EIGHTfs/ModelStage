@@ -51,6 +51,26 @@ const SHELL_APPLIERS = {
   'ctl-settings-io': (v) => runSettingsAction(v),
 };
 
+/**
+ * **一次性动作控件**：点击即执行、本身没有"状态"的那类按钮组（schema 里 kind==='actions'）。
+ *
+ * 为什么必须排除在持久化之外（真 bug 的成因）：这类控件如果被 rememberPanelSetting 存下来，
+ *   启动回放 restorePanelSettings 会把它**再执行一次**——
+ *     导出设置 ⇒ 每次刷新都自动下载一份设置；
+ *     导入设置 ⇒ 每次刷新弹一次文件选择器；
+ *     恢复默认 ⇒ 每次刷新把用户设置清掉。
+ *   判据按 schema 的数据形状推导（kind==='actions'），不手写 id 名单：以后再加动作组自动被排除。
+ */
+const ONE_SHOT_IDS = (() => {
+  const ids = new Set();
+  for (const group of PANEL_GROUPS) {
+    for (const ctl of (group && group.controls) || []) {
+      if (ctl && ctl.kind === 'actions' && ctl.id) ids.add(String(ctl.id));
+    }
+  }
+  return ids;
+})();
+
 /** 可点控件全集 = 外壳项 + 声明了能力键的项（能力过滤决定其中哪些真的可点） */
 const WIRED_IDS = (() => {
   const ids = new Set(Object.keys(SHELL_APPLIERS));
@@ -76,6 +96,8 @@ export function suspendPanelPersist(on) {
 }
 
 function rememberPanelSetting(id, value) {
+  // 一次性动作不记（见 ONE_SHOT_IDS：记了就会在下次启动回放时重放）
+  if (ONE_SHOT_IDS.has(String(id))) return;
   state.panelSettings = { ...(state.panelSettings || {}), [id]: value };
   document.documentElement.dataset.panelSetting = JSON.stringify(state.panelSettings);
   if (persistSuspended) return; // 回放阶段不落盘，避免默认值覆盖用户保存值
@@ -86,6 +108,16 @@ function rememberPanelSetting(id, value) {
 export function restorePanelSettings(skipIds) {
   const saved = (readViewSettings().panel) || {};
   const skip = skipIds instanceof Set ? skipIds : new Set();
+  // 历史脏数据迁移：旧版本把一次性动作控件也存进了 panel（典型表现是"导出过设置后每次刷新又导出一次"）。
+  //   这里就地清掉并写回存储，否则每次启动都要绕一遍（用户重装/换浏览器后又从旧备份带回这份脏数据）。
+  const stale = Object.keys(saved).filter((id) => ONE_SHOT_IDS.has(id));
+  if (stale.length) {
+    for (const id of stale) delete saved[id];
+    try { saveViewSettings({ panel: { ...saved } }); } catch { /* 存储不可用就只跳过 */ }
+    stageLog('warn', '已清理面板设置里的一次性动作记录（旧版本遗留，会导致每次启动重放）', { removed: stale });
+    state.panelSettings = { ...(state.panelSettings || {}) };
+    for (const id of stale) delete state.panelSettings[id];
+  }
   for (const [id, value] of Object.entries(saved)) {
     if (skip.has(id)) continue;
     try { applyPanelSetting(id, value); } catch { /* 单项失败继续 */ }
