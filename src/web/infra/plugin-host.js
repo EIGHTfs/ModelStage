@@ -348,8 +348,39 @@ const MIME_BY_EXT = {
     return { prefix: j.prefix, entry: j.entry, files, hit: true, provider: 'server', src: 'server-hit' };
   }
 
-  /** 预热上限（MB）：超过不解包 —— 实测 19MB→VmHWM 451MB、42MB→479MB，只有 ≤12MB 才安全（176MB） */
-  const MAX_WARMUP_MB = 12;
+  /** 容量探测缓存（60s）；失败时**保守不放行**（reason=fallback），绝不当成"随便解包" */
+  let capCache = null;
+  const CAP_TTL_MS = 60 * 1000;
+
+  /**
+   * 问服务端"这个包现在能预热吗"。判断全在服务端：可用内存**现取** × 0.5 预算 vs 预估峰值，
+   * 外加预热时间上限（>6s 不预热）。前端只读 `allowWarmup` 一个布尔，不自己算任何阈值。
+   * @param {{rootId: string, rel: string}} file
+   * @returns {Promise<{allowWarmup: boolean, reason: string, peakEstMb?: number, budgetMb?: number, estUnpackSec?: number}>}
+   */
+  async function fetchCapacity(file) {
+    const key = `${file.rootId}/${file.rel}`;
+    if (capCache && capCache.key === key && Date.now() - capCache.at < CAP_TTL_MS) return capCache.value;
+    const fallback = { allowWarmup: false, reason: 'fallback:capacity-unavailable' };
+    try {
+      const qs = `?rootId=${encodeURIComponent(file.rootId)}&rel=${encodeURIComponent(file.rel)}`;
+      const res = await fetch(`/api/unpack/capacity${qs}`, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(1500) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const j = await res.json();
+      const value = {
+        allowWarmup: j.allowWarmup === true,
+        reason: String(j.reason || 'unknown'),
+        peakEstMb: j.peakEstMb,
+        budgetMb: j.budgetMb,
+        estUnpackSec: j.estUnpackSec,
+      };
+      capCache = { at: Date.now(), key, value };
+      return value;
+    } catch {
+      capCache = { at: Date.now(), key, value: fallback };
+      return fallback;
+    }
+  }
 
   /**
    * 空闲预热（形态 C）：ready 之后 requestIdleCallback(带 timeout 兜底) + 再延迟 2s，
@@ -365,11 +396,22 @@ const MIME_BY_EXT = {
     const sizeMb = Number(file && file.size) / 1048576;
     const emitWarm = (extra) => emit('unpack.warmup', { rootId: file && file.rootId, rel: file && file.rel, sizeMb: +sizeMb.toFixed(1), ...extra });
     if (!file || !file.rootId || !file.rel) return;
-    if (sizeMb > MAX_WARMUP_MB) {
-      emitWarm({ skipped: 'too-large' });
-      say.info(`跳过预热：${file.rel} ${sizeMb.toFixed(1)}MB > 上限 ${MAX_WARMUP_MB}MB（大包解包峰值 451~479MB）`);
-      return;
-    }
+    // 上限来自服务端（CPU 维度与内存维度取小）；拿不到则保守 12
+    fetchCapacity(file).then((cap) => {
+      if (!cap.allowWarmup) {
+        emitWarm({ skipped: cap.reason, peakEstMb: cap.peakEstMb, budgetMb: cap.budgetMb, estUnpackSec: cap.estUnpackSec });
+        say.info(`跳过预热：${file.rel} ${sizeMb.toFixed(1)}MB（${cap.reason}；预估峰值 ${cap.peakEstMb}MB / 预算 ${cap.budgetMb}MB / 预估耗时 ${cap.estUnpackSec}s）`);
+        return;
+      }
+      scheduleWarmup(file, emitWarm, cap);
+    }).catch(() => {
+      // fetchCapacity 内部已有兜底（allowWarmup=false），这里防御未知异常：保守跳过
+      emitWarm({ skipped: 'fallback:capacity-unavailable' });
+    });
+  }
+
+  /** 真正排期执行预热（idle + 2s 延迟） */
+  function scheduleWarmup(file, emitWarm, cap) {
     const idle = typeof requestIdleCallback === 'function'
       ? (fn) => requestIdleCallback(fn, { timeout: 3000 })
       : (fn) => setTimeout(fn, 800);
@@ -377,7 +419,7 @@ const MIME_BY_EXT = {
       const t0 = performance.now();
       try {
         const j = await postJson('/api/unpack/resolve', { rootId: file.rootId, rel: file.rel }, { timeoutMs: 30000 });
-        emitWarm({ ok: !!j.ok, hit: !!(j && j.hit), ms: Math.round(performance.now() - t0) });
+        emitWarm({ ok: !!j.ok, hit: !!(j && j.hit), peakEstMb: cap && cap.peakEstMb, ms: Math.round(performance.now() - t0) });
         say.info(`预热完成：${file.rel}（${j && j.hit ? '已有缓存' : '已落盘'}，${Math.round(performance.now() - t0)}ms）`);
       } catch (e) {
         emitWarm({ ok: false, error: String((e && e.message) || e).slice(0, 120) });

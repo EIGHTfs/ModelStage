@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { sendFile } from '../http/static.mjs';
+import { capacity } from './capacity.mjs';
 
 /** 强制失败开关（验收"回退可用"用；默认关） */
 function forcedFail() {
@@ -81,7 +82,13 @@ export function createUnpackRoutes(deps) {
       try {
         const out = await store.resolve({ rootId, rel, absPath: r.abs });
         if (!out.ok) {
-          return sendJson(res, 500, { ok: false, reason: out.reason || 'unpack-failed', message: out.message || '解包失败' });
+          // 把判据数字一起回给调用方（insufficient-memory 时要能看到 预算/预估峰值/当前可用）
+          return sendJson(res, 500, {
+            ok: false,
+            reason: out.reason || 'unpack-failed',
+            message: out.message || '解包失败',
+            ...(out.budgetMb !== undefined ? { budgetMb: out.budgetMb, peakEstMb: out.peakEstMb, availMb: out.availMb } : {}),
+          });
         }
         return sendJson(res, 200, {
           ok: true,
@@ -139,6 +146,23 @@ export function createUnpackRoutes(deps) {
     }
     if (p === '/api/unpack/file' && req.method === 'GET') {
       handleFile(req, res, url);
+      return true;
+    }
+    if (p === '/api/unpack/capacity' && req.method === 'GET') {
+      // 前端读不到 os.totalmem / MemAvailable，容量必须服务端算好下发。
+      //   带上 rootId+rel 时服务端自己 stat 源包大小，前端不用传 size（少一处不一致的可能）。
+      const rootId = String(url.searchParams.get('rootId') || '');
+      const rel = String(url.searchParams.get('rel') || '');
+      let sourceMb = 0;
+      if (rootId && rel) {
+        const r = resolveRequest(rootId, rel);
+        if (r.error) {
+          sendJson(res, 200, { ...capacity(), sourceMb: null, allowWarmup: true, reason: 'source-unresolved' });
+          return true;
+        }
+        sourceMb = fs.statSync(r.abs).size / 1024 / 1024;
+      }
+      sendJson(res, 200, capacity(sourceMb || undefined));
       return true;
     }
     if (p === '/api/unpack/stats' && req.method === 'GET') {

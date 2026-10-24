@@ -18,6 +18,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { unpackFile, runnerInfo } from './plugin-runner.mjs';
+import { checkUnpackMemory } from './capacity.mjs';
+
+/** 1MB 的字节数（下面多处换算用；写成常量避免 1048576 散落） */
+const BYTES_PER_MB = 1024 * 1024;
 
 /** 缓存上限（可用 config 覆盖；4GB 可用内存 / 磁盘都在这个量级以内安全） */
 const DEFAULT_LIMITS = { maxDirs: 20, maxBytes: 8 * 1024 * 1024 * 1024 };
@@ -77,6 +81,7 @@ export function createUnpackStore(opts) {
     // miss 的具体原因（验收"改 mtime → 重新解包"时要能看出是 source-changed 而不是别的原因）
     lastMissReason: null,
     peekHits: 0, // 前台只查缓存命中的次数（形态 C 的主指标）
+    lastFailReason: null, // 最近一次拒绝/失败的原因（insufficient-memory 等）
   };
   /** fp → Promise（同一包的并发只解一次） */
   const inflight = new Map();
@@ -299,6 +304,15 @@ export function createUnpackStore(opts) {
     counters.lastMissReason = detectMissCause({ ...req, stat }) || verdict.reason || 'no-index';
     const task = enqueue(async () => {
       const t0 = Date.now();
+      // 解包前按**当前可用内存**现判（不缓存、不看包大小阈值）：
+      //   预估峰值 = 源大小 × 分段倍数（实测上包络），超过"可用内存的一半"就拒绝，
+      //   否则一次解包可能把机器拖到换页（42MB 包实测峰值 479MB）。
+      const mem = checkUnpackMemory(stat.size);
+      if (!mem.ok) {
+        counters.failures += 1;
+        counters.lastFailReason = mem.reason;
+        return { ok: false, fingerprint: fp, reason: mem.reason, message: mem.message, budgetMb: mem.budgetMb, peakEstMb: mem.peakEstMb, availMb: mem.availMb };
+      }
       sampleRss();
       const res = await unpackFile({ rootId: req.rootId, rel: req.rel, absPath: req.absPath });
       if (!res.ok) {
@@ -337,12 +351,12 @@ export function createUnpackStore(opts) {
     return {
       ...counters,
       // peakRssMb 用内核 VmHWM（真峰值）；sampledPeakRssMb 保留旧抽样值，便于看出"抽样会漏多少"
-      peakRssMb: Math.round(mem.peak / 1048576),
+      peakRssMb: Math.round(mem.peak / BYTES_PER_MB),
       peakSource: mem.source,
-      sampledPeakRssMb: Math.round((counters.peakRss || 0) / 1048576),
-      rssMb: Math.round(mem.rss / 1048576),
+      sampledPeakRssMb: Math.round((counters.peakRss || 0) / BYTES_PER_MB),
+      rssMb: Math.round(mem.rss / BYTES_PER_MB),
       dirs,
-      bytesMb: Math.round(bytes / 1048576),
+      bytesMb: Math.round(bytes / BYTES_PER_MB),
       inflight: inflight.size,
       limits,
       runner: runnerInfo(),
