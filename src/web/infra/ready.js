@@ -37,6 +37,7 @@ const st = {
   pending: new Map(),  // stage → update[]（待上报，**队列**：同阶段的中间态不能互相覆盖）
   timer: null,
   installed: false,
+  flushes: 0,          // 实际上报次数（每次真正发出 POST 计 1；供"批量重置只报一次"的断言用）
 };
 
 /**
@@ -74,15 +75,59 @@ export function markStage(name, state, detail, reason) {
  * @param {string} name 阶段名
  * @returns {boolean} 是否执行了重置
  */
-export function resetStage(name) {
+/**
+ * 重置的内部实现（**不触发上报**）：清掉已有等级、塞一条 reset 记录进待发队列。
+ * @param {string} name 阶段名
+ * @returns {boolean} 是否是合法阶段
+ */
+function resetStageInternal(name) {
   if (!STAGES.includes(name)) return false;
   delete st.stages[name];
   st.rev += 1;
   st.pending.set(name, [{ stage: name, state: 'mounted', at: Date.now(), reset: true }]);
-  // **立刻上报**：reset 若被去抖窗口里的后续 mark 覆盖，服务端就只见到"最终状态"，
-  //   而它相对旧记录是同级/退步 ⇒ 整轮推进被静默丢弃（实测踩过：换模型后 SSE 一条 update 都收不到）。
-  flushNow();
   return true;
+}
+
+/**
+ * 重置单个阶段并立刻上报。
+ * **为什么要立刻上报**：reset 若被去抖窗口里的后续 mark 覆盖，服务端就只见到"最终状态"，
+ *   而它相对旧记录是同级/退步 ⇒ 整轮推进被静默丢弃（实测踩过：换模型后 SSE 一条 update 都收不到）。
+ * @param {string} name 阶段名
+ * @returns {boolean} 是否执行了重置
+ */
+export function resetStage(name) {
+  const ok = resetStageInternal(name);
+  if (ok) flushNow();
+  return ok;
+}
+
+/**
+ * 批量重置多个阶段，**整批只上报一次**。
+ *
+ * 为什么需要：一次交互（如切影院模式）会同时影响顶栏与两侧栏；逐个 resetStage 会各发一次 POST，
+ *   在慢机器上这些请求容易在页面关闭/负载高时被 AbortSignal 超时中止，表现为一串
+ *   `net::ERR_ABORTED (Fetch)` 噪音（实测：f2-topbar 的 problems 从 10 涨到 47）。
+ * @param {string[]} names 阶段名数组（非法项自动跳过）
+ * @returns {string[]} 实际被重置的阶段名
+ */
+export function resetStages(names, opts) {
+  const flushNowAfter = !(opts && opts.flush === false);
+  const done = [];
+  for (const name of Array.isArray(names) ? names : []) {
+    if (resetStageInternal(name)) done.push(name);
+  }
+  // flush:false 时不在这里发：调用方紧接着会重新跟踪，跟踪的第一拍 markStage('mounted')
+  //   会把 reset + mounted 一起进同一个去抖窗口 ⇒ 整次交互只发 1 个 POST。
+  if (done.length && flushNowAfter) flushNow();
+  return done;
+}
+
+/**
+ * 上报统计（诊断/断言用）。
+ * @returns {{flushes: number, pending: number, rev: number}} 上报次数、待发条数、本地 rev
+ */
+export function stats() {
+  return { flushes: st.flushes, pending: st.pending.size, rev: st.rev };
 }
 
 /** 页面内直读快照（契约 §5.1）：ready() 全量，ready('model') 单阶段 */
@@ -112,6 +157,7 @@ function flush() {
   if (!st.pending.size) return;
   const updates = [...st.pending.values()].flat();
   st.pending.clear();
+  st.flushes += 1;
   try {
     fetch('/api/ready', {
       method: 'POST',

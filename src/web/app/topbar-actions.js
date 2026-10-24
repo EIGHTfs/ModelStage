@@ -13,7 +13,7 @@ import { stage, state } from './context.js';
 import { stageStatus } from './status.js';
 import { repaintActive } from '../render/playback.js';
 import { captureActive } from '../render/capture.js';
-import { resetStage, trackElementStage } from '../infra/ready.js';
+import { flushNow, resetStages, trackElementStage } from '../infra/ready.js';
 
 /** 影院模式下静止多久把播放条淡出（毫秒）；鼠标一动就回来 */
 const CINEMA_IDLE_MS = 3000;
@@ -159,19 +159,37 @@ const stageHandles = new Map();
  * @returns {boolean} 是否重新起了跟踪
  */
 export function retrackStage(name) {
-  const selector = STAGE_SELECTORS[name];
-  if (!selector) return false;
-  const prev = stageHandles.get(name);
-  if (prev) {
-    try { prev(); } catch { /* 旧句柄已停 */ }
-    stageHandles.delete(name);
+  return retrackStages([name]) > 0;
+}
+
+/**
+ * 批量版：一次交互牵动多个阶段时用它——**整批只上报一次**就绪快照。
+ * @param {string[]} names 阶段名数组
+ * @returns {number} 实际重新起了跟踪的阶段数
+ */
+export function retrackStages(names) {
+  const list = (Array.isArray(names) ? names : []).filter((n) => STAGE_SELECTORS[n]);
+  if (!list.length) return 0;
+  // ① 先停旧句柄（连点以最后一次为准，不叠跟踪器）
+  for (const n of list) {
+    const prev = stageHandles.get(n);
+    if (prev) { try { prev(); } catch { /* 已停 */ } stageHandles.delete(n); }
   }
-  resetStage(name);
-  const el = document.querySelector(selector);
-  if (!el) return false;
-  const stop = trackElementStage({ name, el });
-  if (typeof stop === 'function') stageHandles.set(name, stop);
-  return true;
+  // ② 批量重置：这里**不单独上报**——紧接着的重新跟踪会在第一拍 markStage('mounted')，
+  //    两者落在同一个去抖窗口里 ⇒ 整次交互只发 1 个 POST（实测：影院切换 1 次 = 1 次上报）
+  resetStages(list, { flush: false });
+  // ③ 用启动时同一套判据重新跟踪
+  let started = 0;
+  for (const n of list) {
+    const el = document.querySelector(STAGE_SELECTORS[n]);
+    if (!el) continue;
+    const stop = trackElementStage({ name: n, el });
+    if (typeof stop === 'function') stageHandles.set(n, stop);
+    started += 1;
+  }
+  // 兜底：元素不在（或跟踪没起来）就没人触发上报，此时必须自己把 reset 发出去
+  if (!started) flushNow();
+  return started;
 }
 
 /**
@@ -183,10 +201,9 @@ export function toggleCinema(force) {
   const root = document.documentElement;
   const next = typeof force === 'boolean' ? force : root.dataset.cinema !== 'on';
   root.dataset.cinema = next ? 'on' : 'off';
-  // 顶栏与两侧栏一起做位移过渡 ⇒ 三个阶段的就绪状态重新起算（进入/退出都算）
-  retrackStage('topbar');
-  retrackStage('sidebarLeft');
-  retrackStage('sidebarRight');
+  // 顶栏与两侧栏一起做位移过渡 ⇒ 三个阶段的就绪状态重新起算（进入/退出都算）。
+  //   用批量接口：整批只上报一次（逐个重置会各发一次 POST，慢机器上会变成一串 ERR_ABORTED）。
+  retrackStages(['topbar', 'sidebarLeft', 'sidebarRight']);
   const btn = document.getElementById('btn-cinema');
   if (btn) btn.setAttribute('aria-pressed', String(next));
   syncSidebarButtons(); // 影院模式隐藏了两侧栏，两个开关的高亮也要跟着灭/亮

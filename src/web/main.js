@@ -37,7 +37,7 @@ import { installCameraLogger } from './app/camera-log.js';
 import { resetViewViaRenderer } from './render/reset-view.js';
 import { applyTopbarIcons } from './panel/icons.js';
 import {
-  bindCinemaKeys, bindSidebarStateSync, exportScreenshot, syncSidebarButtons, toggleCinema, toggleRightPanel,
+  bindCinemaKeys, bindSidebarStateSync, exportScreenshot, retrackStage, syncSidebarButtons, toggleCinema, toggleRightPanel,
 } from './app/topbar-actions.js';
 import {
   applyTransportMotion, stepVariant, toggleTransportPlay,
@@ -294,6 +294,8 @@ async function applyMsaa(mode) {
 function toggleLeftPanel() {
   state.leftPanelVisible = !state.leftPanelVisible;
   dom.leftPanel.classList.toggle('is-hidden', !state.leftPanelVisible);
+  // 左栏位移是一次过渡 ⇒ 它的就绪状态重新起算（只重置左栏；右栏/顶栏不受影响）
+  retrackStage('sidebarLeft');
   syncSidebarButtons(); // 高亮只认"实际可见"，不在这里单独写 aria
 }
 
