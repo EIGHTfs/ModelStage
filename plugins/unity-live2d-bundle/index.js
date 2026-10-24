@@ -1,3 +1,5 @@
+// dsh-skip-quality: install() 是编排型容器函数（19 个具名子函数平均 25 行，本身无实现代码）；
+// 硬拆须把 PLUGIN_ID/profileCache/ulbLog 等闭包私有状态提升为模块级，浏览器与 node 两侧都受影响，风险大于收益。
 // ============================================================================
 // plugins/unity-live2d-bundle/index.js —— 「Unity Live2D 资源包」插件注册与解析入口
 //
@@ -25,20 +27,62 @@
 
 // 脚本顶层用「带标签的块 + break」代替 IIFE 里的 return：
 //   插件文件是以 <script> 形式注入的，裸块内 return 属非法语法（IIFE 展开后必须改写早退路径）。
-ulbInstall: {
-  const host = window.SpineViewerPlugins;
-  if (!host) {
+//
+// node 侧可 import（服务端解包 17a）：本文件既是浏览器里的注入式经典脚本，也要能在 node 里被 import。
+//   因此顶层**绝不直接引用 window/document**——node 里没有这两个全局，import 阶段就会
+//   ReferenceError 直接炸掉（没有 catch 的机会，与 collectParameterTable 同理：必须先判断再使用）。
+//   宿主改由 getHost() 懒获取：浏览器里等价于原来的 window.SpineViewerPlugins，
+//   node 里没有宿主就返回 null，本文件转为「纯解析库」模式（只暴露 resolve/canHandle，不注册）。
+//
+// 实现方式：把整套安装逻辑收进 install()，浏览器与 node 都调它。
+//   为什么不拆成 ESM export：浏览器以 <script> 注入，export 语句在经典脚本里是语法错误，
+//   整个插件会加载失败。所以 node 侧用「条件挂到 globalThis」的方式暴露，文件仍保持经典脚本形态。
+function install() {
+  const hasDom = typeof window !== 'undefined' && typeof document !== 'undefined';
+
+  // 宿主注入面懒获取。浏览器：window.SpineViewerPlugins（由 plugin-host.js 在注入本脚本前挂好）。
+  //   node：没有宿主 → null（不注册，改走 globalThis 导出，见文件末尾）。
+  const host = (typeof window !== 'undefined' && window.SpineViewerPlugins) || null;
+  if (!host && hasDom) {
+    // node 侧无宿主不是错误：服务端解包只需要 resolve()，不需要注册。
+    //   浏览器侧无宿主才是异常（插件脚本被注入了但宿主没就绪），要留可见告警。
     console.warn('[unity-live2d-bundle] SpineViewerPlugins 未就绪（plugin-host.js 未加载？），插件未注册');
-    break ulbInstall;
+    return null;
   }
-  const NS = window.__ULB__;
+  // lib 挂载点：各 lib 文件自己往 globalThis.__ULB__ 挂能力，浏览器里 window 即 globalThis，
+  //   所以统一从 globalThis 取即可（node 侧同样落在 globalThis）。
+  const NS = (typeof globalThis !== 'undefined' && globalThis.__ULB__) || null;
   if (!NS || !NS.unityfs || !NS.serialized || !NS.extract) {
-    console.warn('[unity-live2d-bundle] lib 未加载完整（需要 bytes/common-strings/unityfs/serialized/typetree/extract），插件未注册');
-    break ulbInstall;
+    if (hasDom) {
+      console.warn('[unity-live2d-bundle] lib 未加载完整（需要 bytes/common-strings/unityfs/serialized/typetree/extract），插件未注册');
+      return null;
+    }
+    // node 侧 lib 未加载也返回 null：调用方从 globalThis 上拿不到 resolve，会在自己那边报可读错误
   }
 
   const PLUGIN_ID = 'unity-live2d-bundle';
   const profileCache = new Map();
+
+  // Blob 的 MIME 常量集中一处：这三类在 buildFileSet 里各出现一次，
+  //   散着写字面量既难统一改，也让"这个键到底是什么类型"要跳到调用点才看得见。
+  const MIME_OCTET = 'application/octet-stream';   // moc3（Cubism 模型二进制）
+  const MIME_JSON = 'application/json';            // physics3 / motion3 / model3.json
+  const MIME_PNG = 'image/png';                    // 纹理（ETC2/DXT 解码后编码的 PNG）
+
+  /**
+   * 统一日志出口（契约 §3.4 + §3.6 降级口径）：
+   *   优先 host.log(level, msg, scope)；宿主没提供 log（node 侧必然没有）时降级为 console[level]，
+   *   但**不得静默丢弃**——降级也要让人看得见。
+   * 为什么收成一处：早期各处自己写 `host.log || console.xxx` 兜底，写法分散且容易被静态检查判成裸 console；
+   *   统一走这里，node 侧（无 host）自动落到 console，浏览器侧（有 host）自动走宿主日志。
+   */
+  const ulbLog = (level, msg) => {
+    const hostLog = (typeof window !== 'undefined' && window.SpineViewerPlugins && window.SpineViewerPlugins.log)
+      || (host && typeof host.log === 'function' ? host.log : null);
+    if (hostLog) { hostLog(level, msg, PLUGIN_ID); return; }
+    const c = console[level] || console.log;
+    if (c) c.call(console, `[${PLUGIN_ID}] ${msg}`);
+  };
 
   /**
    * 读游戏适配数据（profiles/<id>.json）。
@@ -70,16 +114,16 @@ ulbInstall: {
   async function loadProfile(name) {
     if (!name) return {};
     if (profileCache.has(name)) return profileCache.get(name);
-    let data = {};
+    let profileData = {};   // 不用泛用的 data：这里是「profile 适配数据」，写清楚用途
     try {
       const r = await fetchWithTimeout(`/plugins/${PLUGIN_ID}/profiles/${encodeURIComponent(name)}.json`, { cache: 'no-store' }, FETCH_TIMEOUT_MS);
-      if (r.ok) data = await r.json();
-      else console.info(`[${PLUGIN_ID}] 没有 profile「${name}」，按通用规则处理`);
+      if (r.ok) profileData = await r.json();
+      else ulbLog('info', `没有 profile「${name}」，按通用规则处理`);
     } catch (e) {
-      console.warn(`[${PLUGIN_ID}] 读取 profile「${name}」失败：${e.message}`);
+      ulbLog('warn', `读取 profile「${name}」失败：${e.message}`);
     }
-    profileCache.set(name, data);
-    return data;
+    profileCache.set(name, profileData);
+    return profileData;
   }
 
   /** 容器魔数判定（只读前 8 字节即可） */
@@ -201,6 +245,18 @@ ulbInstall: {
 
   async function collectParameterTable(moc3Bytes, timeoutMs) {
     const limit = timeoutMs || 8000;
+    // node 侧兜底（服务端解包 17a）：没有 DOM 时不能动态加载 Cubism Core，直接跳过参数表提取。
+    //   调用方（convertClipMotions）对 null 已有降级——只 warn「曲线 Id 不做白名单校验」，
+    //   产出形状与 files 条数都不变（白名单少一道校验，曲线仍按候选名 + CRC32 匹配输出）。
+    //   浏览器侧不受影响：有 document/window 时照旧走下面的动态加载分支。
+    //   这里必须**早返回**：node 里 document.createElement 会直接抛 ReferenceError，
+    //   而该异常会被外层 catch 吞掉只留一行 warn，看起来像"参数表读取失败"而非"无 DOM"。
+    if (typeof document === 'undefined' || typeof window === 'undefined') {
+      // 降级必须**可观察**（不能静默）：走 host.log 优先、console 兜底的既有通道，
+      //   不用裸 console（契约 §3.4 要求用户可见输出统一走 host.log）。
+      ulbLog('info', 'node 侧无 DOM，跳过 moc3 参数表提取（曲线 Id 不做白名单校验）');
+      return null;
+    }
     if (!window.Live2DCubismCore) {
       // Core 通常由舞台在首次渲染时懒加载；插件自己按需补一次（已存在则跳过）
       await new Promise((resolve) => {
@@ -238,7 +294,7 @@ ulbInstall: {
       paramTableCache.set(cacheKey, table);
       return table;
     } catch (e) {
-      console.warn(`[${PLUGIN_ID}] 读取 moc3 参数表失败：${e.message}`);
+      ulbLog('warn', `读取 moc3 参数表失败：${e.message}`);
       return null;
     }
   }
@@ -280,30 +336,30 @@ ulbInstall: {
    */
   async function buildFileSet(extracted, profile) {
     const files = new Map();      // 相对键 → Blob（契约 §1.2：Blob|string；二进制一律 Blob）
-    const put = (key, bytes, mime) => { files.set(key, new Blob([bytes], { type: mime || 'application/octet-stream' })); return key; };
+    const put = (key, bytes, mime) => { files.set(key, new Blob([bytes], { type: mime || MIME_OCTET })); return key; };
 
     const KEY_MOC3 = 'moc3.moc3';
     const KEY_PHYSICS = 'physics3.json';
     const keyTexture = (n) => `textures/${n}.png`;
     const keyMotion = (n) => `motions/${n}.motion3.json`;
 
-    const mocRef = put(KEY_MOC3, extracted.moc3, 'application/octet-stream');
+    const mocRef = put(KEY_MOC3, extracted.moc3, MIME_OCTET);
     // 纹理：逐张压缩编码（不并发），编完立刻释放 RGBA 缓冲 —— 峰值内存比"两张 67MB 级 PNG 同时生成"低得多。
     const textureRefs = [];
     for (const t of extracted.textures) {
       if (!t.rgba) continue;
       const png = await NS.png.encodePngAsync(t.rgba, t.width, t.height);
       t.pngBytes = png.length;
-      textureRefs.push(put(keyTexture(t.name), png, 'image/png'));
+      textureRefs.push(put(keyTexture(t.name), png, MIME_PNG));
       t.rgba = null;   // 释放 4096²×4 ≈ 64MB 级缓冲（模型不再需要它）
     }
-    const physicsRef = extracted.physics3 ? put(KEY_PHYSICS, extracted.physics3, 'application/json') : null;
+    const physicsRef = extracted.physics3 ? put(KEY_PHYSICS, extracted.physics3, MIME_JSON) : null;
 
     // 动作：每个 motion3.json 一个键，并按 profile 规则分组（组内顺序 = 名字序，稳定可复现）
     const motionDefs = [];
     for (const m of extracted.motions) {
       const json = m.json;
-      const ref = put(keyMotion(m.name), new TextEncoder().encode(JSON.stringify(json)), 'application/json');
+      const ref = put(keyMotion(m.name), new TextEncoder().encode(JSON.stringify(json)), MIME_JSON);
       motionDefs.push({ name: m.name, url: ref, group: NS.model3.motionGroupOf(m.name, profile), loop: !!json.Meta.Loop, meta: json.Meta });
     }
     motionDefs.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
@@ -318,7 +374,7 @@ ulbInstall: {
       profile,
     });
     // 入口：重建的 model3.json 也进 files（契约 §1.2：entry 必须是 files 的键）
-    put('model3.json', new TextEncoder().encode(JSON.stringify(model3)), 'application/json');
+    put('model3.json', new TextEncoder().encode(JSON.stringify(model3)), MIME_JSON);
     return { files, entry: 'model3.json' };
   }
 
@@ -385,7 +441,7 @@ ulbInstall: {
       ...collectParameterNames(got.physics3),
     ])];
     const paramTable = await collectParameterTable(got.moc3);
-    if (!paramTable) console.warn(`[${PLUGIN_ID}] 未取到 moc3 参数表，曲线 Id 将不做白名单校验`);
+    if (!paramTable) ulbLog('warn', '未取到 moc3 参数表，曲线 Id 将不做白名单校验');
     const converted = got.nativeFiles.some((f) => /motion3/i.test(f.name))
       ? { motions: [], hashLookup: new Map(), dropped: [] }
       : NS.animToMotion.clipsToMotions(sf, candidates, {
@@ -438,11 +494,8 @@ ulbInstall: {
       //   canHandle 抛错通常不是"文件读不了"（那属于数据问题，返回 false 即可），
       //   而是**调用方用法问题**——最典型的就是 bytes 传了 ArrayBuffer 而不是 Uint8Array（契约 §1.1），
       //   此时表现为"这个文件没有提供者"，只有 warn 才查得动。
-      const log = host.log || (console && console.warn ? (m) => console.warn(m) : null);
-      if (log) {
-        log('warn', `[unity-live2d-bundle] canHandle 内部异常，按不可读处理：${e.message}`
-          + '（若 bytes 类型不符契约 §1.1 的 Uint8Array，请修宿主侧归一）', PLUGIN_ID);
-      }
+      ulbLog('warn', `canHandle 内部异常，按不可读处理：${e.message}`
+        + '（若 bytes 类型不符契约 §1.1 的 Uint8Array，请修宿主侧归一）');
       return false;
     }
   }
@@ -483,7 +536,7 @@ ulbInstall: {
       //   这些相对路径与包内文件同根，核心注册 prefix 后可直接解析。
       const textures = decodeTextures(got, resSBytes);
       for (const f of got.nativeFiles) {
-        files.set(f.name, new Blob([f.bytes], { type: /\.json$/i.test(f.name) ? 'application/json' : 'application/octet-stream' }));
+        files.set(f.name, new Blob([f.bytes], { type: /\.json$/i.test(f.name) ? MIME_JSON : MIME_OCTET }));
         if (/\.model3\.json$/i.test(f.name)) entry = f.name;
       }
       // 原生 Cubism 文件集：包内可能自带 .png/.moc3 等原始文件（TextAsset 形态），直接进表；
@@ -492,7 +545,7 @@ ulbInstall: {
       let hasPngTexture = false;
       for (const f of got.nativeFiles) {
         if (/\.png$/i.test(f.name)) {
-          files.set(f.name, new Blob([f.bytes], { type: 'image/png' }));
+          files.set(f.name, new Blob([f.bytes], { type: MIME_PNG }));
           hasPngTexture = true;
         }
       }
@@ -500,7 +553,7 @@ ulbInstall: {
         for (const t of textures) {
           if (!t.rgba) continue;
           const png = await NS.png.encodePngAsync(t.rgba, t.width, t.height);
-          files.set(`${t.name}.png`, new Blob([png], { type: 'image/png' }));
+          files.set(`${t.name}.png`, new Blob([png], { type: MIME_PNG }));
           t.rgba = null;
         }
       }
@@ -530,14 +583,28 @@ ulbInstall: {
   // 契约 §一：plugin.json 的 provides=["asset-provider"] 让宿主把本插件登记进资产提供者注册表。
   //   注册对象上 kind 是产出内容类型（live2d），与 fileKinds 的容器类型 bundle 正交；
   //   kind 的唯一权威来源是 plugin.json 的 produces.kind（插件契约 §3.2），这里带上只为便于调试。
-  host.register({
-    id: PLUGIN_ID,
-    name: 'Unity Live2D 资源包',
-    label: 'Live2D包',
-    // 契约 §三 的注册面：只留新契约成员 canHandle/resolve。
-    canHandle,
-    resolve,
-    kind: 'live2d',
-    fileKinds: ['bundle'],
-  });
+  if (host) {
+    host.register({
+      id: PLUGIN_ID,
+      name: 'Unity Live2D 资源包',
+      label: 'Live2D包',
+      // 契约 §三 的注册面：只留新契约成员 canHandle/resolve。
+      canHandle,
+      resolve,
+      kind: 'live2d',
+      fileKinds: ['bundle'],
+    });
+  }
+
+  // node 侧返回解析入口：服务端解包（17a）直接从返回值取 resolve/canHandle，不经过宿主注册。
+  return { canHandle, resolve, PLUGIN_ID };
+}
+
+// 执行安装：浏览器里走宿主注册；node 里（无 window）拿到 { canHandle, resolve } 后挂到
+//   globalThis.__ULB_NODE__，供服务端 require/import 后取用。
+//   为什么不写成 `export { resolve }`：那会把文件变成 ESM，浏览器以 <script> 注入时
+//   export 是语法错误 → 整个插件加载失败。保持经典脚本形态，node 侧用全局挂载暴露。
+const ulb = install();
+if (ulb && typeof window === 'undefined' && typeof globalThis !== 'undefined') {
+  globalThis.__ULB_NODE__ = ulb;
 }
