@@ -42,11 +42,20 @@ function missingClasses(rt) {
 }
 
 /** 运行时是否支持 straight alpha（4.1+ 的 SkeletonRenderer 有 premultipliedAlpha 字段） */
-function detectStraightAlpha(rt) {
+function detectStraightAlpha(rt, version) {
+  // **照搬旧端判据：按运行时版本号 >= 4.1 判定**（旧端原文 `parseFloat(T.version||"0")>=4.1`）。
+  // 为什么不用能力探测：spine 4.1 的 `SkeletonRenderer.premultipliedAlpha` 是**类字段（实例属性）**，
+  //   不在 prototype 上 ⇒ `'premultipliedAlpha' in SR.prototype` 恒为 false ⇒ 4.1 被误判"不支持直通"
+  //   ⇒ 面板显示"直通支持: 不支持"、`straight` 档被降级成 upload（旧端同环境显示"支持"）。
+  //   实测：4.1 类定义 `SkeletonRenderer = class { premultipliedAlpha = false; … }`；3.8 段内无此字段。
+  const ver = Number(version);
+  if (Number.isFinite(ver)) return ver >= 4.1;
+  // 版本号拿不到时退回能力探测（旧行为）
   const SR = rtClass(rt, 'SkeletonRenderer');
   if (!SR || !SR.prototype) return false;
-  return 'premultipliedAlpha' in SR.prototype || 'premultipliedAlpha' in (new SR({ getExtension: () => null, createTexture: () => ({}) })).constructor.prototype;
+  return 'premultipliedAlpha' in SR.prototype;
 }
+
 
 /**
  * 在隔离作用域执行运行时源码，返回它自己的 spine 对象。
@@ -128,7 +137,7 @@ export class SpineRuntimeManager {
     const p = (async () => {
       const src = await this.sourceOf(ver);
       const spine = evalIsolated(src, ver);
-      const entry = { version: ver, spine, supportsStraightAlpha: detectStraightAlpha(spine) };
+      const entry = { version: ver, spine, supportsStraightAlpha: detectStraightAlpha(spine, ver) };
       this.cache.set(ver, entry);
       this.loading.delete(ver);
       this.log('info', `Spine ${ver} 运行时已就绪`, 'runtime');

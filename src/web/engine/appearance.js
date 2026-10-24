@@ -10,13 +10,14 @@
 //   —— **不回滚 pmaMode**。本实现照抄不回滚（回滚是旧引擎没有的行为，会造成"面板显示与实际口径"另一种分裂）。
 
 import { reconcileFilter, hasFilter, DEFAULT_FILTER } from './filters.js';
-import { installBlendHooks } from './blend.js';
+import { installBlendHooks, patchRuntimeBlendConverter } from './pma.js';
 import { buildModel } from './loader.js';
 import { applyTextureFilter } from './textures.js';
 import { pickClass } from './runtime.js';
 
-/** 给 gl 装混合钩子（幂等，钩子内部读 engine.pmaInfo） */
+/** 给 gl 装混合钩子 + 给运行时打 Screen 映射补丁（都幂等；照搬旧端 initRenderer 的两步） */
 export function installBlend(engine) {
+  try { patchRuntimeBlendConverter(engine.spine || (engine.adapter && engine.adapter.spine)); } catch { /* 忽略 */ }
   return installBlendHooks(engine.gl, engine);
 }
 

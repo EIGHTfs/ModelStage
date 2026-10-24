@@ -174,7 +174,6 @@ export class SpineEngine {
     // PMA 结果随模型一起绑定（rebuildTextures 走这里），否则档位显示与实际口径分裂
     this.pmaInfo = model.pmaInfo || null;
     this.pmaDetection = model.pmaDetection || null;
-    this.gpuUnpack = !!model.gpuUnpack;
     this.atlas = model.atlas;
     this.textures = model.textures || [];
     this.skeletonData = model.skeletonData;

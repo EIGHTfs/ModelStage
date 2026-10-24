@@ -72,28 +72,28 @@ export async function decodeImageSource(entry) {
   return { img, width: img.naturalWidth || img.width, height: img.naturalHeight || img.height };
 }
 
-/** 取（或建）该贴图的 2D 画布源，用于 CPU 预乘与透明占位 */
-export function texSourceCanvas(entry) {
-  if (entry.canvas || entry.transparent || !entry.img) return entry.canvas;
-  const canvas = document.createElement('canvas');
-  canvas.width = entry.width;
-  canvas.height = entry.height;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  if (!ctx) return null;
-  ctx.drawImage(entry.img, 0, 0);
-  entry.canvas = canvas;
-  return canvas;
-}
 
-/** 上传源选择：透明页→画布；CPU 预乘过→画布；否则优先 <img> */
-export function getUploadSource(entry, cpuPremultiplied) {
-  if (entry.transparent) return entry.canvas;
-  if (cpuPremultiplied) return texSourceCanvas(entry);
-  return entry.img ? entry.img : entry.canvas;
-}
 
-/** 把贴图取成 ImageData（供 PMA 像素检测） */
+
+/**
+ * 把贴图取成 ImageData（供 PMA 像素检测）。
+ *
+ * **必须避免"预乘 → 非预乘"往返**：直接把 <img> 画进 2D canvas 再 getImageData 时，
+ *   canvas 内部按预乘存储、读回时再除一次 alpha ⇒ 半透明区域相对误差被放大（除以很小的 a），
+ *   会产生 `r > a` 的**假违反**。现场：bd2 的图半透明边缘多 ⇒ 假违反 9.8%~22.4%
+ *   ⇒ 被判成"非预乘" ⇒ 走 upload 又乘一次 alpha ⇒ 双重预乘（嘴巴黑圈）。
+ *   azurlane 的图边缘干净 ⇒ 0.1% ⇒ 判对。
+ *
+ * 做法：用 `createImageBitmap(img, { premultiplyAlpha: 'none' })` 拿到**未预乘**的位图再画；
+ *   浏览器不支持或失败时退回原路径（并保持"能检测就检测"的语义，不因取不到样本而阻塞装载）。
+ *
+ * @param {object} entry 贴图条目 {img|canvas,width,height}
+ * @returns {Promise<ImageData|null>}
+ */
 export function sampleSourceImageData(entry) {
+  // **照搬旧端**（dist: this.sampleSourceImageData）：画到 2D canvas 再 getImageData，同步。
+  // 之前我改成 async + createImageBitmap + WebGL 精确取样，都属于自创，已删；
+  //   （当时用"违反占比"判据得到的结论也不可靠——那个判据抓不到"变暗"，见排查记录。）
   try {
     let canvas = null;
     if (entry.img) {
@@ -142,27 +142,6 @@ function premultiplyMainThread(imageData) {
   return new ImageData(data, imageData.width, imageData.height);
 }
 
-/** 整页 CPU 预乘（Worker 优先） */
-export function premultiplyImageData(imageData) {
-  return new Promise((resolve) => {
-    try {
-      if (!premultiplyWorker) {
-        const blob = new Blob([CPU_PREMULTIPLY_SOURCE], { type: 'application/javascript' });
-        const url = URL.createObjectURL(blob);
-        premultiplyWorker = new Worker(url);
-        URL.revokeObjectURL(url);
-      }
-      const onMessage = (e) => {
-        premultiplyWorker.removeEventListener('message', onMessage);
-        resolve(new ImageData(new Uint8ClampedArray(e.data.data), imageData.width, imageData.height));
-      };
-      premultiplyWorker.addEventListener('message', onMessage);
-      premultiplyWorker.postMessage({ imageData: imageData.data });
-    } catch {
-      resolve(premultiplyMainThread(imageData));
-    }
-  });
-}
 
 /** 1×1 空纹理对象（图集页找不到匹配贴图时的占位；必须像纹理，否则批处理器会抛） */
 export function makePlaceholderTexture() {
@@ -220,62 +199,5 @@ export function applyTextureFilter(gl, texture, mode) {
   } catch { /* 忽略 */ }
 }
 
-/**
- * 按 PMA 口径把一批页上传成纹理。
- * @param {{gl: WebGLRenderingContext, GLTextureCtor: Function|null, entries: Map,
- *           effectiveMode: string, needPremultiply: boolean, gpuUnpack: boolean,
- *           cpuPremultiplied: boolean, textureFilter: string, log?: Function}} ctx
- * @returns {Promise<Map<string, object>>} 页名 → 纹理对象
- */
-export async function uploadTextures(ctx) {
-  const { gl, GLTextureCtor, entries, effectiveMode, needPremultiply, gpuUnpack, log = () => {} } = ctx;
-  const out = new Map();
-  // pma 标志的含义（旧引擎）：gpuUnpack 时上传已预乘 → false；否则按 needPremultiply/effectiveMode
-  const pmaFlag = gpuUnpack ? false : (needPremultiply ? true : effectiveMode === 'premultiplied');
-  const unpack = gpuUnpack;
-  let cpuMode = ctx.cpuPremultiplied;
-  for (const [name, entry] of entries) {
-    if (cpuMode && !entry.transparent) {
-      const canvas = texSourceCanvas(entry);
-      if (canvas) {
-        const cctx = canvas.getContext('2d', { willReadFrequently: true });
-        if (cctx) {
-          const img = cctx.getImageData(0, 0, canvas.width, canvas.height);
-          cctx.putImageData(await premultiplyImageData(img), 0, 0);
-          entry.uploadCanvas = true;
-        }
-      }
-    }
-    const source = getUploadSource(entry, cpuMode);
-    if (!source) continue;
-    const filterMode = ctx.textureFilter === 'nearest' ? gl.NEAREST : gl.LINEAR;
-    if (GLTextureCtor) {
-      try {
-        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, unpack);
-        const tex = new GLTextureCtor(gl, source);
-        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-        if ('pma' in tex) {
-          if (effectiveMode === 'straight') {
-            tex.pma = false;
-            try {
-              if (typeof tex.bind === 'function') tex.bind(0);
-              gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-              gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
-            } catch { /* 重传失败保持已建纹理 */ }
-          } else {
-            tex.pma = pmaFlag;
-            if (typeof tex.update === 'function') { try { tex.update(tex.useMipMaps === true); } catch { /* 忽略 */ } }
-          }
-        }
-        applyTextureFilter(gl, tex, ctx.textureFilter);
-        out.set(name, tex);
-        continue;
-      } catch (e) {
-        log('warn', `创建 GLTexture 失败 ${name}: ${e && e.message ? e.message : e}，回退手动上传`, 'loader');
-      }
-    }
-    const manual = manualTexture(gl, source, filterMode);
-    if (manual) out.set(name, manual);
-  }
-  return out;
-}
+// 预乘相关的上传实现在 pma.js（唯一权威位置）：这里再导出，调用方 import 路径不用改。
+export { uploadTextures } from './pma.js';

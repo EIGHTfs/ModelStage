@@ -44,7 +44,6 @@ export function engineDefaults() {
     pmaMode: 'auto',             // auto | premultiplied | straight | upload
     pmaInfo: null,
     pmaDetection: null,
-    gpuUnpack: false,
     textureFilter: 'linear',     // linear | nearest
     filterId: 'original',        // 12 个预设之一
     filterState: { saved: null, active: null },
@@ -115,7 +114,6 @@ export function rendererInfo(engine) {
     capabilityWarns: engine.caps ? engine.caps.warns.slice() : [],
     pma: engine.pmaInfo ? { mode: engine.pmaMode, effective: engine.pmaInfo.effectiveMode, blend: engine.pmaInfo.blendMode, degraded: engine.pmaInfo.degraded } : null,
     pmaDetection: engine.pmaDetection || null,
-    gpuUnpack: !!engine.gpuUnpack,
     filter: engine.filterId,
     textureFilter: engine.textureFilter,
   };

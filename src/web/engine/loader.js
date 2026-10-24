@@ -48,7 +48,6 @@ export async function buildModel(ctx) {
     textures: prepared.textures,
     pmaInfo: prepared.pmaInfo,
     pmaDetection: prepared.pmaDetection,
-    gpuUnpack: prepared.gpuUnpack,
     premultiplied: prepared.pmaInfo.blendMode === 'premultiplied',
     skeletonData,
     ...runtime,

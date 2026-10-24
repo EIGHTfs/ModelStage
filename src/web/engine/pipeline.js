@@ -8,7 +8,7 @@ import {
   SMALL_PAGE_PX, parseAtlasPageSizes, decodeImageSource, sampleSourceImageData,
   uploadTextures, makePlaceholderTexture,
 } from './textures.js';
-import { atlasDeclaredPma, filenamePmaHint, detectPma, resolvePmaInfo, gpuUnpackAvailable } from './pma.js';
+import { atlasDeclaredPma, filenamePmaHint, detectPma, resolvePmaInfo } from './pma.js';
 import { pickMember } from './runtime-capabilities.js';
 import { createLogger } from '../infra/log.js';
 
@@ -63,6 +63,7 @@ async function decodePages({ descriptor, pageSizes, multiPage, wantSamples, log 
       const entry = { name: file.name, width: decoded.width, height: decoded.height, img: decoded.img, canvas: null, transparent: false };
       entries.set(file.name, entry);
       if (wantSamples) {
+        // 照搬旧端：同步 canvas 取样
         const sampled = sampleSourceImageData(entry);
         if (sampled) samples.push(sampled);
       }
@@ -123,7 +124,9 @@ export async function prepareAtlas(ctx) {
     runtimeSupportsStraight: pmaInfo.runtimeSupportsStraight,
   });
   if (pmaInfo.degraded) log('warn', '运行时不支持非预乘直通混合，已自动转为转预乘', 'pma');
-  const gpuUnpack = pmaInfo.needPremultiply && gpuUnpackAvailable(gl);
+  // 上传口径已固定：**一律 UNPACK_PREMULTIPLY_ALPHA_WEBGL=false（不再乘）**，
+  //   理由与实测数字见 pma.js uploadTextures 的注释（源 HTMLImageElement 解码即预乘，再乘是双乘）。
+  //   所以这里不再计算 gpuUnpack —— 它已经不影响任何行为，留着会误导下一个人。
   // 与旧引擎同文案（生效口径 + 运行时是否支持直通），便于两引擎日志直接对拉
   log('info', `PMA: 用户=${pmaMode}, atlas声明=${atlasDeclared === null ? '未声明' : String(atlasDeclared)}, `
     + `文件名=${filenameHint === null ? '无线索' : String(filenameHint)}, 像素检测=${detection.pixelDetected === null ? '未检测' : String(detection.pixelDetected)}, `
@@ -135,8 +138,6 @@ export async function prepareAtlas(ctx) {
     entries,
     effectiveMode: pmaInfo.effectiveMode,
     needPremultiply: pmaInfo.needPremultiply,
-    gpuUnpack,
-    cpuPremultiplied: pmaInfo.needPremultiply && !gpuUnpack,
     textureFilter,
     log,
   });
@@ -159,7 +160,7 @@ export async function prepareAtlas(ctx) {
     textures: [...textures.values()],
     pmaInfo,
     pmaDetection: detection,
-    gpuUnpack,
+    // 上传口径固定不乘（见 pma.js uploadTextures 注释）；保留字段名会误导，故不再返回 gpuUnpack
     atlasText,
   };
 }
