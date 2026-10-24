@@ -16,7 +16,7 @@
 //   ③ canHandle 由宿主调用、宿主兜异常：插件内部抛错一律当"不认这个文件"，不冒泡到调用方
 
 import { getSharedVirtualFS } from './vfs.js';
-import { postJson } from './api.js';
+import { postJson, fetchWithRetry } from './api.js';
 
 /** 宿主提示通道：优先用注入的 log（项目调试日志），否则退回 console */
 function makeLogger(log) {
@@ -110,8 +110,8 @@ export function createPluginHost(opts = {}) {
    */
   async function fetchFile(rootId, rel) {
     const url = `${base}/api/file?root=${encodeURIComponent(rootId)}&path=${encodeURIComponent(rel)}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`读文件失败 HTTP ${res.status}: ${rel}`);
+    // 容器包字节同样走重试：这是"模型文件"主路径，keep-alive race 会打中它
+    const res = await fetchWithRetry(url, { timeoutMs: 20000, label: 'plugin-file' });
     // 契约 §1.1：file.bytes 的类型是 **Uint8Array**（不是 ArrayBuffer）。
     //   宿主在这里就转好，调用方拿到的直接是插件期望的类型。
     const bytes = new Uint8Array(await res.arrayBuffer());
@@ -336,8 +336,8 @@ const MIME_BY_EXT = {
     //   顺序取会让"命中路径"慢 2.5 倍，从而在竞速里输给本地解包 —— 那 17b 就白做了。
     const list = j.files || [];
     const got = await Promise.all(list.map(async (f) => {
-      const res = await fetch(f.url);
-      if (!res.ok) throw new Error(`取产物失败 HTTP ${res.status}: ${f.path}`);
+      // 服务端解包产物同样属于"模型文件"，失败要重试（keep-alive race 会打中这里）
+      const res = await fetchWithRetry(f.url, { timeoutMs: 15000, label: 'unpack-file' });
       // VFS 只接受 Blob/字符串（本地路径上插件给的就是 Blob）→ 这里转成带 MIME 的 Blob，
       //   MIME 影响 blob URL 的消费方（<img>/WebGL 纹理、fetch 后 JSON.parse 都看它）
       const type = MIME_BY_EXT[(/\.[a-z0-9]+$/i.exec(f.path) || [''])[0].toLowerCase()] || 'application/octet-stream';

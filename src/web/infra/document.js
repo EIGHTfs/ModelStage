@@ -15,6 +15,9 @@
 //   · Document 不注册 VFS 前缀（注册由提供者负责），因此 dispose() 只撤销"本层自己注册过的"前缀；
 //     当前没有这种前缀 ⇒ dispose 是幂等空操作，绝不会和别处的 revoke 撞车（无双重撤销）。
 import { getSharedVirtualFS } from './vfs.js';
+// 模型文件必须走带重试的 fetch：几十个并发裸 fetch 遇上 keep-alive race 会直接 Failed to fetch，
+//   一个文件失败整个模型就画不出来（现场表现：Spine 空白、资源包正常——后者走 blob 不过网络）。
+import { fetchWithRetry } from './api.js';
 
 /** 默认取共享 VFS 实例（与渲染器、验收脚本同一个） */
 function pickVfs(deps) {
@@ -40,7 +43,8 @@ function resolveUrl(vfs, url) {
 /** 读一个资源的字节；失败只记 warning，不抛（由调用方汇总成 error 文档） */
 async function readBytes(url, label, warnings) {
   try {
-    const res = await fetch(url);
+    // 带重试：网络错误 / 5xx 会退避重试（4xx 不重试）
+    const res = await fetchWithRetry(url, { timeoutMs: 15000, label: 'model-bytes' });
     if (!res || !res.ok) {
       warnings.push(`${label} 读取失败：HTTP ${(res && res.status) || '?'}（${url}）`);
       return null;
@@ -162,7 +166,7 @@ async function fillMotionDurations(doc, ref, baseRef, vfs) {
     const abs = /^[a-z][a-z0-9+.-]*:/i.test(file) || file.startsWith('/') ? file : `${base}${file}`;
     const url = resolveUrl(vfs, abs);
     try {
-      const res = await fetch(url);
+      const res = await fetchWithRetry(url, { timeoutMs: 12000, label: 'motion3' });
       if (!res || !res.ok) return;
       const json = await res.json();
       const d = Number(json && json.Meta && json.Meta.Duration);
@@ -185,7 +189,7 @@ async function buildLive2dAssets(doc, entry, vfs) {
   //    motions/x.motion3.json 这类引用映射回已注册的前缀）。
   doc.assets.entry = { role: 'definition', name: raw.split('/').pop() || '', url, ref: raw, bytes: null };
   try {
-    const res = await fetch(url);
+    const res = await fetchWithRetry(url, { timeoutMs: 12000, label: 'model-def' });
     if (!res || !res.ok) {
       warn.push(`模型定义读取失败：HTTP ${(res && res.status) || '?'}（${url}）`);
       return doc;

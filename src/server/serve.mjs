@@ -444,6 +444,13 @@ const server = http.createServer((req, res) => {
   }
 });
 
+// HTTP keep-alive 超时（消除"客户端复用已被服务端关闭的连接"这类 race）：
+//   Node 默认 keepAliveTimeout=5s，浏览器常把空闲连接留着复用 ⇒ 拿到已关闭连接 ⇒ fetch 直接 Failed to fetch。
+//   现场表现：加载过很多模型后 Spine 空白（模型文件是几十个并发裸 fetch），而资源包正常（走 blob 不走网络）。
+//   注意 headersTimeout **必须严格大于** keepAliveTimeout，否则 Node 会在读 header 阶段就断连。
+server.keepAliveTimeout = 65000;
+server.headersTimeout = 66000;
+server.requestTimeout = 0; // 0 = 不主动超时（长请求如大模型文件不被中途砍断）
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[serve] 新端自带服务 on http://0.0.0.0:${PORT}`);
   console.log(`[serve] 静态根 ${WEB_ROOT}`);

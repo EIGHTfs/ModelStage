@@ -66,6 +66,8 @@ const SUITES = [
   { name: 'model-carousel', runner: 'node-test', file: 'test/model-carousel.test.mjs' },
   // 清单签名比对（含「根目录不存在=稳定状态」边界；P0 回归）
   { name: 'manifest-stamp', runner: 'node-test', file: 'test/manifest-stamp.test.mjs' },
+  // 模型文件抓取的可控断连重试（P0：keep-alive race）
+  { name: 'fetch-retry', runner: 'node-test', file: 'test/fetch-retry.test.mjs' },
   // 引擎冒烟（3.8 ↔ 4.1 版本往返 + samplePixels().ratio + lastError 判据）：
   //   它验证的是"引擎能不能出画"，是所有交互套件的前置
   { name: 'engine-b1', wait: 4500 },
@@ -88,6 +90,7 @@ const EST_SEC = {
   'unpack-filesview': 8,
   'model-carousel': 3,
   'manifest-stamp': 2,
+  'fetch-retry': 2,
   'engine-b1': 18,
   'f1-controls': 24, 'f2-topbar': 14, 'f3-reveal': 11, 'f4-roots': 13,
   'spine-actions': 62, 'panel-actions': 17, 'roster-actions': 18, 'anim-list': 34,
