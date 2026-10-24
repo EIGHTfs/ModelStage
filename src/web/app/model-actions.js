@@ -35,6 +35,24 @@ function refreshSkinList() {
   try { refreshPanelAnimations(); } catch { /* 动作列表刷新失败不影响主流程 */ }
   document.documentElement.dataset.skinCount = String(skins.length);
 }
+
+/**
+ * 把"当前动作"缓存对齐到底栏下拉的实际值。
+ *
+ * 为什么要这一步：`state.transportMotion` 是"当前动作"的**副本**（唯一真相是底栏下拉，契约 §七），
+ *   但它只在"用户手动选动作"时被写入。装载新模型时动作清单整体换掉、底栏被重置到新清单的首项，
+ *   缓存却还停在上一个模型的 id —— 右栏按这个陈旧 id 去高亮就一条都匹配不上（实测：底栏显示 idle、
+ *   缓存仍是上一模型的 "3"，右栏 0 个选中）。装载完成后立刻对齐，缓存与真实播放项就不会分叉。
+ * @returns {string} 对齐后的当前动作 id（取不到则为空串）
+ */
+function syncTransportMotionCache() {
+  const transport = state.transport;
+  if (!transport || typeof transport.picker !== 'function') return '';
+  const pk = transport.picker('transport-motion');
+  const value = pk && typeof pk.value === 'function' ? String(pk.value() || '') : '';
+  if (value) state.transportMotion = value;
+  return value;
+}
 /** 在左栏顶部插一条错误横幅（替代抛异常到控制台） */
 function showRootsError(message) {
   const banner = document.createElement('p');
@@ -215,6 +233,11 @@ function onSelectModel(model) {
       if (state.panel) state.panel.setReadonly('ctl-runtime', `Spine ${info.version}`);
       refreshSkinList();
       fillTransportOptions(info);
+      // 底栏已按新清单落到首项（或模型自报的 motion）⇒ 立刻把"当前动作"缓存对齐，
+      //   否则右栏刷新会读到上一个模型的 id（换模型后右栏无选中项的真因）
+      syncTransportMotionCache();
+      // 缓存对齐后再刷一次右栏，保证"底栏 == 右栏高亮"（两处逐项一致，契约 §一/§七）
+      try { refreshPanelAnimations(); } catch { /* 动作列表刷新失败不影响主流程 */ }
       document.documentElement.dataset.stageReady = '1';
     })
     .catch((err) => {

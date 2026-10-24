@@ -328,8 +328,25 @@ export function refreshPanelAnimations() {
   // 同一份清单同步底栏下拉（契约 §一/§三：两处必须逐项一致）
   syncTransportOptions();
   bindTransportMotionWatcher();
-  // 下拉可能刚被填好（首次打开时为空）——按最终值补一次高亮，避免"首屏没有当前项"
-  const finalId = currentAnimationId();
+  // 下拉可能刚被填好（首次打开时为空）——按最终值补一次高亮，避免"首屏没有当前项"。
+  //
+  // 取值的优先级为什么不是 currentAnimationId()：它**优先读 state.transportMotion 这个缓存**
+  //   （见 anim-list.js 的实现）。而缓存只有"用户手动选动作"时才会被写；换模型时没人同步它，
+  //   于是它仍停在上一个模型的 id。实测：换模型后底栏已显示 idle，缓存却还是上一模型的 "3"，
+  //   新清单里没有 "3" ⇒ 一圈都匹配不上 ⇒ 右栏一个 aria-pressed="true" 都没有（底栏正常、刷新页面正常）。
+  // 正确口径：**底栏下拉才是"当前动作"的唯一真相（契约 §七）**，缓存只是它的副本。
+  //   所以顺序改为「底栏值 → 缓存值 → 清单首项」，且候选必须真的落在本清单里（否则宁可不选）。
+  const listIds = new Set(list.map((x) => String(x.id)));
+  const pickerValue = (() => {
+    const transport = state && state.transport;
+    if (!transport || typeof transport.picker !== 'function') return '';
+    const pk = transport.picker('transport-motion');
+    return pk && typeof pk.value === 'function' ? String(pk.value() || '') : '';
+  })();
+  const finalId = [pickerValue, String(currentAnimationId() || ''), String(list[0] ? list[0].id : '')]
+    .find((v) => v && listIds.has(v)) || '';
+  // 缓存与真相对齐（下次任何读"当前动作"的地方都不会再拿到上一个模型的 id）
+  if (finalId && state) state.transportMotion = finalId;
   // 记录"这次重绘用的 id"：出现"高亮被刷回去"时，看一眼最后一次用的值就能定性
   document.documentElement.dataset.lastRefreshId = String(finalId || '');
   if (finalId) {
