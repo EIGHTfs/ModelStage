@@ -1,8 +1,11 @@
 // env.mjs —— 项目根 .env 的极简解析（零依赖）
+
+const log = createLogger('brand');
 //
 // 不引入 dotenv：只需要 KEY=VALUE、注释、成对引号剥除这几条规则。
 // 每次调用都重读文件，改完 .env 刷新页面即生效。
 import fs from 'node:fs';
+import { createLogger } from './log.mjs';
 
 /** @param {{dotenvFile: string}} p 由 createPaths() 产出 */
 export function createEnv(p) {
@@ -28,7 +31,7 @@ function readDotEnv() {
       if (key) out[key] = val;
     }
   } catch (e) {
-    console.warn(`[brand] 读取 .env 失败，按内置默认处理: ${e.message}`);
+    log.warn('读取 .env 失败，按内置默认处理', { err: e.message });
   }
   return out;
 }

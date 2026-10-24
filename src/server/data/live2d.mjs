@@ -1,4 +1,6 @@
 // live2d.mjs —— Live2D 模型扫描、清单缓存与运行时库探测
+
+const log = createLogger('live2d');
 //
 // 逻辑逐字搬自 server.mjs（行为等价由 sha256 逐字节比对验证）。
 // 与旧实现的差别只在**结构**：把原先套在工厂里的步骤按职责拆开
@@ -7,6 +9,7 @@
 // 与 Spine 的关键差异：Live2D 定义文件内部用**相对路径**引用同目录文件，
 //   因此对外必须给**路径式** URL（/files/<rootId>/<相对路径>）——查询串式会在相对解析时丢掉。
 import fs from 'node:fs';
+import { createLogger } from '../core/log.mjs';
 import { dirSignature, signatureMatches } from './manifest-stamp.mjs';
 import path from 'node:path';
 import { encodePath } from '../assets/probe.mjs';
@@ -103,7 +106,7 @@ export function buildLive2DModel(root, relPath, defName, cubism) {
   try {
     def = JSON.parse(fs.readFileSync(absDef, 'utf8'));
   } catch (e) {
-    console.warn(`[live2d] 定义文件解析失败 ${relPath}/${defName}: ${e.message}`);
+    log.warn('定义文件解析失败', { file: `${relPath}/${defName}`, err: e.message });
     return null;
   }
 
@@ -201,7 +204,7 @@ export function getLive2DModels(configFile, cfg, force) {
         if (signatureMatches(payload.dirStamps, cfg.path)) {
           return { models: payload.models, cached: true, ts: payload.ts };
         }
-        console.log(`[live2d] 目录已变化，清单失效重建: ${cfg.id}`);
+        log.info('目录已变化，清单失效重建', { id: cfg.id });
       }
     } catch {
       /* 缓存损坏则重扫 */
@@ -218,7 +221,7 @@ export function getLive2DModels(configFile, cfg, force) {
       models,
     }), 'utf8');
   } catch (e) {
-    console.warn(`[live2d] 清单写入失败（不影响使用）: ${e.message}`);
+    log.warn('清单写入失败（不影响使用）', { err: e.message });
   }
   return { models, cached: false, ts };
 }
@@ -227,10 +230,10 @@ export function getLive2DModels(configFile, cfg, force) {
 export function getLive2DRuntimeFiles() {
   if (!live2dRuntimeFilesCache) {
     const r = resolveLive2DRuntimes();
-    console.info(`[live2d] 运行时来源: ${r.origin}`);
-    console.info(`[live2d] 运行时目录: ${r.dir}`);
+    log.info('运行时来源', { origin: r.origin });
+    log.info('运行时目录', { dir: r.dir });
     if (r.missingOptional.length) {
-      console.info(`[live2d] 缺少可选文件（仅影响 Cubism 4 的 .moc3 模型）: ${r.missingOptional.join(', ')}`);
+      log.warn('缺少可选文件（仅影响 Cubism 4 的 .moc3 模型）', { missing: r.missingOptional });
     }
     live2dRuntimeFilesCache = r.files;
   }

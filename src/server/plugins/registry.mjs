@@ -3,6 +3,7 @@
 // 插件是「放目录即加能力」：这里只负责把 plugins/<id>/plugin.json 读成清单，
 // 并回答「某个 fileKind 当前有没有启用的插件」。
 import fs from 'node:fs';
+import { createLogger } from '../core/log.mjs';
 import path from 'node:path';
 import { parseJsonc } from '../../../tool/parse-jsonc.mjs';
 
@@ -41,29 +42,32 @@ export function validateProvides(provides) {
  * 服务端据此决定条目可见性）；produces/errorCodes 是可选能力自描述，未声明时给 null/[]。
  * @returns {object|null} 不可用（清单坏/没有存在的 js/被禁用）时返回 null
  */
+/** 服务端日志（统一形状 {at,level,tag,msg,detail}） */
+const log = createLogger('plugins');
+
 export function readPluginManifest(pluginsDir, dirName, isFile, disabled) {
   let m = null;
   try {
     m = JSON.parse(fs.readFileSync(path.join(pluginsDir, dirName, 'plugin.json'), 'utf8'));
   } catch (err) {
-    console.warn(`[plugins] ${dirName}/plugin.json 解析失败，跳过该插件: ${err.message}`);
+    log.warn('plugin.json 解析失败，跳过该插件', { plugin: dirName, err: err.message });
     return null;
   }
   const declared = Array.isArray(m.files) && m.files.length ? m.files : (m.entry ? [m.entry] : ['index.js']);
   const files = declared.map((f) => String(f).replace(/^\.?\//, '')).filter((f) => isFile(`${dirName}/${f}`));
   if (!files.length) {
-    console.warn(`[plugins] ${dirName} 清单里没有任何存在的 js，跳过`);
+    log.warn('清单里没有任何存在的 js，跳过', { plugin: dirName });
     return null;
   }
   const pid = String(m.id || dirName);
   if (isPluginDisabled(disabled, pid, dirName)) {
-    console.log(`[plugins] 已按 config/plugins.json 禁用: ${pid}`);
+    log.info('已按 config/plugins.json 禁用', { plugin: pid });
     return null;
   }
   // PL1：provides 必选且角色合法，否则整体不注册（并打印可读原因，避免静默消失）
   const badProvides = validateProvides(m.provides);
   if (badProvides) {
-    console.warn(`[plugins] ${pid} 注册失败：${badProvides}`);
+    log.warn('注册失败', { plugin: pid, reason: badProvides });
     return null;
   }
   return {
@@ -116,9 +120,9 @@ export function readPlugins(pluginsDir, switchFile) {
     if (e.name.startsWith('.')) continue;
     if (e.isFile() && e.name.toLowerCase().endsWith('.js')) {
       const id = e.name.replace(/\.js$/i, '');
-      if (isPluginDisabled(disabled, id, id)) { console.log(`[plugins] 已按 config/plugins.json 禁用: ${id}`); continue; }
+      if (isPluginDisabled(disabled, id, id)) { log.info('已按 config/plugins.json 禁用', { plugin: id }); continue; }
       // 平铺单文件没有清单 ⇒ provides 无从声明 ⇒ 按契约 PL1 不注册（日志说清，别静默消失）
-      console.warn(`[plugins] ${id} 未注册：缺少 plugin.json，provides 无法声明（合法角色：${PLUGIN_ROLES.join(' / ')}）`);
+      log.warn('未注册：缺少 plugin.json，provides 无法声明', { plugin: id, roles: PLUGIN_ROLES.join(' / ') });
       continue;
     }
     if (!e.isDirectory()) continue;
@@ -134,9 +138,9 @@ export function readPlugins(pluginsDir, switchFile) {
     try { inner = fs.readdirSync(path.join(pluginsDir, e.name), { withFileTypes: true }); } catch { continue; }
     const js = inner.filter((x) => x.isFile() && x.name.toLowerCase().endsWith('.js')).map((x) => x.name).sort();
     if (!js.length) continue;
-    if (isPluginDisabled(disabled, e.name, e.name)) { console.log(`[plugins] 已按 config/plugins.json 禁用: ${e.name}`); continue; }
+    if (isPluginDisabled(disabled, e.name, e.name)) { log.info('已按 config/plugins.json 禁用', { plugin: e.name }); continue; }
     // 目录里没有 plugin.json ⇒ 同上，provides 无从声明 ⇒ 不注册
-    console.warn(`[plugins] ${e.name} 未注册：目录内缺少 plugin.json，provides 无法声明（合法角色：${PLUGIN_ROLES.join(' / ')}）`);
+    log.warn('未注册：目录内缺少 plugin.json，provides 无法声明', { plugin: e.name, roles: PLUGIN_ROLES.join(' / ') });
     continue;
   }
   return out;
@@ -156,10 +160,10 @@ export function readPluginSwitch(switchFile) {
   if (!fs.existsSync(switchFile)) return empty;
   let cfg = null;
   try { cfg = parseJsonc(fs.readFileSync(switchFile, 'utf8'), 'config/plugins.json'); }
-  catch (err) { console.warn(`[plugins] config/plugins.json 解析失败，按全部启用处理: ${err.message}`); return empty; }
+  catch (err) { log.warn('config/plugins.json 解析失败，按全部启用处理', { err: err.message }); return empty; }
   const list = Array.isArray(cfg && cfg.disabled) ? cfg.disabled : [];
   const disabled = new Set(list.map((x) => String(x).trim()).filter(Boolean));
-  if (disabled.size) console.log(`[plugins] config/plugins.json 禁用插件 ${disabled.size} 个: ${[...disabled].join(', ')}`);
+  if (disabled.size) log.info('config/plugins.json 禁用插件', { count: disabled.size, plugins: [...disabled] });
   return { disabled };
 }
 

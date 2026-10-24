@@ -1,9 +1,12 @@
 // model-meta.mjs —— Spine 模型元数据（/api/model-meta 的数据层）
+
+const log = createLogger('model-meta');
 //
 // 产出字段与 Cubism 的 modelMeta 同名：kind / designSize / bbox / bones / slots / animations / skins / version
 // 解析器按需 import（首次请求才加载几 MB 源码，不在启动时加载）；
 // 动作分组规则来自 tool/spine-motion-rules.json，读一次缓存（改规则后重启生效）。
 import fs from 'node:fs';
+import { createLogger } from '../core/log.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -20,7 +23,7 @@ async function loadMotionRules(rulesPath) {
     const { loadRules } = await import('../../tool/lib/spine-motions.mjs');
     motionRules = loadRules(rulesPath);
   } catch (e) {
-    console.warn(`[model-meta] 动作规则加载失败，按"未知名"处理：${e.message}`);
+    log.warn('动作规则加载失败，按"未知名"处理', { err: e.message });
     motionRules = null;
   }
   return motionRules;

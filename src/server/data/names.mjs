@@ -1,7 +1,10 @@
 // names.mjs —— 角色名表读取（config/names/<id>.json）
+
+const log = createLogger('names');
 //
 // 名表是数据（JSON），不写死在代码里；后端只读取与返回，怎么显示由前端决定。
 import fs from 'node:fs';
+import { createLogger } from '../core/log.mjs';
 import path from 'node:path';
 
 /** @param {{root: string}} p */
@@ -18,7 +21,7 @@ function getNameTable(root) {
   try {
     t = JSON.parse(fs.readFileSync(path.join(ROOT, 'config', 'names', `${root.names}.json`), 'utf8'));
   } catch (e) {
-    console.warn(`[names] 名表读取失败 config/names/${root.names}.json: ${e.message}`);
+    log.warn('名表读取失败', { file: `config/names/${root.names}.json`, err: e.message });
     t = null;
   }
   nameTableCache.set(root.names, t);

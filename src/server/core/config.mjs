@@ -1,10 +1,15 @@
 // config.mjs —— 资源根配置的读写与分组视图（config/resources.json 是唯一权威）
+
 //
 // 写回时保留原文件的注释头，避免系统写一次就把人工写的说明冲掉；
 // 写入走 tmp + rename，避免读到写了一半的内容。
 import fs from 'node:fs';
+import { createLogger } from './log.mjs';
 import path from 'node:path';
 import { parseJsonc } from '../../../tool/parse-jsonc.mjs';
+
+/** 服务端日志（统一形状 {at,level,tag,msg,detail}；error→stderr，其余→stdout） */
+const log = createLogger('config');
 
 /** @param {{root: string, configFile: string}} p */
 export function createConfig(p) {
@@ -28,7 +33,7 @@ function readConfig() {
     const roots = Array.isArray(cfg.roots) ? cfg.roots : [];
     return roots.filter((r) => r && r.id && r.path && r.enabled !== false);
   } catch (e) {
-    console.error('读取 config/resources.json 失败:', e.message);
+    log.error('读取 config/resources.json 失败', { err: e.message });
     return [];
   }
 }

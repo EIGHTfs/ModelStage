@@ -1,10 +1,13 @@
 // models.mjs —— Spine 模型扫描与清单缓存（config/models.<rootId>.json）
+
+const log = createLogger('models');
 //
 // 逻辑逐字搬自 server.mjs（行为等价由 sha256 逐字节比对验证）。
 // 与旧实现的唯一差别是**结构**：原先一个函数里套着全部步骤，这里按阶段拆成
 // 「建索引 → 收集目录条目 → 按 base name 分组 → 组装模型」，便于阅读与单独测试；
 // 路径依赖（清单文件位置）改成显式入参，模块内不持有全局路径。
 import fs from 'node:fs';
+import { createLogger } from '../core/log.mjs';
 import { dirSignature, signatureMatches } from './manifest-stamp.mjs';
 import path from 'node:path';
 import { MIME, encodePath, parseAtlasPages } from '../assets/probe.mjs';
@@ -47,7 +50,7 @@ export function collectTextures(relPath, atlas, dirFiles, fileIndex) {
     else missing.push(p);
   }
   if (missing.length) {
-    console.warn(`[models] ${relPath || '.'} 缺贴图页（同目录与全根均未找到）: ${missing.join(', ')}`);
+    log.warn('缺贴图页（同目录与全根均未找到）', { dir: relPath || '.', missing });
   }
   return { textures, missing };
 }
@@ -283,10 +286,10 @@ export function getModels(configFile, root, force, deps) {
         if (signatureMatches(j.dirStamps, root.path)) {
           return { models: j.models, cached: true, ts: j.ts || Date.now() };
         }
-        console.log(`[models] 目录已变化，清单失效重建: ${root.id}`);
+        log.info('目录已变化，清单失效重建', { root: root.id });
       }
     } catch (e) {
-      console.warn(`[models] 清单 ${f} 读取失败，将重新扫描: ${e.message}`);
+      log.warn('清单读取失败，将重新扫描', { file: f, err: e.message });
     }
   }
 
@@ -304,7 +307,7 @@ export function getModels(configFile, root, force, deps) {
   // 原子写入，避免写到一半被读到损坏内容
   fs.writeFileSync(`${f}.tmp`, JSON.stringify(payload), 'utf8');
   fs.renameSync(`${f}.tmp`, f);
-  console.log(`[models] 已生成清单 ${path.basename(f)}: ${models.length} 个模型`);
+  log.info('已生成清单', { file: path.basename(f), count: models.length });
   return { models, cached: false, ts: payload.ts };
 }
 

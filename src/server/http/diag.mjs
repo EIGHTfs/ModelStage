@@ -7,6 +7,7 @@
 //   · 任何异常都只回 {ok:false}，绝不抛到路由外（否则会打挂进程）。
 import fs from 'node:fs';
 import path from 'node:path';
+import { createLogger } from '../core/log.mjs';
 
 const MAX_BYTES = 8 * 1024 * 1024;
 const MAX_ENTRIES_PER_REQ = 500;
@@ -20,6 +21,9 @@ const SESSION_MAX = 4;
 /**
  * @param {{dataDir: string, diagFile: string}} paths
  */
+/** 服务端日志（统一形状） */
+const log = createLogger('diag');
+
 export function createDiag(paths) {
   // 服务端侧的环形缓冲（GET /api/diag 读它，与面板内容同源）。
   // 按会话 id 分组：页面重载会换 sid，旧条目不会混进"当前这一轮"的统计。
@@ -50,7 +54,7 @@ export function createDiag(paths) {
       if (lines.length) fs.appendFileSync(paths.diagFile, lines.join('\n') + '\n', 'utf8');
       return { ok: true, written: lines.length, dropped: entries.length - take.length };
     } catch (e) {
-      console.warn(`[diag] 落盘失败（前端会降级为仅内存）: ${e.message}`);
+      log.warn('落盘失败（前端会降级为仅内存）', { err: e.message });
       return { ok: false, error: e.message };
     }
   }
