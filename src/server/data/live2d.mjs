@@ -1,6 +1,5 @@
 // live2d.mjs —— Live2D 模型扫描、清单缓存与运行时库探测
 
-const log = createLogger('live2d');
 //
 // 逻辑逐字搬自 server.mjs（行为等价由 sha256 逐字节比对验证）。
 // 与旧实现的差别只在**结构**：把原先套在工厂里的步骤按职责拆开
@@ -14,6 +13,11 @@ import { dirSignature, signatureMatches } from './manifest-stamp.mjs';
 import path from 'node:path';
 import { encodePath } from '../assets/probe.mjs';
 import { resolveLive2DRuntimes } from '../../../tool/resolve-live2d-runtimes.mjs';
+
+/** 本模块日志（统一形状 {at,level,tag,msg,detail}） */
+const log = createLogger('live2d');
+/** tool/ 层探测消息单独一个 tag：一眼看出是"运行时库探测"而不是"模型清单" */
+const rtLog = createLogger('live2d-runtimes');
 
 /** Live2D 清单缓存的格式版本（结构变更时 +1，旧缓存自动失效重扫） */
 const LIVE2D_MANIFEST_VERSION = 1;
@@ -229,7 +233,8 @@ export function getLive2DModels(configFile, cfg, force) {
 /** 探测 Live2D 运行时库（Cubism Core 受专有许可约束不入库，从本地已有副本取）。 */
 export function getLive2DRuntimeFiles() {
   if (!live2dRuntimeFilesCache) {
-    const r = resolveLive2DRuntimes();
+    // 注入本模块的 logger：tool 层只认「有 info/warn 的对象」，不 import server 层
+    const r = resolveLive2DRuntimes({ log: rtLog });
     log.info('运行时来源', { origin: r.origin });
     log.info('运行时目录', { dir: r.dir });
     if (r.missingOptional.length) {
