@@ -170,6 +170,7 @@ function connectWs(wsUrl) {
 
 // ------------------------------------------------------------------- 主流程
 const problems = [];   // {kind, text}
+const aborted = [];    // 请求中止（页面卸载/取消）：单独归类，不算页面问题
 const all = [];        // 全部控制台条目（报告用）
 const responses = [];  // {status, url} 供 Network 证据
 
@@ -225,8 +226,19 @@ async function main() {
     }
     if (msg.method === 'Network.loadingFailed') {
       const p = msg.params;
-      // 主动导航/取消会报 canceled，不算页面错误
-      if (!/cancel/i.test(p.errorText || '')) problems.push({ kind: '请求失败', text: `${p.errorText} (${p.type})` });
+      const errText = p.errorText || '';
+      /**
+       * 把「请求被取消」与「真网络错误」分开归类。
+       *
+       * 为什么必须分开：ERR_ABORTED / NS_BINDING_ABORTED 是"请求被取消"（页面卸载、导航、
+       *   AbortController、keepalive 上报在页面关闭瞬间被打断），不是网络故障；真网络错误是
+       *   ERR_CONNECTION_REFUSED / ERR_NAME_NOT_RESOLVED 这一类。混在一起会让"发出后立刻关页面"
+       *   的功能凭空产生一堆假 problem，把真异常淹掉（实测：一次过渡埋点让 problems 从 10 涨到 47）。
+       * 处置：中止的单独计数、单独打印一行，**不计入 problems、不影响退出码**。
+       */
+      const isAbort = /ERR_ABORTED|NS_BINDING_ABORTED/i.test(errText) || /cancel/i.test(errText);
+      if (isAbort) aborted.push({ kind: '请求中止', text: `${errText} (${p.type})` });
+      else problems.push({ kind: '请求失败', text: `${errText} (${p.type})` });
     }
   });
   const send = (method, params) => new Promise((resolve) => {
@@ -283,6 +295,8 @@ async function main() {
     ok: problems.length === 0,
     problemCount: problems.length,
     problems,
+    abortedCount: aborted.length,
+    aborted: aborted.slice(0, 40),
     scriptResult,
     scriptError,
     screenshot: shotPath,
@@ -303,6 +317,10 @@ async function main() {
       for (const p of problems) console.log(`    - [${p.kind}] ${p.text}`);
     } else {
       console.log('\n  ✅ 零错误（无 console.error / 未捕获异常 / 4xx-5xx / 请求失败）');
+    }
+    if (aborted.length) {
+      // 中止不是错误：只告知存在（页面关闭瞬间的正常现象），不参与判定
+      console.log(`  ℹ️  请求中止(页面卸载/取消)：${aborted.length} 条（不计入问题）  例：${aborted[0].text}`);
     }
     if (shotPath) console.log(`  截图: ${shotPath}`);
   }

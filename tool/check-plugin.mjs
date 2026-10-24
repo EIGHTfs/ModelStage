@@ -3,7 +3,9 @@
 //
 // 用法：
 //   node tool/check-plugin.mjs plugins/unity-live2d-bundle
+//   node tool/check-plugin.mjs --src /tmp/bad/unity-live2d-bundle [--manifest plugins/unity-live2d-bundle/plugin.json]
 //   node tool/check-plugin.mjs --all plugins
+//   node tool/check-plugin.mjs --src /tmp/bad/unity-live2d-bundle [--manifest plugins/unity-live2d-bundle/plugin.json]
 //   node tool/check-plugin.mjs --all plugins --json     （机器可读）
 //
 // 输出：每条一行 ✅ / ⚠️ / ❌ + 依据（引用契约章节号）；有 ❌ 时退出码非零，可直接进 CI。
@@ -56,8 +58,10 @@ function createReport() {
 }
 
 /** 把一个插件目录读成清单（JSONC）+ 入口文件清单 */
-function readManifest(dir) {
-  const file = path.join(dir, 'plugin.json');
+function readManifest(dir, manifestPath) {
+  // manifestPath：清单不在源码目录旁时指定（典型用法：--src /tmp/pl9/unity-live2d-bundle --manifest 仓库里的原清单）
+  //   files[] 仍相对**源码目录**解析，所以副本目录必须保持同样的内部结构。
+  const file = manifestPath ? path.resolve(manifestPath) : path.join(dir, 'plugin.json');
   const text = fs.readFileSync(file, 'utf8');
   const manifest = parseJsonc(text, `${path.basename(dir)}/plugin.json`);
   // 加载顺序按契约 §二：files[] → entry → index.js
@@ -82,7 +86,7 @@ export async function checkPlugin(dir, options = {}) {
   let manifest = null;
   let files = [];
   try {
-    const r = readManifest(abs);
+    const r = readManifest(abs, options.manifestPath);
     manifest = r.manifest;
     files = r.files;
     rep.ok('A1', 'plugin.json 可解析（JSONC）', '§二');
@@ -321,10 +325,16 @@ async function main(argv) {
     targets = fs.readdirSync(base)
       .map((n) => path.join(base, n))
       .filter((p) => fs.statSync(p).isDirectory() && fs.existsSync(path.join(p, 'plugin.json')));
+  } else if (args.includes('--src')) {
+    // 校验**副本**：反向自证（故意改坏源码验检查器）必须走这条，绝不改仓库里的原件。
+    //   副本目录名要与插件 id 一致（A3 会比 id 与目录名），例如 /tmp/pl9/unity-live2d-bundle。
+    const src = args[args.indexOf('--src') + 1];
+    if (!src || !fs.existsSync(src)) { console.error(`--src 目录不存在：${src || '(空)'}`); process.exit(2); }
+    targets = [path.resolve(src)];
   } else {
     const t = args.find((a) => !a.startsWith('--'));
     if (!t) {
-      console.error('用法：node tool/check-plugin.mjs <插件目录> | --all <plugins 目录> [--json]');
+      console.error('用法：node tool/check-plugin.mjs <插件目录> | --all <plugins 目录> | --src <源码目录> [--manifest <plugin.json>] [--json]');
       process.exit(2);
     }
     targets = [path.resolve(t)];
@@ -332,7 +342,8 @@ async function main(argv) {
   if (!targets.length) { console.error('没找到任何含 plugin.json 的插件目录'); process.exit(2); }
 
   const results = [];
-  for (const d of targets) results.push(await checkPlugin(d, { samplePath }));
+  const manifestPath = args.includes('--manifest') ? args[args.indexOf('--manifest') + 1] : null;
+  for (const d of targets) results.push(await checkPlugin(d, { samplePath, manifestPath }));
   // 覆盖表每轮都打：让"PL1–PL8 各自被哪项检查覆盖"自证，不靠口头说明
   if (!jsonMode) printCoverageTable();
   if (jsonMode) {
