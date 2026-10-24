@@ -7,6 +7,7 @@
 import { formatError } from '../infra/api.js';
 import { readViewSettings, VIEW_SETTINGS_KEY } from '../app/view-settings.js';
 import { stageStatus } from '../app/status.js';
+import { state } from '../app/context.js';
 
 /** 装配层注入：面板设置回放、导入后重载、偏好应用 */
 let ioBridge = {
@@ -92,7 +93,8 @@ export function openImportPicker() {
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = '.json,application/json';
-  input.style.cssText = 'position:fixed;left:-9999px;';
+  // 同上：隐藏靠类名，不写内联样式
+  input.classList.add('file-picker-hidden');
   document.body.append(input);
   input.addEventListener('change', async () => {
     const file = input.files && input.files[0];
@@ -138,12 +140,27 @@ function objectField(value) {
 /** 这份对象看起来是不是"视图偏好本体"（最早期导出没有包装层） */
 function looksLikePrefs(obj) {
   if (!obj) return false;
-  if (obj.uiTheme || obj.background) return true;
-  return obj.partFilterEnabled !== undefined || obj.partFilterKeywords !== undefined;
+  // 只认"确实还在用"的偏好字段；已下线的字段不再参与识别
+  //   （否则一份只剩 partFilter* 的旧导出会被误当成偏好本体）
+  return !!(obj.uiTheme || obj.background);
 }
+
+/** 已下线的设置字段：导入时**忽略并记一条 warn**，绝不因此中断整份导入 */
+const DEPRECATED_PREF_FIELDS = ['partFilterEnabled', 'partFilterKeywords'];
+
 
 function classifyImportPayload(parsed) {
   const obj = objectField(parsed) || {};
+  // 向后兼容：老导出文件里可能带已下线的字段（如 partFilter*）。
+  //   这里只提示一句、照常继续导入 —— 不能因为一个废弃字段让整份配置导入失败。
+  const deprecated = DEPRECATED_PREF_FIELDS.filter((k) => obj[k] !== undefined
+    || (obj.view && obj.view[k] !== undefined) || (obj.viewer && obj.viewer[k] !== undefined));
+  if (deprecated.length) {
+    try {
+      stageStatus(`导入配置里含已下线字段（${deprecated.join('、')}），已忽略，其余设置照常导入`, 'warn');
+    } catch { /* 状态行不可用不影响导入 */ }
+    document.documentElement.dataset.settingsImportDeprecated = deprecated.join(',');
+  }
   const projectFiles = obj.project && obj.project.files ? obj.project.files : null;
   const viewer = objectField(obj.viewer);
   const viewPrefs = objectField(obj.view) || viewer || (looksLikePrefs(obj) ? obj : null);
@@ -213,7 +230,13 @@ function importPrefs(viewPrefs, panelPrefs) {
   }
   if (panelPrefs && typeof ioBridge.applyPanelSetting === 'function') {
     for (const [id, value] of Object.entries(panelPrefs)) {
-      try { ioBridge.applyPanelSetting(id, value); applied += 1; } catch { /* 单项失败继续 */ }
+      try {
+        ioBridge.applyPanelSetting(id, value);
+        // 面板控件同步：导入只写引擎会出现"设置生效了、读数还是旧值"，
+        //   而读数是用户唯一可见的生效出口 —— 必须跟着走到新值（契约：显示值=真实值）
+        if (state.panel && typeof state.panel.setValue === 'function') state.panel.setValue(id, value);
+        applied += 1;
+      } catch { /* 单项失败继续 */ }
     }
   }
   return applied;

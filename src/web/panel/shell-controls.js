@@ -16,7 +16,6 @@ import { dom, state, stage } from '../app/context.js';
 import { resetViewViaRenderer } from '../render/reset-view.js';
 import { stageStatus } from '../app/status.js';
 import { VIEW_SETTINGS_KEY, applyBackground, applyTheme, readViewSettings, saveViewSettings } from '../app/view-settings.js';
-import { DEFAULT_PART_FILTER_KEYWORDS, applyPartFilter } from '../app/part-filter.js';
 import {
   connectSettingsIo, exportSettingsFile, importSettingsFromText, openImportPicker,
 } from './settings-io.js';
@@ -178,7 +177,6 @@ export function restoreDefaultSettings() {
   }
   applyTheme('dark-cyan');
   applyBackground('checkerboard');
-  applyPartFilter({ enabled: false, keywords: DEFAULT_PART_FILTER_KEYWORDS.slice() });
   const panel = state.panel;
   if (panel && panel.setValue) {
     panel.setValue('ctl-theme', state.viewTheme);

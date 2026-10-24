@@ -17,6 +17,7 @@ import { ACTION_ICONS, COLLAPSE_ICON, GROUP_ICONS, svgIcon } from './icons.js';
 import { el, markDisabled, markPending } from './dom.js';
 import { renderChips, renderListRow, renderSelect } from './render-choice.js';
 import { PANEL_GROUPS } from './schema.js';
+import { formatSliderValue, posOf, renderSlider } from './slider.js';
 
 /** 元素工厂（与名册那边同名的本地小工具，避免跨模块只为建元素而互相依赖） */
 /**
@@ -307,6 +308,7 @@ function renderReadonly(ctl) {
   return row;
 }
 
+
 /** 按种类分派 */
 function renderControl(ctl, ctx) {
   switch (ctl.kind) {
@@ -316,6 +318,7 @@ function renderControl(ctl, ctx) {
     case 'dynamic-list': return renderDynamicList(ctl);
     case 'readonly': return renderReadonly(ctl);
     case 'chips': return renderChips(ctl, ctx);
+    case 'slider': return renderSlider(ctl, ctx, el, markDisabled);
     case 'select': return renderSelect(ctl, ctx);
     default: return el('p', 'ctl-note', ctl.note || '');
   }
@@ -367,6 +370,13 @@ function renderGroup(group, ctx) {
 export function mountPanel({ headEl, bodyEl, onSetting, wiredIds, groups }) {
   // schema 可由调用方按渲染器能力过滤后传入；缺省用全量 PANEL_GROUPS（保持原有行为）
   const schema = Array.isArray(groups) && groups.length ? groups : PANEL_GROUPS;
+  // 滑块 id → 控件声明：外部同步（恢复上次设置 / 生效值回显）时要按声明格式化读数
+  const sliderDefs = new Map();
+  for (const group of schema) {
+    for (const ctl of group.controls || []) {
+      if (ctl && ctl.kind === 'slider' && ctl.id) sliderDefs.set(ctl.id, ctl);
+    }
+  }
   headEl.replaceChildren();
   /**
    * 现查容器：面板可能在切面/重建时被换成新 DOM，
@@ -487,6 +497,16 @@ export function mountPanel({ headEl, bodyEl, onSetting, wiredIds, groups }) {
         opts.forEach((b, i) => b.setAttribute('aria-pressed', String(i === idx)));
         return;
       }
+    }
+    const range = find(`input.ctl-slider-input#${id}`);
+    if (range) {
+      const def = sliderDefs.get(id);
+      // 非线性滑块要先把"数值"换算回"格位"再写 value（否则 1.5 会被当成第 1.5 格）
+      range.value = String(Math.round(def ? posOf(def, value) : Number(value)));
+      const ro = find(`[data-readout="${id}"]`);
+      // 读数格式化按 schema 声明（单位/0 值语义都在那里），不在这里猜
+      if (ro) ro.textContent = def ? formatSliderValue(def, value) : String(value);
+      return true;
     }
     const sel = find(`select[data-ctl-select="${id}"]`);
     if (sel && [...sel.options].some((o) => o.value === String(value))) sel.value = String(value);

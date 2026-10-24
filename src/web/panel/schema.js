@@ -22,14 +22,15 @@
  * 为什么需要：面板回落策略是「无能力信息 ⇒ 只显示通用项」，而不是"默认全支持"
  *   —— 默认全支持会让"声明了但没实现"的缺陷静默存在（见 doc/契约/面板能力契约.md §五）。
  */
+// 滑块的取值域与默认值统一由 slider.js 提供（避免"面板写一套、映射写另一套"）
+import { MIX_DEFAULT, MIX_MAX, MIX_MIN, MIX_STEP, SPEED_DEFAULT, SPEED_MAX, SPEED_MIN, SPEED_STEP } from './slider.js';
+
 export const RENDERER_INDEPENDENT = [
   'ctl-theme', 'ctl-bg-mode', 'ctl-bg-color', 'ctl-bg-image', 'ctl-bg-list',
   'ctl-hang-guard', 'ctl-show-status', 'ctl-debug-log', 'ctl-settings-io',
-  // 动作组的两个：循环开关由应用层定时器推进、动作列表内容由应用层填，
+  // 动作组的循环开关由应用层定时器推进、动作列表内容由应用层填，
   //   与"渲染器是否声明某项能力"无关（两面都要有）。
   'ctl-anim-loop', 'ctl-anim-list',
-  // 皮肤组的混合过渡：由应用层在切皮肤时对两次渲染做交叉淡化，属面板侧行为。
-  'ctl-skin-mix',
   // 运行时版本读数：只读文本，跟着渲染器自己报的值走，不参与能力判断。
   'ctl-runtime',
 ];
@@ -44,11 +45,9 @@ export const PANEL_GROUPS = [
     title: '动作',
     defaultOpen: true,
     controls: [
-      // 动作组并列两个开关，各自管一件事（契约 §四，正交、不合并）：
-      //   混合模式 = 切换那一瞬间的过渡；循环播放 = 播完之后接谁
-      // 手动隐藏（优先级最高）：动作过渡由引擎默认值决定（默认开启 ≈0.2s 渐变），
-      //   面板不再暴露这个开关——手动维护 > 自动按能力声明判断。
-      { kind: 'switch', label: '混合模式', id: 'ctl-mix-mode', hidden: true, capabilityKey: 'mixMode', core: true, title: '切换动作时的过渡：开=约 0.2s 渐变，关=硬切' },
+      // 动作组只剩循环播放一个开关（管"播完接谁"）。
+      //   「混合模式」开关已移除：过渡强度改由「播放」组的「混合时长」滑块统一控制
+      //   （0 秒 = 不混合 = 原来的"混合模式关"），两个开关 + 一个时长属于三重控制，多余。
       { kind: 'switch', label: '循环播放', id: 'ctl-anim-loop', core: true, title: '播完之后接谁：开=按列表顺序连播、末尾回到第一条；关=停留当前动作重复播' },
       { kind: 'dynamic-list', label: '动作列表', id: 'ctl-anim-list', core: true, note: '选中模型后逐条列出动作，点一条即播放' },
     ],
@@ -57,8 +56,7 @@ export const PANEL_GROUPS = [
     id: 'skin',
     title: '皮肤',
     controls: [
-      // 与「动作」组的混合模式是同一状态，两处点任一处都要同步（main.js 统一维护）
-      { kind: 'switch', label: '混合模式', id: 'ctl-skin-mix', core: true, title: '切换皮肤时是否交叉淡化（只影响皮肤，不影响动作）' },
+      // 「皮肤混合」开关已移除：换肤过渡同样由「播放」组的「混合时长」一个数控制（0 = 不混合）。
       // 皮肤列表：加载模型后按 skeletonData.skins 重建；默认 default
       // capabilityKey: skin —— 渲染面不声明就置灰（Live2D 面没有皮肤概念）
       { kind: 'chips', layout: 'list', label: '皮肤列表', id: 'ctl-skin-list', core: true, capabilityKey: 'skin', defaultValue: 'default', emptyText: '默认皮肤', options: [{ text: 'default', value: 'default' }] },
@@ -68,15 +66,38 @@ export const PANEL_GROUPS = [
     id: 'play',
     title: '播放',
     controls: [
-      // 按关键词把部件从渲染中剔除（引擎 setSlotFilter + hideFilteredSlots 已有能力）
-      { kind: 'switch', label: '部件筛除', id: 'ctl-part-filter', capabilityKey: 'partFilter', core: true, title: '按关键词筛除部件（默认关）' },
-      // 关键字默认值取自旧端存储的 partFilterKeywords（mask,mosai,mmd,mozaiku）
+      // 顺序照旧端：速度 → 混合时长（两个连续值滑块，标签左、当前值右）
+      // 播放速度：统一入口（spine 缩动画时间轴 / Live2D 缩整帧时间）
       {
-        kind: 'chips',
-        label: '关键字',
-        id: 'ctl-part-filter-reset', capabilityKey: 'partFilter', core: true,
-        defaultValue: 'reset',
-        options: [{ text: '恢复默认关键字', value: 'reset' }],
+        kind: 'slider',
+        label: '速度',
+        id: 'ctl-speed',
+        capabilityKey: 'speed',
+        core: true,
+        min: SPEED_MIN,
+        max: SPEED_MAX,
+        step: SPEED_STEP,
+        defaultValue: SPEED_DEFAULT,
+        format: 'x',            // 显示 1.5x
+        // 非线性双段：左半 0.1~1.0 细调、右半 1.0~3.0 粗调，1.0 恰在正中（映射见 view.js SLIDER_CURVES）
+        curve: 'speed',
+        title: '动画播放速率 0.1–3。spine 缩放动画时间轴；Live2D 缩放整帧时间（物理/呼吸/眨眼会一起变快）。双击数值复位 1',
+      },
+      // 混合时长：切换动作/皮肤时的交叉淡化秒数。**0 秒即关闭混合**（硬切），
+      //   取代了原来的两处「混合模式」开关（一个数同时表达"开不开"和"开多久"）。
+      {
+        kind: 'slider',
+        label: '混合时长',
+        id: 'ctl-mix-time',
+        capabilityKey: 'mixTime',
+        core: true,
+        min: MIX_MIN,
+        max: MIX_MAX,
+        step: MIX_STEP,
+        defaultValue: MIX_DEFAULT,
+        format: 's',            // 显示 0.85s
+        zeroText: '关',         // 0 秒显示"关"，不写 0.00s（语义更直白）
+        title: '切换动作/皮肤时的交叉淡化时长（0–1 秒）。拖到最左（0）＝不混合、硬切；双击数值复位 0.2s',
       },
     ],
   },

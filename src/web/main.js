@@ -29,7 +29,6 @@ import { dom, setStage, stage, state } from './app/context.js';
 import { diagEvent } from './app/status.js';
 import { stageStatus } from './app/status.js';
 import { VIEW_SETTINGS_KEY, applyBackground, applyTheme, readViewSettings, saveViewSettings } from './app/view-settings.js';
-import { DEFAULT_PART_FILTER_KEYWORDS, applyPartFilter } from './app/part-filter.js';
 import {
   WIRED_IDS, applyPanelSetting, panelSnapshot, rebuildPanelFor, restorePanelSettings,
   runPanelSelfCheck, suspendPanelPersist,
@@ -405,10 +404,6 @@ function boot() {
   const savedView = readViewSettings();
   applyTheme(savedView.uiTheme || 'dark-cyan');
   applyBackground((savedView.background && savedView.background.mode) || 'checkerboard');
-  const savedKeywords = typeof savedView.partFilterKeywords === 'string' && savedView.partFilterKeywords.trim()
-    ? savedView.partFilterKeywords.split(',').map((k) => k.trim()).filter(Boolean)
-    : DEFAULT_PART_FILTER_KEYWORDS.slice();
-  applyPartFilter({ enabled: savedView.partFilterEnabled === true, keywords: savedKeywords });
   if (state.panel && state.panel.setValue) {
     state.panel.setValue('ctl-theme', state.viewTheme);
     state.panel.setValue('ctl-bg-mode', state.viewBg);

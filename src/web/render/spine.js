@@ -11,7 +11,7 @@ import { buildDocument } from '../infra/document.js';
 /** Spine 渲染器支持的设置项 */
 // 前 7 项是"引擎参数"，后 4 项是"内容操作"（皮肤/部件筛除/动作混合/动作切换）：
 //   它们同样只能经 setSetting 落地（INV-01），否则 Live2D 模式下会打到隐藏的 spine 舞台。
-const SETTINGS = ['fps', 'dpr', 'msaa', 'textureFilter', 'presetFilter', 'pma', 'fit', 'skin', 'partFilter', 'mixMode', 'animation'];
+const SETTINGS = ['fps', 'dpr', 'msaa', 'textureFilter', 'presetFilter', 'pma', 'fit', 'skin', 'mixMode', 'mixTime', 'animation', 'speed'];
 /** Spine 渲染器支持的调试绘制项
  *  注：不含 points —— 3.8/4.1/4.2/4.3 的 SkeletonDebugRenderer 均无 drawPoints（实测 grep 全为 0），
  *  该项永远画不出来，按「声明即必须可实现」不列入能力声明；运行时若探测到缺失项，
@@ -24,6 +24,8 @@ const DEBUG_DRAW = ['bones', 'meshes', 'boundingBoxes', 'paths', 'regions', 'cli
  *   不自己解释设置语义；面板因此可以完全不知道舞台的存在（契约 INV-01）。
  */
 const STAGE_SETTERS = {
+  speed: 'setSpeed',
+  mixTime: 'setMixTime',
   fps: 'setFpsLimit',
   dpr: 'setDprMode',
   textureFilter: 'setTextureFilter',
@@ -235,12 +237,9 @@ export function createSpineRenderer({ stage, onMsaa } = {}) {
         try { stage.setDebug({ [dbg[1]]: !!value }); return true; } catch { return false; }
       }
       // ---- 内容操作四键：返回值语义与改动前一致（皮肤=是否真的切过去；mixMode=是否生效；
-      //      partFilter=是否下发；animation=舞台是否接受）
+      //      animation=舞台是否接受）
       if (key === 'skin') {
         try { return stage.setSkin(String(value)) !== false; } catch { return false; }
-      }
-      if (key === 'partFilter') {
-        try { stage.setPartFilter(value && typeof value === 'object' ? value : {}); return true; } catch { return false; }
       }
       if (key === 'mixMode') {
         try { stage.setMixMode(!!value); } catch { return false; }
@@ -274,18 +273,26 @@ export function createSpineRenderer({ stage, onMsaa } = {}) {
     getSetting(key) {
       const dbg = /^debug:(.+)$/.exec(String(key || ''));
       const st = (() => { try { return stage.stats().settings; } catch { return null; } })();
+      /** 取引擎实例（多处要用；抽出来避免同一段 IIFE 反复出现在每个分支里） */
+      const engineOf = () => { try { return stage.debug ? stage.debug().engine : null; } catch { return null; } };
       if (!st) return null;
       if (dbg) return !!(st.debug && st.debug[dbg[1]]);
       // 内容操作四键：回显**生效值**（INV-08），读舞台/引擎的真实状态，不是请求值
       if (key === 'skin') return st.skin || 'default';
       if (key === 'mixMode') return (Number(st.mixTime) || 0) > 0;
-      if (key === 'partFilter') {
-        return { enabled: st.partFilterEnabled === true, keywords: Array.isArray(st.partFilterKeywords) ? st.partFilterKeywords.slice() : [] };
-      }
+      // 混合时长：回显生效秒数（0 = 不混合）
+      if (key === 'mixTime') return Number(st.mixTime) || 0;
       if (key === 'animation') {
         // 无模型时回显 ''（而不是 null）：null 会让能力自检判成"没有生效值"
-        const eng = (() => { try { return stage.debug ? stage.debug().engine : null; } catch { return null; } })();
+        const eng = engineOf();
         return (eng && eng.animationName) || '';
+      }
+      // 播放速度：回显**生效值**（引擎侧 timeScale 才是真正在用的），舞台设置里的 speed 是请求值
+      if (key === 'speed') {
+        const eng = engineOf();
+        const scale = eng && eng.state && typeof eng.state.timeScale === 'number' ? eng.state.timeScale : null;
+        if (scale !== null) return scale;
+        return st.speed !== undefined ? st.speed : 1;
       }
       const map = { fps: 'fpsLimit', dpr: 'dprMode', msaa: 'msaa', textureFilter: 'textureFilter', presetFilter: 'filter', pma: 'pma', fit: 'fit' };
       const k = map[key];

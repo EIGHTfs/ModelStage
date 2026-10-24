@@ -251,7 +251,11 @@ export class SpineEngine {
 
   update(dt) {
     if (!this.state || !this.skeleton) return;
-    this.state.update(dt * this.speed);
+    // **不要在 dt 上再乘 speed**：AnimationState.update 内部已经 `delta *= this.timeScale`，
+    //   而 setSpeed 又把 timeScale 设成同一个 v ⇒ 再乘一次就变成 v²（2× 实际 4×、0.5× 实际 0.25×）。
+    //   旧端也是这个 v²（dist 里同时存在 `state.timeScale=v` 与 `state.update(t*this.speed)`），
+    //   属于历史行为；本轮按"与 Live2D 线性语义对齐"的要求修成线性。
+    this.state.update(dt);
     this.state.apply(this.skeleton);
     this.skeleton.updateWorldTransform(2);
   }

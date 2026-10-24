@@ -84,6 +84,8 @@ export function createLive2DRenderer({ live2d } = {}) {
   if (!live2d) throw new Error('createLive2DRenderer: 需要 live2d 实现');
   /** 当前生效的纹理过滤与限帧（回显用） */
   let filterMode = 'linear';
+  /** 播放速度倍率（Live2D 侧：缩放进 model.update 的 dt；与 spine 的 timeScale 对齐为线性） */
+  let speedValue = 1;
   /** 暂停标记：暂停期间相机/设置变化后必须自己补一帧（ticker 停着不会自动画） */
   let pausedRef = false;
   /** 立刻画一帧（暂停时的按需渲染） */
@@ -290,8 +292,8 @@ try { if (live2d.syncSize) live2d.syncSize({ size: { width: cssW, height: cssH }
       // msaa / pma / fit 不声明：msaa 要重建 PIXI app（运行期做不到）；
       //   pma 由 PIXI 纹理管线托管、无法按页切直通/转预乘；fit 的"全部部件/动画全程"依赖 Spine 骨架包围盒数据（Live2D 无此数据）。
       // animation：动作切换经 bridge.playLabel 落地（本面唯一的"内容操作"能力）。
-      //   skin / partFilter / mixMode 不声明——本面没有对应实现，声明了就是骗面板。
-      settings: ['textureFilter', 'fps', 'dpr', 'presetFilter', 'animation'],
+      //   skin / mixMode 不声明——本面没有对应实现，声明了就是骗面板。
+      settings: ['textureFilter', 'fps', 'dpr', 'presetFilter', 'animation', 'speed'],
       debugDraw: [],
       camera: 'ortho-2d',
     },
@@ -314,6 +316,8 @@ try { if (live2d.syncSize) live2d.syncSize({ size: { width: cssW, height: cssH }
       handleRef = handle || null;
       try {
         const info = await live2d.mount(document, handle);
+        // 装载完成补一次播放速度：换模型/切到本面后速度要保持（speed 存在设置层，不随模型走）
+        try { live2d.bridge.setSpeed(speedValue); } catch { /* 速度补不上不影响装载 */ }
         // 每次装载后确保门控装在当前 app 上（unmount 会销毁 app，重建后是新的实例）
         try { installFrameGate(live2d.getApp ? live2d.getApp() : null); } catch { /* 门控装不上不应阻断装载 */ }
         applyPreset(); // 新模型挂上后把当前滤镜补一次（切模型/重建后不断档）
@@ -447,8 +451,14 @@ if (typeof live2d.syncSize === 'function') {
         if (!label) return true;
         try { return live2d.bridge.playLabel(label) === true; } catch { return false; }
       }
-      // 未声明的三项（skin / partFilter / mixMode）：本面确实不支持，如实返回 false
-      if (key === 'skin' || key === 'partFilter' || key === 'mixMode') return false;
+      // 未声明的两项（skin / mixMode）：本面确实不支持，如实返回 false
+      if (key === 'skin' || key === 'mixMode') return false;
+      if (key === 'speed') {
+        const v = Math.max(0.1, Math.min(3, Number(value) || 1));
+        speedValue = v;
+        // bridge.setSpeed 在模型未装载时只记住值，装载后会补；所以这里只要没抛错就算成功
+        try { live2d.bridge.setSpeed(v); return true; } catch { return false; }
+      }
       if (key === 'presetFilter') {
         const id = String(value || DEFAULT_FILTER);
         if (!FILTER_PRESETS.some((x) => x.id === id)) return false; // 未知档位不认
@@ -518,6 +528,7 @@ if (typeof live2d.syncSize === 'function') {
         // 无模型时回显 ''（不是 null，理由同 spine）
         try { return (live2d.bridge.currentLabel && live2d.bridge.currentLabel()) || ''; } catch { return ''; }
       }
+      if (key === 'speed') return speedValue;
       if (key === 'presetFilter') return presetId;
       if (key === 'textureFilter') return filterMode;
       if (key === 'fps') {

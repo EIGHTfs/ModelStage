@@ -33,7 +33,7 @@ export function rendererSupports(key) {
 
 /**
  * 经渲染器下发一项设置。
- * @param {string} key 能力键（skin / partFilter / mixMode / animation / fps / pma …）
+ * @param {string} key 能力键（skin / mixMode / mixTime / animation / fps / speed / pma …）
  * @param {any} value 目标值
  * @returns {{ok: boolean, applied: any}} ok=false 时 applied 是回读到的生效值（可能为 null）
  */

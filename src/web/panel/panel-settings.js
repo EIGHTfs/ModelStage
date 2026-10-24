@@ -13,9 +13,8 @@ import { PANEL_GROUPS, applyCapabilities, selfCheck, settingKeyOf } from './sche
 import { mountPanel } from './view.js';
 import { applyDebugLog, applyHangGuard, applyShowStatus, connectShellControls, runSettingsAction } from './shell-controls.js';
 import { applyBackground, applyTheme, readViewSettings, saveViewSettings } from '../app/view-settings.js';
-import { DEFAULT_PART_FILTER_KEYWORDS, applyPartFilter } from '../app/part-filter.js';
 import { refreshBackgrounds } from './background-list.js';
-import { applyAnimLoop, applyMixMode, applySkinMix, applyTransportMotion } from '../app/transport-actions.js';
+import { applyAnimLoop, applyTransportMotion } from '../app/transport-actions.js';
 import { repaintActive } from '../render/playback.js';
 import {
   buildAnimationList, currentAnimationId, durationText, labelWithDuration, onCycleAdvance,
@@ -33,19 +32,19 @@ export function connectPanelRefresh(fn) {
 
 /**
  * 外壳自己处理的控件：主题/背景走 CSS 与 Surface（与渲染器无关）；
- *   皮肤、混合模式、部件筛除虽然也由外壳记住偏好，但**落地一律经 renderer.setSetting**（契约 INV-01）。
+ *   皮肤虽然也由外壳记住偏好，但**落地一律经 renderer.setSetting**（契约 INV-01）。
  *   其它设置项同理——面板层不得直接调用舞台的 set 方法。
+ *
+ * 注：`ctl-mix-mode` / `ctl-skin-mix` / `ctl-part-filter` / `ctl-part-filter-reset`
+ *   已从面板移除（混合过渡统一由「播放 → 混合时长」一个滑块控制，部件筛除整项下线），
+ *   对应的映射表条目一并删除；底层 setMixMode / setMixTime 保留（部件筛除整项已下线，底层也删）。
  */
 const SHELL_APPLIERS = {
   'ctl-theme': (v) => applyTheme(v),
   'ctl-bg-mode': (v) => applyBackground(v),
-  'ctl-mix-mode': (v) => applyMixMode(v),
   'ctl-anim-loop': (v) => applyAnimLoop(v),
-  'ctl-skin-mix': (v) => applySkinMix(v),
   // 皮肤切换同样经渲染器（INV-01）：Live2D 面没声明 skin ⇒ 不会打到隐藏的 spine 舞台
   'ctl-skin-list': (v) => setRendererSetting('skin', v),
-  'ctl-part-filter': (v) => applyPartFilter({ enabled: !!v }),
-  'ctl-part-filter-reset': () => applyPartFilter({ keywords: DEFAULT_PART_FILTER_KEYWORDS.slice() }),
   'ctl-hang-guard': (v) => applyHangGuard(v),
   'ctl-show-status': (v) => applyShowStatus(v),
   'ctl-debug-log': (v) => applyDebugLog(v),
@@ -417,10 +416,6 @@ connectShellControls({
   applyViewerPrefs: (prefs) => {
     applyTheme(prefs.uiTheme || 'dark-cyan');
     applyBackground((prefs.background && prefs.background.mode) || 'checkerboard');
-    const kw = typeof prefs.partFilterKeywords === 'string' && prefs.partFilterKeywords.trim()
-      ? prefs.partFilterKeywords.split(',').map((k) => k.trim()).filter(Boolean)
-      : DEFAULT_PART_FILTER_KEYWORDS.slice();
-    applyPartFilter({ enabled: prefs.partFilterEnabled === true, keywords: kw });
     if (state.panel && state.panel.setValue) {
       state.panel.setValue('ctl-theme', state.viewTheme);
       state.panel.setValue('ctl-bg-mode', state.viewBg);

@@ -1,7 +1,7 @@
 // app/view-settings.js —— 展示类设置的持久化与落地（主题 / 背景）
 //
 // 这些设置与渲染器无关：主题只改 CSS 变量所在属性，背景由 Surface 写 data-bg 后交给 CSS。
-// 存储沿用旧端的同一个键与结构（{uiTheme, background:{mode,color,imageUrl}, partFilter*…}），
+// 存储沿用旧端的同一个键与结构（{uiTheme, background:{mode,color,imageUrl}}；旧版的 partFilter* 已下线并清理），
 // 新旧实现共用一份，切换时用户看到的选择不会丢。
 
 import { state } from './context.js';
@@ -9,14 +9,28 @@ import { state } from './context.js';
 /** 视图设置存储键（与旧端同一键：主题、背景等展示类设置） */
 export const VIEW_SETTINGS_KEY = 'spine-viewer-settings-v2';
 
-/** 读视图设置（沿用旧端结构：{uiTheme, background:{mode,color,imageUrl}}） */
+/** 已下线的视图设置字段：读到就地清掉，避免"看不见的设置还在生效/还在占存储" */
+const DEPRECATED_VIEW_KEYS = ['partFilterEnabled', 'partFilterKeywords'];
+
+/**
+ * 读视图设置（沿用旧端结构：{uiTheme, background:{mode,color,imageUrl}}）。
+ * 副作用：**顺手清理已下线字段**（一次写回），这样老 localStorage 里的残留会被自然淘汰，
+ *   不用用户手动清缓存，也不会因为残留字段让"看不见的设置"继续生效。
+ */
 export function readViewSettings() {
+  let s;
   try {
-    const s = JSON.parse(localStorage.getItem(VIEW_SETTINGS_KEY) || '{}');
-    return s && typeof s === 'object' ? s : {};
+    s = JSON.parse(localStorage.getItem(VIEW_SETTINGS_KEY) || '{}');
   } catch {
     return {};
   }
+  if (!s || typeof s !== 'object') return {};
+  const stale = DEPRECATED_VIEW_KEYS.filter((k) => k in s);
+  if (stale.length) {
+    for (const k of stale) delete s[k];
+    try { localStorage.setItem(VIEW_SETTINGS_KEY, JSON.stringify(s)); } catch { /* 写不了就只保留内存态 */ }
+  }
+  return s;
 }
 
 /** 写视图设置：只覆盖自己管的键，其余字段原样保留（与旧端共用同一份） */
@@ -51,7 +65,8 @@ export function pickBackgroundImage() {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*';
-    input.style.cssText = 'position:fixed;left:-9999px;';
+    // 用类名而不是内联样式定位到视口外（契约《禁止内联CSS与JS》：样式写在 panel.css）
+    input.classList.add('file-picker-hidden');
     document.body.append(input);
     input.addEventListener('change', () => {
       const file = input.files && input.files[0];

@@ -229,6 +229,8 @@ function createLoadGroup(ctx, st, note) {
       } else {
         note(`Live2D 复用已加载模型：${model.name}`);
       }
+      // 装载完成即补一次速度：新模型实例没有补丁，且"先设速度再换模型"要能延续
+      applySpeedToModel(st);
       return {
         animations: ctx.api.model.motionLabels(),
         skins: ((st.meta && st.meta.expressions) || []).map((e) => e.name),
@@ -295,6 +297,67 @@ function debugMotionOf(st) {
  *
  * @param {object} ctx {{st, note, api}}
  */
+
+/**
+ * 给 Live2D 模型实例打"速度补丁"（**幂等**：重复调用不会套多层）。
+ *
+ * 为什么这么做：pixi-live2d-display 与 Cubism 核心都**没有** expose 速度接口
+ *   （三个库 grep timeScale/setSpeed/speed 全为 0），唯一可控的是喂给 `model.update(dt)` 的 dt：
+ *   源码链路 `onTickerUpdate → update(deltaMS) → _render 里 internalModel.update(deltaTime, elapsedTime)`，
+ *   而 `internalModel.update` 会把 dt 传给 动作 + 物理 + 呼吸/眨眼 + 焦点 + pose。
+ *   ⇒ 缩放 dt = 整帧时间缩放（物理与呼吸会一起变快，这是预期行为，要在控件 title 里写明）。
+ *
+ * 为什么不改 `PIXI.Ticker.shared.speed`：那是全局的，会影响所有订阅者；实例级补丁作用面最小。
+ *
+ * @param {object} model Live2DModel 实例
+ * @returns {boolean} 是否已可用（无 update 方法时返回 false）
+ */
+function patchModelSpeed(model) {
+  if (!model || typeof model.update !== 'function') return false;
+  if (model.__speedPatched) return true;
+  const orig = model.update.bind(model);
+  model.__speedPatched = { orig };
+  model.__speed = model.__speed || 1;
+  model.update = (dt) => orig(dt * (model.__speed || 1));
+  return true;
+}
+
+/**
+ * 播放速度组：统一入口的 Live2D 侧实现（与 spine 的 AnimationState.timeScale 对齐为线性倍率）。
+ * @param {object} st live2d 舞台状态
+ */
+function createSpeedGroup(st) {
+  return {
+    /**
+     * 设置播放速度（夹 0.1–3）。
+     * 模型还没装载时先记住（st.speed），装载后由 applySpeedToModel 补上 —— 否则"先设速度再换模型"会丢。
+     * @param {number} v 倍率
+     * @returns {number} 生效值
+     */
+    setSpeed(v) {
+      const speed = Math.max(0.1, Math.min(3, Number(v) || 1));
+      st.speed = speed;
+      const model = st.model;
+      if (model && patchModelSpeed(model)) model.__speed = speed;
+      return speed;
+    },
+    /** @returns {number} 当前速度倍率（未设置过为 1） */
+    getSpeed() {
+      return typeof st.speed === 'number' ? st.speed : 1;
+    },
+  };
+}
+
+/**
+ * 把已记住的速度应用到当前模型（换模型 / 装载后必须调一次，新实例没有补丁）。
+ * @param {object} st
+ */
+function applySpeedToModel(st) {
+  const model = st.model;
+  if (!model || !patchModelSpeed(model)) return;
+  model.__speed = typeof st.speed === 'number' ? st.speed : 1;
+}
+
 export function createBridge(ctx) {
   const { st, note } = ctx;
   const probe = createViewProbe(st);
@@ -302,6 +365,7 @@ export function createBridge(ctx) {
   const playbackGroup = createPlaybackGroup(st, probe);
   const viewGroup = createViewGroup(ctx, st, probe);
   const loadGroup = createLoadGroup(ctx, st, note);
+  const speedGroup = createSpeedGroup(st);
 
   const bridge = {
     isActive: stateGroup.isActive,
@@ -318,6 +382,8 @@ export function createBridge(ctx) {
     setZoomRatio: viewGroup.setZoomRatio,
     pan: viewGroup.pan,
     readState: viewGroup.readState,
+    // 播放速度（统一入口的 Live2D 侧；与 spine 同名能力键 `speed`）
+    ...speedGroup,
   };
 
   // 验收探针挂到页面上（与 lead 共用同一套引擎侧判据）

@@ -121,35 +121,25 @@ api.animationDetails = () => {
  */
 const MIX_TIME_CROSSFADE_SEC = 0.2;
 
-api.setMixMode = (on) => {
-  const t = on ? MIX_TIME_CROSSFADE_SEC : 0;
-  st.settings.mixTime = t;
-  if (st.engine && typeof st.engine.setMixTime === 'function') {
-    try { st.engine.setMixTime(t); } catch { /* 版本不支持则只记状态 */ }
-  }
-  return t;
-};
+api.setMixMode = (on) => api.setMixTime(on ? MIX_TIME_CROSSFADE_SEC : 0);
 
 /**
- * 部件筛除：传入 { enabled, keywords }。
- * 引擎侧是 setSlotFilter(keywords) + 每帧 hideFilteredSlots/restoreFilteredSlots；
- * enabled=false 或关键词为空即清空（等价不过滤）。
+ * 混合时长（秒）：0 表示**不混合**（硬切），>0 表示动作/皮肤切换时的交叉淡化秒数。
+ * 面板的「混合时长」滑块走这里；原来的「混合模式」开关等价于 setMixMode(0|默认值)。
+ * @param {number} t 0~1 秒
+ * @returns {number} 生效值
  */
-api.setPartFilter = ({ enabled, keywords }) => {
-  const list = enabled ? (Array.isArray(keywords) ? keywords : []) : [];
-  st.settings.partFilterEnabled = !!enabled;
-  st.settings.partFilterKeywords = Array.isArray(keywords) ? keywords.slice() : [];
-  if (st.engine && typeof st.engine.setSlotFilter === "function") {
-    try { st.engine.setSlotFilter(list); } catch { /* 版本不支持则只记状态 */ }
+api.setMixTime = (t) => {
+  // 范围夹到 0~1：与面板滑块一致，避免外部传入巨大值把过渡拖成几秒
+  const v = Math.max(0, Math.min(1, Number(t) || 0));
+  st.settings.mixTime = v;
+  if (st.engine && typeof st.engine.setMixTime === 'function') {
+    try { st.engine.setMixTime(v); } catch { /* 版本不支持则只记状态 */ }
   }
-  // matched = 当前骨架里"真会被摘掉"的槽数（只读扫一遍，不改骨架）。
-  //   与 applied 分开：applied 是关键词条数，若把它当"隐藏了几件"会把"关键词没命中"误读成"隐藏成功"。
-  let matched = 0;
-  if (st.engine && typeof st.engine.countFilterableSlots === 'function') {
-    try { matched = st.engine.countFilterableSlots(list); } catch { matched = 0; }
-  }
-  return { enabled: !!enabled, applied: list.length, matched };
+  return v;
 };
+
+
 }
 
 /** 相机视图入口：只读读数 + 薄转发（不换算） */

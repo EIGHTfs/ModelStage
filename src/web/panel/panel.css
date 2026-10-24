@@ -844,3 +844,94 @@
   font-weight: 500;
   color: var(--color-primary);
 }
+
+/* ---------------- 滑块控件（播放速度 / 混合时长） ----------------
+   结构：标签在左、当前值在右（等宽），滑块单独一行占满宽度 —— 与旧端一致。
+   契约《禁止内联 CSS 与 JS》：颜色/尺寸/字体全部走 CSS 变量，JS 不写任何 element.style；
+   轨道与手柄用原生 `accent-color` 跟随主题主色，无需自绘。 */
+.ctl-slider {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;                       /* 标签行与滑块的间距 */
+  padding: 2px 0;
+}
+
+.ctl-slider-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between; /* 标签左、值右 */
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.ctl-slider-label {
+  color: var(--color-muted-foreground);
+}
+
+/* 当前值：等宽字体 + 表格数字，避免拖动时宽度跳动 */
+.ctl-slider-value {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-foreground);
+  cursor: pointer;                /* 双击复位默认值 */
+  user-select: none;
+}
+
+/* 滑块的定位容器：刻度线用伪元素叠在轨道中线（原生 input 内部结构不可插入伪元素） */
+.ctl-slider-track {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+/* 基准刻度：中线（速度的 1.0x 正好落在正中）
+   注意：accent-color 不作用于伪元素，所以颜色必须自己指定主题令牌 */
+.ctl-slider-track::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 2px;
+  height: 10px;
+  border-radius: 1px;
+  background: var(--color-muted-foreground);
+  opacity: 0.45;
+  pointer-events: none;      /* 不挡拖动 */
+}
+
+.ctl-slider-input {
+  width: 100%;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--color-primary);   /* 轨道/手柄颜色跟随五套主题 */
+}
+
+/* 键盘可达性：焦点用主色描边（不写字面色值） */
+.ctl-slider-input:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: 999px;
+}
+
+/* 禁用态（当前渲染面未声明该能力时由面板压制） */
+.ctl-slider-input:disabled {
+  opacity: var(--ctl-off-opacity);
+  cursor: not-allowed;
+}
+
+
+/* 隐藏的文件选择器（导入/导出、自定义背景用）
+   为什么不写内联 style：契约《禁止内联CSS与JS》——定位交给类名，JS 只加类。
+   用 position:fixed + 视口外偏移而非 display:none：某些浏览器对 display:none 的 input 不弹选择框。 */
+.file-picker-hidden {
+  position: fixed;
+  left: -9999px;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
