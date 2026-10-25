@@ -17,6 +17,7 @@
 //   3. index.json 走 .tmp + rename 原子写，且用串行队列避免并发写互相覆盖
 
 import fs from 'node:fs';
+import { createSerialQueue, writeFileAtomic, writeJsonAtomic } from './atomic-json.mjs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
@@ -118,8 +119,8 @@ function fail(reason, message, status = 400) {
  * @param {{dir: string, indexFile: string, trashDir: string}} ctx 存储上下文
  */
 function createIndexStore(ctx) {
-  /** 串行队列：索引读写不并发，避免两次上传把 index.json 互相覆盖 */
-  let chain = Promise.resolve();
+  /** 串行队列：索引读写不并发，避免两次上传把 index.json 互相覆盖（与全仓同一实现） */
+  const enqueue = createSerialQueue();
 
   /** 确保目录存在（首次使用时创建） */
   function ensureDirs() {
@@ -138,26 +139,16 @@ function createIndexStore(ctx) {
     }
   }
 
-  /** 原子写索引：先写 .tmp 再 rename（rename 在单文件上是原子的，不会出现"写一半"） */
+  /**
+   * 写索引：复用全仓统一的 writeJsonAtomic（写 tmp → **fsync** → rename）。
+   *
+   * 旧实现手写了 tmp+rename 但**漏了 fsync**：rename 只保证"看到旧或新文件"，
+   *   不保证新文件内容已落盘 —— 崩溃窗口里会出现 0 字节的 index.json，
+   *   图片还在但界面里全部消失（纯色预设那条路早就用 writeJsonAtomic 修过，这里是漏网的另一处）。
+   */
   function write(items) {
     ensureDirs();
-    const text = JSON.stringify({ version: 1, items }, null, 2);
-    const tmp = `${ctx.indexFile}.tmp`;
-    fs.writeFileSync(tmp, text, 'utf8');
-    fs.renameSync(tmp, ctx.indexFile);
-  }
-
-  /**
-   * 把一次修改排进串行队列。
-   * @template T
-   * @param {() => T} fn 要执行的操作
-   * @returns {Promise<T>} 操作结果
-   */
-  function enqueue(fn) {
-    const next = chain.then(fn, fn);
-    // 队列自身不能被失败拖死：吞掉拒绝，只把结果交给调用方
-    chain = next.then(() => undefined, () => undefined);
-    return next;
+    writeJsonAtomic(ctx.indexFile, { version: 1, items });
   }
 
   return { ensureDirs, read, write, enqueue };
@@ -224,7 +215,9 @@ function saveUpload(env, buf, headers) {
   const abs = path.join(env.ctx.dir, file);
   try {
     env.store.ensureDirs();
-    fs.writeFileSync(abs, buf);
+    // 与索引同一套原子写（tmp → fsync → rename）：否则崩溃后可能"索引有这条、图片 0 字节"，
+    //   而取文件路径只校验 isFile()（0 字节也算存在）⇒ 不会被剔除，用户长期破图。
+    writeFileAtomic(abs, buf);
   } catch (e) {
     return fail('disk-error', `写入磁盘失败：${(e && e.message) || e}`, 500);
   }

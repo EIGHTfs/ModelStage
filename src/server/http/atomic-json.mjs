@@ -57,6 +57,31 @@ export function writeJsonAtomic(file, value) {
 }
 
 /**
+ * 原子写**任意字节**（图片等二进制）：写 tmp → fsync → rename，与 writeJsonAtomic 同一套顺序。
+ *
+ * 为什么图片也要 fsync：上传后"索引里有这条、文件却是 0 字节"的窗口确实存在，
+ *   而取文件路径只校验 `statSync(abs).isFile()` —— 0 字节文件照样算存在，
+ *   没有任何自愈会把这条剔除 ⇒ 用户长期看到破图。图片不大（上限几 MB），一次 fsync 的代价可接受。
+ * @param {string} file 目标文件绝对路径
+ * @param {Uint8Array|Buffer} bytes 内容
+ * @returns {{bytes:number}}
+ */
+export function writeFileAtomic(file, bytes) {
+  ensureDir(path.dirname(file));
+  const tmp = `${file}.tmp`;
+  const fd = fs.openSync(tmp, 'w', FILE_MODE);
+  try {
+    fs.writeFileSync(fd, bytes);
+    fs.fsyncSync(fd);          // ← 数据落盘后再 rename（顺序与 writeJsonAtomic 一致）
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmp, file);
+  try { fs.chmodSync(file, FILE_MODE); } catch { /* 已正确时可能失败，忽略 */ }
+  return { bytes: bytes.length };
+}
+
+/**
  * 串行队列：把"读-改-写"整段排进队列，避免两次并发修改互相覆盖。
  *
  * 为什么不是锁：单进程单事件循环下，队列已经足够（并且没有任何"进程崩了锁不释放"的风险）。
