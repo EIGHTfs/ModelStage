@@ -14,7 +14,7 @@ import { PANEL_GROUPS, applyCapabilities, selfCheck, settingKeyOf } from './sche
 import { mountPanel } from './view.js';
 import { applyDebugLog, applyHangGuard, applyShowStatus, connectShellControls, runSettingsAction } from './shell-controls.js';
 import { applyBackground, applyTheme, readViewSettings, saveViewSettings } from '../app/view-settings.js';
-import { refreshBackgrounds } from './background-list.js';
+import { refreshBackgrounds, refreshSolids } from './background-list.js';
 import { applyAnimLoop, applyTransportMotion } from '../app/transport-actions.js';
 import { repaintActive } from '../render/playback.js';
 import {
@@ -327,6 +327,7 @@ function rebuildPanelFor(renderer) {
   refreshSkinHook();
   // 自定义背景图列表：面板重建后重新拉一次（切面/重开面板都会走到这里）
   refreshBackgrounds().catch(() => { /* 列表拉取失败只是少一块内容，不影响面板其余部分 */ });
+  refreshSolids().catch(() => { /* 同上：纯色预设取不到不阻塞面板 */ });
   state.panelSnapshot = panelSnapshot();
   const check = selfCheck(renderer || {});
   state.panelSelfCheck = check;

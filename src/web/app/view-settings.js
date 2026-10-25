@@ -5,6 +5,7 @@
 // 新旧实现共用一份，切换时用户看到的选择不会丢。
 
 import { state } from './context.js';
+import { defaultSolidColor } from './background-solids.js';
 
 /** 视图设置存储键：主题、背景等展示类设置（全站唯一的偏好键，面板/布局/调试段都在里面） */
 export const VIEW_SETTINGS_KEY = 'spine-viewer-settings-v2';
@@ -107,7 +108,7 @@ export function setCustomBackground(url) {
   stageEl.style.backgroundSize = url ? 'cover' : '';
   stageEl.style.backgroundPosition = url ? 'center' : '';
   state.viewBg = 'custom';
-  saveViewSettings({ background: { mode: 'custom', color: '#2a2a2a', imageUrl: url || '' } });
+  saveViewSettings({ background: { mode: 'custom', color: defaultSolidColor(), imageUrl: url || '' } });
   document.documentElement.dataset.bgImage = url ? 'set' : 'none';
   return !!url;
 }
@@ -129,6 +130,10 @@ export function applyBackground(mode) {
   stageEl.style.backgroundImage = '';
   stageEl.style.backgroundSize = '';
   stageEl.style.backgroundPosition = '';
+  // 纯色模式：颜色值由 CSS 变量 --stage-solid 驱动（panel.css 里 #stage[data-bg="solid"] 读它）
+  //   颜色属于运行时数据 ⇒ 以变量下发，不写 style.background 字面量（契约 §3.1 动态值例外）
+  const savedColor = (readViewSettings().background || {}).color || defaultSolidColor();
+  if (m === 'solid') { try { stageEl.style.setProperty('--stage-solid', savedColor); } catch { /* 忽略 */ } }
   // 背景唯一入口：交给 Surface（它会写 data-bg 并通知所有渲染器）
   try {
     if (state.surface && typeof state.surface.setBackground === 'function') state.surface.setBackground(m);
@@ -141,8 +146,41 @@ export function applyBackground(mode) {
   saveViewSettings({
     background: {
       mode: m,
-      color: (cur.background && cur.background.color) || '#2a2a2a',
+      color: (cur.background && cur.background.color) || defaultSolidColor(),
       imageUrl: (cur.background && cur.background.imageUrl) || '',
     },
   });
+}
+
+
+/**
+ * 应用一个纯色（并切到纯色模式）。
+ *
+ * 语义：**存的是颜色值本身，不是预设 id** —— 预设只是快捷方式，
+ *   因此预设被删/改名都不会影响已经选中的颜色（这也是它敢放在界面上随便改的前提）。
+ * @param {string} color '#rrggbb'（非法时回落到默认预设色）
+ * @returns {boolean} 是否成功应用
+ */
+export function setBackgroundColor(color) {
+  const stageEl = document.getElementById('stage');
+  if (!stageEl) return false;
+  const ok = /^#[0-9a-f]{6}$/i.test(String(color || ''));
+  const c = ok ? String(color).toLowerCase() : defaultSolidColor();
+  try { stageEl.style.setProperty('--stage-solid', c); } catch { return false; }
+  state.viewBg = 'solid';
+  try {
+    if (state.surface && typeof state.surface.setBackground === 'function') state.surface.setBackground('solid');
+    else stageEl.dataset.bg = 'solid';
+  } catch { stageEl.dataset.bg = 'solid'; }
+  // 与切模式同一条广播：右栏档位/底栏下拉都靠它收敛
+  try { document.dispatchEvent(new CustomEvent('panel:bg-applied', { detail: { mode: 'solid' } })); } catch { /* 忽略 */ }
+  const cur = readViewSettings();
+  saveViewSettings({
+    background: {
+      mode: 'solid',
+      color: c,
+      imageUrl: (cur.background && cur.background.imageUrl) || '',
+    },
+  });
+  return true;
 }

@@ -8,7 +8,11 @@
 
 import { el } from './dom.js';
 import { stageLog, stageStatus } from '../app/status.js';
-import { applyBackground, readViewSettings, setCustomBackground } from '../app/view-settings.js';
+import { applyBackground, readViewSettings, setBackgroundColor, setCustomBackground } from '../app/view-settings.js';
+import {
+  addSolid, listSolids, removeSolid, renameSolid, resetSolids,
+} from '../app/background-solids.js';
+import { openColorPicker } from './color-picker.js';
 import {
   listBackgrounds, pickFile, removeBackground, renameBackground, uploadBackground,
 } from '../app/backgrounds.js';
@@ -243,4 +247,188 @@ export async function refreshBackgrounds() {
     box.dataset.bgMsg = `列表渲染异常：${(e && e.message) || e}`;
     return -1;
   }
+}
+
+
+// ============================================================ 纯色预设（ctl-bg-solids）
+//
+// 与上面的自定义图片列表同一套交互习惯（列表 + 行内操作 + 二次确认 + 失败原样透出），
+// 数据来自服务端 /api/backgrounds/solids（见 app/background-solids.js）。
+// 职责划分：颜色挑选交给 panel/color-picker.js（纯 UI），这里只管"命名 + 增删改 + 应用"。
+
+/** 纯色列表容器（现查，不闭包持有——面板会重建） */
+const SOLID_BOX_SEL = '#right-panel [data-ctl="ctl-bg-solids"]';
+
+/** 当前纯色列表数据 */
+let solidItems = [];
+
+/** 纯色列表的状态文案（断言读 data-bg-solid-msg） */
+function solidSay(box, text, kind = 'ok') {
+  box.dataset.bgSolidMsg = text;
+  const hint = box.querySelector('.bg-solid-hint');
+  if (!hint) return;
+  hint.textContent = text;
+  hint.dataset.kind = kind;
+}
+
+/** 问答式命名：新建与改名共用一个入口（便于自动化时 stub window.prompt） */
+function askName(defaultValue) {
+  try {
+    const v = window.prompt('给这个颜色起个名字（≤30 字）', defaultValue || '');
+    if (v === null) return null;
+    const t = String(v).trim();
+    return t || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 应用某条预设（切到纯色模式并立即生效）。
+ * @param {object} item 预设条目
+ * @param {HTMLElement} box 容器
+ */
+function applySolid(item, box) {
+  if (!item) return;
+  setBackgroundColor(item.color);
+  box.dataset.bgSolidApplied = item.color;
+  solidSay(box, `已应用「${item.name}」 ${item.color}`, 'ok');
+}
+
+/**
+ * 删除后的回落：删掉的正好是当前在用的颜色时，回落到第一条；列表空了就切回棋盘格。
+ * 这条必须先定义清楚——否则会留下"舞台还显示着已删除的颜色"这种未定义行为。
+ * @param {string} removedColor 被删掉的颜色值
+ * @param {HTMLElement} box 容器
+ */
+function fallbackAfterRemove(removedColor, box) {
+  const cur = (readViewSettings().background || {}).color || '';
+  if (String(cur).toLowerCase() !== String(removedColor).toLowerCase()) return false;
+  const next = solidItems[0];
+  if (next) { applySolid(next, box); return false; }
+  applyBackground('checkerboard');
+  solidSay(box, '纯色预设已删空，已切回棋盘格', 'error');
+  return true;   // 让调用方别再覆盖这条更重要的提示
+}
+
+/** 一行：色块（点击即应用）+ 名称 + 改名 + 删除 */
+function buildSolidRow(item, box) {
+  const row = el('div', 'bg-solid-row');
+  row.dataset.solidId = item.id;
+  const swatch = el('button', 'bg-solid-swatch');
+  swatch.type = 'button';
+  swatch.title = `应用 ${item.color}`;
+  // 颜色是运行时数据 ⇒ 以 CSS 变量下发，不写 style.background 字面量
+  swatch.style.setProperty('--swatch', item.color);
+  swatch.addEventListener('click', () => applySolid(item, box));
+  row.append(swatch, el('span', 'bg-solid-name', item.name));
+
+  const rename = el('button', 'bg-btn', '改名');
+  rename.type = 'button';
+  rename.addEventListener('click', () => startRenameSolid(item, box));
+  const del = el('button', 'bg-btn bg-btn-danger', '删');
+  del.type = 'button';
+  del.addEventListener('click', () => startRemoveSolid(del, item, box));
+  row.append(rename, del);
+  return row;
+}
+
+/** 整表重绘（列表 + 底部按钮） */
+function renderSolidList(box) {
+  const list = el('div', 'bg-solids');
+  for (const item of solidItems) list.append(buildSolidRow(item, box));
+  if (!solidItems.length) list.append(el('p', 'ctl-list-empty', '还没有纯色预设'));
+
+  const foot = el('div', 'bg-solid-foot');
+  const add = el('button', 'bg-btn bg-btn-primary', '+ 添加颜色');
+  add.type = 'button';
+  add.addEventListener('click', () => startAddSolid(box));
+  const reset = el('button', 'bg-btn bg-btn-danger', '恢复默认');
+  reset.type = 'button';
+  reset.addEventListener('click', () => startResetSolids(reset, box));
+  foot.append(add, reset);
+
+  const hint = el('p', 'bg-solid-hint', '');
+  box.dataset.bgSolidCount = String(solidItems.length);
+  box.replaceChildren(hint, list, foot);
+}
+
+/**
+ * 刷新纯色列表（面板重建、增删改、恢复默认之后都调它）。
+ * @returns {Promise<number>} 条数（容器不存在返回 -1）
+ */
+export async function refreshSolids() {
+  const box = document.querySelector(SOLID_BOX_SEL);
+  if (!box) return -1;
+  const r = await listSolids();
+  if (!r.ok) {
+    solidItems = [];
+    box.dataset.bgSolidCount = '0';
+    solidSay(box, r.message || '取纯色预设失败', 'error');
+    box.replaceChildren(box.querySelector('.bg-solid-hint') || el('p', 'bg-solid-hint', r.message || ''));
+    return 0;
+  }
+  solidItems = r.items || [];
+  renderSolidList(box);
+  return solidItems.length;
+}
+
+/** 添加：调色盘取色 → 命名 → POST → 刷新 → **立即应用**（不然用户以为没成功） */
+async function startAddSolid(box) {
+  const picked = await new Promise((resolve) => {
+    openColorPicker({
+      initial: (readViewSettings().background || {}).color || '#2a2a2a',
+      anchor: box,
+      onConfirm: (color) => resolve(color),
+      onCancel: () => resolve(null),
+    });
+  });
+  if (!picked) return;
+  const name = askName(`颜色 ${picked}`);
+  if (!name) { solidSay(box, '已取消：没有命名', 'error'); return; }
+  const r = await addSolid(name, picked);
+  if (!r.ok) { solidSay(box, r.message || '添加失败', 'error'); return; }
+  await refreshSolids();
+  const item = r.item || solidItems.find((x) => x.color === picked);
+  if (item) applySolid(item, box);
+}
+
+/** 改名：id 与 color 不变，只换名字 */
+async function startRenameSolid(item, box) {
+  const name = askName(item.name);
+  if (!name || name === item.name) return;
+  const r = await renameSolid(item.id, name);
+  if (!r.ok) { solidSay(box, r.message || '改名失败', 'error'); return; }
+  await refreshSolids();
+  solidSay(box, `已改名：${name}`, 'ok');
+}
+
+/** 删除：两段式确认（防误点），删完按"是否正在用"决定回落 */
+async function startRemoveSolid(btn, item, box) {
+  if (!btn.classList.contains('is-armed')) {
+    btn.classList.add('is-armed');
+    btn.textContent = '确认删？';
+    setTimeout(() => { btn.classList.remove('is-armed'); btn.textContent = '删'; }, DISARM_MS);
+    return;
+  }
+  const r = await removeSolid(item.id);
+  if (!r.ok) { solidSay(box, r.message || '删除失败', 'error'); return; }
+  await refreshSolids();
+  const switchedToCheckerboard = fallbackAfterRemove(item.color, box);
+  if (!switchedToCheckerboard) solidSay(box, `已删除「${item.name}」`, 'ok');
+}
+
+/** 恢复默认：两段式确认（误点会把自定义全清掉，所以必须二次确认） */
+async function startResetSolids(btn, box) {
+  if (!btn.classList.contains('is-armed')) {
+    btn.classList.add('is-armed');
+    btn.textContent = '确认恢复？';
+    setTimeout(() => { btn.classList.remove('is-armed'); btn.textContent = '恢复默认'; }, DISARM_MS);
+    return;
+  }
+  const r = await resetSolids();
+  if (!r.ok) { solidSay(box, r.message || '恢复默认失败', 'error'); return; }
+  solidItems = r.items || [];
+  renderSolidList(box);
+  solidSay(box, `已恢复默认 ${solidItems.length} 条`, 'ok');
 }

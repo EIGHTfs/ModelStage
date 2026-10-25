@@ -26,7 +26,8 @@
 import { MIX_DEFAULT, MIX_MAX, MIX_MIN, MIX_STEP, SPEED_DEFAULT, SPEED_MAX, SPEED_MIN, SPEED_STEP } from './slider.js';
 
 export const RENDERER_INDEPENDENT = [
-  'ctl-theme', 'ctl-bg-mode', 'ctl-bg-color', 'ctl-bg-image', 'ctl-bg-list',
+  // 背景类全部与渲染器无关（外壳行为）：纯色预设列表也是外壳数据，不依赖任何渲染能力
+  'ctl-theme', 'ctl-bg-mode', 'ctl-bg-color', 'ctl-bg-image', 'ctl-bg-list', 'ctl-bg-solids',
   'ctl-hang-guard', 'ctl-show-status', 'ctl-debug-log', 'ctl-settings-io',
   // 动作组的循环开关由应用层定时器推进、动作列表内容由应用层填，
   //   与"渲染器是否声明某项能力"无关（两面都要有）。
@@ -188,6 +189,15 @@ export const PANEL_GROUPS = [
         values: ['checkerboard', 'solid', 'transparent', 'custom'],
         defaultValue: 'checkerboard',
         titles: ['棋盘格底纹', '纯色底色', '透明（露出页面底色）', '本地图片背景（选一张图片作为舞台背景）'],
+      },
+      {
+        // 纯色预设列表：内容由 panel/background-list.js 从服务端填（应用/添加/改名/删除/恢复默认）
+        //   为什么独立成一块：预设是要能跨设备带走的数据（存服务端），
+        //   而"当前选中的颜色值"才是界面偏好（存本地 background.color）。
+        kind: 'dynamic-list',
+        label: '纯色预设',
+        id: 'ctl-bg-solids', core: true,
+        note: '点色块即应用；可添加 / 改名 / 删除 / 恢复默认（预设存服务端，换浏览器也在）',
       },
     ],
   },
