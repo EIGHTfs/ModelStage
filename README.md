@@ -107,36 +107,23 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 
 ---
 
-## 致谢与来源
+## 合规状态
 
-**前端界面（布局、结构与样式）** 取自 [Boneview](https://github.com/souling01/spine-viewer-webgl)（作者 souling01）。
-服务端、插件机制、解析与导出工具链、渲染引擎均为本项目自行实现。
-
-- 原项目在线版：https://souling01.github.io/spine-viewer-webgl/
-- 原项目未声明 LICENSE（`license: null`），默认保留全部权利
-
-## 合规状态（重要）
-
-| 项目 | 许可证 | 影响 |
+| 项目 | 许可证 | 说明 |
 |---|---|---|
-| Boneview（前端界面来源） | **无 LICENSE（`license: null`）** | 默认保留全部权利 |
-| Spine Runtimes（本项目内联使用） | 自定义协议（NOASSERTION） | 受 Spine Runtimes License Agreement 约束 |
-| spive2d（参考项目，非本库代码） | MIT | 若将来以其为基础重做，需保留 MIT 声明 |
+| **本项目自有代码** | **MIT**（见 [LICENSE](LICENSE)） | — |
+| **Boneview**（[仓库](https://github.com/souling01/spine-viewer-webgl)） | **无 LICENSE**（默认保留全部权利） | 仅**前端布局**参考；本项目代码 90% 以上自研，不含其代码 |
+| **Spine Runtimes** | 自定义协议 | 运行时源码**不入库**、需自备；**不受本项目 MIT 覆盖** |
 
-**当前状态**：本仓库为**私有、本地自用**，不对外分发，也不部署到公开 Pages。
+> 本项目使用官方 Spine Runtimes（[Esoteric Software](https://esotericsoftware.com)），受 [Spine Runtimes License Agreement](https://esotericsoftware.com/spine-runtimes-license) 约束。集成预览可以，但每个使用 Spine 数据的终端用户仍需拥有 Spine 编辑器授权。
 
-## Spine Runtimes 申明
-
-> 本工具使用官方 Spine Runtimes（[Esoteric Software](https://esotericsoftware.com)），
-> 受 [Spine Runtimes License Agreement](https://esotericsoftware.com/spine-runtimes-license) 约束。
-> 集成预览可以，但每个使用 Spine 数据的终端用户仍需拥有 Spine 编辑器授权。
+**仓库内不含任何游戏提取资源** —— 模型、纹理等素材均不入库，需自备。
 
 ---
 
 ## 免责
 
-本 README 中的许可证与合规说明基于对原仓库元数据的查证与开源许可一般原理，**不构成法律意见**。
-对外分发前建议咨询专业 IP 律师。
+许可证说明基于开源许可一般原理，**不构成法律意见**。对外分发前建议咨询专业 IP 律师。
 
 ## 导出物版权
 

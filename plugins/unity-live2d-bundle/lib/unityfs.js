@@ -134,7 +134,15 @@
    *   blocksInfoBytes:number, dataStart:number, data:Uint8Array
    * }}
    */
-  function parse(u8) {
+  /**
+   * 只读容器头 + blocksInfo 表（**不解压任何数据块**）。
+   *
+   * 为什么单拎出来：准入判断只需要"解压后总共多大"，而解压数据块是全流程最贵的一步
+   *   （LZ4 包 19MB→42MB 实测 150ms+）。有了它就能在一份块表上求和，P90 < 5ms。
+   * @param {Uint8Array} u8
+   * @returns {object} parse 返回里的"头部字段"（不含 data / blockSpans / totalSize）
+   */
+  function readHeader(u8) {
     // UnityFS 的容器头与 blocksInfo 表都是**大端**（与内嵌 SerializedFile 的小端不同）
     const r = new B.Reader(u8, { endian: '>' });
     const signature = r.cstring('signature');
@@ -207,6 +215,22 @@
     if (dataflags & ARCHIVE.BlockInfoNeedPaddingAtStart) r.align(16);
     const dataStart = r.pos;
 
+    return {
+      signature, version, playerVersion, engineVersion, dataflags, blocksInfoAtEnd,
+      usesEncryption: false, blocks, nodes, blocksInfoContentEnd,
+      blocksInfoBytes: blocksInfoContentEnd - start, dataStart, blocksInfoHash: B.toHex(hash),
+      reader: r,   // 游标停在 dataStart，parse 解压数据块时要用；对外返回前剔除
+    };
+  }
+
+  /**
+   * 解析 UnityFS 容器（**含数据块解压**）。头部与块表复用 readHeader。
+   * @param {Uint8Array} u8 整个文件字节
+   */
+  function parse(u8) {
+    const h = readHeader(u8);
+    const { blocks, dataStart, reader: r } = h;
+
     // 数据块：**预分配整段**，逐块直接解压到对应 offset。
     //   为什么不再用「每块各解一份 + concat」：那会让峰值 = 解压总量 ×2
     //   （实测 19MB 包：解压 42.1MB + concat 复制 42.1MB = 84.2MB），而块只有一个时又白留一份。
@@ -223,27 +247,29 @@
       cursor += b.uncompressedSize;
     }
 
+    const { reader, ...head } = h;   // reader 是内部游标，不对外暴露
+    return { ...head, blockSpans, data, totalSize: u8.length };
+  }
+
+  /**
+   * 轻量摘要：只读头 + blocksInfo，**不解压数据块**。
+   * 供准入判断与插件声明内存用（见 docs/设计/解包内存预估.md）。
+   * @param {Uint8Array} u8
+   * @returns {{decompressedBytes:number, compressedBytes:number, blockCount:number, cabBytes:number, resSBytes:number}}
+   */
+  function blocksSummary(u8) {
+    const h = readHeader(u8);
+    let decompressedBytes = 0;
+    let compressedBytes = 0;
+    for (const b of h.blocks) { decompressedBytes += b.uncompressedSize; compressedBytes += b.compressedSize; }
+    const cab = h.nodes.find((n) => /CAB-/.test(n.path) && !/\.resS$/i.test(n.path));
+    const resS = h.nodes.find((n) => /\.resS$/i.test(n.path));
     return {
-      signature,
-      version,
-      playerVersion,
-      engineVersion,
-      dataflags,
-      blocksInfoAtEnd,
-      usesEncryption: false,
-      blocks,
-      nodes,
-      blocksInfoContentEnd,
-      blocksInfoBytes: blocksInfoContentEnd - start,
-      dataStart,
-      blockSpans,
-      data,
-      totalSize: u8.length,
-      blocksInfoHash: B.toHex(hash),
+      decompressedBytes, compressedBytes, blockCount: h.blocks.length,
+      cabBytes: cab ? cab.size : 0, resSBytes: resS ? resS.size : 0,
     };
   }
 
-  /** 从解析结果里按节点 path 取该节点的数据切片 */
   function nodeBytes(parsed, path) {
     const node = parsed.nodes.find((n) => n.path === path);
     if (!node) throw NS.errors.fail('ULB_ERR_CONTAINER_PARSE', `容器内没有节点: ${path}`);
@@ -253,5 +279,5 @@
     return parsed.data.subarray(node.offset, node.offset + node.size);
   }
 
-  NS.unityfs = { parse, nodeBytes, lz4Decompress, ARCHIVE, COMPRESSION };
+  NS.unityfs = { parse, readHeader, blocksSummary, nodeBytes, lz4Decompress, ARCHIVE, COMPRESSION };
 }

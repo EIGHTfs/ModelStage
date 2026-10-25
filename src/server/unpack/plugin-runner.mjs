@@ -258,6 +258,52 @@ export async function unpackFile({ rootId, rel, absPath }) {
   return { ok: true, prefix: String(res.prefix), entry: String(res.entry), files: view, readMs, unpackMs };
 }
 
+/**
+ * 问插件"这个容器解包要吃多少内存"（契约 插件.md §2.2 的 decompressedBytes）。
+ *
+ * 代价控制：插件侧走 blocksSummary（只读头 + blocksInfo，**不解压数据块**），
+ *   实测 19 包 P50 0.13ms / P90 0.91ms（整包 probe 是 20/56/173ms）。
+ * 拿不到（插件不支持/不是它的格式/解析失败）就返回 null ⇒ 核心走回落，绝不阻断加载。
+ * @param {{rootId:string, rel:string, absPath:string}} opts
+ * @returns {{decompressedBytes:number, compressedBytes:number}|null}
+ */
+export function estimateMemoryOf({ rootId, rel, absPath }) {
+  const p = ensurePlugin();
+  if (!p.ok || typeof p.api.estimateMemory !== 'function') return null;
+  const name = path.basename(String(rel));
+  /**
+   * 只读文件头部：块表（blocksInfo）几乎总在头部，读到 256KB 就能算；
+   * 少数把块表放文件尾的包（实测 aijier_3）会解析失败 ⇒ 退回全量读。
+   */
+  const readHead = (n) => {
+    const fd = fs.openSync(absPath, 'r');
+    try {
+      const size = fs.fstatSync(fd).size;
+      const len = Math.min(size, n);
+      const buf = Buffer.allocUnsafe(len);
+      fs.readSync(fd, buf, 0, len, 0);
+      return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+    } finally {
+      fs.closeSync(fd);
+    }
+  };
+  try {
+    let m = null;
+    try { m = p.api.estimateMemory({ rootId, rel, name, size: 0, bytes: readHead(MEMORY_PROBE_HEAD_BYTES) }); } catch { m = null; }
+    if (m && m.decompressedBytes > 0) return m;
+    // 头部不够（块表在尾 / 头部信息不足）⇒ 老老实实读全量再算一次
+    const buf = fs.readFileSync(absPath);
+    const full = { rootId, rel, name, size: buf.length, bytes: new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength) };
+    m = p.api.estimateMemory(full);
+    return (m && m.decompressedBytes > 0) ? m : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 内存声明的"只读头部"字节数：块表几乎总在头部，256KB 够绝大部分包 */
+const MEMORY_PROBE_HEAD_BYTES = 256 * 1024;
+
 /** 运行器自身的状态（供 /api/unpack/stats 与排障用） */
 export function runnerInfo() {
   return {

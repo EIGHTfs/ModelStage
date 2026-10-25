@@ -19,12 +19,16 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { unpackFile, runnerInfo } from './plugin-runner.mjs';
 import { checkUnpackMemory } from './capacity.mjs';
+import { estimateMemoryOf } from './plugin-runner.mjs';
 
 /** 1MB 的字节数（下面多处换算用；写成常量避免 1048576 散落） */
 const BYTES_PER_MB = 1024 * 1024;
 
 /** 缓存上限（可用 config 覆盖；4GB 可用内存 / 磁盘都在这个量级以内安全） */
 const DEFAULT_LIMITS = { maxDirs: 20, maxBytes: 8 * 1024 * 1024 * 1024 };
+
+/** 内存声明/实测的缓存文件名（在 data/unpacked/<fp>/ 下） */
+const PROBE_FILE = 'probe.json';
 
 /** 清理解包的节流间隔：resolve 后最多 10 分钟扫一次目录 */
 const CLEANUP_INTERVAL_MS = 10 * 60 * 1000;
@@ -127,6 +131,63 @@ export function createUnpackStore(opts) {
   }
 
   const fpDir = (fp) => path.join(rootDir, fp);
+  /** 内存声明/实测的缓存文件（与解包产物同指纹同目录，跟着 LRU 一起回收） */
+  const probePath = (fp) => path.join(fpDir(fp), PROBE_FILE);
+
+  /** 读 probe 缓存（不存在/损坏都当没有，不让缓存问题阻断解包） */
+  function readProbe(fp) {
+    try { return JSON.parse(fs.readFileSync(probePath(fp), 'utf8')); } catch { return null; }
+  }
+
+  /** 合并写 probe 缓存 */
+  function writeProbe(fp, patch) {
+    const next = { ...(readProbe(fp) || {}), ...patch };
+    try {
+      fs.mkdirSync(fpDir(fp), { recursive: true });
+      fs.writeFileSync(probePath(fp), `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+    } catch { /* 缓存写不进去不影响正确性 */ }
+    return next;
+  }
+
+  /**
+   * 本次准入要用的内存声明：缓存优先，其次现场问插件（轻量，不解压），都没有返回 null。
+   * @param {string} fp 指纹
+   * @param {{rootId:string, rel:string, absPath:string}} req
+   */
+  function memoryDeclaration(fp, req) {
+    const cached = readProbe(fp);
+    if (cached && (cached.measuredPeakBytes > 0 || cached.decompressedBytes > 0)) return cached;
+    // 缓存没有 ⇒ 现场问插件（只读块表，P90 < 1ms）。**这里不写盘**：
+    //   目标目录 <fp>/ 此刻还不存在，提前 mkdir 会让解包产物"临时目录 rename 到 <fp>"失败（ENOTEMPTY）。
+    //   缓存统一在解包成功后写（recordMeasuredPeak）。
+    const est = estimateMemoryOf(req);
+    if (!est) return cached;
+    return { decompressedBytes: est.decompressedBytes, compressedBytes: est.compressedBytes, probeAt: Date.now() };
+  }
+
+  /**
+   * 解包完成后回填**实测峰值**（契约 §2.2 第①段的数据来源）。
+   *
+   * 取"起始 RSS + 本次 VmHWM 增量"：本次创了新高就等于本次峰值；
+   *   没创新高说明历史上解过更大的包，此时保留旧值（上包络语义，宁高不低）。
+   * @param {string} fp
+   * @param {{rss:number, peak:number}} before
+   * @param {{rss:number, peak:number}} after
+   */
+  function recordMeasuredPeak(fp, before, after, decl) {
+    const guess = before.rss + Math.max(0, after.peak - before.peak);
+    const prev = readProbe(fp) || {};
+    const measuredPeakBytes = Math.max(prev.measuredPeakBytes || 0, guess);
+    return writeProbe(fp, {
+      // 声明值存档（供下次准入直接用，避免再 probe）
+      decompressedBytes: (decl && decl.decompressedBytes) || prev.decompressedBytes || 0,
+      compressedBytes: (decl && decl.compressedBytes) || prev.compressedBytes || 0,
+      probeAt: (decl && decl.probeAt) || prev.probeAt || Date.now(),
+      measuredPeakBytes,
+      measuredAt: Date.now(),
+      samples: (prev.samples || 0) + 1,
+    });
+  }
   const indexPath = (fp) => path.join(fpDir(fp), 'index.json');
 
   /** 读索引（不存在/损坏 → null） */
@@ -198,7 +259,20 @@ export function createUnpackStore(opts) {
         unpackMs: res.unpackMs,
       };
       fs.writeFileSync(path.join(tmpDir, 'index.json'), JSON.stringify(index, null, 2), 'utf8');
-      fs.renameSync(tmpDir, fpDir(fp)); // 同卷 rename：原子替换，读者要么看到旧目录要么看到新目录
+      // 同卷 rename：原子替换，读者要么看到旧目录要么看到新目录。
+      // 目标目录已存在时 POSIX rename 会报 ENOTEMPTY（旧实现直接失败 ⇒
+      //   "files 缺失要重新解包"这条恢复路径其实一直不可用）。这里先取走 probe 缓存、
+      //   删掉旧目录再 rename，然后把缓存写回，避免重新解包把内存实测值一起丢掉。
+      const keepProbe = readProbe(fp);
+      try {
+        fs.renameSync(tmpDir, fpDir(fp));
+      } catch (e) {
+        if (e && (e.code === 'ENOTEMPTY' || e.code === 'EEXIST' || e.code === 'EPERM')) {
+          fs.rmSync(fpDir(fp), { recursive: true, force: true });
+          fs.renameSync(tmpDir, fpDir(fp));
+          if (keepProbe) writeProbe(fp, keepProbe);
+        } else throw e;
+      }
       return { index, files };
     } catch (e) {
       try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* 清理失败不影响主流程 */ }
@@ -309,23 +383,30 @@ export function createUnpackStore(opts) {
       //   否则一次解包可能把机器拖到换页（42MB 包实测峰值 479MB）。
       // 内存保护开关：默认（不带 allowOverLimit）仍是"超预算就拒"，与既有行为一致；
       //   面板关掉开关后前端带 allowOverLimit ⇒ 放行但保留真实数字（overLimit 标记供上层提示）。
-      const mem = checkUnpackMemory(stat.size, { allowOverLimit: req.allowOverLimit === true });
+      // 内存声明：缓存优先 → 现场问插件（只读块表，P90 < 1ms）→ 都没有则回落"源包大小分段"
+      const decl = memoryDeclaration(fp, req);
+      const mem = checkUnpackMemory(stat.size, { allowOverLimit: req.allowOverLimit === true, memory: decl || undefined });
       if (!mem.ok) {
         counters.failures += 1;
         counters.lastFailReason = mem.reason;
         return { ok: false, fingerprint: fp, reason: mem.reason, message: mem.message, budgetMb: mem.budgetMb, peakEstMb: mem.peakEstMb, availMb: mem.availMb };
       }
       sampleRss();
+      const memBefore = rssNow();
       const res = await unpackFile({ rootId: req.rootId, rel: req.rel, absPath: req.absPath });
+      const memAfter = rssNow();
       if (!res.ok) {
         counters.failures += 1;
         return { ok: false, fingerprint: fp, reason: res.reason, message: res.message };
       }
       const { index } = await writeResult(fp, res, { ...req, size: stat.size, mtimeMs: stat.mtimeMs, pluginId: runnerInfo().pluginId, pluginVersion: version });
+      // 实测回填必须在 writeResult **之后**：产物是"临时目录 rename 到 <fp>"落的盘，
+      //   目标目录若被提前创建（写 probe.json 会 mkdir）会让 rename 报 ENOTEMPTY。
+      if (res.ok) recordMeasuredPeak(fp, memBefore, memAfter, decl);
       counters.unpackCount += 1;
       counters.lastUnpackMs = Date.now() - t0;
       sampleRss();
-      return { ok: true, hit: false, fingerprint: fp, prefix: index.prefix, entry: index.entry, files: index.files, unpackMs: index.unpackMs };
+      return { ok: true, hit: false, fingerprint: fp, prefix: index.prefix, entry: index.entry, files: index.files, unpackMs: index.unpackMs, memBasis: mem.basis, peakEstMb: mem.peakEstMb };
     }).finally(() => inflight.delete(fp));
     inflight.set(fp, task);
     const out = await task;

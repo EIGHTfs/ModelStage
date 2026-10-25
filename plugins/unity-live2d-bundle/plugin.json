@@ -19,7 +19,19 @@
       "files",
       "entry"
     ],
-    "note": "resolve(file) 按资产提供者契约 §1.2 返回 { prefix, files, entry }：prefix 形如 vfs://unity-live2d-bundle/<rootId>/<相对目录>/，files 为 relPath→Blob|string 映射，entry 是 files 内的渲染入口键"
+    "note": "resolve(file) 按资产提供者契约 §1.2 返回 { prefix, files, entry }：prefix 形如 vfs://unity-live2d-bundle/<rootId>/<相对目录>/，files 为 relPath→Blob|string 映射，entry 是 files 内的渲染入口键",
+    "memory": {
+      "via": "estimateMemory(file)",
+      "fields": [
+        "decompressedBytes",
+        "rgbaBytes",
+        "peakBytes"
+      ],
+      "supported": [
+        "decompressedBytes"
+      ],
+      "note": "declaration returns { decompressedBytes } from the container block table (no inflate); rgbaBytes is backfilled into data/unpacked/<fp>/probe.json after a real resolve, because it needs the CAB decoded"
+    }
   },
   "errorCodes": [
     "ULB_ERR_BAD_ARGS",

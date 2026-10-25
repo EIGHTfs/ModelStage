@@ -605,7 +605,28 @@ function install() {
   }
 
   // node 侧返回解析入口：服务端解包（17a）直接从返回值取 resolve/canHandle，不经过宿主注册。
-  return { canHandle, resolve, PLUGIN_ID };
+  /**
+   * 内存代价声明（契约 插件.md §2.2 的第②段：decompressedBytes）。
+   *
+   * 为什么由插件来算：只有解析容器的这一方知道"解压后到底多大"。
+   * 代价控制：走 `unityfs.blocksSummary`（**只读头 + blocksInfo，不解压数据块**），
+   *   实测 19 个真实包 P50 0.13ms / P90 0.91ms / max 2.43ms（对比整包 probe 20/56/173ms）。
+   * rgbaBytes 需要纹理尺寸（要解 CAB），准入路径不付这个代价 —— 由 resolve 完成后回填缓存。
+   * @param {{bytes?: Uint8Array}} file
+   * @returns {{decompressedBytes:number, compressedBytes:number}|null} 不是本插件能处理的容器时返回 null
+   */
+  function estimateMemory(file) {
+    try {
+      // 不调 canHandle：那会跑整包 probe（解析 + 找纹理），而这里只需要块表。
+      //   传进来的 bytes 可能只是文件头部（宿主为了省读盘），越界时 blocksSummary 会抛错 ⇒ 返回 null ⇒ 宿主退回全量读。
+      const s = NS.unityfs.blocksSummary(file.bytes);
+      return { decompressedBytes: s.decompressedBytes, compressedBytes: s.compressedBytes };
+    } catch {
+      return null;   // 判不出来就让核心走回落，绝不因此阻断加载
+    }
+  }
+
+  return { canHandle, resolve, estimateMemory, PLUGIN_ID };
 }
 
 // 执行安装：浏览器里走宿主注册；node 里（无 window）拿到 { canHandle, resolve } 后挂到

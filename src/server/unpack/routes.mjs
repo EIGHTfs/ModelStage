@@ -98,6 +98,8 @@ export function createUnpackRoutes(deps) {
           prefix: out.prefix,
           entry: out.entry,
           unpackMs: out.unpackMs,
+          // 判据来源（验收与排障用）：measured / plugin-peak / model-decompressed / legacy-source
+          ...(out.memBasis ? { memBasis: out.memBasis, peakEstMb: out.peakEstMb } : {}),
           files: out.files.map((f) => ({ path: f.path, size: f.size, url: fileUrl(out.fingerprint, f.path) })),
         });
       } catch (e) {

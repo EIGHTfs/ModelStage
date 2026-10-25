@@ -40,7 +40,50 @@ export function memAvailableMb() {
 }
 
 /**
- * 源包大小 → 预估解包峰值（MB）。**按实测三档取上包络，宁高不低**。
+ * **解压后容器 MB → 预估峰值 MB**（准入主判据，见 docs/设计/解包内存预估.md）。
+ *
+ * 为什么变量是"解压后容器"而不是"源包大小"：19 个真实样本实测
+ *   · 峰值 ~ 解压容器 R²=0.971、MAPE 2.5%
+ *   · 峰值 ~ 源包      R²=0.695（aijier_3 源包 19MB 却解压 42MB，源包完全看不出来）
+ *
+ * 分段值 = 各段实测 max × **1.15 安全垫**（段内样本不均衡，用单点 max 当边界会漏新包）：
+ *   ≤5MB → 147（实测 max 128）｜5~13MB → 239（max 208）｜13~21MB → 267（max 232）
+ *   21~43MB → 423（max 368）｜>43MB → 7.0×uncomp + 118（与 43MB 处连续：7×43+118=419）
+ * @param {number} decompressedMb 解压后容器总大小（MB）
+ * @returns {number} 预估峰值（MB，已含安全垫）
+ */
+export function estimatePeakFromDecompressed(decompressedMb) {
+  if (!(decompressedMb > 0)) return 0;
+  for (const [limit, peak] of PEAK_TABLE) {
+    if (decompressedMb <= limit) return peak;
+  }
+  return Math.ceil(decompressedMb * 7.0 + 118);   // >45MB 外推（与 45MB 处连续：7×45+118=433）
+}
+
+/**
+ * 分段表（解压容器 MB 上界 → 预估峰值 MB）。**每段 = 该段实测 max × 1.15 安全垫**。
+ *
+ * 为什么段划得比较密（11 / 11.5 / 11.9 / 12.5…）：19 个实测样本在 11~12MB 这一小段里
+ *   同时出现了 169MB 和 208MB 两种包（同尺寸、同格式、同动作数，差 23%）——
+ *   段划粗了就会让低值包为高值包陪绑，高估冲到 55%。密段把最大高估压到 22% 以内。
+ *   **这是贴着样本划的，属于已知的过拟合**：新包靠 §回填（measuredPeakBytes）修正，
+ *   公式只当冷启动初值（见 docs/设计/解包内存预估.md）。
+ */
+const PEAK_TABLE = [
+  [5, 147],        // 样本 4.44MB → 实测 128
+  [8, 177],        // 7.38 → 154
+  [11, 192],       // 9.4~10.74 → 154~167
+  [11.5, 239],     // 11.04 → 208（离群包，回填后会被真值替换）
+  [11.95, 194],    // 11.54 / 11.77 → 169 / 168
+  [12.5, 214],     // 11.94 → 186
+  [16, 216],       // 14.02 → 188
+  [25, 267],       // 20.86 → 232
+  [45, 423],       // 41.98 / 42.11 → 348 / 368
+];
+
+/**
+ * 源包大小 → 预估解包峰值（MB）。**仅供第③段回落**（插件没有声明 memory 时，保证不倒退）。
+ * 主判据已改用 estimatePeakFromDecompressed —— 源包大小这个变量解释力很弱（R²=0.695）。
  *   12MB→240（实测 176，留 36% 余量）
  *   19MB→494（实测 451，留 10% 余量）
  *   42MB→630（实测 479，留 32% 余量）
@@ -108,6 +151,38 @@ const OVER_LIMIT_TEXT = (peakEstMb, budgetMb, availMb) =>
   `已放行超限解包：预估峰值 ${peakEstMb}MB 超过可用预算 ${budgetMb}MB（当前可用 ${availMb}MB × ${MEM_BUDGET_RATIO}），内存保护已关闭`;
 
 /**
+ * 三段回落，选出本次判据用的「预估峰值」。
+ *
+ * 顺序固定（契约 §2.2）：
+ *   ① 插件/缓存给了 peakBytes        → **直接采信，不再叠加安全垫**（责任在声明方）
+ *   ② 给了 decompressedBytes（或缓存里的实测解压量）→ 按模型算（模型自带 15% 垫）
+ *   ③ 什么都没有（第三方/旧插件）     → 回落到「源包大小分段」= 既有行为，保证不倒退
+ *
+ * 另外：缓存里若有该包的**实测峰值**（runningPeakBytes），优先用它 ×1.05
+ *   ——公式只是冷启动初值，真值由运行积累（见设计文档 §5 回填）。
+ * @param {number} sourceMb 源包大小（MB）
+ * @param {{peakBytes?:number, decompressedBytes?:number, measuredPeakBytes?:number}} [memory]
+ * @returns {{peakEstMb:number, basis:'measured'|'plugin-peak'|'model-decompressed'|'legacy-source'}}
+ */
+export function estimatePeakWithBasis(sourceMb, memory) {
+  const mem = memory || {};
+  // ① 实测回填优先（同一指纹解过包了，用真实值 + 5% 环境波动余量）
+  if (mem.measuredPeakBytes > 0) {
+    return { peakEstMb: Math.ceil((mem.measuredPeakBytes / (1024 * 1024)) * 1.05), basis: 'measured' };
+  }
+  // ② 插件直接声明峰值：不再叠垫
+  if (mem.peakBytes > 0) {
+    return { peakEstMb: Math.ceil(mem.peakBytes / (1024 * 1024)), basis: 'plugin-peak' };
+  }
+  // ③ 声明了解压后大小：模型算（已含 15% 垫）
+  if (mem.decompressedBytes > 0) {
+    return { peakEstMb: estimatePeakFromDecompressed(mem.decompressedBytes / (1024 * 1024)), basis: 'model-decompressed' };
+  }
+  // ④ 回落：源包大小分段（旧行为）
+  return { peakEstMb: estimatePeakMb(sourceMb), basis: 'legacy-source' };
+}
+
+/**
  * 解包入口的内存判据（服务端 resolve 用；**不含时间上限**——用户主动加载不能因为"慢"被拒）。
  *
  * 内存保护开关的落地口径：
@@ -122,7 +197,8 @@ export function checkUnpackMemory(sourceBytes, opts = {}) {
   const sourceMb = sourceBytes / 1024 / 1024;
   const avail = memAvailableMb();
   const budgetMb = Math.round(avail.mb * MEM_BUDGET_RATIO);
-  const peakEstMb = estimatePeakMb(sourceMb);
+  const est = estimatePeakWithBasis(sourceMb, opts.memory);
+  const peakEstMb = est.peakEstMb;
   if (peakEstMb > budgetMb) {
     // 开关关闭 ⇒ 放行（用户自担风险），但 overLimit 标记与文案都要带出去
     if (opts && opts.allowOverLimit === true) {
@@ -134,6 +210,7 @@ export function checkUnpackMemory(sourceBytes, opts = {}) {
         peakEstMb,
         availMb: avail.mb,
         overLimit: true,
+        basis: est.basis,
       };
     }
     return {
@@ -144,7 +221,8 @@ export function checkUnpackMemory(sourceBytes, opts = {}) {
       peakEstMb,
       availMb: avail.mb,
       overLimit: true,
+      basis: est.basis,
     };
   }
-  return { ok: true, budgetMb, peakEstMb, availMb: avail.mb, overLimit: false };
+  return { ok: true, budgetMb, peakEstMb, availMb: avail.mb, overLimit: false, basis: est.basis };
 }

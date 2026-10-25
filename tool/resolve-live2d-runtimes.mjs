@@ -2,7 +2,7 @@
 // resolve-live2d-runtimes.mjs — 自动定位 Live2D 运行时库（供服务端在运行时供给浏览器）
 //
 // 设计目的：
-//   运行时库**不纳入本仓库**（Live2D Cubism Core 受 Live2D Inc. 专有许可约束，见 README 合规说明），
+//   运行时库**不纳入本仓库**（Live2D Cubism Core 受 Live2D Inc. 专有许可约束，不在本项目 MIT 覆盖范围内），
 //   因此需从仓库外部获取。为让「换机器 / 新克隆」也能用，这里做**多候选自动探测**，
 //   与 tool/resolve-runtimes.mjs（Spine 运行时）保持同一套思路与优先级。
 //
