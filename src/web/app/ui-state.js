@@ -19,6 +19,20 @@
 import { PANEL_GROUPS } from '../panel/schema.js';
 import { state } from './context.js';
 import { readViewSettings, saveViewSettings } from './view-settings.js';
+import { stageLog } from './status.js';
+
+/**
+ * 旧版遗留的调试浮层存储键（已废弃，仅用于"发现即清除"）。
+ *
+ * 两个状态现在都存在偏好键的 `debug` 段（panelPos / logLevels），与面板设置同一条读写路径。
+ * 这张表只被 purgeLegacyKeys 使用：确保老数据不会永久占着 localStorage。
+ */
+export const DEBUG_SLOTS = {
+  /** 收起态胶囊的锚点位置（拖动记忆） */
+  panelPos: { old: 'spine-viewer-debug-panel-pos' },
+  /** 调试日志四档多选 */
+  logLevels: { old: 'spine-viewer-debug-levels' },
+};
 
 /** 写盘去抖（ms）：滑块的连续事件会产生大量写，攒一帧以上再落盘 */
 const WRITE_DEBOUNCE_MS = 150;
@@ -55,6 +69,9 @@ export const SPEC = (() => {
             ? ctl.options.map((o) => (o && typeof o === 'object' ? String(o.value) : String(o)))
             : null),
         defaultValue: hasValue ? ctl.defaultValue : ctl.defaultOn === true,
+        // 存储槽：主题/背景模式的值一直存在顶层（uiTheme / background.mode），
+        //   这里只**读**它们做显示真相，不再往 panel 段写一份（否则就是双份存储）
+        store: ctl.id === 'ctl-theme' ? 'theme' : (ctl.id === 'ctl-bg-mode' ? 'bgMode' : 'panel'),
       });
     }
   }
@@ -72,8 +89,6 @@ const appliers = new Map();
 
 /** 落盘调度 */
 let writeTimer = 0;
-/** 落盘是否被暂停（面板默认值回放期间不写盘，避免把用户设置覆盖成默认） */
-let persistSuspended = false;
 /** 是否已成功读过一次（写入前的安全闸） */
 let loadedOnce = false;
 /** 最近一次被校验拒绝的项（诊断用：脏数据回落不该静默） */
@@ -87,6 +102,156 @@ let applySkip = new Set();
 /** 设置 applyAll 的跳过集合（启动时序用；传空集恢复全量） */
 export function setApplySkip(ids) {
   applySkip = ids instanceof Set ? new Set([...ids].map(String)) : new Set([...(ids || [])].map(String));
+}
+
+/** 读整个 debug 段（内部用） */
+function debugSection() {
+  try {
+    const root = readViewSettings() || {};
+    return (root && typeof root.debug === 'object' && root.debug) ? root.debug : {};
+  } catch { return {}; }
+}
+
+/**
+ * 面板位置（收起态胶囊锚点）。
+ * @returns {{left:number, top:number}|null} 无记录/损坏返回 null（调用方用 CSS 默认位置）
+ */
+export function getPanelPos() {
+  ensurePurged();
+  const v = debugSection().panelPos;
+  if (!v || !Number.isFinite(v.left) || !Number.isFinite(v.top)) return null;
+  return { left: v.left, top: v.top };
+}
+
+/** 保存面板位置（走同一条落盘路径） */
+export function setPanelPos(pos) {
+  if (!pos || !Number.isFinite(pos.left) || !Number.isFinite(pos.top)) return false;
+  const next = { ...debugSection(), panelPos: { left: Math.round(pos.left), top: Math.round(pos.top) } };
+  try { saveViewSettings({ debug: next }); return true; } catch { return false; }
+}
+
+/** 调试日志四档（未存过 ⇒ null，调用方用默认三档） */
+export function getLogLevels() {
+  ensurePurged();
+  const v = debugSection().logLevels;
+  return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : null;
+}
+
+/** 保存四档选择 */
+export function setLogLevels(levels) {
+  const arr = Array.isArray(levels) ? levels.filter((x) => typeof x === 'string') : [];
+  const next = { ...debugSection(), logLevels: arr };
+  try { saveViewSettings({ debug: next }); return true; } catch { return false; }
+}
+
+/**
+ * 清除旧版遗留的调试浮层键（**不再做数据迁移**）。
+ *
+ * 语义已变更：不再"把旧键的值搬到新槽位"，只做一件事——发现旧键就删掉，
+ *   避免旧数据永久占着 localStorage。新键（偏好键的 debug 段）才是唯一存储。
+ *
+ * 幂等、便宜（旧键不存在时只是两次 getItem），由读取路径按需触发。
+ * @returns {string[]} 本次被删掉的旧键
+ */
+export function purgeLegacyKeys() {
+  const purged = [];
+  for (const slot of Object.values(DEBUG_SLOTS)) {
+    try {
+      if (localStorage.getItem(slot.old) !== null) {
+        localStorage.removeItem(slot.old);
+        purged.push(slot.old);
+      }
+    } catch { /* 隐私模式等读不到就跳过 */ }
+  }
+  if (purged.length) {
+    stageLog('info', '已清除旧版遗留的调试浮层存储键', { keys: purged, kept: 'spine-viewer-settings-v2 的 debug 段' });
+  }
+  return purged;
+}
+
+/** 读取路径的按需清理入口（幂等；每次读都跑一遍，成本可忽略） */
+export function ensurePurged() {
+  try { purgeLegacyKeys(); } catch { /* 清理失败不影响读取 */ }
+}
+
+// ---------------------------------------------------------------- 布局 / 浮层收起 / 名册 三个独立槽位
+//
+// 三者各自独立存储（一个坏不连累另一个）：
+//   layout  → 左右栏显隐（布局偏好，与模型无关）
+//   debug   → 浮层收起 + 位置 + 四档
+//   roster  → 名册展开态与上次选中（**键名沿用历史命名，是当前唯一键**）
+
+/** 布局槽默认值：无记录**一律全展开**（把"没有值"当成"用户选了收起"会让新用户以为界面坏了） */
+const LAYOUT_DEFAULT = { leftVisible: true, rightVisible: true };
+
+/**
+ * 读左右栏显隐偏好。
+ * @returns {{leftVisible:boolean, rightVisible:boolean}} 无记录/损坏 ⇒ 全展开
+ */
+export function getLayout() {
+  let v = null;
+  try {
+    const root = readViewSettings() || {};
+    v = root.layout && typeof root.layout === 'object' ? root.layout : null;
+  } catch { v = null; }
+  if (!v) return { ...LAYOUT_DEFAULT };
+  return {
+    leftVisible: typeof v.leftVisible === 'boolean' ? v.leftVisible : LAYOUT_DEFAULT.leftVisible,
+    rightVisible: typeof v.rightVisible === 'boolean' ? v.rightVisible : LAYOUT_DEFAULT.rightVisible,
+  };
+}
+
+/**
+ * 保存左右栏显隐（可只传一项，另一项沿用当前值）。
+ * @param {{leftVisible?:boolean, rightVisible?:boolean}} patch
+ * @returns {{leftVisible:boolean, rightVisible:boolean}} 保存后的完整状态
+ */
+export function setLayout(patch) {
+  const next = { ...getLayout(), ...(patch || {}) };
+  try { saveViewSettings({ layout: next }); } catch { /* 存储不可用就只在当前页面存活期内生效 */ }
+  return next;
+}
+
+/**
+ * 调试浮层是否收起。
+ * @returns {boolean} 无记录 ⇒ false（默认展开）
+ */
+export function getDebugCollapsed() {
+  ensurePurged();
+  const v = debugSection().collapsed;
+  return typeof v === 'boolean' ? v : false;
+}
+
+/** 保存浮层收起状态（与位置/四档共用 debug 段，互不覆盖） */
+export function setDebugCollapsed(collapsed) {
+  const next = { ...debugSection(), collapsed: !!collapsed };
+  try { saveViewSettings({ debug: next }); return true; } catch { return false; }
+}
+
+// ---------------------------------------------------------------- 名册键代理（结构不动）
+/** 名册状态存储键（当前唯一键；键名沿用历史命名，改名会让既有用户的选中/展开态丢失） */
+export const TREE_STATE_KEY = 'spine-multi-viewer.tree-state.v1';
+
+/**
+ * 读名册状态（原样返回解析后的对象；缺省/损坏返回 {}）。
+ * @returns {object}
+ */
+export function getTreeState() {
+  try {
+    const raw = localStorage.getItem(TREE_STATE_KEY);
+    const obj = raw ? JSON.parse(raw) : null;
+    return obj && typeof obj === 'object' ? obj : {};
+  } catch { return {}; }
+}
+
+/**
+ * 写名册状态（原样写入调用方给的对象，不做字段增删）。
+ * @param {object} obj 调用方构造的完整对象
+ * @returns {boolean} 是否写入成功
+ */
+export function setTreeState(obj) {
+  if (!obj || typeof obj !== 'object') return false;
+  try { localStorage.setItem(TREE_STATE_KEY, JSON.stringify(obj)); return true; } catch { return false; }
 }
 
 /** 某控件的默认值（SPEC 派生，等于 schema 的默认） */
@@ -122,15 +287,18 @@ export function registerAppliers(map) {
  * @param {unknown} v
  */
 function valid(it, v) {
+  // ① **有取值域时以域为准**：域内即合法。
+  //   必须按字符串比较 —— 取值域可能是混合类型（如 DPR 的 ['auto', 1, 1.5, 2]），
+  //   若按 defaultValue 的类型（'auto' ⇒ string）判，点 1/1.5/2 会被判非法并回落默认，
+  //   表现为"面板点不动"（这条曾把分段控件变成假接线）。
+  if (Array.isArray(it.values) && it.values.length) {
+    return it.values.map(String).includes(String(v));
+  }
+  // ② 无取值域（开关/滑块等）：按默认值的类型校验
   const d = it.defaultValue;
   if (typeof d === 'boolean') return typeof v === 'boolean';
   if (typeof d === 'number') return typeof v === 'number' && Number.isFinite(v);
-  if (typeof d === 'string') {
-    if (typeof v !== 'string') return false;
-    // 有取值域的（分段/下拉/胶囊）必须落在域内，否则是脏数据
-    if (Array.isArray(it.values) && it.values.length && !it.values.includes(v)) return false;
-    return true;
-  }
+  if (typeof d === 'string') return typeof v === 'string';
   return false;
 }
 
@@ -141,12 +309,20 @@ function valid(it, v) {
  */
 export function loadAll() {
   let saved = {};
-  try { saved = (readViewSettings().panel) || {}; } catch { saved = {}; }
+  let root = {};
+  try { root = readViewSettings() || {}; } catch { root = {}; }
+  saved = (root && root.panel) || {};
   values.clear();
   rejected.length = 0;
   for (const it of SPEC) {
-    if (!(it.id in saved)) continue;
-    const v = saved[it.id];
+    // 按存储槽取值：主题/背景模式在顶层，其余在 panel 段
+    let v;
+    let has = false;
+    if (it.store === 'theme') { v = root.uiTheme; has = v !== undefined; }
+    else if (it.store === 'bgMode') { v = root.background && root.background.mode; has = v !== undefined; }
+    else if (it.id in saved) { v = saved[it.id]; has = true; }
+
+    if (!has) { values.set(it.id, it.defaultValue); continue; }   // 没存过 ⇒ 用 schema 默认（S2：默认值由工厂补齐）
     if (valid(it, v)) { values.set(it.id, v); continue; }
     // 非法值：回落默认，但**仍然记进内存**。
     //   为什么不能只跳过：flush() 会把 values 整包写回，跳过就等于把这些键从存储里删掉，
@@ -155,6 +331,8 @@ export function loadAll() {
     rejected.push(it.id);
   }
   loadedOnce = true;
+  // S3：旧键迁移（幂等；写成功才删旧键，失败保留）
+  try { ensurePurged(); } catch { /* 清理失败不影响启动 */ }
   return { loaded: values.size, rejected: [...rejected] };
 }
 
@@ -204,20 +382,27 @@ export function applyAll(opts = {}) {
 /** 立即落盘（幂等；visibilitychange 隐藏时也会调） */
 export function flush() {
   if (writeTimer) { clearTimeout(writeTimer); writeTimer = 0; }
-  if (persistSuspended) return false;
   // 从未成功读回就不写：否则一次启动异常/未初始化就把整个 panel 段写成 {}（用户设置全丢）
   if (!loadedOnce) return false;
+  // 两个集合要分开：
+  //   panel    = 真正写进 panel 段的项（主题/背景模式由 applyTheme/applyBackground 写顶层，不重复存）
+  //   snapshot = **全部**项的值，只作为 dataset 上的可观测快照（自动化判"点击是否生效"用它）
   const panel = {};
-  for (const [id, v] of values) panel[id] = v;
+  const snapshot = {};
+  for (const it of SPEC) {
+    const v = values.get(it.id);
+    if (v === undefined) continue;
+    snapshot[it.id] = v;
+    if (it.store === 'panel') panel[it.id] = v;
+  }
   state.panelSettings = { ...panel };
-  try { document.documentElement.dataset.panelSetting = JSON.stringify(panel); } catch { /* 忽略 */ }
+  try { document.documentElement.dataset.panelSetting = JSON.stringify(snapshot); } catch { /* 忽略 */ }
   try { saveViewSettings({ panel }); } catch { /* 存储不可用就只保留内存态 */ }
   return true;
 }
 
 /** 去抖落盘 */
 function scheduleWrite() {
-  if (persistSuspended) return;
   if (writeTimer) return;
   writeTimer = setTimeout(() => { writeTimer = 0; flush(); }, WRITE_DEBOUNCE_MS);
 }
@@ -232,10 +417,6 @@ function scheduleWrite() {
 export function set(id, value, opts = {}) {
   const key = String(id);
   const it = byId.get(key);
-  // 启动期回放 schema 默认值时，**已读回的用户值优先**：
-  //   否则会出现"先按用户值显示 → 被默认值覆盖 → 再被读回值覆盖"的闪烁（契约 §六 A3 明令禁止）。
-  //   （这段时序本身在 S2 会整体收进工厂，这里先保证语义正确。）
-  if (persistSuspended && values.has(key)) return values.get(key);
   const v = it && valid(it, value) ? value : defaultOf(key);
   if (it) values.set(key, v);
   const fn = appliers.get(key);
@@ -274,15 +455,9 @@ export function commit(id, value, opts = {}) {
   return v;
 }
 
-/** 暂停/恢复落盘（面板默认值回放期间用；S2 会把这段时序整体收进本模块） */
-export function setPersistSuspended(on) {
-  persistSuspended = !!on;
-  if (!persistSuspended) scheduleWrite();
-}
-
 /** 诊断快照（断言用） */
 export function snapshot() {
-  return { values: getAll(), rejected: [...rejected], suspended: persistSuspended, specCount: SPEC.length };
+  return { values: getAll(), rejected: [...rejected], loadedOnce, specCount: SPEC.length };
 }
 
 // 关页/切后台时把去抖中的值落盘（否则"改完立刻关页面"会丢最后一次）

@@ -6,14 +6,14 @@
 
 import { state } from './context.js';
 
-/** 视图设置存储键（与旧端同一键：主题、背景等展示类设置） */
+/** 视图设置存储键：主题、背景等展示类设置（全站唯一的偏好键，面板/布局/调试段都在里面） */
 export const VIEW_SETTINGS_KEY = 'spine-viewer-settings-v2';
 
 /** 已下线的视图设置字段：读到就地清掉，避免"看不见的设置还在生效/还在占存储" */
 const DEPRECATED_VIEW_KEYS = ['partFilterEnabled', 'partFilterKeywords'];
 
 /**
- * 读视图设置（沿用旧端结构：{uiTheme, background:{mode,color,imageUrl}}）。
+ * 读视图设置（结构：{uiTheme, background:{mode,color,imageUrl}, panel, layout, debug}）。
  * 副作用：**顺手清理已下线字段**（一次写回），这样老 localStorage 里的残留会被自然淘汰，
  *   不用用户手动清缓存，也不会因为残留字段让"看不见的设置"继续生效。
  */

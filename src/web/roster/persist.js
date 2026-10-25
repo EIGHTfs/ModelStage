@@ -4,13 +4,20 @@
 //   { games: [], chars: [], activeGame: '游戏名', lastByGame: { '游戏名': '变体id' }, lastModelId? }
 // 单独成模块的原因：读写逻辑与渲染无关，且 view.js 需要守住单文件行数上限。
 
-/** 存储键（与旧前端同名，切实现不丢用户的选择） */
-export const LS_KEY = 'spine-multi-viewer.tree-state.v1';
+import * as uiState from '../app/ui-state.js';
+
+/**
+ * 名册状态存储键（**当前唯一键**，不是历史遗留）。
+ *
+ * 键名沿用项目早期命名，改名会让已有用户的"上次选中的模型/展开态"丢失，故保持不变；
+ * 读写统一经 app/ui-state 工厂代理，字段结构 `{games, chars, activeGame, lastByGame}` 不动。
+ */
+export const LS_KEY = uiState.TREE_STATE_KEY;
 
 /** 读展开态与上次选中（结构照旧前端的 {games, chars, activeGame, lastByGame}） */
 export function readSaved() {
   try {
-    const s = JSON.parse(localStorage.getItem(LS_KEY) || '{}');
+    const s = uiState.getTreeState();
     return {
       games: new Set(Array.isArray(s.games) ? s.games : []),
       chars: new Set(Array.isArray(s.chars) ? s.chars : []),
@@ -33,12 +40,12 @@ export function saveState(state) {
     const s = readSaved();
     const lastByGame = { ...s.lastByGame };
     if (state.activeGame && state.selected) lastByGame[state.activeGame] = state.selected.modelId;
-    localStorage.setItem(LS_KEY, JSON.stringify({
+    uiState.setTreeState({
       games: [...state.expandedGames],
       chars: [...state.expandedChars],
       activeGame: state.activeGame || s.activeGame,
       lastByGame,
-    }));
+    });
   } catch {
     // 隐私模式等写不了就忽略：持久化是增强，不影响当前会话
   }

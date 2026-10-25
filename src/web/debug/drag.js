@@ -1,3 +1,5 @@
+import * as uiState from '../app/ui-state.js';
+
 // debug/drag.js —— 调试日志浮层的「可拖动 + 记住位置」
 //
 // 只做移动，不做缩放（缩放手柄不在需求内）。
@@ -20,8 +22,11 @@
 //      写死方向必然有一半位置放不下（胶囊在右下角时向下展开直接出屏）。
 //      存盘只存**锚点**（收起态胶囊盒子的位置），展开位置由锚点+方向算出。
 
-/** 位置存储键（与视图设置分开：这是调试浮层自己的界面状态） */
-export const DRAG_STORAGE_KEY = 'spine-viewer-debug-panel-pos';
+/**
+ * 位置存储统一走 app/ui-state 工厂（偏好键的 debug.panelPos 段）。
+ * 旧键 `spine-viewer-debug-panel-pos` 不再被读取，只由工厂的清理入口发现后删除（避免旧数据永久占用）。
+ * 本文件不直接读写它 —— 原来的键常量与 storageKey 参数已无使用方，已删除。
+ */
 
 /** 超过这个位移（px）才算拖动；之内视为点击/手抖 */
 const DRAG_THRESHOLD = 4;
@@ -34,16 +39,9 @@ const NO_DRAG_SELECTOR = 'button, select, input, textarea, option, a';
  * @param {string} [key] 存储键
  * @returns {{left:number, top:number}|null} 无记录或数据损坏时返回 null
  */
-export function readSavedPos(key = DRAG_STORAGE_KEY) {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return null;
-    const obj = JSON.parse(raw);
-    if (!obj || !Number.isFinite(obj.left) || !Number.isFinite(obj.top)) return null;
-    return { left: obj.left, top: obj.top };
-  } catch {
-    return null;
-  }
+export function readSavedPos() {
+  // S3：唯一真相源 = 工厂（旧键由工厂在启动时迁移，这里不再直读 localStorage）
+  try { return uiState.getPanelPos(); } catch { return null; }
 }
 
 /**
@@ -89,11 +87,11 @@ function createPosScheduler(write) {
 
 /**
  * 给面板装上拖动能力（支持多个手柄：标题栏 + 收起态胶囊）。
- * @param {{root: HTMLElement, head: HTMLElement|HTMLElement[], storageKey?: string}} opts
+ * @param {{root: HTMLElement, head: HTMLElement|HTMLElement[]}} opts
  *   head：单个元素或元素数组；数组里为空的值会被过滤掉（调用方不必自己判空）
  * @returns {{restore:Function, dispose:Function, clampIntoView:Function, stats:Function, resetStats:Function}} 句柄
  */
-export function createPanelDrag({ root, head, storageKey = DRAG_STORAGE_KEY }) {
+export function createPanelDrag({ root, head }) {
   const handles = (Array.isArray(head) ? head : [head]).filter(Boolean);
   let moves = 0;
   let dragFrom = null;
@@ -219,11 +217,9 @@ export function createPanelDrag({ root, head, storageKey = DRAG_STORAGE_KEY }) {
     };
   }
 
-  /** 落盘：只存锚点，让两种形态共用同一个位置 */
+  /** 落盘：只存锚点（走工厂的同一条写路径） */
   function persistPos(anchor) {
-    try {
-      localStorage.setItem(storageKey, JSON.stringify({ left: Math.round(anchor.left), top: Math.round(anchor.top) }));
-    } catch { /* 隐私模式忽略 */ }
+    try { uiState.setPanelPos({ left: anchor.left, top: anchor.top }); } catch { /* 隐私模式忽略 */ }
   }
 
   /** 应用一次位置（当前形态）并可选落盘 */
@@ -241,7 +237,7 @@ export function createPanelDrag({ root, head, storageKey = DRAG_STORAGE_KEY }) {
    * @returns {{left:number, top:number}} 落到的位置
    */
   function placeForForm(form) {
-    const saved = readSavedPos(storageKey);
+    const saved = readSavedPos();
     // 锚点来源：有记录就用记录；否则用当前盒子按当前方向反算（首次运行）
     const anchor = saved || toAnchor(currentPos(), currentForm());
     const cBox = boxFor('collapsed');

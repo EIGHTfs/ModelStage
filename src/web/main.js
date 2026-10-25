@@ -29,10 +29,10 @@ import { dom, setStage, stage, state } from './app/context.js';
 import { diagEvent } from './app/status.js';
 import { stageLog, stageStatus } from './app/status.js';
 import * as uiState from './app/ui-state.js';
-import { VIEW_SETTINGS_KEY, applyBackground, applyTheme, readViewSettings, saveViewSettings } from './app/view-settings.js';
+import { VIEW_SETTINGS_KEY, applyBackground, applyTheme } from './app/view-settings.js';
 import {
-  WIRED_IDS, applyPanelSetting, panelSnapshot, rebuildPanelFor, restorePanelSettings,
-  runPanelSelfCheck, suspendPanelPersist,
+  WIRED_IDS, panelSnapshot, rebuildPanelFor, restorePanelSettings,
+  runPanelSelfCheck,
 } from './panel/panel-settings.js';
 import { loadRoots } from './app/model-actions.js';
 import { installCameraLogger } from './app/camera-log.js';
@@ -319,9 +319,28 @@ async function applyMsaa(mode) {
 function toggleLeftPanel() {
   state.leftPanelVisible = !state.leftPanelVisible;
   dom.leftPanel.classList.toggle('is-hidden', !state.leftPanelVisible);
+  // S4：记下这次手动选择（右栏沿用当前值，互不覆盖）
+  uiState.setLayout({ leftVisible: state.leftPanelVisible });
   // 左栏位移是一次过渡 ⇒ 它的就绪状态重新起算（只重置左栏；右栏/顶栏不受影响）
   retrackStage('sidebarLeft');
   syncSidebarButtons(); // 高亮只认"实际可见"，不在这里单独写 aria
+}
+
+/**
+ * 应用左右栏显隐（S4 启动恢复用）。
+ *
+ * 只改"显隐真相"（class / data-right），高亮由 syncSidebarButtons 统一跟随 ——
+ * 这样收起左栏后刷新，顶栏「模型库」按钮的 aria-pressed 仍是 false（表示"点它能展开"），
+ * 用户不会因为"模型列表不见了、按钮还亮着"而困惑。
+ * @param {{leftVisible:boolean, rightVisible:boolean}} layout
+ * @returns {{leftVisible:boolean, rightVisible:boolean}} 实际应用的布局
+ */
+function applyLayout(layout) {
+  const l = layout || { leftVisible: true, rightVisible: true };
+  state.leftPanelVisible = l.leftVisible !== false;
+  if (dom.leftPanel) dom.leftPanel.classList.toggle('is-hidden', !state.leftPanelVisible);
+  document.documentElement.dataset.right = l.rightVisible === false ? 'off' : 'on';
+  return { leftVisible: state.leftPanelVisible, rightVisible: l.rightVisible !== false };
 }
 
 /** 全屏切换（原生 API，无副作用；不需要等后续里程碑） */
@@ -383,12 +402,23 @@ function boot() {
 
   attachInteraction();
 
-  // 契约 R2：**读回早于首次渲染**。loadAll 是纯内存操作（不碰 DOM），
-  //   之后 rebuildPanelFor 建面板时即以读回的持久值渲染，而不是"先默认再命令式补"。
+  // 契约 R2：**读回早于首次渲染**。loadAll 是纯内存操作（不碰 DOM），一次性把工厂填满
+  //   （有存值用存值、没存过用 schema 默认）⇒ S2 起不再需要"先回放默认值再读回"那套时序。
+  // MSAA 例外：重建渲染上下文要 2~5 秒，启动不重建；主题/背景各有专门落地通道。
+  const STARTUP_SKIP = new Set(['ctl-msaa', 'ctl-theme', 'ctl-bg-mode']);
+  uiState.setApplySkip(STARTUP_SKIP);
   try {
     const loaded = uiState.loadAll();
     if (loaded.rejected.length) stageLog('warn', '面板设置里有非法值，已回落默认', { rejected: loaded.rejected });
   } catch { /* 读回失败就按默认继续，不能挡住启动 */ }
+  // S4：左右栏显隐是**布局偏好**（不是模型属性，换面/换模型都不影响），按上次选择恢复。
+  //   首次访问（存储里没有 layout）⇒ 工厂返回全展开，绝不把"没有值"当成"用户选了收起"。
+  // 布局读回 + 落地；无论成败都要放行首帧可见性（否则 CSS 的"读回前隐藏"会把左右栏永久遮住）
+  try {
+    applyLayout(uiState.getLayout());
+  } finally {
+    document.documentElement.dataset.layoutReady = '1';
+  }
   // 面板三态由当前渲染器能力决定；切换渲染器时必须重算 + 重跑自检（契约 INV-05）
   rebuildPanelFor(state.currentRenderer);
   if (state.surface && typeof state.surface.onRendererChange === 'function') {
@@ -407,23 +437,13 @@ function boot() {
     'transport-skin': (name) => { if (stage && stage.setSkin) stage.setSkin(name); },
   });
   state.transport = transportInfo;
-  // 存储优先：主题/背景先按上次的选择恢复，再让"面板默认值"兜底未存过的项
-  const savedView = readViewSettings();
-  applyTheme(savedView.uiTheme || 'dark-cyan');
-  applyBackground((savedView.background && savedView.background.mode) || 'checkerboard');
-  if (state.panel && state.panel.setValue) {
-    state.panel.setValue('ctl-theme', state.viewTheme);
-    state.panel.setValue('ctl-bg-mode', state.viewBg);
-  }
-  // 面板声明的默认值即唯一真相：启动时统一走一遍生效表，避免"高亮在 A、引擎在 B"
-  // MSAA 例外：它的默认值已由建上下文时的 antialias 生效，启动就重建会白等 2~5 秒
-  const STARTUP_SKIP = new Set(['ctl-msaa', 'ctl-theme', 'ctl-bg-mode']);
-  suspendPanelPersist(true); // 回放默认值不落盘：否则每次刷新都会把用户设置覆盖回默认
-  for (const [id, value] of Object.entries((state.panel && state.panel.defaults) || {})) {
-    if (STARTUP_SKIP.has(id)) continue;
-    applyPanelSetting(id, value);
-  }
-  suspendPanelPersist(false);
+  // 主题/背景走各自的落地通道（改 CSS 变量 / 舞台底色）：值来自工厂（工厂按顶层字段读回）。
+  //   显示态不用在这里补 —— 面板渲染时的 initialValue 已经用了同一个值（契约 R2）。
+  applyTheme(uiState.getValue('ctl-theme') || 'dark-cyan');
+  applyBackground(uiState.getValue('ctl-bg-mode') || 'checkerboard');
+  // S2：原来这里有一段"手工回放 schema 默认值"（外面裹 suspendPanelPersist 防覆盖用户值）。
+  //   现在默认值已由工厂 loadAll 一次性补齐、并由 rebuildPanelFor 的 applyAll 生效，
+  //   这段时序连同 suspendPanelPersist 旁路一并删除（写盘只有工厂一条路径）。
   state.panelDefaults = { ...((state.panel && state.panel.defaults) || {}) };
   // 刷新后保持：把上次保存的面板设置重新应用一遍（主题/背景/MSAA 有各自恢复通道，跳过）
   try { restorePanelSettings(STARTUP_SKIP); } catch (err) { stageLog('warn', `恢复上次面板设置失败：${formatError(err)}`, { err: formatError(err) }); }

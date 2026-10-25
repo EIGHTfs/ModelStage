@@ -90,16 +90,8 @@ const WIRED_IDS = (() => {
  * 记住一项面板设置并落盘（刷新后保持）。
  * 与视图偏好共用同一存储键的 panel 字段：一处读写，避免两套持久化各说一套。
  */
-/**
- * 启动回放默认值时暂停落盘：否则默认值会覆盖用户上次保存的设置。
- * 真正的"暂停"状态由工厂持有（写盘只有工厂一条路径，契约 R1）；这里只做转发，
- *   保持 main.js 的调用方式不变（S2 会把这段时序整体收进工厂）。
- */
-let persistSuspended = false;
-export function suspendPanelPersist(on) {
-  persistSuspended = !!on;
-  uiState.setPersistSuspended(persistSuspended);
-}
+// S2 起：启动不再"先回放默认值再读回"，默认值由工厂 loadAll 一次性补齐，
+//   因此原来那套 suspendPanelPersist 旁路开关已删除（写盘只有工厂一条路径，契约 R1）。
 
 /**
  * 记住一项面板设置（**唯一写入口**，契约 R1）。
@@ -110,7 +102,7 @@ export function suspendPanelPersist(on) {
 function rememberPanelSetting(id, value) {
   // 一次性动作不记（见 ONE_SHOT_IDS：记了就会在下次启动回放时重放）
   if (ONE_SHOT_IDS.has(String(id))) return;
-  uiState.set(id, value, { persist: !persistSuspended });
+  uiState.set(id, value);
 }
 
 /**

@@ -12,6 +12,7 @@
 import { stage, state } from './context.js';
 import { stageLog, stageStatus } from './status.js';
 import { repaintActive } from '../render/playback.js';
+import * as uiState from './ui-state.js';
 import { captureActive } from '../render/capture.js';
 import { flushNow, resetStages, trackElementStage } from '../infra/ready.js';
 
@@ -309,6 +310,8 @@ export function toggleRightPanel(force) {
   const root = document.documentElement;
   const open = typeof force === 'boolean' ? force : root.dataset.right === 'off';
   root.dataset.right = open ? 'on' : 'off';
+  // S4：记下这次手动选择（左栏沿用当前值，互不覆盖）
+  uiState.setLayout({ rightVisible: open });
   // 右栏位移是一次过渡 ⇒ 它的就绪状态重新起算（只重置右栏，别的阶段不受影响）
   retrackStage('sidebarRight');
   syncSidebarButtons(); // 高亮跟随真实显隐（不在这里自己写 class）

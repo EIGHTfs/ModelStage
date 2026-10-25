@@ -79,6 +79,10 @@ export function applyDebugLog(on) {
   if (state.debugLogHandle && typeof state.debugLogHandle.setEnabled === 'function') {
     try { state.debugLogHandle.setEnabled(state.debugLog); } catch { /* 开关失败不影响渲染 */ }
   }
+  // S4：把持久化的"收起/展开"补上（面板可能比启动读回更早挂载，挂载那一刻还读不到持久值）
+  if (state.debugPanel && typeof state.debugPanel.restoreCollapsed === 'function') {
+    try { state.debugPanel.restoreCollapsed(); } catch { /* 回放失败保持当前形态 */ }
+  }
   stageStatus(`调试日志：${state.debugLog ? '开' : '关'}`, 'info', { show: true });
 }
 

@@ -14,12 +14,16 @@
 import { DEBUG_LEVELS } from './log.js';
 import { createPanelDrag } from './drag.js';
 import { createUploader } from './upload.js';
+import * as uiState from '../app/ui-state.js';
 
 const CSS_FILE = './panel.css';
 const CSS_LINK_ATTR = 'data-debug-panel-css';
 
-/** 级别多选状态的存储键（独立键：面板偏好不该混进页面设置那份 JSON） */
-const LEVELS_KEY = 'spine-viewer-debug-levels';
+/**
+ * 级别多选状态统一走 app/ui-state 工厂（偏好键的 debug.logLevels 段）。
+ * 旧键 `spine-viewer-debug-levels` 不再被读取，只由工厂的清理入口发现后删除（避免旧数据永久占用）。
+ * 本文件不直接读写它 —— 原来那个常量已无使用方，已删除。
+ */
 
 /**
  * 读取上次勾选的级别；没存过或存的值非法 ⇒ 用默认（debug 关、其余开）。
@@ -27,8 +31,7 @@ const LEVELS_KEY = 'spine-viewer-debug-levels';
  */
 function loadLevels() {
   try {
-    const raw = window.localStorage.getItem(LEVELS_KEY);
-    const arr = raw ? JSON.parse(raw) : null;
+    const arr = uiState.getLogLevels();          // S3：唯一真相源 = 工厂
     if (!Array.isArray(arr)) return [...DEFAULT_LEVELS];
     const valid = arr.filter((x) => LEVEL_UI.some(([lv]) => lv === x));
     return valid.length ? valid : [...DEFAULT_LEVELS];
@@ -39,7 +42,7 @@ function loadLevels() {
 
 /** 保存勾选的级别（写失败不影响使用：持久化只是增强） */
 function saveLevels(levels) {
-  try { window.localStorage.setItem(LEVELS_KEY, JSON.stringify([...levels])); } catch { /* 忽略 */ }
+  try { uiState.setLogLevels([...levels]); } catch { /* 忽略 */ }
 }
 
 /** 元素工厂 */
@@ -233,6 +236,7 @@ function createShell(doc, container) {
   shellInner.append(head.head, bar.bar, list);
   const shellBox = el('div', 'dbg-shell');
   shellBox.append(shellInner);
+  // 初始收起态由挂载方写入（S4：来自工厂；下面这行只是兜底默认，随后会被真实值覆盖）
   root.dataset.collapsed = 'false';
   // 默认展开方向：与 CSS 默认定位（right/bottom）一致 ⇒ 向左上长，胶囊落在右下角
   root.dataset.openDir = 'up-left';
@@ -441,9 +445,13 @@ function wireControls({ shell, view, log, state, dragRef }) {
    *   内容被 overflow:hidden 裁掉，视觉上同样干净。
    * @param {boolean} next 目标状态
    */
-  function setCollapsed(next) {
+  function setCollapsed(next, opts) {
     state.collapsed = !!next;
     shell.root.dataset.collapsed = String(state.collapsed);
+    // S4：把用户这次选择记下来（opts.persist === false 用于启动回放，不写盘）
+    if (!opts || opts.persist !== false) {
+      try { uiState.setDebugCollapsed(state.collapsed); } catch { /* 存储不可用就只在当前页面存活期内生效 */ }
+    }
     // 形态一换盒子尺寸就变（胶囊 120×30 ↔ 面板 322×422）：
     //   交给 drag 重新定位 —— 展开时会**重新判断方向**（靠右向左长、靠下向上长），
     //   所以从任何位置展开都放得下，胶囊态的拖动范围也不必预留展开空间。
@@ -570,7 +578,9 @@ export function mountDebugPanel({ log, container } = {}) {
   }
   const doc = (container || document.body).ownerDocument || document;
   const linkEl = ensureStylesheet(doc);
-  const state = { collapsed: false, levels: new Set(loadLevels()) };
+  // S4：收起状态也持久化（位置/四档 S3 已收编，同处 debug 段）。
+  //   默认 false（展开）—— 首次访问不能一进来就是收起的，那看起来像面板坏了。
+  const state = { collapsed: uiState.getDebugCollapsed(), levels: new Set(loadLevels()) };
   const shell = createShell(doc, container);
   // 防闪烁：面板样式是异步 <link>，样式到位前这块 DOM 会以"无样式裸块"绘制，
   //   刷新时会闪一大片（看起来像样式加载失败）。先 visibility:hidden，样式就绪再显形；
@@ -632,6 +642,10 @@ export function mountDebugPanel({ log, container } = {}) {
   // 两个手柄：展开态拖第 1 行；收起态拖胶囊（此时标题栏高度为 0，抓不到）
   const drag = createPanelDrag({ root: shell.root, head: [shell.head, shell.pill] });
   dragRef.api = drag;
+  // S4：先按工厂恢复"收起/展开"，再恢复位置 —— 顺序不能反：
+  //   收起态与展开态是两套盒子尺寸，先定位再切形态会让像素位置按错误的盒子算（会歪）。
+  //   persist:false 保证这是"回放"，不会把刚读回的值又写一遍。
+  try { wired.setCollapsed(state.collapsed, { persist: false }); } catch { /* 回放失败就用 CSS 默认（展开） */ }
   drag.restore();
   // 样式表是**异步注入**的：样式到位前面板还是"无样式裸块"，尺寸与 --dbg-w/--dbg-h 都不可用，
   //   此时按尺寸夹取会把存下的位置夹歪（实测：存 top=658，样式前恢复到 532）。
@@ -667,6 +681,16 @@ export function mountDebugPanel({ log, container } = {}) {
   return {
     drag,
     element: shell.root,
+    /**
+     * 按工厂当前值回放"收起/展开"（幂等，persist:false 不写盘）。
+     *
+     * 为什么需要它：调试浮层可能在**读回之前**就被挂载（渲染器就绪即建面板），
+     *   那一刻工厂里还没有持久值 ⇒ 只能按默认（展开）挂上。等启动读回完成后，
+     *   由 applyDebugLog 再调一次本方法把真实状态补上（否则刷新后"收起"记不住）。
+     */
+    restoreCollapsed() {
+      try { wired.setCollapsed(uiState.getDebugCollapsed(), { persist: false }); return true; } catch { return false; }
+    },
     destroy() {
       try { wired.unsubscribe(); } catch { /* 忽略 */ }
       try { unwatchVisibility(); } catch { /* 忽略 */ }

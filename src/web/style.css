@@ -294,6 +294,17 @@ html[data-cinema="on"] .app-header {
   pointer-events: none;
 }
 
+/* 布局读回完成前，左右栏不参与首次绘制。
+   为什么需要它：HTML 里左右栏默认是"展开"的，而读回偏好（可能上次是收起的）发生在
+   ES module 的执行期（异步）——中间那几帧用户会看到"显示 → 又被收起"的闪烁。
+   为什么用 visibility 而不是 display:none：前者仍占位，读回后显示不触发重排（不会整页跳）；
+   后者不占位，切回来会重新布局，看起来是"跳一下"。
+   标记由 main.js 在 applyLayout() 之后写入（含异常兜底，不会永久遮住）。 */
+html:not([data-layout-ready]) #left-panel,
+html:not([data-layout-ready]) #right-panel {
+  visibility: hidden;
+}
+
 /* 左右侧栏：影院模式与"单独收起"合并成同一套位移；
    与既有 .is-hidden（模型库按钮切换的类）结果一致，两者可叠加不冲突。 */
 html[data-cinema="on"] .panel-left,
