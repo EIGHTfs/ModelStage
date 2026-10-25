@@ -313,6 +313,11 @@ export async function checkPlugin(dir, options = {}) {
   /** 采样样本与插件自算入口（M2–M4 与 M5 共用一次采样，避免重复跑） */
   const memSample = options.samplePath;
   const memHaveSample = !!(memSample && fs.existsSync(memSample));
+  /** 样本来源（契约 §2.3「门禁报告必须可追溯」）：explicit / default / none */
+  const memSampleOrigin = options.sampleOrigin || (memHaveSample ? 'explicit' : 'none');
+  /** M2–M5 消息里统一使用的来源标签（带具体路径，读者能复核） */
+  const memSampleLabel = !memHaveSample ? '无可用样本'
+    : (memSampleOrigin === 'default' ? `默认样本: ${memSample}` : `--sample: ${memSample}`);
   const memEstFn = (sandbox && sandbox.__ULB_NODE__ && typeof sandbox.__ULB_NODE__.estimateMemory === 'function')
     ? sandbox.__ULB_NODE__.estimateMemory.bind(sandbox.__ULB_NODE__)
     : (typeof desc.estimateMemory === 'function' ? desc.estimateMemory : null);
@@ -337,13 +342,13 @@ export async function checkPlugin(dir, options = {}) {
     memOrigin = '查静态声明值';
   } else if (hasComputed) {
     memVals = memEst;
-    memOrigin = '查实算值（--sample）';
+    memOrigin = `查实算值（${memSampleLabel}）`;
   }
 
   if (!memVals) {
     // 三种「跳过」原因必须说清，否则读报告的人分不清"没检查"和"检查通过"
     const why = !memDecl ? '未声明 memory'
-      : (!memHaveSample ? '动态声明且未提供 --sample，拿不到值'
+      : (!memHaveSample ? '无可用样本（--no-sample 或未探测到）'
         : (memEstErr ? `estimateMemory 抛错（${memEstErr}）`
           : 'estimateMemory 未返回任何内存字段'));
     rep.ok('M2', `跳过（无检查对象：${why}）`, '§2.3');
@@ -397,16 +402,16 @@ export async function checkPlugin(dir, options = {}) {
   //   （M2–M4 查"这个值合不合理"，M5 查"静态声明与实算是否一致"，职责分开）
   {
     if (!memDecl) rep.ok('M5', '未声明 memory，跳过实算比对', '§2.3');
-    else if (!memHaveSample) rep.ok('M5', '未提供 --sample 样本，跳过实算比对', '§2.3');
+    else if (!memHaveSample) rep.ok('M5', '无可用样本（--no-sample 或未探测到），跳过实算比对', '§2.3');
     else if (!memEstFn) rep.warn('M5', '插件没有暴露 estimateMemory，无法实算校验内存声明', '§2.3');
     else if (memEstErr) rep.warn('M5', `estimateMemory 抛错：${memEstErr}`, '§2.3');
     else if (!(memEst && memEst.decompressedBytes > 0)) rep.warn('M5', 'estimateMemory 没有返回 decompressedBytes，无法比对', '§2.3');
     else if (!(memDecl.decompressedBytes > 0)) {
-      rep.ok('M5', `实算 decompressedBytes=${memEst.decompressedBytes}（声明未给静态值，无可比对象）`, '§2.3');
+      rep.ok('M5', `${memSampleLabel}：实算 decompressedBytes=${memEst.decompressedBytes}（声明未给静态值，无可比对象）`, '§2.3');
     } else {
       const dev = Math.abs(memEst.decompressedBytes - memDecl.decompressedBytes) / memEst.decompressedBytes;
-      if (dev > 0.2) rep.warn('M5', `声明 decompressedBytes=${memDecl.decompressedBytes} 与实算 ${memEst.decompressedBytes} 偏差 ${(dev * 100).toFixed(0)}%（>20%）⇒ 声明可能已过期`, '§2.3');
-      else rep.ok('M5', `声明与实算一致（偏差 ${(dev * 100).toFixed(1)}%）`, '§2.3');
+      if (dev > 0.2) rep.warn('M5', `${memSampleLabel}：声明 decompressedBytes=${memDecl.decompressedBytes} 与实算 ${memEst.decompressedBytes} 偏差 ${(dev * 100).toFixed(0)}%（>20%）⇒ 声明可能已过期`, '§2.3');
+      else rep.ok('M5', `${memSampleLabel}：声明与实算一致（偏差 ${(dev * 100).toFixed(1)}%）`, '§2.3');
     }
   }
 
@@ -438,8 +443,23 @@ async function main(argv) {
   const args = argv.slice(2);
   const jsonMode = args.includes('--json');
   const sampleIdx = args.indexOf('--sample');
-  // 没显式给样本时自动找一个：PL7 要求"happy path 真的跑"，拿不到才允许 SKIP
-  const samplePath = sampleIdx >= 0 ? args[sampleIdx + 1] : findDefaultSample();
+  const noSample = args.includes('--no-sample');
+  // 样本来源必须**可追溯**：报告里"查实算值"必须说清用的是哪个文件、从哪来的。
+  //   ① 显式 --sample <路径>  → explicit（作者指定的，换机也一致）
+  //   ② 自动探测默认样本      → default（换机可能找到别的、或找不到 ⇒ 结论不可复现，必须标明）
+  //   ③ --no-sample           → 不读任何样本（CI / 要求确定性的场景）
+  let samplePath = null;
+  let sampleOrigin = 'none';
+  if (noSample) {
+    samplePath = null;
+    sampleOrigin = 'none';
+  } else if (sampleIdx >= 0 && args[sampleIdx + 1]) {
+    samplePath = args[sampleIdx + 1];
+    sampleOrigin = 'explicit';
+  } else {
+    const auto = findDefaultSample();
+    if (auto) { samplePath = auto; sampleOrigin = 'default'; }
+  }
   const allIdx = args.indexOf('--all');
   let targets = [];
   if (allIdx >= 0) {
@@ -458,7 +478,7 @@ async function main(argv) {
   } else {
     const t = args.find((a) => !a.startsWith('--'));
     if (!t) {
-      console.error('用法：node tool/check-plugin.mjs <插件目录> | --all <plugins 目录> | --src <源码目录> [--manifest <plugin.json>] [--json]');
+      console.error('用法：node tool/check-plugin.mjs <插件目录> | --all <plugins 目录> | --src <源码目录> [--sample <包>] [--no-sample] [--manifest <plugin.json>] [--json]');
       process.exit(2);
     }
     targets = [path.resolve(t)];
@@ -467,7 +487,7 @@ async function main(argv) {
 
   const results = [];
   const manifestPath = args.includes('--manifest') ? args[args.indexOf('--manifest') + 1] : null;
-  for (const d of targets) results.push(await checkPlugin(d, { samplePath, manifestPath }));
+  for (const d of targets) results.push(await checkPlugin(d, { samplePath, sampleOrigin, manifestPath }));
   // 覆盖表每轮都打：让"PL1–PL8 各自被哪项检查覆盖"自证，不靠口头说明
   if (!jsonMode) printCoverageTable();
   if (jsonMode) {
