@@ -29,16 +29,20 @@ src/spine-runtimes/
 # 为什么不用 `data/` 或 `/data/` 整目录忽略：
 #   ① 不带前导斜杠的 `data/` 会匹配任意层级的 data 目录，把源码目录 `src/server/data/` 一起忽略，
 #      实测导致该目录的改动提交时报 "src/server/data is ignored" 并返回非零；
-#   ② 即便加上前导斜杠（`/data/`），也会盖住**已入库**的 `data/upstream/`（上游数据快照），
+#   ② 即便加上前导斜杠（`/data/`），也会盖住**需要入库**的 `data/` 下其它路径，
 #      使它们的后续修改不被 git add 捕获（`git ls-files -ci --exclude-standard` 可查出来）。
-#   所以只逐项忽略真正属于运行产物的路径。
+#   所以只逐项忽略真正属于运行产物/大体积数据的路径。
 /data/diag.jsonl
 /data/diag.jsonl.*
 /data/bug-shots/
 # 服务端解包落盘缓存（17b）：可重建（源包 + 插件版本变了就失效），不入库。
-#   注意逐项写死路径，不用 data/ 或 /data/ 通配 —— 那会连带忽略 src/server/data/ 与已入库的 data/upstream/
+#   注意逐项写死路径，不用 data/ 或 /data/ 通配 —— 那会连带忽略 src/server/data/
 /data/unpacked/
 /data/export/
+# 上游游戏原始数据快照（名表导入的原料）：体积 17MB / 113 万行，远大于项目其余全部内容，
+#   且随游戏版本变化、可由导入脚本重新获取 ⇒ 属外部数据而非源码，不入库。
+#   换机/重建名表时需要单独带走该目录，见 data/upstream/README.md。
+/data/upstream/
 # 用户上传的主题背景图（运行时数据）：内容由用户产生、体积不可控，
 #   属部署侧数据而非源码，不入库；换机/备份需单独带走该目录。
 /data/backgrounds/
