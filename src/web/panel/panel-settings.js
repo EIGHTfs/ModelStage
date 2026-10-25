@@ -12,7 +12,7 @@ import * as uiState from '../app/ui-state.js';
 import { stageLog, stageStatus } from '../app/status.js';
 import { PANEL_GROUPS, applyCapabilities, selfCheck, settingKeyOf } from './schema.js';
 import { mountPanel } from './view.js';
-import { applyDebugLog, applyHangGuard, applyShowStatus, connectShellControls, runSettingsAction } from './shell-controls.js';
+import { applyDebugLog, applyHangGuard, applyMemoryGuard, applyShowStatus, connectShellControls, refreshReadoutSoon, runSettingsAction } from './shell-controls.js';
 import { applyBackground, applyTheme, readViewSettings, saveViewSettings } from '../app/view-settings.js';
 import { bindBgGroupToggle, refreshBgSources } from './background-list.js';
 import { applyAnimLoop, applyTransportMotion } from '../app/transport-actions.js';
@@ -46,6 +46,8 @@ const SHELL_APPLIERS = {
   'ctl-anim-loop': (v) => applyAnimLoop(v),
   // 皮肤切换同样经渲染器（INV-01）：Live2D 面没声明 skin ⇒ 不会打到隐藏的 spine 舞台
   'ctl-skin-list': (v) => setRendererSetting('skin', v),
+  // 内存保护与防卡死保护是两件事：前者管内存容量（防 OOM），后者管帧停滞（防假死）
+  'ctl-memory-guard': (v) => applyMemoryGuard(v),
   'ctl-hang-guard': (v) => applyHangGuard(v),
   'ctl-show-status': (v) => applyShowStatus(v),
   'ctl-debug-log': (v) => applyDebugLog(v),
@@ -328,6 +330,7 @@ function rebuildPanelFor(renderer) {
   // 自定义背景图列表：面板重建后重新拉一次（切面/重开面板都会走到这里）
   bindBgGroupToggle();   // 点「纯色▾ / 自定义▾」切换二级列表展开（幂等，只绑一次）
   refreshBgSources().catch(() => { /* 列表拉取失败只是少一块内容，不影响面板其余部分 */ });
+  refreshReadoutSoon();   // 面板重建后重新取一次内存判据（数值来自服务端真值）
   state.panelSnapshot = panelSnapshot();
   const check = selfCheck(renderer || {});
   state.panelSelfCheck = check;

@@ -80,7 +80,8 @@ export function createUnpackRoutes(deps) {
         });
       }
       try {
-        const out = await store.resolve({ rootId, rel, absPath: r.abs });
+        // allowOverLimit：面板「内存保护」开关关闭时前端会带这个标记（默认不带 ⇒ 行为与从前完全一致）
+        const out = await store.resolve({ rootId, rel, absPath: r.abs, allowOverLimit: body.allowOverLimit === true });
         if (!out.ok) {
           // 把判据数字一起回给调用方（insufficient-memory 时要能看到 预算/预估峰值/当前可用）
           return sendJson(res, 500, {

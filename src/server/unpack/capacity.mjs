@@ -103,12 +103,39 @@ export function capacity(sourceMb) {
  * @param {number} sourceBytes 源文件字节数
  * @returns {{ok: boolean, reason?: string, message?: string, budgetMb: number, peakEstMb: number, availMb: number}}
  */
-export function checkUnpackMemory(sourceBytes) {
+/** 覆盖阈值的说明文案（放行时也要把数字带出来，用户才知道自己放行了多大的包） */
+const OVER_LIMIT_TEXT = (peakEstMb, budgetMb, availMb) =>
+  `已放行超限解包：预估峰值 ${peakEstMb}MB 超过可用预算 ${budgetMb}MB（当前可用 ${availMb}MB × ${MEM_BUDGET_RATIO}），内存保护已关闭`;
+
+/**
+ * 解包入口的内存判据（服务端 resolve 用；**不含时间上限**——用户主动加载不能因为"慢"被拒）。
+ *
+ * 内存保护开关的落地口径：
+ *   默认（不传 opts）＝现状，超预算就拒绝 —— 保持既有行为，现有调用方零改动；
+ *   前端把面板里的「内存保护」开关关掉后，请求带上 allowOverLimit:true ⇒ 这里放行，
+ *   但仍把真实数字一起返回（调用方要能提示"你放行了 X MB 的包"）。
+ * @param {number} sourceBytes 源文件字节数
+ * @param {{allowOverLimit?: boolean}} [opts] 是否允许越过内存预算强行解包
+ * @returns {{ok: boolean, reason?: string, message?: string, budgetMb: number, peakEstMb: number, availMb: number, overLimit?: boolean}}
+ */
+export function checkUnpackMemory(sourceBytes, opts = {}) {
   const sourceMb = sourceBytes / 1024 / 1024;
   const avail = memAvailableMb();
   const budgetMb = Math.round(avail.mb * MEM_BUDGET_RATIO);
   const peakEstMb = estimatePeakMb(sourceMb);
   if (peakEstMb > budgetMb) {
+    // 开关关闭 ⇒ 放行（用户自担风险），但 overLimit 标记与文案都要带出去
+    if (opts && opts.allowOverLimit === true) {
+      return {
+        ok: true,
+        reason: 'over-limit-allowed',
+        message: OVER_LIMIT_TEXT(peakEstMb, budgetMb, avail.mb),
+        budgetMb,
+        peakEstMb,
+        availMb: avail.mb,
+        overLimit: true,
+      };
+    }
     return {
       ok: false,
       reason: 'insufficient-memory',
@@ -116,7 +143,8 @@ export function checkUnpackMemory(sourceBytes) {
       budgetMb,
       peakEstMb,
       availMb: avail.mb,
+      overLimit: true,
     };
   }
-  return { ok: true, budgetMb, peakEstMb, availMb: avail.mb };
+  return { ok: true, budgetMb, peakEstMb, availMb: avail.mb, overLimit: false };
 }

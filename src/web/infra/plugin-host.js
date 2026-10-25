@@ -16,6 +16,7 @@
 //   ③ canHandle 由宿主调用、宿主兜异常：插件内部抛错一律当"不认这个文件"，不冒泡到调用方
 
 import { getSharedVirtualFS } from './vfs.js';
+import * as memoryGuard from '../app/memory-guard.js';
 import { postJson, fetchWithRetry, mapLimit } from './api.js';
 
 /** 宿主提示通道：优先用注入的 log（项目调试日志），否则退回 console */
@@ -332,7 +333,8 @@ const MIME_BY_EXT = {
    */
   async function resolveFromServer(file) {
     const j = await postJson('/api/unpack/resolve',
-      { rootId: file.rootId, rel: file.rel, hitOnly: true }, { timeoutMs: 1500 });
+      // allowOverLimit：面板「内存保护」关掉时允许服务端越过内存预算（默认开 ⇒ 不带，行为不变）
+      { rootId: file.rootId, rel: file.rel, hitOnly: true, allowOverLimit: !memoryGuard.isMemoryGuardOn() }, { timeoutMs: 1500 });
     if (!j || !j.ok) throw new Error((j && (j.message || j.reason)) || '服务端查询失败');
     if (!j.hit) throw Object.assign(new Error(`未命中（${j.missReason || 'no-index'}）`), { reason: 'server-miss' });
     // **并行**取产物：实测 19 个文件顺序 145ms vs 并行 57ms（39 个文件 413ms vs 174ms）。
@@ -340,7 +342,11 @@ const MIME_BY_EXT = {
     const list = j.files || [];
     // **限流 4 并发**：39 个文件一次全发会吃满同源 6 个连接槽，
     //   把 Spine 模型文件与 /api/ready 挤到队列里超时（现场："加载资源包之后全挂"）。
+    // 路径 C｜长操作监控：39 个文件可能要取几秒，期间堆占用飙升就先停手。
+    //   中止只影响"还要不要再取"，已经取到的文件与已落盘的服务端产物都保留。
     const got = await mapLimit(list, UNPACK_FETCH_CONCURRENCY, async (f) => {
+      // 每步开头同步采一次（不依赖"是否已跨帧"）：短操作也能被及时发现
+      if (mon.checkNow()) throw Object.assign(new Error(mon.reason()), { reason: 'memory-guard' });
       // 服务端解包产物同样属于"模型文件"，失败要重试（keep-alive race 会打中这里）
       const res = await fetchWithRetry(f.url, { timeoutMs: 8000, label: 'unpack-file' });
       // VFS 只接受 Blob/字符串（本地路径上插件给的就是 Blob）→ 这里转成带 MIME 的 Blob，
@@ -378,6 +384,9 @@ const MIME_BY_EXT = {
         peakEstMb: j.peakEstMb,
         budgetMb: j.budgetMb,
         estUnpackSec: j.estUnpackSec,
+        // 判据显示要贴真实值：可用内存与总内存一起带出来（不在这里重算任何阈值）
+        memAvailableMb: j.memAvailableMb,
+        memTotalMb: j.memTotalMb,
       };
       capCache = { at: Date.now(), key, value };
       return value;
@@ -423,7 +432,8 @@ const MIME_BY_EXT = {
     idle(() => setTimeout(async () => {
       const t0 = performance.now();
       try {
-        const j = await postJson('/api/unpack/resolve', { rootId: file.rootId, rel: file.rel }, { timeoutMs: 30000 });
+        const j = await postJson('/api/unpack/resolve',
+          { rootId: file.rootId, rel: file.rel, allowOverLimit: !memoryGuard.isMemoryGuardOn() }, { timeoutMs: 30000 });
         emitWarm({ ok: !!j.ok, hit: !!(j && j.hit), peakEstMb: cap && cap.peakEstMb, ms: Math.round(performance.now() - t0) });
         say.info(`预热完成：${file.rel}（${j && j.hit ? '已有缓存' : '已落盘'}，${Math.round(performance.now() - t0)}ms）`);
       } catch (e) {
@@ -437,6 +447,23 @@ const MIME_BY_EXT = {
     const skip = prefilterReason(file);
     if (skip) return { ok: false, reason: 'prefilter', message: `跳过：${skip}` };
 
+    // 路径 B｜前端加载前预检：JS 堆占用已超阈值就先别加载（继续加载很可能直接 OOM 崩页面）。
+    //   浏览器不暴露 performance.memory 时 preflightLoad 会放行（拿不到真值就不假装保护）。
+    // 顺带把"这个包需要多少内存"取回来（面板判据行要显示真实需求，不能只显示可用量）——
+    //   不 await：判据读数只是展示，不能拖慢加载。
+    memoryGuard.refreshMemoryReadout({ rootId: file.rootId, rel: file.rel }).catch(() => { /* 取不到就维持上次 */ });
+    const pre = memoryGuard.preflightLoad(`加载 ${file.rel}`);
+    if (!pre.ok) {
+      say.warn(pre.message);
+      emit('memguard.preflight', { rel: file.rel, usedMB: pre.usedMB, limitMB: pre.limitMB, pct: pre.pct });
+      return { ok: false, reason: 'memory-guard', message: pre.message };
+    }
+
+    // 路径 C｜长操作监控：**覆盖整条装载路径**（服务端取产物 / 本地解包 / 读大包字节都算）。
+    //   曾经只挂在"取服务端产物"的循环里 —— 可 cache miss 时走的是本地解包，
+    //   那个循环根本不执行，监控等于不存在（端到端实测发现）。
+    const mon = memoryGuard.startMemoryMonitor(`装载 ${file.rel}`);
+    try {
     const tMat = performance.now();
     // 运行时开关：?unpack=off 关掉服务端命中查询与预热（性能基线用；同一份代码只差开关）
     const unpackOn = (() => {
@@ -446,9 +473,12 @@ const MIME_BY_EXT = {
 
     // 本地通道：原逻辑一字未改（readFile → 插件 resolve）
     const localPath = async () => {
+      // 读整包进内存是这条路径上最吃内存的一步：先查一次，越线就不读
+      if (mon.checkNow()) throw Object.assign(new Error(mon.reason()), { reason: 'memory-guard' });
       const read = await bytesOf(file);
       if (!read.ok) throw Object.assign(new Error(read.message), { reason: 'read-failed' });
       const got = await resolveViaProvider(file, read.bytes);
+      if (mon.checkNow()) throw Object.assign(new Error(mon.reason()), { reason: 'memory-guard' });
       if (!got.ok) throw Object.assign(new Error(got.message || '本地解包失败'), { reason: got.reason, passthrough: got });
       return { ...got.res, provider: got.provider, src: 'local' };
     };
@@ -469,6 +499,7 @@ const MIME_BY_EXT = {
         won = await localPath();
       } catch (e) {
         if (e && e.passthrough) return e.passthrough; // 本地失败保持原有返回形状
+        // 内存保护的判定是**结论**，不是"服务端失败"：绝不能回落本地解包把它绕过去
         return { ok: false, reason: (e && e.reason) || 'unpack-failed', message: String((e && e.message) || e) };
       }
     }
@@ -493,6 +524,10 @@ const MIME_BY_EXT = {
       reRegistered: reg.reRegistered,
       source, // 供上层/诊断断言：解包命中缓存 | 服务端解包 | 回落前端解包
     };
+    } finally {
+      // 无论正常返回、抛错还是被内存监控中止，都要停采样（否则 requestAnimationFrame 会一直排下去）
+      mon.stop();
+    }
   }
 
   /**

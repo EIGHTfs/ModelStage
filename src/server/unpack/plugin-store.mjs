@@ -307,7 +307,9 @@ export function createUnpackStore(opts) {
       // 解包前按**当前可用内存**现判（不缓存、不看包大小阈值）：
       //   预估峰值 = 源大小 × 分段倍数（实测上包络），超过"可用内存的一半"就拒绝，
       //   否则一次解包可能把机器拖到换页（42MB 包实测峰值 479MB）。
-      const mem = checkUnpackMemory(stat.size);
+      // 内存保护开关：默认（不带 allowOverLimit）仍是"超预算就拒"，与既有行为一致；
+      //   面板关掉开关后前端带 allowOverLimit ⇒ 放行但保留真实数字（overLimit 标记供上层提示）。
+      const mem = checkUnpackMemory(stat.size, { allowOverLimit: req.allowOverLimit === true });
       if (!mem.ok) {
         counters.failures += 1;
         counters.lastFailReason = mem.reason;

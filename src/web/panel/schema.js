@@ -28,7 +28,7 @@ import { MIX_DEFAULT, MIX_MAX, MIX_MIN, MIX_STEP, SPEED_DEFAULT, SPEED_MAX, SPEE
 export const RENDERER_INDEPENDENT = [
   // 背景类全部与渲染器无关（外壳行为）：纯色预设列表也是外壳数据，不依赖任何渲染能力
   'ctl-theme', 'ctl-bg-mode', 'ctl-bg-color', 'ctl-bg-image', 'ctl-bg-sources',
-  'ctl-hang-guard', 'ctl-show-status', 'ctl-debug-log', 'ctl-settings-io',
+  'ctl-hang-guard', 'ctl-memory-guard', 'ctl-memory-readout', 'ctl-show-status', 'ctl-debug-log', 'ctl-settings-io',
   // 动作组的循环开关由应用层定时器推进、动作列表内容由应用层填，
   //   与"渲染器是否声明某项能力"无关（两面都要有）。
   'ctl-anim-loop', 'ctl-anim-list',
@@ -239,6 +239,23 @@ export const PANEL_GROUPS = [
       { kind: 'segmented', label: '抗锯齿（MSAA）', id: 'ctl-msaa', capabilityKey: 'msaa', options: ['自动', '关闭'], values: ['auto', 'off'], defaultValue: 'auto' },
       // 注：不设「模型导入模式（替换/追加）」——本项目的模型来源是资源根目录扫描，
       //     不存在"往当前场景导入单个模型"这条路径，留着会是一个点了没意义的入口
+      {
+        // 内存容量保护：与下面「防卡死保护」并列但**不是一回事**
+        //   （前者防 OOM / 页面崩溃；后者防画面停住没人知道）。旧端同名开关绑的是内存预检，
+        //   新端沿用同名的那个是帧停滞看门狗，所以这里新开一项，不改 hang-guard 的语义。
+        kind: 'switch',
+        label: '内存保护（解包准入 + 堆占用）',
+        id: 'ctl-memory-guard', core: true, defaultOn: true,
+      },
+      {
+        // 判据读数：数值全部来自服务端 /api/unpack/capacity（读 /proc/meminfo），前端不自己估
+        kind: 'readonly',
+        label: '内存判据',
+        id: 'ctl-memory-readout',
+        // core 必需：不标 core 会按 id 推导成能力键 memory-readout，渲染器没声明 ⇒ 整项被隐藏
+        core: true,
+        note: '可用内存 / 本次需求（打开面板时自动取服务端真实值）',
+      },
       { kind: 'switch', label: '防卡死保护', id: 'ctl-hang-guard', core: true, defaultOn: true },
       { kind: 'switch', label: '显示状态信息', id: 'ctl-show-status', core: true, defaultOn: true },
       { kind: 'switch', label: '调试日志', id: 'ctl-debug-log', core: true, defaultOn: true },

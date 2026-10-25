@@ -15,6 +15,7 @@ import { formatError } from '../infra/api.js';
 import { dom, state, stage } from '../app/context.js';
 import { resetViewViaRenderer } from '../render/reset-view.js';
 import { stageLog, stageStatus } from '../app/status.js';
+import * as memoryGuard from '../app/memory-guard.js';
 import { VIEW_SETTINGS_KEY, applyBackground, applyTheme, readViewSettings, saveViewSettings } from '../app/view-settings.js';
 import {
   connectSettingsIo, exportSettingsFile, importSettingsFromText, openImportPicker,
@@ -126,6 +127,32 @@ export function applyHangGuard(on) {
   window.__WEB__ && (window.__WEB__.hangGuard = state.hangGuardStats);
   state.hangGuardTimer = setInterval(hangGuardTick, hangGuardConfig.tickMs);
   stageStatus(`防卡死保护：开（连续 ${hangGuardConfig.stallLimit}s 无新帧则尝试恢复）`, 'info', { show: true });
+}
+
+/**
+ * 内存保护（ctl-memory-guard）：与防卡死保护并列、互不替代。
+ *   · 开关开（默认）＝ 服务端解包前按可用内存准入 + 前端加载前查 JS 堆占用；
+ *   · 开关关 ＝ 服务端放行超预算解包（用户自担风险），前端预检也不再拦。
+ * 这里只翻转状态并刷新判据读数，真正的判断在 app/memory-guard.js 与服务端 capacity.mjs。
+ * @param {boolean} on
+ */
+export function applyMemoryGuard(on) {
+  const value = memoryGuard.setMemoryGuard(on);
+  stageStatus(value ? '内存保护：开（解包按可用内存准入）' : '内存保护：关（允许超预算解包，请自行确认内存充足）', 'info', { show: true });
+  // 判据读数跟着开关一起刷新（数字来自服务端真实值）
+  refreshReadoutSoon();
+}
+
+/** 刷新「内存判据」那一行的显示（数值取服务端真值，取不到就明说取不到） */
+export function refreshReadoutSoon() {
+  memoryGuard.refreshMemoryReadout()
+    .then(() => {
+      const text = memoryGuard.readoutText();
+      if (state.panel && typeof state.panel.setReadonly === 'function') {
+        state.panel.setReadonly('ctl-memory-readout', text);
+      }
+    })
+    .catch(() => { /* 取值失败就保持上一次显示，不阻塞面板 */ });
 }
 
 /** 看门狗单次采样 */

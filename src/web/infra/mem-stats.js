@@ -73,10 +73,20 @@ export function memStats() {
   } catch { /* 忽略 */ }
   const orphanGl = st.contexts.filter((r) => !r.lost && r.canvas && !r.canvas.isConnected).length;
   let jsHeapMB = null;
+  let jsHeapLimitMB = null;
+  let jsHeapPct = null;
   try {
     const m = performance && performance.memory;
-    if (m && m.usedJSHeapSize) jsHeapMB = Math.round((m.usedJSHeapSize / 1048576) * 10) / 10;
-  } catch { /* 非 Chrome */ }
+    if (m && m.usedJSHeapSize) {
+      jsHeapMB = Math.round((m.usedJSHeapSize / 1048576) * 10) / 10;
+      // 内存保护（T11）需要的是"占上限的比例"，只给 MB 无法判断还剩多少余量。
+      //   totalJSHeapSize 是"已分配额度"、jsHeapSizeLimit 才是硬上限 ⇒ 后者才是判据。
+      if (m.jsHeapSizeLimit) {
+        jsHeapLimitMB = Math.round((m.jsHeapSizeLimit / 1048576) * 10) / 10;
+        jsHeapPct = m.usedJSHeapSize / m.jsHeapSizeLimit;
+      }
+    }
+  } catch { /* 非 Chrome：保持 null，调用方按"无法判断"处理 */ }
   return {
     glContexts: st.created,
     glContextsLive: Math.max(0, st.created - st.lost),
@@ -86,6 +96,8 @@ export function memStats() {
     canvasesWithGl,
     orphanGl,
     // 逐条明细（排障用）：哪些 canvas 拿了上下文、是否仍在文档里
+    jsHeapLimitMB,
+    jsHeapPct,
     records: st.contexts.map((r) => ({
       type: r.type, id: r.id, cls: r.cls, w: r.w, h: r.h,
       lost: !!r.lost, connected: !!(r.canvas && r.canvas.isConnected),
