@@ -377,7 +377,7 @@ const MIME_BY_EXT = {
 
   /**
    * 问服务端"这个包现在能预热吗"。判断全在服务端：可用内存**现取** × 0.5 预算 vs 预估峰值，
-   * 外加预热时间上限（>6s 不预热）。前端只读 `allowWarmup` 一个布尔，不自己算任何阈值。
+   * 预热**只看内存**（时间不再是门槛：旧规则"预估 >6s 不预热"会让 15MB 以上的包永远进不了缓存）。\n   * 前端只读 `allowWarmup` 一个布尔，不自己算任何阈值。
    * @param {{rootId: string, rel: string}} file
    * @returns {Promise<{allowWarmup: boolean, reason: string, peakEstMb?: number, budgetMb?: number, estUnpackSec?: number}>}
    */

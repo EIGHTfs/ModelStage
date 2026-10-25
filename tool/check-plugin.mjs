@@ -286,6 +286,130 @@ export async function checkPlugin(dir, options = {}) {
     else rep.fail('C3', 'provides 含 asset-provider 但缺 canHandle / resolve', '§一');
   }
 
+  // ---------------- M1–M5 内存声明自查（契约 §2.3） ----------------
+  //   为什么单独一组：内存声明的错法与解析类错法完全不同（漏声明/单位写错/违反物理下限），
+  //   混在 A/B/C 里看结果时容易被当成解析问题。代号统一 M*、条款统一 §2.3。
+  //
+  //   ★ 取值来源（契约 §2.3）：M2–M4 查「**能拿到的那个值**」——
+  //       ① 有静态声明值                → 查静态值
+  //       ② 无静态值但有 --sample 样本  → 实跑 estimateMemory()，查**实算返回值**
+  //       ③ 两者都没有                  → 跳过，并明确说「跳过」而不是「通过」
+  //     为什么必须这样：动态声明（每包算一次）恰恰是最容易把单位写错的地方
+  //     （`return { peakBytes: 400 }` 本意是 400MB）。只查静态值的话，这三条对实际插件等于不存在。
+  const memDecl = (manifest.produces && manifest.produces.memory) || null;
+  if (!parses) {
+    rep.ok('M1', '只注册不解析，无需内存声明（跳过）', '§2.3');
+  } else if (!memDecl) {
+    rep.warn('M1', '参与解析但没有声明 produces.memory ⇒ 准入会回落"源包大小粗估"，偏差由本插件承担', '§2.3');
+  } else {
+    rep.ok('M1', '已声明 produces.memory（准入可用插件自己的峰值）', '§2.3');
+  }
+
+  const MEM_FIELDS = ['decompressedBytes', 'rgbaBytes', 'peakBytes'];
+  const MB = 1024 * 1024;
+  /** 运行期固定开销下限（19 包实测：峰值 ≈ 固定项 103MB + 容器 + 纹理附加） */
+  const FIXED_OVERHEAD_MB = 103;
+
+  /** 采样样本与插件自算入口（M2–M4 与 M5 共用一次采样，避免重复跑） */
+  const memSample = options.samplePath;
+  const memHaveSample = !!(memSample && fs.existsSync(memSample));
+  const memEstFn = (sandbox && sandbox.__ULB_NODE__ && typeof sandbox.__ULB_NODE__.estimateMemory === 'function')
+    ? sandbox.__ULB_NODE__.estimateMemory.bind(sandbox.__ULB_NODE__)
+    : (typeof desc.estimateMemory === 'function' ? desc.estimateMemory : null);
+  let memEst = null;
+  let memEstErr = null;
+  if (memHaveSample && memEstFn) {
+    try {
+      const bytes = new Uint8Array(fs.readFileSync(memSample));
+      memEst = memEstFn({
+        rootId: 'probe-root', rel: path.basename(memSample), name: path.basename(memSample), size: bytes.length, bytes,
+      });
+    } catch (e) { memEstErr = String((e && e.message) || e).slice(0, 80); }
+  }
+
+  /** 静态值优先；没有静态值就用实算值（这样动态声明也能被实质检查） */
+  const memNums = memDecl ? MEM_FIELDS.filter((f) => memDecl[f] !== undefined) : [];
+  const hasComputed = !!(memEst && MEM_FIELDS.some((f) => memEst[f] !== undefined));
+  let memVals = null;
+  let memOrigin = '';
+  if (memNums.length) {
+    memVals = memDecl;
+    memOrigin = '查静态声明值';
+  } else if (hasComputed) {
+    memVals = memEst;
+    memOrigin = '查实算值（--sample）';
+  }
+
+  if (!memVals) {
+    // 三种「跳过」原因必须说清，否则读报告的人分不清"没检查"和"检查通过"
+    const why = !memDecl ? '未声明 memory'
+      : (!memHaveSample ? '动态声明且未提供 --sample，拿不到值'
+        : (memEstErr ? `estimateMemory 抛错（${memEstErr}）`
+          : 'estimateMemory 未返回任何内存字段'));
+    rep.ok('M2', `跳过（无检查对象：${why}）`, '§2.3');
+    rep.ok('M3', `跳过（无检查对象：${why}）`, '§2.3');
+    rep.ok('M4', `跳过（无检查对象：${why}）`, '§2.3');
+  } else {
+    // M2：类型/单位。把 MB 当字节写是头号错法（400 而不是 419430400）
+    const bad = [];
+    const looksLikeMb = [];
+    for (const f of MEM_FIELDS) {
+      if (memVals[f] === undefined) continue;
+      const v = memVals[f];
+      if (typeof v !== 'number' || !Number.isFinite(v)) { bad.push(`${f}=${JSON.stringify(v)} 不是数字`); continue; }
+      if (!Number.isInteger(v)) { bad.push(`${f}=${v} 不是整数`); continue; }
+      if (v <= 0) { bad.push(`${f}=${v} 必须为正`); continue; }
+      if (v < MB) looksLikeMb.push(`${f}=${v}`);
+    }
+    const typeBroken = bad.length > 0 || looksLikeMb.length > 0;
+    if (bad.length) rep.fail('M2', `${memOrigin}：字段类型/取值不合法 —— ${bad.join('；')}（三字段都是**字节**正整数）`, '§2.3');
+    else if (looksLikeMb.length) rep.fail('M2', `${memOrigin}：${looksLikeMb.join('；')} 看着是 MB 不是字节（契约口径是字节：400MB 应写 ${400 * MB}）`, '§2.3');
+    else rep.ok('M2', `${memOrigin}：三字段均为正整数（字节）`, '§2.3');
+
+    if (typeBroken) {
+      // 一个单位错不该级联成三条噪音
+      rep.ok('M3', 'M2 已判类型/单位不合法，跳过物理下限检查（避免一个错误级联成多条）', '§2.3');
+      rep.ok('M4', 'M2 已判类型/单位不合法，跳过固定开销检查', '§2.3');
+    } else {
+      // M3：物理下限。ΣRGBA 是解码后必然存在的裸像素 ⇒ 峰值不可能小于它（逻辑上不成立，故 fail）
+      const phys = [];
+      if (memVals.peakBytes > 0 && memVals.rgbaBytes > 0 && memVals.peakBytes < memVals.rgbaBytes) {
+        phys.push(`peakBytes(${memVals.peakBytes}) < rgbaBytes(${memVals.rgbaBytes})`);
+      }
+      if (memVals.decompressedBytes !== undefined && !(memVals.decompressedBytes > 0)) {
+        phys.push('decompressedBytes 必须 > 0');
+      }
+      if (phys.length) rep.fail('M3', `${memOrigin}：违反物理下限 —— ${phys.join('；')}（ΣRGBA 必然占用，峰值不可能更小）`, '§2.3');
+      else rep.ok('M3', `${memOrigin}：未违反物理下限`, '§2.3');
+
+      // M4：低于固定开销下限 ⇒ 疑似漏算固定项（warn：插件可能用了更省的做法，不能判死）
+      if (memVals.peakBytes > 0 && memVals.peakBytes < FIXED_OVERHEAD_MB * MB) {
+        rep.warn('M4', `${memOrigin}：peakBytes=${(memVals.peakBytes / MB).toFixed(1)}MB 低于运行期固定开销下限（≈${FIXED_OVERHEAD_MB}MB）⇒ 疑似漏算固定项`, '§2.3');
+      } else if (memVals.peakBytes > 0) {
+        rep.ok('M4', `${memOrigin}：peakBytes=${(memVals.peakBytes / MB).toFixed(1)}MB 不低于固定开销下限`, '§2.3');
+      } else {
+        rep.ok('M4', `${memOrigin}：未给出 peakBytes，跳过固定开销检查`, '§2.3');
+      }
+    }
+  }
+
+  // M5：语义**不变** —— 只在「有静态声明 + 有样本」时比对偏差，不扩大到动态声明
+  //   （M2–M4 查"这个值合不合理"，M5 查"静态声明与实算是否一致"，职责分开）
+  {
+    if (!memDecl) rep.ok('M5', '未声明 memory，跳过实算比对', '§2.3');
+    else if (!memHaveSample) rep.ok('M5', '未提供 --sample 样本，跳过实算比对', '§2.3');
+    else if (!memEstFn) rep.warn('M5', '插件没有暴露 estimateMemory，无法实算校验内存声明', '§2.3');
+    else if (memEstErr) rep.warn('M5', `estimateMemory 抛错：${memEstErr}`, '§2.3');
+    else if (!(memEst && memEst.decompressedBytes > 0)) rep.warn('M5', 'estimateMemory 没有返回 decompressedBytes，无法比对', '§2.3');
+    else if (!(memDecl.decompressedBytes > 0)) {
+      rep.ok('M5', `实算 decompressedBytes=${memEst.decompressedBytes}（声明未给静态值，无可比对象）`, '§2.3');
+    } else {
+      const dev = Math.abs(memEst.decompressedBytes - memDecl.decompressedBytes) / memEst.decompressedBytes;
+      if (dev > 0.2) rep.warn('M5', `声明 decompressedBytes=${memDecl.decompressedBytes} 与实算 ${memEst.decompressedBytes} 偏差 ${(dev * 100).toFixed(0)}%（>20%）⇒ 声明可能已过期`, '§2.3');
+      else rep.ok('M5', `声明与实算一致（偏差 ${(dev * 100).toFixed(1)}%）`, '§2.3');
+    }
+  }
+
   // 附注：插件用了裸 console 作为用户可见输出（§3.4 只提示，不判死）
   const naked = logs.filter((l) => l.level.startsWith('console.'));
   if (naked.length) rep.warn('N1', `检测到 ${naked.length} 条裸 console 调用（§3.4 要求走 host.log）`, '§3.4');

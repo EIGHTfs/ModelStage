@@ -28,9 +28,10 @@
         "peakBytes"
       ],
       "supported": [
-        "decompressedBytes"
+        "decompressedBytes",
+        "peakBytes"
       ],
-      "note": "declaration returns { decompressedBytes } from the container block table (no inflate); rgbaBytes is backfilled into data/unpacked/<fp>/probe.json after a real resolve, because it needs the CAB decoded"
+      "note": "returns { decompressedBytes, peakBytes }: decompressedBytes comes from the container block table (no inflate); peakBytes comes from this plugin's own segmented model (measured max x1.15 per bucket). rgbaBytes is backfilled into data/unpacked/<fp>/probe.json after a real resolve"
     }
   },
   "errorCodes": [

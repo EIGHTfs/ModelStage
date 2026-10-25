@@ -599,6 +599,8 @@ function install() {
       // 契约 §三 的注册面：只留新契约成员 canHandle/resolve。
       canHandle,
       resolve,
+      // 契约 §2.2：让宿主与检查器都能发现"本插件能自己算内存代价"（估得准不准由本插件负责）
+      estimateMemory,
       kind: 'live2d',
       fileKinds: ['bundle'],
     });
@@ -615,18 +617,51 @@ function install() {
    * @param {{bytes?: Uint8Array}} file
    * @returns {{decompressedBytes:number, compressedBytes:number}|null} 不是本插件能处理的容器时返回 null
    */
+  /**
+   * 本插件容器（UnityFS + Live2D）的**峰值模型**——分段表在这里，不在核心。
+   *
+   * 为什么搬进插件：不同插件的容器结构完全不同，核心一张通用表对谁都不准，
+   *   而且每加一个插件都要重新标定。准不准由本插件负责；核心拿不到声明时才用源包大小粗估兜底。
+   *
+   * 数据来源：19 个真实 UnityFS Live2D 包实测（每档 = 该档实测 max × 1.15 安全垫），
+   *   变量取"解压后容器大小"（R²=0.971 / MAPE 2.5%）而不是源包大小（R²=0.695）。
+   *   11~12MB 这一小段同时存在 169MB 与 208MB 两种包，所以段划得比较密
+   *   （边界贴着样本，属已知过拟合；缓存里的 measuredPeakBytes 会把它修正成真值）。
+   * @param {number} decompressedMb 解压后容器大小（MB）
+   * @returns {number} 预估峰值（MB，已含安全垫）
+   */
+  function peakFromDecompressed(decompressedMb) {
+    if (!(decompressedMb > 0)) return 0;
+    if (decompressedMb <= 5) return 147;
+    if (decompressedMb <= 8) return 177;
+    if (decompressedMb <= 11) return 192;
+    if (decompressedMb <= 11.5) return 239;
+    if (decompressedMb <= 11.95) return 194;
+    if (decompressedMb <= 12.5) return 214;
+    if (decompressedMb <= 16) return 216;
+    if (decompressedMb <= 25) return 267;
+    if (decompressedMb <= 45) return 423;
+    return Math.ceil(decompressedMb * 7.0 + 118);   // >45MB 外推（与 45MB 处连续：7×45+118=433）
+  }
+
   function estimateMemory(file) {
     try {
       // 不调 canHandle：那会跑整包 probe（解析 + 找纹理），而这里只需要块表。
       //   传进来的 bytes 可能只是文件头部（宿主为了省读盘），越界时 blocksSummary 会抛错 ⇒ 返回 null ⇒ 宿主退回全量读。
       const s = NS.unityfs.blocksSummary(file.bytes);
-      return { decompressedBytes: s.decompressedBytes, compressedBytes: s.compressedBytes };
+      const decompressedMb = s.decompressedBytes / (1024 * 1024);
+      return {
+        decompressedBytes: s.decompressedBytes,
+        compressedBytes: s.compressedBytes,
+        // 本插件自己的模型给出峰值；核心直接采信、不再叠加安全垫（这个数里已含 15%）
+        peakBytes: Math.ceil(peakFromDecompressed(decompressedMb) * 1024 * 1024),
+      };
     } catch {
       return null;   // 判不出来就让核心走回落，绝不因此阻断加载
     }
   }
 
-  return { canHandle, resolve, estimateMemory, PLUGIN_ID };
+  return { canHandle, resolve, estimateMemory, peakFromDecompressed, PLUGIN_ID };
 }
 
 // 执行安装：浏览器里走宿主注册；node 里（无 window）拿到 { canHandle, resolve } 后挂到

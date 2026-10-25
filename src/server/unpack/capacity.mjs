@@ -8,16 +8,14 @@
 //   · VmHWM 峰值：12MB→176MB（14.7×）、19MB→451MB（23.7×）、42MB→479MB（11.4×）
 //     ⇒ **非线性**（19MB 比 42MB 还费内存），所以不能用单一倍数，按档取上包络。
 //   · 解包耗时：12MB→2.3s、19MB→10.0s、42MB→8.6s（同样非线性，19MB 最费）
-//     ⇒ 预热大包会让用户在看模型时单核占满 8~10 秒，所以**预热另有一条时间上限**（WARMUP_MAX_EST_SEC）。
+//     ⇒ 预估耗时只作为参考信息返回（日志里能看"大概多久"），**不参与任何判断**：
+//       曾经用它做过预热门槛，结果 15MB 以上的包永远进不了预热、服务端缓存永远填不上。
 //   · `os.freemem()` 在 Linux 不含可回收 buff/cache，会严重低估 ⇒ 必须优先 /proc/meminfo 的 MemAvailable。
 import fs from 'node:fs';
 import os from 'node:os';
 
 /** 预算比例：只用可用内存的一半，给系统/渲染留另一半 */
 const MEM_BUDGET_RATIO = 0.5;
-
-/** 预热的时间上限（秒）：预估解包超过这个时长就不预热（表达"CPU 影响"，比"包大小阈值"更贴近真实代价） */
-const WARMUP_MAX_EST_SEC = 6;
 
 /**
  * 可用内存（MB）——**每次判断时现取，绝不缓存**。
@@ -40,50 +38,8 @@ export function memAvailableMb() {
 }
 
 /**
- * **解压后容器 MB → 预估峰值 MB**（准入主判据，见 docs/设计/解包内存预估.md）。
- *
- * 为什么变量是"解压后容器"而不是"源包大小"：19 个真实样本实测
- *   · 峰值 ~ 解压容器 R²=0.971、MAPE 2.5%
- *   · 峰值 ~ 源包      R²=0.695（aijier_3 源包 19MB 却解压 42MB，源包完全看不出来）
- *
- * 分段值 = 各段实测 max × **1.15 安全垫**（段内样本不均衡，用单点 max 当边界会漏新包）：
- *   ≤5MB → 147（实测 max 128）｜5~13MB → 239（max 208）｜13~21MB → 267（max 232）
- *   21~43MB → 423（max 368）｜>43MB → 7.0×uncomp + 118（与 43MB 处连续：7×43+118=419）
- * @param {number} decompressedMb 解压后容器总大小（MB）
- * @returns {number} 预估峰值（MB，已含安全垫）
- */
-export function estimatePeakFromDecompressed(decompressedMb) {
-  if (!(decompressedMb > 0)) return 0;
-  for (const [limit, peak] of PEAK_TABLE) {
-    if (decompressedMb <= limit) return peak;
-  }
-  return Math.ceil(decompressedMb * 7.0 + 118);   // >45MB 外推（与 45MB 处连续：7×45+118=433）
-}
-
-/**
- * 分段表（解压容器 MB 上界 → 预估峰值 MB）。**每段 = 该段实测 max × 1.15 安全垫**。
- *
- * 为什么段划得比较密（11 / 11.5 / 11.9 / 12.5…）：19 个实测样本在 11~12MB 这一小段里
- *   同时出现了 169MB 和 208MB 两种包（同尺寸、同格式、同动作数，差 23%）——
- *   段划粗了就会让低值包为高值包陪绑，高估冲到 55%。密段把最大高估压到 22% 以内。
- *   **这是贴着样本划的，属于已知的过拟合**：新包靠 §回填（measuredPeakBytes）修正，
- *   公式只当冷启动初值（见 docs/设计/解包内存预估.md）。
- */
-const PEAK_TABLE = [
-  [5, 147],        // 样本 4.44MB → 实测 128
-  [8, 177],        // 7.38 → 154
-  [11, 192],       // 9.4~10.74 → 154~167
-  [11.5, 239],     // 11.04 → 208（离群包，回填后会被真值替换）
-  [11.95, 194],    // 11.54 / 11.77 → 169 / 168
-  [12.5, 214],     // 11.94 → 186
-  [16, 216],       // 14.02 → 188
-  [25, 267],       // 20.86 → 232
-  [45, 423],       // 41.98 / 42.11 → 348 / 368
-];
-
-/**
  * 源包大小 → 预估解包峰值（MB）。**仅供第③段回落**（插件没有声明 memory 时，保证不倒退）。
- * 主判据已改用 estimatePeakFromDecompressed —— 源包大小这个变量解释力很弱（R²=0.695）。
+ * 现在**只作第③段兜底**：准不准是插件的事（它声明 peakBytes 就用它的），核心不再维护容器结构模型。
  *   12MB→240（实测 176，留 36% 余量）
  *   19MB→494（实测 451，留 10% 余量）
  *   42MB→630（实测 479，留 32% 余量）
@@ -113,7 +69,7 @@ export function estimateUnpackSec(sourceMb) {
  * @param {number} [sourceMb] 源包大小（MB）；不传则只返回机器级信息，allowWarmup=true（不下结论）
  * @returns {object}
  */
-export function capacity(sourceMb) {
+export function capacity(sourceMb, memory) {
   const avail = memAvailableMb();
   const budgetMb = Math.round(avail.mb * MEM_BUDGET_RATIO);
   const base = {
@@ -123,32 +79,22 @@ export function capacity(sourceMb) {
     budgetMb,
     ratio: MEM_BUDGET_RATIO,
     rssMb: Math.round(process.memoryUsage().rss / 1048576),
-    warmupMaxEstSec: WARMUP_MAX_EST_SEC,
   };
   if (!(sourceMb > 0)) {
-    return { ...base, sourceMb: null, peakEstMb: null, estUnpackSec: null, allowWarmup: true, reason: 'no-package' };
+    return { ...base, sourceMb: null, peakEstMb: null, estUnpackSec: null, allowWarmup: true, reason: 'no-package', basis: null };
   }
-  const peakEstMb = estimatePeakMb(sourceMb);
+  // 与准入判断（checkUnpackMemory）**同源**：都走 estimatePeakWithBasis，同一个包只该有一个数字
+  const est = estimatePeakWithBasis(sourceMb, memory);
+  const peakEstMb = est.peakEstMb;
+  // 预估耗时只作参考信息（日志里能看"大概多久"），**不参与任何判断**
   const estUnpackSec = estimateUnpackSec(sourceMb);
   if (peakEstMb > budgetMb) {
-    return { ...base, sourceMb, peakEstMb, estUnpackSec, allowWarmup: false, reason: 'insufficient-memory' };
+    return { ...base, sourceMb, peakEstMb, estUnpackSec, allowWarmup: false, reason: 'insufficient-memory', basis: est.basis };
   }
-  // 内存够，但预热会长时间占核 ⇒ 只影响**预热**，不影响用户主动加载
-  //   （主动加载走 store.resolve 的纯内存判据：不能因为"慢"就拒绝用户要看的模型）
-  if (estUnpackSec > WARMUP_MAX_EST_SEC) {
-    return { ...base, sourceMb, peakEstMb, estUnpackSec, allowWarmup: false, reason: 'insufficient-cpu-time' };
-  }
-  return { ...base, sourceMb, peakEstMb, estUnpackSec, allowWarmup: true, reason: 'ok' };
+  // 预热只看内存：**不再有时间门槛**。旧实现"预估 >6s 就不预热"导致 15.4MB 以上的包永远进不了预热，
+  //   data/unpacked 永远填不上 ⇒ 前端一直回落本地解包，服务端为判断付的 probe/内存读取全都白跑。
+  return { ...base, sourceMb, peakEstMb, estUnpackSec, allowWarmup: true, reason: 'ok', basis: est.basis };
 }
-
-/**
- * 解包入口的内存判据（服务端 resolve 用；**不含时间上限**——用户主动加载不能因为"慢"被拒）。
- * @param {number} sourceBytes 源文件字节数
- * @returns {{ok: boolean, reason?: string, message?: string, budgetMb: number, peakEstMb: number, availMb: number}}
- */
-/** 覆盖阈值的说明文案（放行时也要把数字带出来，用户才知道自己放行了多大的包） */
-const OVER_LIMIT_TEXT = (peakEstMb, budgetMb, availMb) =>
-  `已放行超限解包：预估峰值 ${peakEstMb}MB 超过可用预算 ${budgetMb}MB（当前可用 ${availMb}MB × ${MEM_BUDGET_RATIO}），内存保护已关闭`;
 
 /**
  * 三段回落，选出本次判据用的「预估峰值」。
@@ -166,19 +112,15 @@ const OVER_LIMIT_TEXT = (peakEstMb, budgetMb, availMb) =>
  */
 export function estimatePeakWithBasis(sourceMb, memory) {
   const mem = memory || {};
-  // ① 实测回填优先（同一指纹解过包了，用真实值 + 5% 环境波动余量）
+  // ① 实测回填优先：同一容器解过包了，用真实峰值 + 5% 环境波动余量（比任何声明都准）
   if (mem.measuredPeakBytes > 0) {
     return { peakEstMb: Math.ceil((mem.measuredPeakBytes / (1024 * 1024)) * 1.05), basis: 'measured' };
   }
-  // ② 插件直接声明峰值：不再叠垫
+  // ② 插件声明峰值：**直接采信，不叠加安全垫**（准不准是插件的责任，见 docs/契约/插件.md §2.2）
   if (mem.peakBytes > 0) {
     return { peakEstMb: Math.ceil(mem.peakBytes / (1024 * 1024)), basis: 'plugin-peak' };
   }
-  // ③ 声明了解压后大小：模型算（已含 15% 垫）
-  if (mem.decompressedBytes > 0) {
-    return { peakEstMb: estimatePeakFromDecompressed(mem.decompressedBytes / (1024 * 1024)), basis: 'model-decompressed' };
-  }
-  // ④ 回落：源包大小分段（旧行为）
+  // ③ 回落：按源包大小分段粗估（核心不维护任何"容器结构模型"——那是各插件自己的事）
   return { peakEstMb: estimatePeakMb(sourceMb), basis: 'legacy-source' };
 }
 

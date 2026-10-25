@@ -162,7 +162,8 @@ export function createUnpackStore(opts) {
     //   缓存统一在解包成功后写（recordMeasuredPeak）。
     const est = estimateMemoryOf(req);
     if (!est) return cached;
-    return { decompressedBytes: est.decompressedBytes, compressedBytes: est.compressedBytes, probeAt: Date.now() };
+    // 原样透传插件声明（**包括 peakBytes**：核心要直接采信它，不能只挑解压量把峰值丢掉）
+    return { ...est, probeAt: Date.now() };
   }
 
   /**
@@ -419,6 +420,21 @@ export function createUnpackStore(opts) {
     return path.join(fpDir(fp), 'files', relPath);
   }
 
+  /**
+   * 对外暴露"这个包的内存声明"（/api/unpack/capacity 用）。
+   * 与准入判断走**同一个来源**：缓存命中 → 插件 estimateMemory（含 peakBytes）→ 都没有返回 null。
+   * @param {{rootId:string, rel:string, absPath:string}} req
+   */
+  function memoryOf(req) {
+    try {
+      const stat = fs.statSync(req.absPath);
+      const fp = fingerprintOf({ ...req, stat });
+      return memoryDeclaration(fp, req);
+    } catch {
+      return null;
+    }
+  }
+
   /** 状态（/api/unpack/stats 用；peakRss 给验收与回归看） */
   function stats() {
     const mem = rssNow();
@@ -446,5 +462,5 @@ export function createUnpackStore(opts) {
     };
   }
 
-  return { resolve, peek, readIndex, filePathOf, stats, cleanup, fingerprintOf };
+  return { resolve, memoryOf, peek, readIndex, filePathOf, stats, cleanup, fingerprintOf };
 }

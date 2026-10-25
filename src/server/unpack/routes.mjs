@@ -157,6 +157,7 @@ export function createUnpackRoutes(deps) {
       const rootId = String(url.searchParams.get('rootId') || '');
       const rel = String(url.searchParams.get('rel') || '');
       let sourceMb = 0;
+      let memory = null;
       if (rootId && rel) {
         // 优先用 rootId+rel：服务端自己 stat，前端不用传 size（少一处"两边算得不一样"的可能）
         const r = resolveRequest(rootId, rel);
@@ -165,13 +166,16 @@ export function createUnpackRoutes(deps) {
           return true;
         }
         sourceMb = fs.statSync(r.abs).size / 1024 / 1024;
+        // 带上插件的内存声明（peakBytes 优先）：这样 capacity 与真正的准入判断**同源**，
+        //   同一个包不会出现两个数字（旧实现这里走源包×倍数、准入走解压容器模型）。
+        try { memory = store.memoryOf({ rootId, rel, absPath: r.abs }); } catch { memory = null; }
       } else {
         // 只有字节数时（前端只知道包多大、不想暴露路径）：用 sourceMb 直接问
         //   —— 这样"包字节 → 预估峰值"的翻译始终只有服务端这一份权威实现
         const q = Number(url.searchParams.get('sourceMb') || 0);
         if (Number.isFinite(q) && q > 0) sourceMb = q;
       }
-      sendJson(res, 200, capacity(sourceMb || undefined));
+      sendJson(res, 200, capacity(sourceMb || undefined, memory || undefined));
       return true;
     }
     if (p === '/api/unpack/stats' && req.method === 'GET') {
