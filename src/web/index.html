@@ -36,6 +36,9 @@
   <!-- M1 只放空画布占位；M4 在此挂 PIXI Application 渲染 Spine -->
   <canvas id="stage-canvas" class="stage-canvas"></canvas>
   <p id="stage-hint" class="stage-hint">M1 骨架 · 舞台渲染在 M4 接入</p>
+  <!-- 内存三色条（panel/memory-bar.js 填内容）：默认空且 hidden，有数据才出现；
+       受「显示状态信息」开关控制（与上面的状态行同一策略）。 -->
+  <div id="mem-bar-stage" class="mem-bar-host mem-bar-host--stage" hidden></div>
 </main>
 
 <!-- ============ 顶栏（第 1 区域） ============ -->

@@ -28,7 +28,7 @@ import { MIX_DEFAULT, MIX_MAX, MIX_MIN, MIX_STEP, SPEED_DEFAULT, SPEED_MAX, SPEE
 export const RENDERER_INDEPENDENT = [
   // 背景类全部与渲染器无关（外壳行为）：纯色预设列表也是外壳数据，不依赖任何渲染能力
   'ctl-theme', 'ctl-bg-mode', 'ctl-bg-color', 'ctl-bg-image', 'ctl-bg-sources',
-  'ctl-hang-guard', 'ctl-memory-guard', 'ctl-memory-readout', 'ctl-show-status', 'ctl-debug-log', 'ctl-settings-io',
+  'ctl-hang-guard', 'ctl-memory-guard', 'ctl-memory-bar', 'ctl-show-status', 'ctl-debug-log', 'ctl-settings-io',
   // 动作组的循环开关由应用层定时器推进、动作列表内容由应用层填，
   //   与"渲染器是否声明某项能力"无关（两面都要有）。
   'ctl-anim-loop', 'ctl-anim-list',
@@ -248,13 +248,11 @@ export const PANEL_GROUPS = [
         id: 'ctl-memory-guard', core: true, defaultOn: true,
       },
       {
-        // 判据读数：数值全部来自服务端 /api/unpack/capacity（由服务端读系统内存信息），前端不自己估
-        kind: 'readonly',
-        label: '内存判据',
-        id: 'ctl-memory-readout',
-        // core 必需：不标 core 会按 id 推导成能力键 memory-readout，渲染器没声明 ⇒ 整项被隐藏
-        core: true,
-        note: '可用内存 / 本次需求（打开面板时自动取服务端真实值）',
+        // 内存三色条容器：内容由 panel/memory-bar.js 填（总 / 可用 / 服务端已占用）。
+        //   与舞台左下状态行那条是**同一个组件**，不复制实现。
+        kind: 'dynamic-list',
+        label: '',
+        id: 'ctl-memory-bar', core: true,
       },
       { kind: 'switch', label: '防卡死保护', id: 'ctl-hang-guard', core: true, defaultOn: true },
       { kind: 'switch', label: '显示状态信息', id: 'ctl-show-status', core: true, defaultOn: true },

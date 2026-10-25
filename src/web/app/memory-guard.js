@@ -180,20 +180,6 @@ export async function refreshMemoryReadout(target) {
   }
 }
 
-/**
- * 判据显示文案（带真实数字；拿不到时明说拿不到，不编）。
- * @returns {string}
- */
-export function readoutText() {
-  const r = readout;
-  if (!r.at) return '内存判据：尚未取到（打开面板后自动拉取）';
-  if (r.error) return `内存判据：取不到（${r.error}）`;
-  const avail = r.availMb === null ? '未知' : `${r.availMb} MB`;
-  const total = r.totalMb === null ? '' : ` / 总 ${r.totalMb} MB`;
-  const need = r.peakEstMb === null ? '需求：选中有资源的模型后显示' : `需求 ${r.peakEstMb} MB（预算 ${r.budgetMb} MB）`;
-  return `可用 ${avail}${total} · ${need}`;
-}
-
 /** 最近一次读数（断言用） */
 export function memoryReadout() {
   return { ...readout };

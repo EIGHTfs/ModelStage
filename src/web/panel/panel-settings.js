@@ -6,13 +6,15 @@
 //   ③ rebuildPanelFor：按当前渲染器能力重算三态 + 重跑能力自检（契约 INV-05）
 
 import { dom, stage, state } from '../app/context.js';
+import { refreshPanel } from '../app/memory-bars.js';
+import { bindPanelBarRefresh } from '../app/memory-bars.js';
 import { resetStage, trackElementStage } from '../infra/ready.js';
 import { rendererSupports, setRendererSetting } from '../app/renderer-setting.js';
 import * as uiState from '../app/ui-state.js';
 import { stageLog, stageStatus } from '../app/status.js';
 import { PANEL_GROUPS, applyCapabilities, selfCheck, settingKeyOf } from './schema.js';
 import { mountPanel } from './view.js';
-import { applyDebugLog, applyHangGuard, applyMemoryGuard, applyShowStatus, connectShellControls, refreshReadoutSoon, runSettingsAction } from './shell-controls.js';
+import { applyDebugLog, applyHangGuard, applyMemoryGuard, applyShowStatus, connectShellControls, runSettingsAction } from './shell-controls.js';
 import { applyBackground, applyTheme, readViewSettings, saveViewSettings } from '../app/view-settings.js';
 import { bindBgGroupToggle, refreshBgSources } from './background-list.js';
 import { applyAnimLoop, applyTransportMotion } from '../app/transport-actions.js';
@@ -330,7 +332,10 @@ function rebuildPanelFor(renderer) {
   // 自定义背景图列表：面板重建后重新拉一次（切面/重开面板都会走到这里）
   bindBgGroupToggle();   // 点「纯色▾ / 自定义▾」切换二级列表展开（幂等，只绑一次）
   refreshBgSources().catch(() => { /* 列表拉取失败只是少一块内容，不影响面板其余部分 */ });
-  refreshReadoutSoon();   // 面板重建后重新取一次内存判据（数值来自服务端真值）
+  refreshPanel().catch(() => { /* 内存条取不到就隐藏，不阻塞面板 */ });
+  // 文档 §五「展开设置面板 → 拉一次」：面板重建与"点开设置组"是两件事，
+  //   后者不重建面板，所以单独绑一次点击（幂等）。
+  bindPanelBarRefresh();
   state.panelSnapshot = panelSnapshot();
   const check = selfCheck(renderer || {});
   state.panelSelfCheck = check;

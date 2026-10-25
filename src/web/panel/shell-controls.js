@@ -10,6 +10,7 @@
 //   跨模块需要的"面板重放"通过 connectShellControls 注入，避免 main ↔ 本模块循环依赖。
 
 import { createDebugLog } from '../debug/log.js';
+import { setStageVisible } from '../app/memory-bars.js';
 import { mountDebugPanel } from '../debug/panel.js';
 import { formatError } from '../infra/api.js';
 import { dom, state, stage } from '../app/context.js';
@@ -59,6 +60,8 @@ export function connectShellControls(bridge) {
  * 关掉只是不显示，日志与控制台照旧（排障不能因为藏了提示就断线）。
  */
 export function applyShowStatus(on) {
+  // 舞台顶部的内存条与状态行同策略：关掉「显示状态信息」时它也不显示
+  setStageVisible(on !== false);
   state.showStatus = on !== false;
   document.documentElement.dataset.showStatus = state.showStatus ? 'on' : 'off';
   if (dom.stageHint && !state.showStatus) {
@@ -139,20 +142,6 @@ export function applyHangGuard(on) {
 export function applyMemoryGuard(on) {
   const value = memoryGuard.setMemoryGuard(on);
   stageStatus(value ? '内存保护：开（解包按可用内存准入）' : '内存保护：关（允许超预算解包，请自行确认内存充足）', 'info', { show: true });
-  // 判据读数跟着开关一起刷新（数字来自服务端真实值）
-  refreshReadoutSoon();
-}
-
-/** 刷新「内存判据」那一行的显示（数值取服务端真值，取不到就明说取不到） */
-export function refreshReadoutSoon() {
-  memoryGuard.refreshMemoryReadout()
-    .then(() => {
-      const text = memoryGuard.readoutText();
-      if (state.panel && typeof state.panel.setReadonly === 'function') {
-        state.panel.setReadonly('ctl-memory-readout', text);
-      }
-    })
-    .catch(() => { /* 取值失败就保持上一次显示，不阻塞面板 */ });
 }
 
 /** 看门狗单次采样 */

@@ -4,6 +4,7 @@
 // 具体怎么画由渲染器负责；本模块不碰引擎内部。
 
 import { dom, stage, state } from './context.js';
+import { refreshStage } from './memory-bars.js';
 import { markModelFailed } from '../infra/ready.js';
 import { buildDocument } from '../infra/document.js';
 import { getSharedVirtualFS } from '../infra/vfs.js';
@@ -231,6 +232,8 @@ function mountEntry(entry, name) {
       stageStatus(`${name} · ${head} · ${anims.length} 动作 · 播放 ${motion}`, 'info');
       // 运行时组只读：显示本次实际使用的运行时版本（引擎按骨架版本自动选，不可手切）
       if (state.panel) state.panel.setReadonly('ctl-runtime', `Spine ${info.version}`);
+      // 模型加载成功 = "现在真的有资源在用内存了" ⇒ 刷新内存三色条（事件驱动，不轮询）
+      refreshStage().catch(() => { /* 取不到数据时组件内部已记 warn 并隐藏 */ });
       refreshSkinList();
       fillTransportOptions(info);
       // 底栏已按新清单落到首项（或模型自报的 motion）⇒ 立刻把"当前动作"缓存对齐，

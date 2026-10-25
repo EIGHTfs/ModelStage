@@ -425,6 +425,10 @@
   --color-muted-foreground: #9ca3af;
   --color-text-secondary: #9ca3af;
   --color-border: #353a3e;
+  /* 内存三色条：底槽 / 可用 / 服务端已占用（深浅主题都保证三段可分辨） */
+  --mem-total: #2a2f33;
+  --mem-available: #3ddc84;
+  --mem-server: #e08b3a;
 }
 
 /* 主题：eye-gray（色值取自既有的 --color-* 变量，逐值一致） */
@@ -439,6 +443,10 @@
   --color-muted-foreground: #b0aea5;
   --color-text-secondary: #b0aea5;
   --color-border: #4a4843;
+  /* 内存三色条：底槽 / 可用 / 服务端已占用（深浅主题都保证三段可分辨） */
+  --mem-total: #3a3a36;
+  --mem-available: #7fd68a;
+  --mem-server: #e09b5a;
 }
 
 /* 主题：day-paper（色值取自既有的 --color-* 变量，逐值一致） */
@@ -453,6 +461,10 @@
   --color-muted-foreground: #5c574b;
   --color-text-secondary: #5c574b;
   --color-border: #d8d2c4;
+  /* 内存三色条：底槽 / 可用 / 服务端已占用（深浅主题都保证三段可分辨） */
+  --mem-total: #d8d3c8;
+  --mem-available: #2e8b57;
+  --mem-server: #c96a1e;
 }
 
 /* 主题：neon-violet（色值取自既有的 --color-* 变量，逐值一致） */
@@ -467,6 +479,10 @@
   --color-muted-foreground: #b0a6cc;
   --color-text-secondary: #b0a6cc;
   --color-border: #352b49;
+  /* 内存三色条：底槽 / 可用 / 服务端已占用（深浅主题都保证三段可分辨） */
+  --mem-total: #2d2140;
+  --mem-available: #4be3a2;
+  --mem-server: #ff9f45;
 }
 
 /* 主题：cloud-blue（色值取自既有的 --color-* 变量，逐值一致） */
@@ -481,6 +497,10 @@
   --color-muted-foreground: #4f5e78;
   --color-text-secondary: #4f5e78;
   --color-border: #cbd5e1;
+  /* 内存三色条：底槽 / 可用 / 服务端已占用（深浅主题都保证三段可分辨） */
+  --mem-total: #2b3a4a;
+  --mem-available: #52d9a0;
+  --mem-server: #f0a04b;
 }
 
 /* 舞台底色：背景模式（本实现同时写存储与画面，切换即时生效）
@@ -1155,3 +1175,60 @@
 
 .bg-src-menu-item:hover { background: rgba(255, 255, 255, 0.08); }
 .bg-src-menu-item--danger { color: #e05a5a; }
+
+
+/* ---- 内存三色条（panel/memory-bar.js）----
+   轨道 = 总内存；三段宽度 = 值 / 总 × 100%（由 JS 以 --seg-w 下发，样式表只用 var）。
+   颜色一律走 --mem-* 令牌（每套主题各一份），不写内联色值。 */
+.mem-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.mem-bar-track {
+  display: flex;
+  width: 100%;
+  height: 10px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--mem-total);
+}
+
+.mem-bar-seg {
+  flex: 0 0 auto;
+  width: var(--seg-w, 0%);
+  height: 100%;
+}
+
+.mem-bar-seg--server { background: var(--mem-server); }
+.mem-bar-seg--other { background: var(--mem-total); }
+.mem-bar-seg--avail { background: var(--mem-available); }
+
+.mem-bar-text {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--color-muted-foreground);
+  /* 等宽数字：数值变化时文字不会左右抖 */
+  font-variant-numeric: tabular-nums;
+}
+
+/* 舞台那条：紧贴在状态行（.stage-hint，位于舞台左下 left:12px/bottom:12px）的**上方**。
+   为什么不去底部居中：底部那条是 transport 栏，居中会与它重叠（实测截图确认）。
+   为什么 pointer-events:none：本条不可点，绝不能挡住舞台上的其它交互。 */
+#stage-hint + .mem-bar-host,
+.mem-bar-host--stage {
+  position: absolute;
+  left: 12px;
+  bottom: 44px;
+  width: min(360px, 70vw);
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* 设置面板里那一条：撑满面板宽度，允许点选其它控件（本条不可点，别挡路） */
+.mem-bar-host--panel {
+  margin-top: 2px;
+}
