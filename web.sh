@@ -1,13 +1,15 @@
 #!/bin/bash
-# 新前端（src/web）启停脚本
+# 应用启停脚本（src/web 前端 + src/server 服务端）
 # 用法: web.sh [start|stop|restart|status]   (默认 restart；未启动时 restart 相当于 start)
 #
-# 与 server.sh 的关系：
-#   - server.sh 跑既有实现前端（dist/index.html，默认 8803），PID/日志为 spine-multi-viewer.*
-#   - 本脚本跑重写版前端（src/web，默认 8804），PID/日志为 model-stage-web.*，两者互不干扰
-#   - 新前端由 src/server/serve.mjs 独立提供（静态 + /api + /files + /icons + /live2d-lib），**不再反代 8803**
+# 架构：单进程。由 src/server/serve.mjs 同时提供
+#   · 静态前端（src/web）
+#   · /api 接口、/files 资源、/icons 图标、/live2d-lib 运行时
+#   · 服务端解包、插件宿主
+# 因此不存在"另起一个静态服务再反代"的分层。
 #
-# 端口与上游都可用环境变量覆盖：
+# PID 与日志：model-stage-web.*（日志目录 runtime/）
+# 端口可用环境变量覆盖：
 #   PORT=8804 bash web.sh restart
 
 set -u

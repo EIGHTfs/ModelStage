@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// resolve-live2d-runtimes.mjs — 自动定位 Live2D 运行时库（供 server.mjs 在运行时供给浏览器）
+// resolve-live2d-runtimes.mjs — 自动定位 Live2D 运行时库（供服务端在运行时供给浏览器）
 //
 // 设计目的：
 //   运行时库**不纳入本仓库**（Live2D Cubism Core 受 Live2D Inc. 专有许可约束，见 README 合规说明），
@@ -46,8 +46,6 @@ const CANDIDATE_SUBPATHS = [
   'static/lib',
   'js/lib',
   'src/lib',
-  'legacy/patches/lib',
-  'dist/lib',
   '.',            // 库直接放在项目根
 ];
 
