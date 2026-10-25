@@ -13,13 +13,15 @@ import {
   addSolid, listSolids, removeSolid, renameSolid, resetSolids,
 } from '../app/background-solids.js';
 import { openColorPicker } from './color-picker.js';
+import { askConfirm, askText } from './dialog.js';
 import { listBgSources, renderSourceGroup, selectedSourceId } from './bg-source.js';
+import * as uiState from '../app/ui-state.js';
 import {
   listBackgrounds, pickFile, removeBackground, renameBackground, uploadBackground,
 } from '../app/backgrounds.js';
 
-/** 容器的唯一选择器（现查，不闭包持有——面板会重建） */
-const BOX_SEL = '#right-panel [data-ctl="ctl-bg-list"]';
+/** 公共列表容器的选择器（现查，不闭包持有——面板会重建） */
+const BOX_SEL = '#right-panel [data-ctl="ctl-bg-sources"]';
 
 /** 当前列表数据（重命名/删除后就地更新，避免整表重取时闪一下） */
 let items = [];
@@ -65,20 +67,16 @@ function applyItem(item) {
  * @param {object} item 列表项
  * @param {HTMLElement} box 容器
  */
-function confirmDelete(btn, item, box) {
-  if (btn.dataset.armed !== '1') {
-    btn.dataset.armed = '1';
-    btn.textContent = '确认删除';
-    btn.classList.add('is-armed');
-    setTimeout(() => {
-      if (btn.dataset.armed !== '1') return;
-      btn.dataset.armed = '0';
-      btn.textContent = '删除';
-      btn.classList.remove('is-armed');
-    }, DISARM_MS);
-    return;
-  }
-  btn.dataset.armed = '0';
+async function confirmDelete(btn, item, box) {
+  // 自定义图删的是**服务端真实文件**（不可恢复）⇒ 必须明确确认；
+  //   纯色预设不需要（有「恢复默认」能一键找回），所以那边直接删。
+  const ok = await askConfirm({
+    title: '删除这张背景图？',
+    message: `「${item.name || item.id}」删除后不可恢复（图片文件会被一并删除）。`,
+    danger: true,          // 确定键红色，且默认焦点落在「取消」防误触
+    confirmText: '删除',
+  });
+  if (!ok) { say(box, '已取消删除', 'ok'); return; }
   removeBackground(realIdOf(item)).then((r) => {
     if (!r.ok) { say(box, r.message, 'error'); return null; }
     // 删掉的正好是当前背景图 ⇒ 舞台不能继续指向一个已 404 的地址，回落到棋盘格
@@ -135,16 +133,22 @@ function solidSay(box, text, kind = 'ok') {
   hint.dataset.kind = kind;
 }
 
-/** 问答式命名：新建与改名共用一个入口（便于自动化时 stub window.prompt） */
-function askName(defaultValue) {
-  try {
-    const v = window.prompt('给这个颜色起个名字（≤30 字）', defaultValue || '');
-    if (v === null) return null;
-    const t = String(v).trim();
-    return t || null;
-  } catch {
-    return null;
-  }
+/**
+ * 命名：新建与改名共用这一个入口，走自绘弹窗 panel/dialog.js（返回 Promise）。
+ * 不用浏览器原生输入框：它同步阻塞主线程、样式不受主题控制。
+ * @param {string} defaultValue 原名（改名时预填，打开即全选，可直接覆盖）
+ * @returns {Promise<string|null>} 取消 ⇒ null
+ */
+async function askName(defaultValue) {
+  const v = await askText({
+    title: '给这个颜色起个名字',
+    message: '最多 30 个字；同名会被服务端拒绝，换个名字即可。',
+    value: defaultValue || '',
+    maxlength: 30,
+    confirmText: '确定',
+  });
+  const t = (v || '').trim();
+  return t || null;
 }
 
 /**
@@ -193,7 +197,7 @@ async function startAddSolid(box) {
     });
   });
   if (!picked) return;
-  const name = askName(`颜色 ${picked}`);
+  const name = await askName(`颜色 ${picked}`);
   if (!name) { solidSay(box, '已取消：没有命名', 'error'); return; }
   const r = await addSolid(name, picked);
   if (!r.ok) { solidSay(box, r.message || '添加失败', 'error'); return; }
@@ -204,7 +208,7 @@ async function startAddSolid(box) {
 
 /** 改名：id 与 color 不变，只换名字 */
 async function startRenameSolid(item, box) {
-  const name = askName(item.name);
+  const name = await askName(item.name);
   if (!name || name === item.name) return;
   const r = await renameSolid(realIdOf(item), name);
   if (!r.ok) { solidSay(box, r.message || '改名失败', 'error'); return; }
@@ -214,15 +218,10 @@ async function startRenameSolid(item, box) {
 
 /** 删除：两段式确认（防误点），删完按"是否正在用"决定回落 */
 async function startRemoveSolid(btn, item, box) {
-  if (!btn.classList.contains('is-armed')) {
-    btn.classList.add('is-armed');
-    btn.textContent = '确认删？';
-    setTimeout(() => { btn.classList.remove('is-armed'); btn.textContent = '删'; }, DISARM_MS);
-    return;
-  }
+  // 纯色直接删：有「恢复默认」能一键找回，二次确认反而碍事（自定义图那边才必须确认）
   const r = await removeSolid(realIdOf(item));
   if (!r.ok) { solidSay(box, r.message || '删除失败', 'error'); return; }
-  await refreshSolids();
+  await refreshBgSources();
   const switchedToCheckerboard = fallbackAfterRemove(item.color, box);
   if (!switchedToCheckerboard) solidSay(box, `已删除「${item.name}」`, 'ok');
 }
@@ -251,19 +250,26 @@ async function startResetSolids(btn, box) {
 //              ② 展开哪一组（openGroup）
 //              ③ 打开时把「当前项」勾出来
 
-/** 当前展开的组：null = 都收起，'solid' / 'custom' = 展开对应列表 */
-let openGroup = null;
+/**
+ * 当前展开的组：null = 都收起，'solid' / 'custom' = 展开对应列表。
+ * **状态存在 UI 状态工厂里**（不只是内存变量）：刷新后能恢复"上次展开的是哪一组"，
+ * 否则会出现"按钮回填了、列表却收起"的半截状态。
+ */
+let openGroup = uiState.getBgOpen() || null;
 
-/** 容器选择器（现查：面板重建会换 DOM） */
-const SOLIDS_SEL = '#right-panel [data-ctl="ctl-bg-solids"]';
-const CUSTOM_SEL = '#right-panel [data-ctl="ctl-bg-list"]';
+/**
+ * 公共列表容器（现查：面板重建会换 DOM）。
+ * 纯色预设与自定义图片**共用这一个位置**：切换组时只换内容，按钮行不位移、视线不用上下找。
+ */
+const SRC_SEL = BOX_SEL;
 
 /** 按 openGroup 控制两组列表的可见性（列表内容常驻，切的是显隐） */
 function applyGroupVisibility() {
-  const solidBox = document.querySelector(SOLIDS_SEL);
-  const customBox = document.querySelector(CUSTOM_SEL);
-  if (solidBox) solidBox.hidden = openGroup !== 'solid';
-  if (customBox) customBox.hidden = openGroup !== 'custom';
+  const box = document.querySelector(SRC_SEL);
+  if (!box) return;
+  // 收起时**整块不占位**：清内容 + hidden（style.css 有全局 [hidden]{display:none!important} 兜底）
+  if (!openGroup) { box.replaceChildren(); box.hidden = true; }
+  else box.hidden = false;
   const rp = document.getElementById('right-panel');
   if (rp) rp.dataset.bgOpen = openGroup || '';
 }
@@ -283,7 +289,7 @@ function realIdOf(item) {
 
 /** 图片改名：与纯色走同一套问答式命名（不再做行内输入框，两边口径一致） */
 async function startRenameImage(item, box) {
-  const name = askName(item.name);
+  const name = await askName(item.name);
   if (!name || name === item.name) return;
   const r = await renameBackground(realIdOf(item), name);
   if (!r || !r.ok) { say(box, (r && r.message) || '改名失败', 'error'); return; }
@@ -299,35 +305,37 @@ async function startRenameImage(item, box) {
  * @returns {Promise<number>} 两条列表合计条数
  */
 export async function refreshBgSources() {
-  const solidBox = document.querySelector(SOLIDS_SEL);
-  const customBox = document.querySelector(CUSTOM_SEL);
-  if (!solidBox || !customBox) return -1;
+  const box = document.querySelector(SRC_SEL);
+  if (!box) return -1;
   const sources = await listBgSources();
   const sel = selectedSourceId(readViewSettings().background || {}, sources);
   const selId = sel.itemId || null;
 
-  renderSourceGroup(solidBox, 'solid', sources.solid, {
-    selectedItemId: selId,
-    onApply: (item) => applySolid(item, solidBox),
-    onRename: (item) => startRenameSolid(item, solidBox),
-    onRemove: (btn, item) => startRemoveSolid(btn, item, solidBox),
-    onAdd: () => startAddSolid(solidBox),
-    onReset: (btn) => startResetSolids(btn, solidBox),
-  });
-  renderSourceGroup(customBox, 'custom', sources.custom, {
+  if (sources.errors && sources.errors.length) box.dataset.bgSrcErrors = sources.errors.join(' / ');
+  else delete box.dataset.bgSrcErrors;
+
+  if (!openGroup) { applyGroupVisibility(); return 0; }
+  box.hidden = false;
+
+  if (openGroup === 'solid') {
+    renderSourceGroup(box, 'solid', sources.solid, {
+      selectedItemId: selId,
+      onApply: (item) => applySolid(item, box),
+      onRename: (item) => startRenameSolid(item, box),
+      onRemove: (btn, item) => startRemoveSolid(btn, item, box),
+      onAdd: () => startAddSolid(box),
+      onReset: (btn) => startResetSolids(btn, box),
+    });
+    return sources.solid.length;
+  }
+  renderSourceGroup(box, 'custom', sources.custom, {
     selectedItemId: selId,
     onApply: (item) => applyItem(item),
-    onRename: (item) => startRenameImage(item, customBox),
-    onRemove: (btn, item) => confirmDelete(btn, item, customBox),
-    onUpload: () => startUpload(customBox),
+    onRename: (item) => startRenameImage(item, box),
+    onRemove: (btn, item) => confirmDelete(btn, item, box),
+    onUpload: () => startUpload(box),
   });
-
-  if (sources.errors && sources.errors.length) {
-    const box = solidBox;
-    box.dataset.bgSrcErrors = sources.errors.join(' / ');
-  }
-  applyGroupVisibility();
-  return sources.solid.length + sources.custom.length;
+  return sources.custom.length;
 }
 
 /** 兼容旧入口：两处都转发到统一实现（panel-settings 的调用点不用改） */
@@ -350,6 +358,7 @@ export function bindBgGroupToggle() {
     if (!btn) return;
     const v = btn.dataset.value;
     openGroup = (v === 'solid' || v === 'custom') ? (openGroup === v ? null : v) : null;
+    uiState.setBgOpen(openGroup || '');   // 记进工厂：刷新后按这个值恢复展开态
     // 模式切换由 segmented 自身继续走（它会在下一拍更新档位与背景）
     setTimeout(() => { refreshBgSources().catch(() => { /* 刷新失败保留现状 */ }); }, 0);
   }, true);

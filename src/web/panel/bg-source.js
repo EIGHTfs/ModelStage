@@ -116,6 +116,85 @@ export function selectedSourceId(background, groups) {
  * @param {'panel'|'menu'} [opts.variant] 渲染风格（右栏行内 / 底栏菜单）
  * @returns {{count:number}} 渲染条数
  */
+/** 当前打开的行菜单（同一时刻只允许一个） */
+let openMenuEl = null;
+
+/** 关掉当前行菜单（幂等） */
+export function closeRowMenu() {
+  if (!openMenuEl) return;
+  try { openMenuEl.remove(); } catch { /* 已被移除 */ }
+  openMenuEl = null;
+  document.removeEventListener('click', onDocClick, true);
+  document.removeEventListener('keydown', onDocKey, true);
+}
+
+/**
+ * 在某行的 ⋯ 按钮旁弹出小菜单。
+ *
+ * 关闭行为三条都覆盖：点菜单外任意处 / Esc / 点了某一项。
+ * @param {HTMLElement} anchorBtn ⋯ 按钮
+ * @param {Array<{text:string, run:Function, danger?:boolean}>} entries 菜单项
+ */
+export function openRowMenu(anchorBtn, entries) {
+  closeRowMenu();                       // 互斥：开新的先关旧的
+  const items = (entries || []).filter(Boolean);
+  if (!anchorBtn || !items.length) return null;
+
+  const menu = el('div', 'bg-src-menu');
+  menu.setAttribute('role', 'menu');
+  for (const it of items) {
+    const btn = el('button', 'bg-src-menu-item' + (it.danger ? ' bg-src-menu-item--danger' : ''), it.text);
+    btn.type = 'button';
+    btn.setAttribute('role', 'menuitem');
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeRowMenu();
+      try { it.run(); } catch { /* 单项失败不影响其它 */ }
+    });
+    menu.append(btn);
+  }
+  document.body.append(menu);
+
+  // 定位：贴 ⋯ 的右下角；越界就翻到左上（动态值，契约允许的唯一例外）
+  const r = anchorBtn.getBoundingClientRect();
+  const box = menu.getBoundingClientRect();
+  const vw = window.innerWidth || 0;
+  const vh = window.innerHeight || 0;
+  let left = r.right - box.width;
+  let top = r.bottom + 4;
+  if (vw && left + box.width > vw - 8) left = Math.max(8, vw - box.width - 8);
+  if (left < 8) left = 8;
+  if (vh && top + box.height > vh - 8) top = Math.max(8, r.top - box.height - 4);
+  menu.style.left = `${Math.round(left)}px`;
+  menu.style.top = `${Math.round(top)}px`;
+  openMenuEl = menu;
+
+  // 点外部关闭（用 setTimeout 让"本次点击"先冒泡完，否则点 ⋯ 会立刻被关掉）
+  setTimeout(() => {
+    document.addEventListener('click', onDocClick, true);
+    document.addEventListener('keydown', onDocKey, true);
+  }, 0);
+  return menu;
+}
+
+/** 点菜单外任意处 → 关 */
+function onDocClick(ev) {
+  if (!openMenuEl) return;
+  if (openMenuEl.contains(ev.target)) return;
+  closeRowMenu();
+  document.removeEventListener('click', onDocClick, true);
+  document.removeEventListener('keydown', onDocKey, true);
+}
+
+/** Esc → 关 */
+function onDocKey(ev) {
+  if (ev.key !== 'Escape' || !openMenuEl) return;
+  closeRowMenu();
+  ev.stopPropagation();
+  document.removeEventListener('click', onDocClick, true);
+  document.removeEventListener('keydown', onDocKey, true);
+}
+
 export function renderSourceGroup(host, groupId, items, opts = {}) {
   const list = Array.isArray(items) ? items : [];
   const o = opts || {};
@@ -148,27 +227,36 @@ export function renderSourceGroup(host, groupId, items, opts = {}) {
 
     row.append(el('span', 'bg-src-name', item.name || item.id));
 
-    // 行内操作：改名 / 删（底栏菜单里不显示，避免菜单里塞二级操作）
+    // 行内操作收进单个 ⋯ 菜单：
+    //   两个文字按钮挤在行尾会把 320px 宽的面板挤爆（手机上尤其明显），
+    //   且"改名/删"是低频操作，收进菜单后行高能从两行降到一行。
     if (variant === 'panel') {
-      if (typeof o.onRename === 'function') {
-        const rn = el('button', 'bg-btn', '改名');
-        rn.type = 'button';
-        rn.addEventListener('click', (e) => { e.stopPropagation(); o.onRename(item); });
-        row.append(rn);
-      }
-      if (typeof o.onRemove === 'function') {
-        const rm = el('button', 'bg-btn bg-btn-danger', '删');
-        rm.type = 'button';
-        rm.addEventListener('click', (e) => { e.stopPropagation(); o.onRemove(rm, item); });
-        row.append(rm);
-      }
+      const more = el('button', 'bg-src-more', '⋯');
+      more.type = 'button';
+      more.title = '更多操作';
+      more.setAttribute('aria-label', `更多操作：${item.name || item.id}`);
+      more.dataset.srcMore = item.id;
+      // ⋯ 必须 stopPropagation：否则"点 ⋯"会连带触发整行的"应用该色"
+      more.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openRowMenu(more, [
+          typeof o.onRename === 'function' ? { text: '改名', run: () => o.onRename(item) } : null,
+          typeof o.onRemove === 'function' ? { text: '删除', danger: true, run: () => o.onRemove(more, item) } : null,
+        ].filter(Boolean));
+      });
+      row.append(more);
     }
 
     row.addEventListener('click', () => { if (typeof o.onApply === 'function') o.onApply(item); });
     rows.push(row);
   }
 
-  host.replaceChildren(...rows);
+  // 小标题：告诉用户"现在看的是哪一组、有几条"（两组合用同一位置时，这个标题是唯一的组标识）
+  const unit = groupId === 'solid' ? '个' : '张';
+  const titleText = groupId === 'solid' ? '纯色预设' : '自定义图片';
+  const head = el('p', 'bg-src-title', `${titleText} · ${list.length} ${unit}`);
+  head.dataset.group = groupId;
+  host.replaceChildren(head, ...rows);
 
   if (!rows.length) {
     const emptyText = o.emptyText || (groupId === 'solid' ? '还没有颜色，点添加' : '还没有图片，点上传');

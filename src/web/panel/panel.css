@@ -1014,8 +1014,8 @@
 
 .bg-src-swatch {
   flex: 0 0 auto;
-  width: 20px;
-  height: 20px;
+  width: 40px;
+  height: 32px;
   border-radius: 4px;
   border: 1px solid rgba(255, 255, 255, 0.22);
   background: var(--swatch, #2a2a2a);
@@ -1023,8 +1023,9 @@
 
 .bg-src-thumb {
   flex: 0 0 auto;
-  width: 26px;
-  height: 20px;
+  /* 56×32：再小就分不清是哪张图（用户明确要求放大）；object-fit: cover 由 background-size 等价实现 */
+  width: 56px;
+  height: 32px;
   border-radius: 4px;
   border: 1px solid rgba(255, 255, 255, 0.22);
   background-color: rgba(255, 255, 255, 0.06);
@@ -1091,3 +1092,66 @@
   background-size: cover;
   background-position: center;
 }
+
+
+/* ---- 背景来源行：单行 + 右侧 ⋯ 菜单 ----
+   行高目标：纯色 ≈38px（色块 32 + 上下 3）、自定义 ≈38px（缩略图 32 + 上下 3）。
+   为什么单行：手机上两行式 5 个颜色就是 320px，列表一长必须滚。 */
+.bg-src-row {
+  min-height: 38px;
+  padding: 3px 4px;
+  flex-wrap: nowrap;
+}
+
+/* ⋯ 按钮：点击区 ≥32×32（手指要能点准），视觉上仍是小字 */
+.bg-src-more {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-muted, #8b949e);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.bg-src-more:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--color-fg, #e6e8ea);
+}
+
+/* 行菜单：贴 ⋯ 弹出的浮动小面板（fixed + JS 算坐标） */
+.bg-src-menu {
+  position: fixed;
+  z-index: 9500;
+  min-width: 112px;
+  padding: 4px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border, #3a3f45);
+  background: var(--color-card, #23272b);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.bg-src-menu-item {
+  display: block;
+  width: 100%;
+  /* 行高 ≥36px：触屏可点 */
+  min-height: 36px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-fg, #e6e8ea);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.bg-src-menu-item:hover { background: rgba(255, 255, 255, 0.08); }
+.bg-src-menu-item--danger { color: #e05a5a; }

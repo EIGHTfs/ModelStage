@@ -1,0 +1,116 @@
+/* panel/dialog.css —— 自绘弹窗的全部样式（组件内不写内联 style）
+ *
+ * 配色一律走主题变量（--color-*），这样夜间/日间主题切换时弹窗跟着变，
+ *   不会出现"深色面板 + 系统白底弹窗"的视觉断层。
+ * z-index 10000：必须高于现有最高层（调试日志浮层 9500），否则被浮层盖住。
+ */
+
+.dlg-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.dlg-panel {
+  width: 320px;
+  max-width: calc(100vw - 32px);
+  padding: 16px;
+  border-radius: 12px;
+  border: 1px solid var(--color-border, #3a3f45);
+  background: var(--color-card, #23272b);
+  color: var(--color-fg, #e6e8ea);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  box-sizing: border-box;
+}
+
+.dlg-title {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.dlg-message {
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  /* 用前景色 + 降透明度：--color-muted 在深色底上对比太低（实拍几乎看不见） */
+  color: var(--color-fg, #e6e8ea);
+  opacity: 0.78;
+  /* 长名称（图片名可能很长）要能换行，不能撑破面板 */
+  word-break: break-word;
+}
+
+/* 输入行：输入框 + 右侧实时字数 */
+.dlg-input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.dlg-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border, #3a3f45);
+  background: var(--color-bg, #1b1e21);
+  color: var(--color-fg, #e6e8ea);
+  font-size: 14px;
+  box-sizing: border-box;
+}
+
+.dlg-input:focus {
+  outline: 1px solid var(--color-primary, #1fc0c5);
+  border-color: var(--color-primary, #1fc0c5);
+}
+
+.dlg-counter {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--color-fg, #e6e8ea);
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.dlg-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.dlg-btn {
+  /* 44px：手机手指友好的最小高度 */
+  min-height: 44px;
+  min-width: 84px;
+  padding: 0 16px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border, #3a3f45);
+  background: var(--color-secondary, #2d3237);
+  color: var(--color-fg, #e6e8ea);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.dlg-btn:hover { border-color: var(--color-primary, #1fc0c5); }
+
+.dlg-btn--primary {
+  border-color: var(--color-primary, #1fc0c5);
+  color: var(--color-primary, #1fc0c5);
+}
+
+/* 危险操作的确定键：红色，与"删除"语义一致 */
+.dlg-btn--danger {
+  border-color: #e05a5a;
+  color: #fff;
+  background: #c94444;
+}
+
+.dlg-btn--danger:hover { border-color: #ff7b7b; }

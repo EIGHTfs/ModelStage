@@ -7,6 +7,17 @@
      控件外观（按钮、列表、横幅）在 components.css。
    ========================================================================== */
 
+/* [hidden] 兜底 —— 必须写在所有容器样式之前，且用 !important。
+   原因：`el.hidden = true` 只是加 HTML 属性，UA 的 `[hidden] { display: none }` 会被
+   作者样式里的 `display:` 直接覆盖（两者同为元素选择器权重，作者样式优先），
+   结果是"属性设了、界面照样显示"的静默失效。
+   历史：.stage-hint[hidden] 与 .acc-body[hidden] 都是逐类补过的 —— 加了这条后它们成为冗余
+   （保留无害），但新容器不要再逐类打补丁。
+   为什么用 !important：[hidden] 的语义就是"不显示"，任何作者样式都不该把它变回来。 */
+[hidden] {
+  display: none !important;
+}
+
 :root {
   /* 主色板（取自旧前端 :root） */
   --color-background: #131416;

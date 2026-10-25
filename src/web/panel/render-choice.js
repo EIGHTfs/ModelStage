@@ -38,15 +38,19 @@ export function renderSelect(ctl, ctx) {
 
 /** 预设按钮组（chips）：一组同名按钮，每项自带机器值（滤镜这类"多选一但项很多"的场景） */
 /** 造一个候选项节点：列表布局用行，否则用 chips 胶囊 */
-function buildOptionNode(ctl, opt) {
+function buildOptionNode(ctl, opt, selectedValue) {
+  // 选中值由调用方给（工厂里的当前值）；缺省才回落到 schema 默认。
+  //   不能在这里直接读 ctl.defaultValue —— 那会和"按工厂值标选中"形成两个来源，
+  //   面板重建后出现两个同时高亮（实测：深空青 + 云蓝 都是 aria-pressed=true）。
+  const sel = selectedValue === undefined ? ctl.defaultValue : selectedValue;
   if (ctl.layout === 'list') {
-    const row = renderListRow(opt, { selected: opt.value === ctl.defaultValue });
+    const row = renderListRow(opt, { selected: opt.value === sel });
     row.type = 'button';
     return row;
   }
   const chip = el('button', 'chip-btn', opt.text || opt.value);
   chip.type = 'button';
-  chip.setAttribute('aria-pressed', String(opt.value === ctl.defaultValue));
+  chip.setAttribute('aria-pressed', String(opt.value === sel));
   return chip;
 }
 
@@ -62,9 +66,8 @@ export function renderChips(ctl, ctx) {
   const ivChips = ctx && typeof ctx.initialValue === 'function' ? ctx.initialValue(ctl.id) : undefined;
   const wantChips = ivChips === undefined ? ctl.defaultValue : ivChips;
   for (const opt of ctl.options) {
-    const btn = buildOptionNode(ctl, opt);
-    // 首次渲染就高亮当前值（契约 R2）：以前 chips 首屏无选中，要等命令式 setValue 补
-    if (wantChips !== undefined && String(opt.value) === String(wantChips)) btn.setAttribute('aria-pressed', 'true');
+    // 选中态只有一个来源：把工厂里的当前值传下去（不要在这里再补一次标 true）
+    const btn = buildOptionNode(ctl, opt, wantChips);
     if (wired) {
       btn.title = opt.text || opt.value;
       btn.addEventListener('click', () => {

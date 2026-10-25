@@ -229,6 +229,29 @@ export function setDebugCollapsed(collapsed) {
 }
 
 // ---------------------------------------------------------------- 名册键代理（结构不动）
+/**
+ * 右栏背景「二级列表」当前展开的组（'solid' | 'custom' | ''）。
+ *
+ * 为什么要持久化：刷新后按钮状态能回填（档位由 ctl-bg-mode 的工厂值驱动），
+ *   但"展开哪一组"原来只是内存变量 ⇒ 刷新后列表收起了，用户以为丢了状态。
+ * @returns {'solid'|'custom'|''} 无记录/非法值 ⇒ ''（都不展开）
+ */
+export function getBgOpen() {
+  let v = '';
+  try {
+    const root = readViewSettings() || {};
+    v = typeof root.bgOpen === 'string' ? root.bgOpen : '';
+  } catch { v = ''; }
+  return v === 'solid' || v === 'custom' ? v : '';
+}
+
+/** 保存"展开哪一组"（'' = 都收起） */
+export function setBgOpen(group) {
+  const g = group === 'solid' || group === 'custom' ? group : '';
+  try { saveViewSettings({ bgOpen: g }); } catch { /* 存储不可用就只在当前页面生效 */ }
+  return g;
+}
+
 /** 名册状态存储键（当前唯一键；键名沿用历史命名，改名会让既有用户的选中/展开态丢失） */
 export const TREE_STATE_KEY = 'spine-multi-viewer.tree-state.v1';
 
