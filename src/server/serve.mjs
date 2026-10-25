@@ -27,6 +27,7 @@ import { createDiag } from './http/diag.mjs';
 import { createReady } from './http/ready.mjs';
 import { createWriteApi, toRootView } from './http/write.mjs';
 import { createBackgrounds } from './http/backgrounds.mjs';
+import { createBackgroundSolids } from './http/background-solids.mjs';
 import { createDiagUpload } from './http/diag-upload.mjs';
 import { createLogger } from './core/log.mjs';
 import { createUnpackStore } from './unpack/plugin-store.mjs';
@@ -36,6 +37,7 @@ import { handleConfig } from './routes/config.mjs';
 import { handleDiag } from './routes/diag.mjs';
 import { handleReady } from './routes/ready.mjs';
 import { handleBackgrounds } from './routes/backgrounds.mjs';
+import { handleBackgroundSolids } from './routes/background-solids.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const WEB_ROOT = path.join(ROOT, 'src', 'web');
@@ -52,6 +54,8 @@ const staticRoutes = createStaticRoutes({ root: ROOT, webRoot: WEB_ROOT, runtime
 const diag = createDiag(data.paths);
 // 自定义背景图存储：落盘在 data/backgrounds/（运行时数据，换机/备份需单独带走）
 const backgrounds = createBackgrounds(data.paths);
+// 纯色背景预设：落盘 data/backgrounds/solids.json（运行时数据，与背景图同目录）
+const solids = createBackgroundSolids(data.paths);
 // 调试日志上传：落盘在 data/logs/（页面把内存里的日志一次性交上来，供 AI 事后读现场）
 const diagUpload = createDiagUpload({ dataDir: data.paths.dataDir, configDir: path.join(ROOT, 'config') });
 
@@ -137,7 +141,7 @@ function readBody(req, res, onBody, maxBytes = 2e6) {
  * 不把 req/res 之外的全局状态藏进模块级变量——之前那个 127 行的大回调就是这种耦合的产物。
  */
 const ctx = {
-  data, staticRoutes, diag, diagUpload, ready, writeApi, backgrounds, unpackRoutes,
+  data, staticRoutes, diag, diagUpload, ready, writeApi, backgrounds, solids, unpackRoutes,
   resolveSafe, browseDir, sendFile, toRootView, sendJson, sendText, readBody, fs, path, log,
 };
 
@@ -164,6 +168,9 @@ function dispatch(req, res, p, url) {
   if (handleDiag(req, res, p, url, ctx)) return true;
   if (handleReady(req, res, p, url, ctx)) return true;
   if (handleConfig(req, res, p, ctx)) return true;
+  // 注意顺序：/api/backgrounds/solids 是 /api/backgrounds 的**子路径**，
+  //   必须先让纯色预设那组认领，否则会被 backgrounds 的 404 分支吃掉
+  if (handleBackgroundSolids(req, res, p, ctx)) return true;
   if (handleBackgrounds(req, res, p, ctx)) return true;
   if (handleData(req, res, p, url, ctx)) return true;
   if (staticRoutes.serveAssets(req, res, p)) return true;

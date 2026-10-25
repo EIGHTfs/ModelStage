@@ -118,6 +118,9 @@ const SUITES = [
   { name: 'pma-detect', runner: 'node-test', file: 'test/pma-detect.test.mjs' },
   // 模型文件抓取的可控断连重试（P0：keep-alive race）
   { name: 'fetch-retry', runner: 'node-test', file: 'test/fetch-retry.test.mjs' },
+  // 纯色背景预设（T8 服务端半）：校验/落盘/自愈/备份轮转/权限，全隔离在临时目录，
+  //   不起 HTTP、不碰 data/backgrounds/ 里的真实数据
+  { name: 'background-solids', runner: 'node-test', file: 'test/background-solids.test.mjs' },
   // 引擎冒烟（3.8 ↔ 4.1 版本往返 + samplePixels().ratio + lastError 判据）：
   //   它验证的是"引擎能不能出画"，是所有交互套件的前置
   { name: 'engine-b1', wait: 4500 },
@@ -142,6 +145,7 @@ const EST_SEC = {
   'catalog-motions': 2,
   'pma-detect': 2,
   'fetch-retry': 2,
+  'background-solids': 2,
   'engine-b1': 18,
   'f1-controls': 24, 'f2-topbar': 14, 'f3-reveal': 11, 'f4-roots': 13,
   'spine-actions': 62, 'panel-actions': 17, 'roster-actions': 18, 'anim-list': 34,
@@ -166,7 +170,7 @@ const RULES = [
   { re: /^src\/web\/main\.js$/, suites: ALL },
   { re: /^src\/web\/index\.html$/, suites: ALL },
   { re: /^src\/web\/[^/]*(?:\/.*)?\.css$/, suites: ['panel-actions', 'f1-controls'] },
-  { re: /^src\/server\//, suites: ['f4-roots', 'panel-actions'] },
+  { re: /^src\/server\//, suites: ['background-solids', 'f4-roots', 'panel-actions'] },
   { re: /^src\/web\/panel\//, suites: ['panel-actions', 'f1-controls', 'f2-topbar'] },
   { re: /^src\/web\/app\//, suites: ['f1-controls', 'f2-topbar', 'panel-actions'] },
   { re: /^src\/web\/roster\//, suites: ['roster-actions', 'f3-reveal'] },
