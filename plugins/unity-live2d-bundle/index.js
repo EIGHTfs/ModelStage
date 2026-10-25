@@ -347,11 +347,12 @@ function install() {
     // 纹理：逐张压缩编码（不并发），编完立刻释放 RGBA 缓冲 —— 峰值内存比"两张 67MB 级 PNG 同时生成"低得多。
     const textureRefs = [];
     for (const t of extracted.textures) {
-      if (!t.rgba) continue;
-      const png = await NS.png.encodePngAsync(t.rgba, t.width, t.height);
+      if (!t.comp) continue;
+      // 解一张 → 编一张：rgba 是**局部变量**，编完随作用域释放（不要挂到 t 上，挂上去就等于常驻）
+      const rgba = NS.texdecode.decode(t, t.comp);
+      const png = await NS.png.encodePngAsync(rgba, t.width, t.height);
       t.pngBytes = png.length;
       textureRefs.push(put(keyTexture(t.name), png, MIME_PNG));
-      t.rgba = null;   // 释放 4096²×4 ≈ 64MB 级缓冲（模型不再需要它）
     }
     const physicsRef = extracted.physics3 ? put(KEY_PHYSICS, extracted.physics3, MIME_JSON) : null;
 
@@ -414,8 +415,16 @@ function install() {
     };
   }
 
-  /** 逐张纹理解码；单张失败只记录 error，不整体失败（报告里能看出是哪张坏）。 */
-  function decodeTextures(got, resSBytes) {
+  /**
+   * 逐张纹理**只收集压缩字节**（**不在这里解码**）；单张失败只记录 error，不整体失败（报告里能看出是哪张坏）。
+   *
+   * 为什么把解码推迟到编码那一刻：一张 4096² 的 RGBA 是 64MB，
+   *   旧做法"全部解完 → 再逐张编码"会让峰值 = Σ(所有纹理 RGBA)（两张 4096² 就是 128MB 级）；
+   *   改成"编码时才解、编完随作用域释放"后，常驻的只有压缩字节
+   *   （`textureCompressedBytes` 返回的是 resS 的 subarray 视图，不拷贝）。
+   *   注意：这一步**只降常驻**，不改变产物；峰值的大头是 PNG 编码（见 doc/解包内存归因.md）。
+   */
+  function collectTextures(got, resSBytes) {
     const textures = [];
     for (const t of got.textures) {
       const rec = {
@@ -423,9 +432,8 @@ function install() {
         format: t.format, formatName: t.formatName, source: t.stream ? 'resS' : 'inline',
       };
       try {
-        const comp = NS.extract.textureCompressedBytes(t, resSBytes);
-        rec.rgba = NS.texdecode.decode(t, comp);
-        rec.bytes = comp.length;
+        rec.comp = NS.extract.textureCompressedBytes(t, resSBytes);
+        rec.bytes = rec.comp.length;
       } catch (e) {
         rec.error = e.message;
       }
@@ -534,7 +542,7 @@ function install() {
       // 包型① 原生 Cubism 文件集：包内自带 model3/motion3/physics3，直接以原文件成表，不重建。
       //   entry = 包内 model3；纹理与 mocs 由包内 model3 的 FileReferences 相对引用，
       //   这些相对路径与包内文件同根，核心注册 prefix 后可直接解析。
-      const textures = decodeTextures(got, resSBytes);
+      const textures = collectTextures(got, resSBytes);
       for (const f of got.nativeFiles) {
         files.set(f.name, new Blob([f.bytes], { type: /\.json$/i.test(f.name) ? MIME_JSON : MIME_OCTET }));
         if (/\.model3\.json$/i.test(f.name)) entry = f.name;
@@ -551,10 +559,10 @@ function install() {
       }
       if (!hasPngTexture) {
         for (const t of textures) {
-          if (!t.rgba) continue;
-          const png = await NS.png.encodePngAsync(t.rgba, t.width, t.height);
+          if (!t.comp) continue;
+          const rgba = NS.texdecode.decode(t, t.comp);   // 局部变量，编完即释放
+          const png = await NS.png.encodePngAsync(rgba, t.width, t.height);
           files.set(`${t.name}.png`, new Blob([png], { type: MIME_PNG }));
-          t.rgba = null;
         }
       }
       if (!entry) throw NS.errors.fail('ULB_ERR_MODEL_BUILD', '原生文件集里找不到 model3.json 入口');
@@ -562,7 +570,7 @@ function install() {
     }
 
     // 包型② Unity 集成版：没有 model3，重建「相对路径版」（引用 files 内的键，不写 Blob URL）。
-    const textures = decodeTextures(got, resSBytes);
+    const textures = collectTextures(got, resSBytes);
     const { converted, candidates, paramTable } = await convertClipMotions(got, sf, profile);
     const extracted = {
       moc3: got.moc3,
