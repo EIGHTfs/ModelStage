@@ -13,6 +13,7 @@ import {
   addSolid, listSolids, removeSolid, renameSolid, resetSolids,
 } from '../app/background-solids.js';
 import { openColorPicker } from './color-picker.js';
+import { listBgSources, renderSourceGroup, selectedSourceId } from './bg-source.js';
 import {
   listBackgrounds, pickFile, removeBackground, renameBackground, uploadBackground,
 } from '../app/backgrounds.js';
@@ -41,16 +42,6 @@ function say(box, text, kind = 'ok') {
   if (kind === 'error') stageLog('error', text, { source: 'background-list' }); else stageStatus(text, 'info', { show: true });
 }
 
-/**
- * 把字节数格式化成人话。
- * @param {number} n 字节
- */
-function humanSize(n) {
-  const v = Number(n) || 0;
-  if (v >= 1048576) return `${(v / 1048576).toFixed(1)} MB`;
-  if (v >= 1024) return `${Math.round(v / 1024)} KB`;
-  return `${v} B`;
-}
 
 /**
  * 设为舞台背景（服务端 url 直接当 background-image）。
@@ -66,91 +57,7 @@ function applyItem(item) {
   }
 }
 
-/**
- * 造一行：缩略图 + 名称/大小 + 改名 + 删除。
- * @param {object} item 列表项
- * @param {HTMLElement} box 容器（用于状态提示）
- * @returns {HTMLElement} 行元素
- */
-function buildRow(item, box) {
-  const row = el('div', 'bg-item');
-  row.dataset.bgId = item.id;
 
-  const thumb = el('button', 'bg-thumb');
-  thumb.type = 'button';
-  thumb.title = '设为背景';
-  const img = el('img');
-  img.src = item.url;
-  img.alt = item.name || '背景图';
-  img.loading = 'lazy';
-  thumb.append(img);
-  thumb.addEventListener('click', () => applyItem(item));
-
-  const meta = el('div', 'bg-meta');
-  const nameEl = el('span', 'bg-name', item.name || '未命名');
-  meta.append(nameEl, el('span', 'bg-size', humanSize(item.bytes)));
-
-  const renameBtn = el('button', 'bg-btn', '改名');
-  renameBtn.type = 'button';
-  renameBtn.title = '重命名这张图（只改显示名）';
-  renameBtn.addEventListener('click', () => startRename(row, item, box));
-
-  const delBtn = el('button', 'bg-btn bg-btn-danger', '删除');
-  delBtn.type = 'button';
-  delBtn.title = '删除这张图（移入回收目录，可恢复）';
-  delBtn.addEventListener('click', () => confirmDelete(delBtn, item, box));
-
-  row.append(thumb, meta, renameBtn, delBtn);
-  return row;
-}
-
-/**
- * 内联重命名：名称处变成输入框，Enter/确定提交，Esc/取消放弃。
- * @param {HTMLElement} row 行
- * @param {object} item 列表项
- * @param {HTMLElement} box 容器
- */
-function startRename(row, item, box) {
-  const meta = row.querySelector('.bg-meta');
-  const nameEl = meta.querySelector('.bg-name');
-  if (!nameEl || meta.querySelector('.bg-name-input')) return;
-  const input = el('input', 'bg-name-input');
-  input.type = 'text';
-  input.value = item.name || '';
-  input.maxLength = 60;
-  const okBtn = el('button', 'bg-btn', '确定');
-  okBtn.type = 'button';
-  const cancelBtn = el('button', 'bg-btn', '取消');
-  cancelBtn.type = 'button';
-  meta.replaceChildren(input, okBtn, cancelBtn);
-  // 编辑态：把行内的「改名/删除」藏起来——它们和 确定/取消 在同一行，窄面板下会重叠，
-  //   实测会拦住指针事件（点「确定」被判成点到「改名」）。编辑时这两个动作也没有意义。
-  row.classList.add('is-editing');
-  input.focus();
-  input.select();
-  /** 收尾：无论成功失败都把界面还原成文本 */
-  const restore = () => {
-    row.classList.remove('is-editing');
-    meta.replaceChildren(el('span', 'bg-name', item.name || '未命名'),
-      el('span', 'bg-size', humanSize(item.bytes)));
-  };
-  const submit = async () => {
-    const next = input.value.trim();
-    if (!next) { say(box, '名称不能为空', 'error'); return; }
-    const r = await renameBackground(item.id, next);
-    if (!r.ok) { say(box, r.message, 'error'); restore(); return; }
-    item.name = r.item.name;
-    if (r.adjusted) say(box, `同名已存在，改成了「${r.item.name}」`, 'ok');
-    else say(box, `已重命名：${r.item.name}`, 'ok');
-    await refreshBackgrounds();
-  };
-  okBtn.addEventListener('click', submit);
-  cancelBtn.addEventListener('click', restore);
-  input.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Enter') { ev.preventDefault(); submit(); }
-    if (ev.key === 'Escape') { ev.preventDefault(); restore(); }
-  });
-}
 
 /**
  * 删除要二次确认：第一次点变成「确认删除」并自动解除，避免误删。
@@ -172,7 +79,7 @@ function confirmDelete(btn, item, box) {
     return;
   }
   btn.dataset.armed = '0';
-  removeBackground(item.id).then((r) => {
+  removeBackground(realIdOf(item)).then((r) => {
     if (!r.ok) { say(box, r.message, 'error'); return null; }
     // 删掉的正好是当前背景图 ⇒ 舞台不能继续指向一个已 404 的地址，回落到棋盘格
     const using = ((readViewSettings().background || {}).imageUrl || '') === item.url;
@@ -185,18 +92,6 @@ function confirmDelete(btn, item, box) {
   });
 }
 
-/**
- * 渲染整张列表（含顶部上传按钮与状态行）。
- * @param {HTMLElement} box 容器
- */
-function renderList(box) {
-  const list = el('div', 'bg-items');
-  for (const item of items) list.append(buildRow(item, box));
-  if (!items.length) list.append(el('p', 'ctl-list-empty', '还没有上传图片'));
-  const hint = el('p', 'bg-hint', '');
-  box.dataset.bgCount = String(items.length);
-  box.replaceChildren(hint, list);
-}
 
 /**
  * 上传：选文件 → POST → 刷新列表。
@@ -217,37 +112,6 @@ async function startUpload(box) {
  * 每次现查容器：面板重建会换掉旧 DOM，闭包持有旧节点会"刷了看不见"。
  * @returns {Promise<number>} 列表条数（容器不存在时返回 -1）
  */
-export async function refreshBackgrounds() {
-  const box = document.querySelector(BOX_SEL);
-  if (!box) return -1;
-  try {
-  const r = await listBackgrounds();
-  if (!r.ok) {
-    items = [];
-    box.dataset.bgCount = '0';
-    const hint = el('p', 'bg-hint', r.message || '取列表失败');
-    hint.dataset.kind = 'error';
-    box.dataset.bgMsg = r.message || '取列表失败';
-    box.replaceChildren(hint);
-    return 0;
-  }
-  items = r.items || [];
-  renderList(box);
-  // 顶部操作区独立于列表重建，避免每次刷新都重挂监听
-  const bar = el('div', 'bg-actions');
-  const upBtn = el('button', 'bg-btn bg-btn-primary', '上传图片');
-  upBtn.type = 'button';
-  upBtn.title = '上传 png / jpeg / webp 图片（单张 ≤5MB），存到服务端 data/backgrounds/';
-  upBtn.addEventListener('click', () => startUpload(box));
-  bar.append(upBtn);
-  box.prepend(bar);
-  return items.length;
-  } catch (e) {
-    // 兜底：列表是面板的一小块，任何意外都不该让整块面板挂掉
-    box.dataset.bgMsg = `列表渲染异常：${(e && e.message) || e}`;
-    return -1;
-  }
-}
 
 
 // ============================================================ 纯色预设（ctl-bg-solids）
@@ -311,67 +175,12 @@ function fallbackAfterRemove(removedColor, box) {
   return true;   // 让调用方别再覆盖这条更重要的提示
 }
 
-/** 一行：色块（点击即应用）+ 名称 + 改名 + 删除 */
-function buildSolidRow(item, box) {
-  const row = el('div', 'bg-solid-row');
-  row.dataset.solidId = item.id;
-  const swatch = el('button', 'bg-solid-swatch');
-  swatch.type = 'button';
-  swatch.title = `应用 ${item.color}`;
-  // 颜色是运行时数据 ⇒ 以 CSS 变量下发，不写 style.background 字面量
-  swatch.style.setProperty('--swatch', item.color);
-  swatch.addEventListener('click', () => applySolid(item, box));
-  row.append(swatch, el('span', 'bg-solid-name', item.name));
 
-  const rename = el('button', 'bg-btn', '改名');
-  rename.type = 'button';
-  rename.addEventListener('click', () => startRenameSolid(item, box));
-  const del = el('button', 'bg-btn bg-btn-danger', '删');
-  del.type = 'button';
-  del.addEventListener('click', () => startRemoveSolid(del, item, box));
-  row.append(rename, del);
-  return row;
-}
-
-/** 整表重绘（列表 + 底部按钮） */
-function renderSolidList(box) {
-  const list = el('div', 'bg-solids');
-  for (const item of solidItems) list.append(buildSolidRow(item, box));
-  if (!solidItems.length) list.append(el('p', 'ctl-list-empty', '还没有纯色预设'));
-
-  const foot = el('div', 'bg-solid-foot');
-  const add = el('button', 'bg-btn bg-btn-primary', '+ 添加颜色');
-  add.type = 'button';
-  add.addEventListener('click', () => startAddSolid(box));
-  const reset = el('button', 'bg-btn bg-btn-danger', '恢复默认');
-  reset.type = 'button';
-  reset.addEventListener('click', () => startResetSolids(reset, box));
-  foot.append(add, reset);
-
-  const hint = el('p', 'bg-solid-hint', '');
-  box.dataset.bgSolidCount = String(solidItems.length);
-  box.replaceChildren(hint, list, foot);
-}
 
 /**
  * 刷新纯色列表（面板重建、增删改、恢复默认之后都调它）。
  * @returns {Promise<number>} 条数（容器不存在返回 -1）
  */
-export async function refreshSolids() {
-  const box = document.querySelector(SOLID_BOX_SEL);
-  if (!box) return -1;
-  const r = await listSolids();
-  if (!r.ok) {
-    solidItems = [];
-    box.dataset.bgSolidCount = '0';
-    solidSay(box, r.message || '取纯色预设失败', 'error');
-    box.replaceChildren(box.querySelector('.bg-solid-hint') || el('p', 'bg-solid-hint', r.message || ''));
-    return 0;
-  }
-  solidItems = r.items || [];
-  renderSolidList(box);
-  return solidItems.length;
-}
 
 /** 添加：调色盘取色 → 命名 → POST → 刷新 → **立即应用**（不然用户以为没成功） */
 async function startAddSolid(box) {
@@ -397,7 +206,7 @@ async function startAddSolid(box) {
 async function startRenameSolid(item, box) {
   const name = askName(item.name);
   if (!name || name === item.name) return;
-  const r = await renameSolid(item.id, name);
+  const r = await renameSolid(realIdOf(item), name);
   if (!r.ok) { solidSay(box, r.message || '改名失败', 'error'); return; }
   await refreshSolids();
   solidSay(box, `已改名：${name}`, 'ok');
@@ -411,7 +220,7 @@ async function startRemoveSolid(btn, item, box) {
     setTimeout(() => { btn.classList.remove('is-armed'); btn.textContent = '删'; }, DISARM_MS);
     return;
   }
-  const r = await removeSolid(item.id);
+  const r = await removeSolid(realIdOf(item));
   if (!r.ok) { solidSay(box, r.message || '删除失败', 'error'); return; }
   await refreshSolids();
   const switchedToCheckerboard = fallbackAfterRemove(item.color, box);
@@ -431,4 +240,122 @@ async function startResetSolids(btn, box) {
   solidItems = r.items || [];
   renderSolidList(box);
   solidSay(box, `已恢复默认 ${solidItems.length} 条`, 'ok');
+}
+
+
+// ============================================================ 统一来源列表（右栏二级）
+//
+// 右栏现在是「四个平级按钮 + 按下展开对应列表」：
+//   棋盘格 / 纯色▾ / 透明 / 自定义▾  —— 顶部的四个档位仍由 ctl-bg-mode 控件渲染，
+//   这里只负责：① 两组列表的内容（调 bg-source.renderSourceGroup）
+//              ② 展开哪一组（openGroup）
+//              ③ 打开时把「当前项」勾出来
+
+/** 当前展开的组：null = 都收起，'solid' / 'custom' = 展开对应列表 */
+let openGroup = null;
+
+/** 容器选择器（现查：面板重建会换 DOM） */
+const SOLIDS_SEL = '#right-panel [data-ctl="ctl-bg-solids"]';
+const CUSTOM_SEL = '#right-panel [data-ctl="ctl-bg-list"]';
+
+/** 按 openGroup 控制两组列表的可见性（列表内容常驻，切的是显隐） */
+function applyGroupVisibility() {
+  const solidBox = document.querySelector(SOLIDS_SEL);
+  const customBox = document.querySelector(CUSTOM_SEL);
+  if (solidBox) solidBox.hidden = openGroup !== 'solid';
+  if (customBox) customBox.hidden = openGroup !== 'custom';
+  const rp = document.getElementById('right-panel');
+  if (rp) rp.dataset.bgOpen = openGroup || '';
+}
+
+/**
+ * 取条目的**真实服务端 id**。
+ *
+ * 为什么需要：统一渲染层（bg-source）给的 `item.id` 是"带组前缀的渲染 id"
+ *   （`solid:<真id>` / `custom:<url>`），用于唯一标识一行；而改名/删除接口要的是原始 id。
+ *   原始记录一直挂在 `item.raw` 上。
+ * @param {{id?:string, raw?:{id?:string}}} item
+ * @returns {string}
+ */
+function realIdOf(item) {
+  return String((item && item.raw && item.raw.id) || (item && item.id) || '');
+}
+
+/** 图片改名：与纯色走同一套问答式命名（不再做行内输入框，两边口径一致） */
+async function startRenameImage(item, box) {
+  const name = askName(item.name);
+  if (!name || name === item.name) return;
+  const r = await renameBackground(realIdOf(item), name);
+  if (!r || !r.ok) { say(box, (r && r.message) || '改名失败', 'error'); return; }
+  await refreshBgSources();
+  say(box, `已改名：${name}`, 'ok');
+}
+
+/**
+ * 统一刷新两个列表（一次取数，两组都画，勾选态由 bg-source 决定）。
+ *
+ * 勾选口径：纯色按 color、自定义按 url；同色多条只认第一条；
+ *   当前 color 不在任何预设里 ⇒ 列表无勾，但「纯色」档位仍高亮（档位由 ctl-bg-mode 负责）。
+ * @returns {Promise<number>} 两条列表合计条数
+ */
+export async function refreshBgSources() {
+  const solidBox = document.querySelector(SOLIDS_SEL);
+  const customBox = document.querySelector(CUSTOM_SEL);
+  if (!solidBox || !customBox) return -1;
+  const sources = await listBgSources();
+  const sel = selectedSourceId(readViewSettings().background || {}, sources);
+  const selId = sel.itemId || null;
+
+  renderSourceGroup(solidBox, 'solid', sources.solid, {
+    selectedItemId: selId,
+    onApply: (item) => applySolid(item, solidBox),
+    onRename: (item) => startRenameSolid(item, solidBox),
+    onRemove: (btn, item) => startRemoveSolid(btn, item, solidBox),
+    onAdd: () => startAddSolid(solidBox),
+    onReset: (btn) => startResetSolids(btn, solidBox),
+  });
+  renderSourceGroup(customBox, 'custom', sources.custom, {
+    selectedItemId: selId,
+    onApply: (item) => applyItem(item),
+    onRename: (item) => startRenameImage(item, customBox),
+    onRemove: (btn, item) => confirmDelete(btn, item, customBox),
+    onUpload: () => startUpload(customBox),
+  });
+
+  if (sources.errors && sources.errors.length) {
+    const box = solidBox;
+    box.dataset.bgSrcErrors = sources.errors.join(' / ');
+  }
+  applyGroupVisibility();
+  return sources.solid.length + sources.custom.length;
+}
+
+/** 兼容旧入口：两处都转发到统一实现（panel-settings 的调用点不用改） */
+export async function refreshBackgrounds() { return refreshBgSources(); }
+export async function refreshSolids() { return refreshBgSources(); }
+
+/**
+ * 点「纯色▾」/「自定义▾」的语义：既是切到该模式，也是展开/收起它的列表。
+ * 已经是该组展开态时再点一次 = 收起（不重复应用同一个颜色）。
+ * 点「棋盘格」「透明」⇒ 两组都收起。
+ */
+let toggleBound = false;
+export function bindBgGroupToggle() {
+  if (toggleBound) return false;
+  toggleBound = true;
+  document.addEventListener('click', (ev) => {
+    const btn = ev.target && typeof ev.target.closest === 'function'
+      ? ev.target.closest('#right-panel [data-ctl="ctl-bg-mode"] [data-value]')
+      : null;
+    if (!btn) return;
+    const v = btn.dataset.value;
+    openGroup = (v === 'solid' || v === 'custom') ? (openGroup === v ? null : v) : null;
+    // 模式切换由 segmented 自身继续走（它会在下一拍更新档位与背景）
+    setTimeout(() => { refreshBgSources().catch(() => { /* 刷新失败保留现状 */ }); }, 0);
+  }, true);
+  // 其它来源（底栏/快捷键/自动恢复）改了背景 ⇒ 只更新勾选，不擅自展开/收起
+  document.addEventListener('panel:bg-applied', () => {
+    refreshBgSources().catch(() => { /* 忽略 */ });
+  });
+  return true;
 }

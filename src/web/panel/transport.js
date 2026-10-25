@@ -12,8 +12,10 @@
 import { TRANSPORT_CONTROLS } from './schema.js';
 import { GROUP_ICONS } from './icons.js';
 import { el } from './dom.js';
+import { setBackgroundColor, setCustomBackground } from '../app/view-settings.js';
+import { stageStatus } from '../app/status.js';
 import {
-  BG_MODES, applyBgValue, bindBgSync, createPicker, currentBgValue, refreshBgOptions,
+  BG_MODES, applyBgValue, bindBgSync, createPicker, currentBgValue, refreshBgOptions, renderBgSubmenu,
 } from './transport-picker.js';
 
 /** 统一打死"未接线"标记 */
@@ -148,9 +150,31 @@ export function mountTransport(footerEl, handlers = {}) {
         // 背景：内置 4 模式 + 服务端自定义图，选中即应用（不再"点一次换一个"的循环切换）。
         //   这里不接 handlers['transport-bg']：那个是旧的循环切换动作，接了就会"选了又跳下一项"。
         const bgPicker = createPicker(
-          { ...ctl, icon: ICONS[ctl.id], options: BG_MODES.slice(), value: currentBgValue([]) },
+          { ...ctl, icon: ICONS[ctl.id], options: BG_MODES.slice(), value: currentBgValue() },
           (value) => applyBgValue(value),
-          { onBeforeOpen: () => { refreshBgOptions(bgPicker).catch(() => { /* 刷新失败沿用现有选项 */ }); } },
+          {
+            onBeforeOpen: () => { refreshBgOptions(bgPicker).catch(() => { /* 刷新失败沿用现有选项 */ }); },
+            /**
+             * 一级里点「纯色 / 自定义」→ 侧向弹出二级（色块列表 / 图片列表）。
+             * 二级内容由 bg-source.renderSourceGroup 渲染，与右栏那份是同一套代码；
+             * 选中后：应用 + 关掉两级 + 让一级重新对齐（勾选与按钮回显都靠 refreshBgOptions）。
+             */
+            onSubmenu: (groupId, host) => {
+              renderBgSubmenu(host, groupId, ({ groupId: g, item }) => {
+                if (g === 'solid') {
+                  setBackgroundColor(item.color);
+                  stageStatus(`背景 → ${item.name}`, 'info', { show: true });
+                } else {
+                  setCustomBackground(item.url);
+                  document.dispatchEvent(new CustomEvent('panel:bg-applied', { detail: { mode: 'custom' } }));
+                  stageStatus(`背景 → ${item.name}`, 'info', { show: true });
+                }
+                try { bgPicker.closeSub(); } catch { /* 忽略 */ }
+                bgPicker.close();
+                refreshBgOptions(bgPicker).catch(() => { /* 忽略 */ });
+              }).catch(() => { /* 二级渲染失败：保持一级 */ });
+            },
+          },
         );
         pickers.set(id, bgPicker);
         selfWired.add(id);

@@ -185,7 +185,8 @@ export const PANEL_GROUPS = [
         kind: 'segmented',
         label: '背景模式',
         id: 'ctl-bg-mode', core: true,
-        options: ['棋盘格', '纯色', '透明', '自定义'],
+        // 带 ▾ 的两项点下去会展开二级列表（纯色预设 / 自定义图片）；另两项直接切换
+        options: ['棋盘格', '纯色 ▾', '透明', '自定义 ▾'],
         values: ['checkerboard', 'solid', 'transparent', 'custom'],
         defaultValue: 'checkerboard',
         titles: ['棋盘格底纹', '纯色底色', '透明（露出页面底色）', '本地图片背景（选一张图片作为舞台背景）'],

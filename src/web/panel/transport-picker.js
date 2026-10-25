@@ -11,6 +11,7 @@
 //   bindBgSync(picker)               任何来源改了背景都让下拉重新对齐
 
 import { el } from './dom.js';
+import { listBgSources, renderSourceGroup, selectedSourceId } from './bg-source.js';
 import { listBackgrounds } from '../app/backgrounds.js';
 import { applyBackground, readViewSettings, setCustomBackground } from '../app/view-settings.js';
 import { stageLog, stageStatus } from '../app/status.js';
@@ -32,7 +33,7 @@ import { stageLog, stageStatus } from '../app/status.js';
  * @param {HTMLElement} list 目标 <ul>
  * @returns {Array<{value:string, text:string, node:HTMLLIElement}>}
  */
-function buildPickerItems(options, onPickItem, list) {
+function buildPickerItems(options, onPickItem, list, onSubmenu) {
   list.replaceChildren();
   const items = [];
   for (const opt of options || []) {
@@ -47,8 +48,17 @@ function buildPickerItems(options, onPickItem, list) {
     li.setAttribute('role', 'option');
     li.dataset.value = String(opt.value);
     li.tabIndex = -1;
-    li.addEventListener('click', () => onPickItem(String(opt.value)));
-    items.push({ value: String(opt.value), text: opt.text, node: li });
+    if (opt.submenu) {
+      // 有二级：行尾加 ▸，点它不"选中"而是展开侧向二级（键盘 Enter 同样走这条）
+      li.dataset.submenu = String(opt.submenu);
+      li.append(el('span', 'transport-picker-arrow', '▸'));
+      li.addEventListener('click', () => {
+        if (typeof onSubmenu === 'function') onSubmenu(String(opt.submenu), li);
+      });
+    } else {
+      li.addEventListener('click', () => onPickItem(String(opt.value)));
+    }
+    items.push({ value: String(opt.value), text: opt.text, node: li, submenu: opt.submenu || null });
     list.append(li);
   }
   return items;
@@ -110,7 +120,10 @@ export function createPicker(ctl, onPick, hooks = {}) {
   const list = el('ul', 'transport-picker-list');
   list.setAttribute('role', 'listbox');
   list.hidden = true;
-  root.append(btn, list);
+  // 二级菜单（侧向弹出）：内容由调用方的 hooks.onSubmenu 用统一渲染层填
+  const sub = el('div', 'transport-picker-sub');
+  sub.hidden = true;
+  root.append(btn, list, sub);
 
   let items = [];
   let activeIndex = -1;
@@ -130,7 +143,13 @@ export function createPicker(ctl, onPick, hooks = {}) {
     });
   }
 
+  function closeSub() {
+    sub.hidden = true;
+    sub.replaceChildren();
+  }
+
   function close(returnFocus = false) {
+    closeSub();
     if (list.hidden) return;
     list.hidden = true;
     btn.setAttribute('aria-expanded', 'false');
@@ -168,7 +187,14 @@ export function createPicker(ctl, onPick, hooks = {}) {
 
   /** 重建选项（换模型/换面时调用）：建行细节在模块级 buildPickerItems */
   function setOptions(next, value) {
-    items = buildPickerItems(next, (v) => { pick(v); close(true); }, list);
+    items = buildPickerItems(next, (v) => { pick(v); close(true); }, list, (groupId, node) => {
+      // 展开二级：把容器交给调用方渲染（内容与右栏同一份 renderSourceGroup）
+      items.forEach((it) => it.node.classList.toggle('is-sub', it.node === node));
+      sub.hidden = false;
+      if (typeof hooks.onSubmenu === 'function') {
+        try { hooks.onSubmenu(String(groupId), sub); } catch { closeSub(); }
+      }
+    });
     if (typeof value === 'string') current = value;
     if (!items.some((it) => it.value === current)) current = items[0] ? items[0].value : '';
     paintLabel();
@@ -199,6 +225,22 @@ export function createPicker(ctl, onPick, hooks = {}) {
     root,
     setOptions,
     setValue: (v) => { current = String(v); paintLabel(); paintActive(); },
+    /**
+     * 按钮上的"当前项预览"（小色块 / 缩略图）。
+     * 用 CSS 变量下发颜色与图片地址（运行时数据，不写内联 background 字面量）。
+     * @param {{swatch?:string, thumb?:string}|null} preview 传 null 清掉预览
+     */
+    setPreview: (preview) => {
+      let block = btn.querySelector('.picker-prev');
+      if (!preview) { if (block) block.remove(); return; }
+      if (!block) { block = el('span', 'picker-prev'); btn.insertBefore(block, btn.firstChild); }
+      if (preview.swatch) block.style.setProperty('--prev-swatch', preview.swatch);
+      else block.style.removeProperty('--prev-swatch');
+      if (preview.thumb) block.style.setProperty('--prev-thumb', `url("${preview.thumb}")`);
+      else block.style.removeProperty('--prev-thumb');
+      block.dataset.kind = preview.thumb ? 'thumb' : 'swatch';
+    },
+    closeSub,
     open,
     close: () => close(false),
     isOpen: () => !list.hidden,
@@ -206,26 +248,32 @@ export function createPicker(ctl, onPick, hooks = {}) {
   };
 }
 
-/** 底栏「背景」的内置模式（与右栏「背景模式」四个档位一一对应） */
+/**
+ * 底栏「背景」的一级菜单（与右栏四个档位一一对应）。
+ *
+ * 结构是**两级**：棋盘格 / 透明 直接选；纯色 ▸ / 自定义 ▸ 展开侧向二级（色块列表 / 图片列表），
+ * 二级内容由 panel/bg-source.js 的统一渲染层出，与右栏那份是同一套代码。
+ * 这里的初值只用于"数据还没拉回来"的第一帧，真实文案（含当前项名与 ✓）由 refreshBgOptions 重算。
+ */
 export const BG_MODES = [
   { text: '棋盘格', value: 'mode:checkerboard' },
-  { text: '纯色', value: 'mode:solid' },
   { text: '透明', value: 'mode:transparent' },
-  { text: '自定义（选本地图片）', value: 'mode:custom' },
+  { text: '纯色', value: 'g:solid', submenu: 'solid' },
+  { text: '自定义', value: 'g:custom', submenu: 'custom' },
 ];
 
 /**
- * 当前背景在列表里的值：内置模式用 `mode:<模式>`，服务端自定义图用 `img:<url>`。
- * @param {Array<{url: string}>} images 服务端已有的自定义图
- * @returns {string} 当前值
+ * 当前背景在**一级菜单**里对应的值：内置模式用 `mode:<模式>`，纯色/自定义用档位值 `g:<组>`。
+ * 具体是哪一条色/图不在这里体现（二级菜单里打勾），一级只标"哪一档"。
+ * @param {{mode?:string}} [background] 缺省读当前设置
+ * @returns {string}
  */
-export function currentBgValue(images) {
-  const bg = readViewSettings().background || {};
-  if (bg.mode === 'custom' && bg.imageUrl) {
-    const hit = (images || []).find((it) => it.url === bg.imageUrl);
-    return hit ? `img:${hit.url}` : 'mode:custom';
-  }
-  return `mode:${bg.mode || 'checkerboard'}`;
+export function currentBgValue(background) {
+  const bg = background || (readViewSettings().background || {});
+  const mode = String(bg.mode || 'checkerboard');
+  if (mode === 'solid') return 'g:solid';
+  if (mode === 'custom') return 'g:custom';
+  return `mode:${mode === 'transparent' ? 'transparent' : 'checkerboard'}`;
 }
 
 /**
@@ -270,19 +318,48 @@ export function applyBgValue(value) {
  */
 export async function refreshBgOptions(picker) {
   if (!picker) return 0;
-  const r = await listBackgrounds();
-  const images = r && r.ok ? (r.items || []) : [];
-  const opts = BG_MODES.slice();
-  if (images.length) {
-    opts.push({ text: '自定义图片', group: true });
-    bgImageNames.clear();
-    for (const it of images) {
-      bgImageNames.set(it.url, it.name);
-      opts.push({ text: it.name, value: `img:${it.url}` });
-    }
+  const sources = await listBgSources();
+  const sel = selectedSourceId(readViewSettings().background || {}, sources);
+  // 两组各自找自己的命中条目：不能共用一个 item，否则会出现「自定义 · 暖暗」这种串味
+  const findIn = (pool) => (sel.itemId ? (pool || []).find((x) => x.id === sel.itemId) || null : null);
+  const solidItem = sel.groupId === 'solid' ? findIn(sources.solid) : null;
+  const customItem = sel.groupId === 'custom' ? findIn(sources.custom) : null;
+
+  const tick = (on) => (on ? '✓ ' : '');
+  const opts = [
+    { text: `${tick(sel.groupId === 'builtin' && sel.id === 'checkerboard')}棋盘格`, value: 'mode:checkerboard' },
+    { text: `${tick(sel.groupId === 'builtin' && sel.id === 'transparent')}透明`, value: 'mode:transparent' },
+    // 一级只标"哪一档"；有具体命中的条目就把名字带出来，按钮回显因此自然是「纯色 · 暖暗」
+    { text: `${tick(sel.groupId === 'solid')}${solidItem ? `纯色 · ${solidItem.name}` : '纯色'}`, value: 'g:solid', submenu: 'solid' },
+    { text: `${tick(sel.groupId === 'custom')}${customItem ? `自定义 · ${customItem.name}` : '自定义'}`, value: 'g:custom', submenu: 'custom' },
+  ];
+  picker.setOptions(opts, currentBgValue());
+  // 按钮上的小预览：纯色给色块、自定义给缩略图；内置模式清掉
+  if (typeof picker.setPreview === 'function') {
+    picker.setPreview(solidItem ? { swatch: solidItem.color }
+      : (customItem ? { thumb: customItem.url } : null));
   }
-  picker.setOptions(opts, currentBgValue(images));
   return opts.length;
+}
+
+/**
+ * 渲染某一组的二级菜单内容（供底栏 picker 的 onSubmenu 调用）。
+ * 与右栏共用 panel/bg-source.js 的同一个渲染函数 ⇒ 两处永远一致。
+ * @param {HTMLElement} host 二级容器
+ * @param {'solid'|'custom'} groupId
+ * @param {(payload:{groupId:string, item:object})=>void} onPick 选中回调
+ * @returns {Promise<number>} 条数
+ */
+export async function renderBgSubmenu(host, groupId, onPick) {
+  const sources = await listBgSources();
+  const sel = selectedSourceId(readViewSettings().background || {}, sources);
+  const items = groupId === 'custom' ? sources.custom : sources.solid;
+  const { count } = renderSourceGroup(host, groupId, items, {
+    variant: 'menu',
+    selectedItemId: sel.itemId || null,
+    onApply: (item) => { if (typeof onPick === 'function') onPick({ groupId, item }); },
+  });
+  return count;
 }
 
 /**
