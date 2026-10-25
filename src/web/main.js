@@ -457,10 +457,20 @@ function boot() {
   // S4：左右栏显隐是**布局偏好**（不是模型属性，换面/换模型都不影响），按上次选择恢复。
   //   首次访问（存储里没有 layout）⇒ 工厂返回全展开，绝不把"没有值"当成"用户选了收起"。
   // 布局读回 + 落地；无论成败都要放行首帧可见性（否则 CSS 的"读回前隐藏"会把左右栏永久遮住）
+  // 启动期先关掉过渡（见 style.css 的 html.is-booting）：
+  //   否则 applyLayout() 写下的隐藏终态会在"放行可见"的那次重算里被 0.2s 过渡真实画出来
+  //   ⇒ 用户看到「先出现、再滑走」（这是修过一次又回归的闪烁）。
+  document.documentElement.classList.add('is-booting');
   try {
     applyLayout(uiState.getLayout());
   } finally {
-    document.documentElement.dataset.layoutReady = '1';
+    // 双 rAF：第一帧让上面的隐藏终态真正落地（样式计算 + 布局），第二帧才放开可见性并恢复过渡。
+    //   单 rAF 不够 —— rAF 回调在样式计算**之前**执行，会和 applyLayout 的改动合并成同一次重算，等于没分开。
+    //   放行只晚一帧，而这一帧面板仍被 visibility:hidden 遮住，用户看不到任何中间态。
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      document.documentElement.dataset.layoutReady = '1';
+      document.documentElement.classList.remove('is-booting');
+    }));
   }
   // 面板三态由当前渲染器能力决定；切换渲染器时必须重算 + 重跑自检（契约 INV-05）
   rebuildPanelFor(state.currentRenderer);

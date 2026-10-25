@@ -53,7 +53,7 @@ if (BAD_PERMS.files.length || BAD_PERMS.dirs.length) {
 // **门禁：前端单一数据源**（静态检查，与权限预检同层：失败即中止，不占回归套件名额）
 //   为什么是门禁而不是第 20 套：19 套是回归清单，"19 套全绿"本身是个可读信号；
 //   静态约束挂在前面当门禁，红得早、也不会让人误以为"多了一套测试"。
-//   规则与例外见 doc/契约/单一数据源.md。
+//   规则与例外见 docs/契约/数据与接口.md。
 {
   const { ok, violations } = checkSingleSource();
   if (!ok) {
@@ -101,6 +101,9 @@ const SUITES = [
   //   不用等到跑完几十分钟的交互套件才发现。
   { name: 'renderer-contract', runner: 'node-test', file: 'test/renderer-contract.test.mjs' },
   { name: 'live2d-lifecycle', runner: 'node-test', file: 'test/live2d-lifecycle.test.mjs' },
+  // VirtualFS 纯模块（注册/命中/归一化/revoke/重复注册/懒创建缓存/统计口径）：
+  //   它是插件资源进渲染层的唯一通道，纯函数秒级，必须是契约级保护而非交互套件的副产品
+  { name: 'vfs', runner: 'node-test', file: 'test/vfs.test.mjs' },
   // 测试单实例锁的回归：锁坏了会让**所有人**跑不了测试，属基础设施，必须有保护
   { name: 'test-lock', runner: 'node-test', file: 'test/lib/test-lock.test.mjs' },
   // api.js 的重试/退避/超时/去重：网络层是所有页面功能的入口，坏了整站都挂
@@ -142,6 +145,7 @@ const SUITES = [
 const EST_SEC = {
   'renderer-contract': 1,
   'live2d-lifecycle': 1,
+  'vfs': 1,
   'test-lock': 3,
   'api-retry': 6,
   'unpack-filesview': 8,
@@ -186,7 +190,7 @@ const RULES = [
   { re: /^src\/web\/live2d\//, suites: ['live2d-lifecycle', 'anim-list', 'f2-topbar'] },
   // 渲染器契约（能力声明/mount 形状）由 renderer-contract 专测
   { re: /^src\/web\/render\//, suites: ['renderer-contract', 'spine-actions', 'anim-list', 'panel-actions'] },
-  { re: /^src\/web\/infra\//, suites: ['spine-actions', 'anim-list', 'panel-actions'] },
+  { re: /^src\/web\/infra\//, suites: ['vfs', 'spine-actions', 'anim-list', 'panel-actions'] },
   { re: /^src\/web\/debug\//, suites: ['panel-actions'] },
   // 测试脚本本身：改了哪套就跑哪套（名字不在 SUITES 里的按"无法映射"处理）
   // 静态套件的公共垫片：改它等于改两个静态套件

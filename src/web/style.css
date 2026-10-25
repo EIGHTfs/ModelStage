@@ -310,10 +310,25 @@ html[data-cinema="on"] .app-header {
    ES module 的执行期（异步）——中间那几帧用户会看到"显示 → 又被收起"的闪烁。
    为什么用 visibility 而不是 display:none：前者仍占位，读回后显示不触发重排（不会整页跳）；
    后者不占位，切回来会重新布局，看起来是"跳一下"。
-   标记由 main.js 在 applyLayout() 之后写入（含异常兜底，不会永久遮住）。 */
+   标记由 main.js 在 applyLayout() 之后写入（含异常兜底，不会永久遮住）。
+   还必须关掉过渡：`.panel` 自带 transform/opacity 的 0.2s 过渡，而 applyLayout() 与放行标记
+   在同一个任务里完成 —— visibility 一放开，那条"滑出"过渡就会被真实绘制出来，
+   表现为「先出现、再滑走」。首帧不做过渡，读回落地后的交互照旧有动画。 */
 html:not([data-layout-ready]) #left-panel,
 html:not([data-layout-ready]) #right-panel {
   visibility: hidden;
+}
+
+/* 启动期（is-booting）左右栏一律不过渡。
+   为什么需要单独一条：applyLayout() 加的隐藏类（transform/opacity 终态）与"放行可见"
+   若落在同一次样式重算里，浏览器看到的新状态 transition 又是 0.2s ⇒
+   那条"从原位滑到隐藏位"的过渡会被真实画出来 =「先出现、再滑走」。
+   仅靠上一条 :not([data-layout-ready]) 里的 transition:none 管不到这一次变化
+   （它只在旧状态生效）。所以启动期用一个独立类把过渡关掉，等隐藏终态落地一帧后再摘掉它。
+   摘掉后：transform 值没变化 ⇒ 不会触发任何过渡；之后的交互切换照旧有 0.2s 动画。 */
+html.is-booting #left-panel,
+html.is-booting #right-panel {
+  transition: none !important;
 }
 
 /* 左右侧栏：影院模式与"单独收起"合并成同一套位移；
