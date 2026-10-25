@@ -7,7 +7,7 @@
 //
 // 三条路径：
 //   A 服务端解包准入：开关开＝超预算拒绝（既有行为）；关＝请求带 allowOverLimit 强行解包。
-//     判断全在服务端（capacity.mjs，读 /proc/meminfo），前端不自己算阈值。
+//     判断全在服务端（capacity.mjs 读系统内存），前端不自己算阈值。
 //   B 前端加载前预检：jsHeap 占上限比例 > HEAP_RATIO 就拒绝并给出真实数字。
 //   C 长操作中监控：解包/批量加载期间按帧采样 jsHeap，超限即中止（已完成的文件保留）。
 //
@@ -15,9 +15,9 @@
 //   所以所有提示都带「当前 / 上限 / 百分比 / MB」。
 
 import { memStats } from '../infra/mem-stats.js';
+import { HEAP_RATIO, assess, buildMessage, setBudgetGuardEnabled } from './memory-budget.js';
 
-/** 前端堆占用上限比例（路径 B / C 共用）。85% 与旧端 memoryGuard 的口径一致。 */
-export const HEAP_RATIO = 0.85;
+export { HEAP_RATIO };
 
 /** 操作中监控的采样间隔（帧）—— 每 20 帧约 1/3 秒，够快且不干扰渲染 */
 export const MONITOR_FRAME_STRIDE = 20;
@@ -35,6 +35,7 @@ let readout = { availMb: null, totalMb: null, peakEstMb: null, budgetMb: null, a
  */
 export function setMemoryGuard(on) {
   enabled = on !== false;
+  setBudgetGuardEnabled(enabled);   // 判据层与开关状态保持同步（它不 import 本文件，避免成环）
   try { document.documentElement.dataset.memoryGuard = enabled ? 'on' : 'off'; } catch { /* 忽略 */ }
   return enabled;
 }
@@ -61,18 +62,24 @@ export function heapSnapshot() {
  * @param {string} what 要加载的东西（写进提示，便于用户知道是哪一步被拦）
  * @returns {{ok: boolean, message?: string, usedMB?: number|null, limitMB?: number|null, pct?: number|null}}
  */
-export function preflightLoad(what) {
+export async function preflightLoad(what) {
+  // 判断口径全部交给 memory-budget.assess（服务端容量 + 前端堆两路取更严格），
+  //   这里只负责把结果翻成调用方要的形状，不自己算任何阈值。
   if (!enabled) return { ok: true };
-  const h = heapSnapshot();
-  if (h.pct === null || h.pct === undefined) return { ok: true, ...h, unjudgeable: true };
-  if (h.pct <= HEAP_RATIO) return { ok: true, ...h };
-  // 极低占用时 round 会给出 "0%"，看着像没数据 ⇒ 不足 1% 一律写成 <1%
-  const pctText = h.pct < 0.01 ? '<1' : String(Math.round(h.pct * 100));
-  return {
-    ok: false,
-    ...h,
-    message: `内存占用较高（${h.usedMB} MB / ${h.limitMB} MB，${pctText}%），${what}已暂停；请关闭其他标签页后重试`,
-  };
+  const r = await assess({ where: 'web-load', label: what });
+  return { ok: r.ok, message: r.message, reason: r.reason, ...r.numbers };
+}
+
+/**
+ * 解包判据（供 plugin-host 在装载容器包前调用）：包字节 → 预估峰值 vs 可用预算。
+ * 内部就是 assess({ where:'web-unpack' })，前端不算任何倍数。
+ * @param {string} label 对象名
+ * @param {number} bytes 包字节数
+ * @returns {Promise<{ok:boolean, reason:string, numbers:object, message:string}>}
+ */
+export function assessUnpack(label, bytes) {
+  if (!enabled) return Promise.resolve({ ok: true, reason: 'guard-off', numbers: {}, message: '' });
+  return assess({ where: 'web-unpack', label, bytesHint: bytes });
 }
 
 /**
@@ -100,8 +107,15 @@ export function startMemoryMonitor(label) {
     const h = heapSnapshot();
     if (!enabled || h.pct === null || h.pct <= HEAP_RATIO) return;
     state.hit = true;
-    const pct = h.pct < 0.01 ? '<1' : String(Math.round(h.pct * 100));
-    state.why = `${String(label).trim()}过程中内存占用较高（${h.usedMB} MB / ${h.limitMB} MB，${pct}%），已中止后续步骤（已完成的文件保留）`;
+    // 文案走统一模板（三处同一套格式），不再各处手拼
+    state.why = buildMessage({
+      where: 'web-long-op',
+      label: String(label).trim(),
+      serverFails: false,
+      heapFails: true,
+      serverDetail: '',
+      numbers: { heapPct: h.pct, usedMB: h.usedMB, limitMB: h.limitMB },
+    });
     try { document.documentElement.dataset.memGuardAbort = label; } catch { /* 忽略 */ }
   };
 
@@ -135,7 +149,7 @@ export function startMemoryMonitor(label) {
 /**
  * 刷新判据读数（面板「内存判据」那行显示的真实值）。
  *
- * 数值来源必须是服务端的 /api/unpack/capacity（它读 /proc/meminfo），
+ * 数值来源必须是服务端的 /api/unpack/capacity（由它读系统内存），
  *   前端不许自己拍脑袋算"大概够不够"。
  * @param {{rootId?: string, rel?: string}} [target] 给了就带上该包的需求估算
  * @returns {Promise<object>} 服务端返回的判据（失败时返回 {error}）

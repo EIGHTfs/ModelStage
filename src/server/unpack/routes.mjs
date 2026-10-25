@@ -156,12 +156,18 @@ export function createUnpackRoutes(deps) {
       const rel = String(url.searchParams.get('rel') || '');
       let sourceMb = 0;
       if (rootId && rel) {
+        // 优先用 rootId+rel：服务端自己 stat，前端不用传 size（少一处"两边算得不一样"的可能）
         const r = resolveRequest(rootId, rel);
         if (r.error) {
           sendJson(res, 200, { ...capacity(), sourceMb: null, allowWarmup: true, reason: 'source-unresolved' });
           return true;
         }
         sourceMb = fs.statSync(r.abs).size / 1024 / 1024;
+      } else {
+        // 只有字节数时（前端只知道包多大、不想暴露路径）：用 sourceMb 直接问
+        //   —— 这样"包字节 → 预估峰值"的翻译始终只有服务端这一份权威实现
+        const q = Number(url.searchParams.get('sourceMb') || 0);
+        if (Number.isFinite(q) && q > 0) sourceMb = q;
       }
       sendJson(res, 200, capacity(sourceMb || undefined));
       return true;

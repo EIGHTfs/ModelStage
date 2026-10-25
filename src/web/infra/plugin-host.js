@@ -189,8 +189,16 @@ export function createPluginHost(opts = {}) {
 
   /** 普通模型资产的后缀：这些不可能是资源包，别为它们读全量 */
   const ORDINARY_ASSET_EXT = /\.(json|skel|atlas|png|jpe?g|webp|bmp|gif|moc3|motion3|physics3|cdi3|txt|md|bin)$/i;
-  /** 单个包大小上限（防御性：超过就不读，避免把内存打爆） */
-  const MAX_BUNDLE_BYTES = 512 * 1024 * 1024;
+  /**
+   * **绝对兜底**上限（只防"手滑点了一个几 GB 的文件"，不是内存判据）。
+   *
+   * 为什么从 512MB 改成 2GB 并受开关控制：原来它是"裸字节数"判断 ——
+   *   512MB 的包在 8GB 机器上没事、在 2GB 机器上必然炸，而且关掉内存保护它照样拦，
+   *   文案还只说"文件过大（536870912B > 上限 536870912B）"（用户不知道该怎么做）。
+   * 现在真正的内存判断交给 memory-budget.assess（按可用内存换算预估峰值），
+   *   这里只在"明显不可能是有意义的资源包"时兜一下，且**开关关闭时不拦**。
+   */
+  const MAX_BUNDLE_BYTES = 2 * 1024 * 1024 * 1024;
 
   /**
    * 预筛：返回 null 表示"可能是资源包，值得读全量"，否则返回跳过原因。
@@ -202,7 +210,11 @@ export function createPluginHost(opts = {}) {
     const name = String(file.name || file.rel);
     if (ORDINARY_ASSET_EXT.test(name)) return `后缀是普通模型资产（${name.split('.').pop()}），不可能是资源包`;
     if (typeof file.size === 'number' && file.size === 0) return '文件为空';
-    if (typeof file.size === 'number' && file.size > MAX_BUNDLE_BYTES) return `文件过大（${file.size}B > 上限 ${MAX_BUNDLE_BYTES}B）`;
+    // 绝对兜底：只在内存保护开着时生效（关掉开关＝用户明示要试，不再拦）
+    if (memoryGuard.isMemoryGuardOn() && typeof file.size === 'number' && file.size > MAX_BUNDLE_BYTES) {
+      const gb = (n) => `${(n / 1024 / 1024 / 1024).toFixed(1)} GB`;
+      return `包体积 ${gb(file.size)} 超过绝对上限 ${gb(MAX_BUNDLE_BYTES)}（内存保护开启时的兜底；可在面板关闭内存保护后重试）`;
+    }
     return null;
   }
 
@@ -452,7 +464,14 @@ const MIME_BY_EXT = {
     // 顺带把"这个包需要多少内存"取回来（面板判据行要显示真实需求，不能只显示可用量）——
     //   不 await：判据读数只是展示，不能拖慢加载。
     memoryGuard.refreshMemoryReadout({ rootId: file.rootId, rel: file.rel }).catch(() => { /* 取不到就维持上次 */ });
-    const pre = memoryGuard.preflightLoad(`加载 ${file.rel}`);
+    // 解包判据：包字节 → 预估峰值（翻译器在服务端，前端不算倍数），与"加载判据"分开问
+    const unpackJudged = await memoryGuard.assessUnpack(file.rel, file.size);
+    if (!unpackJudged.ok) {
+      say.warn(unpackJudged.message);
+      emit('memguard.unpack', { rel: file.rel, numbers: unpackJudged.numbers, reason: unpackJudged.reason });
+      return { ok: false, reason: 'memory-guard', message: unpackJudged.message };
+    }
+    const pre = await memoryGuard.preflightLoad(file.rel);
     if (!pre.ok) {
       say.warn(pre.message);
       emit('memguard.preflight', { rel: file.rel, usedMB: pre.usedMB, limitMB: pre.limitMB, pct: pre.pct });

@@ -248,7 +248,7 @@ export const PANEL_GROUPS = [
         id: 'ctl-memory-guard', core: true, defaultOn: true,
       },
       {
-        // 判据读数：数值全部来自服务端 /api/unpack/capacity（读 /proc/meminfo），前端不自己估
+        // 判据读数：数值全部来自服务端 /api/unpack/capacity（由服务端读系统内存信息），前端不自己估
         kind: 'readonly',
         label: '内存判据',
         id: 'ctl-memory-readout',
