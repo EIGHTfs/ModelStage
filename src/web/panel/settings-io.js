@@ -54,12 +54,12 @@ export async function exportSettingsFile() {
   const project = await fetchProjectFiles();
   const payload = {
     _meta: {
-      app: 'spine-multi-viewer',
+      app: 'modelstage',
       formatVersion: 1,
       exportedAt: new Date().toISOString(),
       note: 'project=服务端配置原文（资源根+名表）；panel/view=前端偏好',
     },
-    schema: 'spine-viewer-settings/v2',
+    schema: 'modelstage-settings/v2',
     project: project.files ? { files: project.files } : null,
     panel: { ...(ioBridge.panelSettings() || {}) },
     view: readViewSettings(),
@@ -72,7 +72,7 @@ export async function exportSettingsFile() {
   });
   document.documentElement.dataset.settingsExport = String(text.length);
   try {
-    downloadJson(text, `spine-viewer-settings-${payload._meta.exportedAt.slice(0, 10)}.json`);
+    downloadJson(text, `modelstage-settings-${payload._meta.exportedAt.slice(0, 10)}.json`);
     stageStatus(
       `已导出设置：前端偏好 ${panelCount} 项`
       + (projectCount ? ` + 项目配置 ${projectCount} 个文件` : `（项目配置未取到：${project.error}）`)

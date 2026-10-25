@@ -1,4 +1,4 @@
-// routes/ready.mjs —— 就绪信号通道（契约 doc/契约/就绪信号契约.md）
+// routes/ready.mjs —— 就绪信号通道（契约 docs/契约/交互与实现约束.md）
 //
 // 三条同路径不同方法：
 //   GET  /api/ready         快照（幂等；未登记阶段名 ⇒ 400，已登记未上报 ⇒ 200 pending）

@@ -1,6 +1,6 @@
 // roster/persist.js —— 名册展开态与"上次选中"的持久化
 //
-// 键名与结构沿用旧前端（spine-multi-viewer.tree-state.v1）：
+// 键名与结构（modelstage.tree-state.v1）：
 //   { games: [], chars: [], activeGame: '游戏名', lastByGame: { '游戏名': '变体id' }, lastModelId? }
 // 单独成模块的原因：读写逻辑与渲染无关，且 view.js 需要守住单文件行数上限。
 

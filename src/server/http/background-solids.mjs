@@ -9,7 +9,7 @@
 //   原子写 + fsync + 串行队列全部来自 http/atomic-json.mjs。
 //
 // 并发约定：**单实例内串行一致；多实例共享同一 dataDir 不保证**（无文件锁）。
-//   见 doc/契约/纯色预设API.md §四。
+//   见 docs/契约/数据与接口.md §四。
 
 import fs from 'node:fs';
 import path from 'node:path';

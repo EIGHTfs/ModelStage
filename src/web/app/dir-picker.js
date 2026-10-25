@@ -12,7 +12,7 @@
 // 面板关掉就销毁，不常驻 DOM（不留隐藏节点）。
 
 /** 打开时的默认起点：上次用过的目录优先，否则从根开始让用户自己走 */
-const LAST_DIR_KEY = 'spine-multi-viewer.dirpicker.last';
+const LAST_DIR_KEY = 'modelstage.dirpicker.last';
 
 /**
  * 创建目录选择器。

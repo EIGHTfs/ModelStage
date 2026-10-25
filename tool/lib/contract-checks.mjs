@@ -1,4 +1,4 @@
-// tool/lib/contract-checks.mjs —— 把 `doc/契约/插件契约.md` 的 PL1–PL9 逐条变成可执行检查
+// tool/lib/contract-checks.mjs —— 把 `docs/契约/插件.md` 的 PL1–PL9 逐条变成可执行检查
 //
 // 为什么单独成模块：check-plugin.mjs 已经按 A/B/C 分组验"清单形态 + 代码形态"，
 //   而 PL1–PL9 是**契约条目**视角，两者不是一一对应（一条 PL 可能横跨清单、宿主、catalog、静态规范）。

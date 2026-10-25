@@ -422,7 +422,7 @@ function install() {
    *   旧做法"全部解完 → 再逐张编码"会让峰值 = Σ(所有纹理 RGBA)（两张 4096² 就是 128MB 级）；
    *   改成"编码时才解、编完随作用域释放"后，常驻的只有压缩字节
    *   （`textureCompressedBytes` 返回的是 resS 的 subarray 视图，不拷贝）。
-   *   注意：这一步**只降常驻**，不改变产物；峰值的大头是 PNG 编码（见 doc/解包内存归因.md）。
+   *   注意：这一步**只降常驻**，不改变产物；峰值的大头是 PNG 编码（见 docs/已知问题.md）。
    */
   function collectTextures(got, resSBytes) {
     const textures = [];

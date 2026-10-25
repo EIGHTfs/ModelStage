@@ -60,7 +60,7 @@ export function writeJsonAtomic(file, value) {
  * 串行队列：把"读-改-写"整段排进队列，避免两次并发修改互相覆盖。
  *
  * 为什么不是锁：单进程单事件循环下，队列已经足够（并且没有任何"进程崩了锁不释放"的风险）。
- *   跨进程/多实例共享同一目录**不保证**顺序 —— 见 doc/契约/纯色预设API.md 的说明。
+ *   跨进程/多实例共享同一目录**不保证**顺序 —— 见 docs/契约/数据与接口.md 的说明。
  * @returns {(fn: () => any) => Promise<any>}
  */
 export function createSerialQueue() {

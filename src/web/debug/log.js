@@ -2,13 +2,13 @@
 //
 // 职责：环形缓冲、分级、订阅、开关。面板（debug-panel.js）只消费这里产出的条目。
 //
-// 单一真相源（doc/任务-调试日志接入.md）：
+// 单一真相源（docs/设计/调试日志面板.md）：
 //   条目**只从 diag 进来** —— log() 不再直接写缓冲，而是把事件交给 window.__DIAG__，
 //   由面板注册的 sink 回调 addExternal() 写回缓冲。这样"应用事件 / 运行时异常 / 网络失败"
 //   走的是同一条管道：把 sink 注册注释掉，三类会一起消失（可反向验证"真的接通了"）。
 //   没有 diag（独立使用本模块/单测）时退回直接写缓冲，行为与旧版一致。
 //
-// 契约（doc/任务-前端重写.md 第二十二节）：
+// 契约（docs/README.md 第二十二节）：
 //   const log = createDebugLog({ capacity: 500 });
 //   log.log(tag, message, { level = 'info', data } = {});
 //   log.entries();      // [{ ts, level, tag, message }] 快照，按时间正序

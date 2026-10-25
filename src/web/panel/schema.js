@@ -20,7 +20,7 @@
 /**
  * 与渲染器无关的控件（无能力信息时唯一允许出现的项）。
  * 为什么需要：面板回落策略是「无能力信息 ⇒ 只显示通用项」，而不是"默认全支持"
- *   —— 默认全支持会让"声明了但没实现"的缺陷静默存在（见 doc/契约/面板能力契约.md §五）。
+ *   —— 默认全支持会让"声明了但没实现"的缺陷静默存在（见 docs/契约/渲染面.md §五）。
  */
 // 滑块的取值域与默认值统一由 slider.js 提供（避免"面板写一套、映射写另一套"）
 import { MIX_DEFAULT, MIX_MAX, MIX_MIN, MIX_STEP, SPEED_DEFAULT, SPEED_MAX, SPEED_MIN, SPEED_STEP } from './slider.js';

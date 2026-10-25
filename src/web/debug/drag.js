@@ -24,8 +24,7 @@ import * as uiState from '../app/ui-state.js';
 
 /**
  * 位置存储统一走 app/ui-state 工厂（偏好键的 debug.panelPos 段）。
- * 旧键 `spine-viewer-debug-panel-pos` 不再被读取，只由工厂的清理入口发现后删除（避免旧数据永久占用）。
- * 本文件不直接读写它 —— 原来的键常量与 storageKey 参数已无使用方，已删除。
+ * 本文件不直接读写存储 —— 不再有独立的键常量与 storageKey 参数。
  */
 
 /** 超过这个位移（px）才算拖动；之内视为点击/手抖 */

@@ -1,7 +1,7 @@
 // catalog.mjs —— 模型来源规范化（GET /api/catalog 的数据层）
 //
 // 背景：Spine 与 Live2D 两路扫描输出的形状不同（入口字段、版本字段、动作字段、私有字段各一套），
-//   消费方必须各自适配。这里合并两路结果，统一输出 ModelEntry（见 doc/架构-基础能力与插件.md 第十节）：
+//   消费方必须各自适配。这里合并两路结果，统一输出 ModelEntry（见 docs/架构/总览.md 第十节）：
 //     { id, kind, rootId, rootName, name, srcDir,
 //       entry: { url, name, size },
 //       assets: [{ role, name, url, size }],

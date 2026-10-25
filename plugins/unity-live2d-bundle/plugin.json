@@ -13,7 +13,7 @@
   "produces": {
     "kind": "live2d",
     "entry": "resolve(file)",
-    "schema": "doc/插件产出schema（prepare）.MD",
+    "schema": "docs/契约/插件.md",
     "fields": [
       "prefix",
       "files",

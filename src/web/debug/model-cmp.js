@@ -1,6 +1,6 @@
 // model-cmp.js —— 逐模型差异采集（诊断专用，不改任何渲染行为）
 //
-// 依据：doc/相机统一入口-设计与数值清单.md 第 4 节。
+// 依据：docs/设计/相机.md 第 4 节。
 // 为什么用 extract 而不是 readPixels：Live2D 的 PIXI 画布是 preserveDrawingBuffer=false，
 //   直接 readPixels 全 0，不能当证据；extract.canvas 走离屏渲染，拿到的是"实际画出来的结果"。
 //

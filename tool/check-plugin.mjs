@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// check-plugin.mjs —— 插件合法性检查（把 `doc/契约/插件契约.md` 的条款变成可执行检查）
+// check-plugin.mjs —— 插件合法性检查（把 `docs/契约/插件.md` 的条款变成可执行检查）
 //
 // 用法：
 //   node tool/check-plugin.mjs plugins/unity-live2d-bundle

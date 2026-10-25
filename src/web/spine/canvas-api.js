@@ -12,7 +12,7 @@ import { samplePixels } from './canvas-pixels.js';
 import { statsOf } from './canvas-view.js';
 
 /**
- * 创建舞台（对外契约见 doc/参考-Spine渲染要点.md §14）。
+ * 创建舞台（对外契约见 docs/参考/渲染与纹理.md §14）。
  * @param {{canvas: HTMLCanvasElement, onStatus?: (s:object)=>void}} opts
  */
 /**

@@ -1,6 +1,6 @@
 // app/ui-state.js —— UI 状态的单一真相源（S1）
 //
-// 契约：doc/契约/UI状态持久化契约.md
+// 契约：docs/契约/状态.md
 //   R1 单一真相源：UI 显示值 == 生效值 == 工厂里的值（禁止控件自己留一份显示副本）
 //   R2 读回早于首次渲染：loadAll() 必须在第一次面板 DOM 构建之前完成（纯内存，不碰 DOM）
 //   R3 apply 与 render 分离：apply=下发给引擎/渲染器（幂等）；render=更新已存在 DOM 的显示态（可重放）
@@ -20,19 +20,6 @@ import { PANEL_GROUPS } from '../panel/schema.js';
 import { state } from './context.js';
 import { readViewSettings, saveViewSettings } from './view-settings.js';
 import { stageLog } from './status.js';
-
-/**
- * 旧版遗留的调试浮层存储键（已废弃，仅用于"发现即清除"）。
- *
- * 两个状态现在都存在偏好键的 `debug` 段（panelPos / logLevels），与面板设置同一条读写路径。
- * 这张表只被 purgeLegacyKeys 使用：确保老数据不会永久占着 localStorage。
- */
-export const DEBUG_SLOTS = {
-  /** 收起态胶囊的锚点位置（拖动记忆） */
-  panelPos: { old: 'spine-viewer-debug-panel-pos' },
-  /** 调试日志四档多选 */
-  logLevels: { old: 'spine-viewer-debug-levels' },
-};
 
 /** 写盘去抖（ms）：滑块的连续事件会产生大量写，攒一帧以上再落盘 */
 const WRITE_DEBOUNCE_MS = 150;
@@ -117,7 +104,6 @@ function debugSection() {
  * @returns {{left:number, top:number}|null} 无记录/损坏返回 null（调用方用 CSS 默认位置）
  */
 export function getPanelPos() {
-  ensurePurged();
   const v = debugSection().panelPos;
   if (!v || !Number.isFinite(v.left) || !Number.isFinite(v.top)) return null;
   return { left: v.left, top: v.top };
@@ -132,7 +118,6 @@ export function setPanelPos(pos) {
 
 /** 调试日志四档（未存过 ⇒ null，调用方用默认三档） */
 export function getLogLevels() {
-  ensurePurged();
   const v = debugSection().logLevels;
   return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : null;
 }
@@ -144,35 +129,6 @@ export function setLogLevels(levels) {
   try { saveViewSettings({ debug: next }); return true; } catch { return false; }
 }
 
-/**
- * 清除旧版遗留的调试浮层键（**不再做数据迁移**）。
- *
- * 语义已变更：不再"把旧键的值搬到新槽位"，只做一件事——发现旧键就删掉，
- *   避免旧数据永久占着 localStorage。新键（偏好键的 debug 段）才是唯一存储。
- *
- * 幂等、便宜（旧键不存在时只是两次 getItem），由读取路径按需触发。
- * @returns {string[]} 本次被删掉的旧键
- */
-export function purgeLegacyKeys() {
-  const purged = [];
-  for (const slot of Object.values(DEBUG_SLOTS)) {
-    try {
-      if (localStorage.getItem(slot.old) !== null) {
-        localStorage.removeItem(slot.old);
-        purged.push(slot.old);
-      }
-    } catch { /* 隐私模式等读不到就跳过 */ }
-  }
-  if (purged.length) {
-    stageLog('info', '已清除旧版遗留的调试浮层存储键', { keys: purged, kept: 'spine-viewer-settings-v2 的 debug 段' });
-  }
-  return purged;
-}
-
-/** 读取路径的按需清理入口（幂等；每次读都跑一遍，成本可忽略） */
-export function ensurePurged() {
-  try { purgeLegacyKeys(); } catch { /* 清理失败不影响读取 */ }
-}
 
 // ---------------------------------------------------------------- 布局 / 浮层收起 / 名册 三个独立槽位
 //
@@ -217,7 +173,6 @@ export function setLayout(patch) {
  * @returns {boolean} 无记录 ⇒ false（默认展开）
  */
 export function getDebugCollapsed() {
-  ensurePurged();
   const v = debugSection().collapsed;
   return typeof v === 'boolean' ? v : false;
 }
@@ -252,8 +207,9 @@ export function setBgOpen(group) {
   return g;
 }
 
-/** 名册状态存储键（当前唯一键；键名沿用历史命名，改名会让既有用户的选中/展开态丢失） */
-export const TREE_STATE_KEY = 'spine-multi-viewer.tree-state.v1';
+/** 名册状态存储键（全站唯一名册状态键） */
+export const TREE_STATE_KEY = 'modelstage.tree-state.v1';
+
 
 /**
  * 读名册状态（原样返回解析后的对象；缺省/损坏返回 {}）。
@@ -354,8 +310,6 @@ export function loadAll() {
     rejected.push(it.id);
   }
   loadedOnce = true;
-  // S3：旧键迁移（幂等；写成功才删旧键，失败保留）
-  try { ensurePurged(); } catch { /* 清理失败不影响启动 */ }
   return { loaded: values.size, rejected: [...rejected] };
 }
 
