@@ -450,6 +450,16 @@ function runSuite(suite) {
     failingDetail: (result && result.results
       ? result.results.filter((r) => !r.ok).map((r) => ({ name: r.name, actual: r.actual, expect: r.expect }))
       : []),
+    // skip（环境缺数据）与 fail 分开：skip 不计入 failed，但必须在终端/落盘/汇总三处可见，
+    //   否则"整套都跳过"会看起来像通过 —— 那是最危险的状态（一条都没验证）
+    skipped: (result && typeof result.skipped === 'number')
+      ? result.skipped
+      : (result && result.results ? result.results.filter((r) => r.skipped === true).length : 0),
+    // 各套件的记录字段名不统一（browser 侧用 name/sel/actual，engine-b1 用 step/error）⇒ 两者都认
+    skippedDetail: (result && result.results
+      ? result.results.filter((r) => r.skipped === true)
+        .map((r) => ({ name: r.name || r.step || '(未命名)', reason: r.actual || r.error || '' }))
+      : []),
     raw: res.stdout,
     // 没产出结果时把 stderr 尾巴带出来：否则只看到 failed=null，不知道是 chrome 起不来还是脚本炸了
     stderrTail: (res.stderr || '').trim().split('\n').slice(-4).join(' | ').slice(0, 400),
@@ -526,6 +536,10 @@ for (const suite of CHOSEN) {
       startedAt: new Date(Date.now() - r.ms).toISOString(),
       finishedAt: new Date().toISOString(),
       ms: r.ms, failed: r.failed, total: r.total, problems: r.problems,
+      // skip 必须落盘（含每条原因），否则"跳过"在下一次排查时完全不可见
+      skipped: Number(r.skipped) || 0,
+      skippedDetail: r.skippedDetail || [],
+      allSkipped: Number(r.total) > 0 && Number(r.skipped) === Number(r.total),
       failing: r.failing || [], failingDetail: r.failingDetail || [],
       exitCode: r.status, signal: r.signal || null,
       outcome: r.outcome, outcomeHint: r.outcomeHint || '',
@@ -534,6 +548,8 @@ for (const suite of CHOSEN) {
     });
     updateSummary(RUN.summaryPath, { suites: report.suites.map((x) => ({
       suite: x.name, outcome: x.outcome, ms: x.ms, failed: x.failed, total: x.total,
+      skipped: Number(x.skipped) || 0,
+      allSkipped: Number(x.total) > 0 && Number(x.skipped) === Number(x.total),
       problems: x.problems, memAtStart: x.memAtStart, memAtEnd: x.memAtEnd,
     })) });
   } catch (e) {
@@ -547,13 +563,27 @@ for (const suite of CHOSEN) {
   // 只有真失败/无结果算"红"；超时被杀单独标注（它也是红，但原因不同，要一眼看出来）
   const bad = r.failed === null || r.failed > 0;
   if (bad) report.ok = false;
+  // 「整套都跳过」= 一条都没验证：绝不能显示成绿的（曾经 13 条静默退化成 1 条 skipped 而全场以为通过）
+  const allSkipped = Number(r.total) > 0 && Number(r.skipped) === Number(r.total);
+  if (allSkipped) report.ok = false;
   if (r.outcomeHint) say(`      ⚠ ${r.outcome}：${r.outcomeHint}`);
-  say(`  ${r.name.padEnd(16)} ${bad ? '❌' : '✅'} failed=${r.failed} total=${r.total} problems=${r.problems} ${r.ms}ms`
+  const skipTag = allSkipped ? '（全部 skip）' : (r.skipped > 0 ? `（skip ${r.skipped}）` : '');
+  say(`  ${r.name.padEnd(16)} ${bad || allSkipped ? '❌' : '✅'} failed=${r.failed} total=${r.total} problems=${r.problems} ${r.ms}ms${skipTag}`
     + (r.failing.length ? `\n      未通过：${r.failing.join(' / ')}` : '')
-    + ((r.failingDetail || []).map((d) => `\n         · ${d.name}\n           actual: ${String(d.actual).slice(0, 220)}\n           expect: ${String(d.expect).slice(0, 160)}`).join('')));
+    + ((r.failingDetail || []).map((d) => `\n         · ${d.name}\n           actual: ${String(d.actual).slice(0, 220)}\n           expect: ${String(d.expect).slice(0, 160)}`).join(''))
+    + (allSkipped ? `\n       🚨 本套件实际未验证：${r.total} 条全部被 skip（环境缺数据，不是代码通过）` : ''));
 }
 
-say(`\n[test-all] ${report.ok ? '✅ 全部通过' : '❌ 存在失败'}（${report.suites.length} 套）`);
+const totalSkipped = report.suites.reduce((n, x) => n + (Number(x.skipped) || 0), 0);
+const allSkippedSuites = report.suites
+  .filter((x) => Number(x.total) > 0 && Number(x.skipped) === Number(x.total))
+  .map((x) => x.name);
+if (totalSkipped > 0) {
+  say(`[test-all] ⏭ 跳过 ${totalSkipped} 条（环境缺数据，不计失败）`
+    + (allSkippedSuites.length ? `；🚨 整套未验证：${allSkippedSuites.join(', ')}` : ''));
+}
+say(`\n[test-all] ${report.ok ? '✅ 全部通过' : '❌ 存在失败'}（${report.suites.length} 套）`
+  + (allSkippedSuites.length ? ` ｜ ⚠ 有 ${allSkippedSuites.length} 套实际未验证` : ''));
 finishRun({ outRoot: OUT_DIR, dir: RUN.dir, summaryPath: RUN.summaryPath, exitCode: report.ok ? 0 : 1 });
 say(`[test-all] 结果：${path.join(OUT_DIR, 'latest.json')}`);
 process.exit(report.ok ? 0 : 1);
