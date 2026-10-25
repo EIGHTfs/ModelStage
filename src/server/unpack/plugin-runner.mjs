@@ -72,6 +72,21 @@ export function ensurePlugin() {
     NS.bytes.setSha256((u8) => crypto.createHash('sha256').update(u8).digest('hex'));
     NS.png.setInflate((u8) => new Uint8Array(zlib.inflateSync(Buffer.from(u8))));
     NS.png.setDeflate((u8) => new Uint8Array(zlib.deflateSync(Buffer.from(u8), { level: 6 })));
+    // 流式版：编码器按 64 行一块喂进来，这里不攒整张、不转 Buffer。
+    //   输出与一次性 deflateSync 逐字节相同（deflate 的切分不影响结果，只要不 flush）。
+    //   最后 Buffer.concat 只分配一次总长（省掉"片段数组再拼一份"的额外拷贝）。
+    NS.png.setDeflateStream(async (chunks) => {
+      const d = zlib.createDeflate({ level: 6 });
+      const out = [];
+      d.on('data', (c) => out.push(c));
+      const done = new Promise((res, rej) => { d.on('end', res); d.on('error', rej); });
+      for (const c of chunks) d.write(c);
+      d.end();
+      await done;
+      // 返回**片段数组**（不 concat）：编码器会把片段直接 set 进一次预分配的 PNG 缓冲，
+      //   多一次 concat 就是多一份 18MB。
+      return out;
+    });
     vm.runInContext(fs.readFileSync(path.join(PLUGIN_DIR, 'index.js'), 'utf8'), sandbox, { filename: 'index.js' });
     const api = sandbox.__ULB_NODE__;
     if (!api || typeof api.resolve !== 'function' || typeof api.canHandle !== 'function') {
@@ -208,7 +223,13 @@ export async function unpackFile({ rootId, rel, absPath }) {
   let bytes;
   const t0 = Date.now();
   try {
-    bytes = new Uint8Array(fs.readFileSync(absPath));
+    // 零拷贝视图：`new Uint8Array(buf)` 会把 Buffer 的**内容再拷一份**（19MB 包就是 +19MB 峰值），
+    //   而这里只需要一段只读字节视图。必须带 byteOffset/byteLength —— 小文件可能来自 Buffer 池，
+    //   只写 buf.buffer 会把池里相邻的其它内容也包进来。
+    // 只读约束：本文件与插件层都**不原地写**这段字节（grep 确认无 bytes[i]= / set / fill / copy），
+    //   因此与 Buffer 共享内存在语义上是安全的。
+    const buf = fs.readFileSync(absPath);
+    bytes = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
   } catch (e) {
     return { ok: false, reason: 'read-failed', message: String((e && e.message) || e) };
   }

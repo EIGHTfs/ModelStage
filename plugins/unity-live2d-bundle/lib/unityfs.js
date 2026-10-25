@@ -68,8 +68,11 @@
    * 为什么自己实现：容器允许 LZ4 压缩的数据块，浏览器端没有内置 LZ4。
    * 与 UnityPy 的 lz4.block.decompress 对齐：入参是裸块，输出固定为 expectedSize。
    */
-  function lz4Decompress(src, expectedSize) {
-    const dst = new Uint8Array(expectedSize);
+  function lz4Decompress(src, expectedSize, target, targetOffset = 0) {
+    // target：若调用方已预分配好整段缓冲（多块拼接场景），直接写到它的对应区间，
+    //   省掉"每块各分配一份 + 最后 concat 再复制一份"的第二份内存。
+    //   安全性：LZ4 block 的匹配段只引用**同一块内**已解出的字节，不跨块 ⇒ 写到大缓冲的任意 offset 都成立。
+    const dst = target ? target.subarray(targetOffset, targetOffset + expectedSize) : new Uint8Array(expectedSize);
     let si = 0;
     let di = 0;
     while (si < src.length) {
@@ -103,16 +106,18 @@
   }
 
   /** 按压缩类型解压一段数据（flags 低 6 位） */
-  function decompress(bytes, uncompressedSize, flags, where) {
+  function decompress(bytes, uncompressedSize, flags, where, target, targetOffset = 0) {
     const type = flags & ARCHIVE.CompressionTypeMask;
     if (type === COMPRESSION.NONE) {
       if (bytes.length !== uncompressedSize) {
         throw NS.errors.fail('ULB_ERR_CONTAINER_PARSE', `${where || '数据块'} 声明未压缩但长度不符：实际 ${bytes.length}，声明 ${uncompressedSize}`);
       }
+      // 未压缩块没有"解压"这步，只能拷进目标区间（语义与拼接一致，不再多留一份视图）
+      if (target) { target.set(bytes, targetOffset); return target.subarray(targetOffset, targetOffset + bytes.length); }
       return bytes;
     }
     if (type === COMPRESSION.LZ4 || type === COMPRESSION.LZ4HC) {
-      return lz4Decompress(bytes, uncompressedSize);
+      return lz4Decompress(bytes, uncompressedSize, target, targetOffset);
     }
     const label = type === COMPRESSION.LZMA ? 'LZMA' : type === COMPRESSION.LZHAM ? 'LZHAM' : `未知(${type})`;
     throw NS.errors.fail('ULB_ERR_CONTAINER_PARSE', `${where || '数据块'} 使用 ${label} 压缩，本插件尚未支持该分支（已支持 none / LZ4）`);
@@ -202,19 +207,21 @@
     if (dataflags & ARCHIVE.BlockInfoNeedPaddingAtStart) r.align(16);
     const dataStart = r.pos;
 
-    // 数据块：按顺序解压后拼接；节点的 offset/size 都相对这份拼接结果
-    const dataParts = [];
+    // 数据块：**预分配整段**，逐块直接解压到对应 offset。
+    //   为什么不再用「每块各解一份 + concat」：那会让峰值 = 解压总量 ×2
+    //   （实测 19MB 包：解压 42.1MB + concat 复制 42.1MB = 84.2MB），而块只有一个时又白留一份。
+    //   节点的 offset/size 相对这份整段缓冲，语义与拼接完全相同。
+    const totalUncompressed = blocks.reduce((a, b) => a + b.uncompressedSize, 0);
+    const data = new Uint8Array(totalUncompressed);
     const blockSpans = [];
     let cursor = 0;
     for (let i = 0; i < blocks.length; i++) {
       const b = blocks[i];
       const raw = r.bytes(b.compressedSize, `block[${i}]`);
-      const out = decompress(raw, b.uncompressedSize, b.flags, `block[${i}]`);
-      blockSpans.push({ start: cursor, end: cursor + out.length });
-      dataParts.push(out);
-      cursor += out.length;
+      decompress(raw, b.uncompressedSize, b.flags, `block[${i}]`, data, cursor);
+      blockSpans.push({ start: cursor, end: cursor + b.uncompressedSize });
+      cursor += b.uncompressedSize;
     }
-    const data = blockCount === 1 ? dataParts[0] : B.concatBytes(dataParts);
 
     return {
       signature,

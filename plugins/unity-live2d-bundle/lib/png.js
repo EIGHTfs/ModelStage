@@ -37,6 +37,20 @@
     return (c ^ 0xffffffff) >>> 0;
   }
 
+  /**
+   * 增量 CRC32：对多个片段**连续**计算（PNG 的 CRC 覆盖 "类型 + 数据"）。
+   * 为什么不先拼再算：IDAT 数据动辄 18MB，拼一次就是一次全量拷贝 —— 而 CRC 本身就是流式的。
+   * @param {Array<Uint8Array>} parts
+   * @returns {number}
+   */
+  function crc32OfParts(parts) {
+    let c = 0xffffffff;
+    for (const u8 of parts) {
+      for (let i = 0; i < u8.length; i++) c = CRC_TABLE[(c ^ u8[i]) & 0xff] ^ (c >>> 8);
+    }
+    return (c ^ 0xffffffff) >>> 0;
+  }
+
   function adler32(u8) {
     let a = 1;
     let b = 0;
@@ -124,6 +138,77 @@
   let deflateImpl = null;
   function setDeflate(fn) { deflateImpl = fn; }
 
+  /**
+   * 流式 deflate 注入（Node 侧注入 zlib.createDeflate 版本）。
+   * 为什么不直接用 deflateImpl：那是一次性接口（吃整块、吐整块），
+   *   而整块 = 4096² 的"过滤后扫描线"67MB + 一次全量拷贝 67MB（`Buffer.from`）。
+   *   给一个**吃块迭代器**的接口，编码器就能按行块喂，全程不造整张。
+   * @param {(chunks: Iterable<Uint8Array>) => Promise<Uint8Array>} fn
+   */
+  let deflateStreamImpl = null;
+  function setDeflateStream(fn) { deflateStreamImpl = fn; }
+
+  /** 每块的扫描行数：64 行 ≈ 4096² 时 1MB/块（够大能摊掉调用开销，够小不会造出第二张整图的量级） */
+  const STREAM_ROWS = 64;
+
+  /**
+   * 把「过滤后的扫描线」切成小块逐个喂给 deflate，返回完整 zlib 流。
+   *
+   * 关键前提（已实测，见工具输出）：分块 write 与一次性 deflateSync 产出的 zlib 流**逐字节相同**
+   *   —— 只要不调 flush()，deflate 的切分对输出无影响（块大小 2B / 64KB / 1MB 都验过）。
+   *   所以这条路径不会改变 PNG 产物。
+   * @param {Uint8Array} rgba 源像素（整张，LZ4 解码产物，这部分省不掉）
+   * @param {number} width
+   * @param {number} height
+   * @returns {Promise<{chunks: Uint8Array[], length: number}>} zlib 流的**片段**（不拼接：拼接是调用方在一次预分配里做的）
+   */
+  async function deflateScanlines(rgba, width, height) {
+    const stride = width * 4;
+    /** 生成"每 64 行一块"的 [0, row..., 0, row...] 缓冲区（过滤方式 None） */
+    function* blocks() {
+      for (let y0 = 0; y0 < height; y0 += STREAM_ROWS) {
+        const rows = Math.min(STREAM_ROWS, height - y0);
+        const chunk = new Uint8Array((stride + 1) * rows);
+        for (let r = 0; r < rows; r++) {
+          const y = y0 + r;
+          chunk[r * (stride + 1)] = 0;                                  // 过滤方式 0（None）
+          chunk.set(rgba.subarray(y * stride, (y + 1) * stride), r * (stride + 1) + 1);
+        }
+        yield chunk;
+      }
+    }
+
+    if (deflateStreamImpl) return normalizeChunks(await deflateStreamImpl(blocks()));
+
+    // 浏览器：CompressionStream 也能流式写（先挂上读取再写，避免背压死锁）
+    const CS = root.CompressionStream;
+    if (CS) {
+      const cs = new CS('deflate');
+      const writer = cs.writable.getWriter();
+      const collected = new Response(cs.readable).arrayBuffer();   // 先启动读取
+      for (const chunk of blocks()) await writer.write(chunk);
+      await writer.close();
+      // CompressionStream 只给整体缓冲，拿不到分段 ⇒ 单片段返回（内存上仍是"一份"）
+      return normalizeChunks([new Uint8Array(await collected)]);
+    }
+
+    // 兜底：没有流式能力 ⇒ 退回一次性（拼起来只是为了拿 stored 版本，仍正确）
+    const parts = []; let total = 0;
+    for (const chunk of blocks()) { parts.push(chunk); total += chunk.length; }
+    const raw = new Uint8Array(total);
+    let off = 0;
+    for (const part of parts) { raw.set(part, off); off += part.length; }
+    return normalizeChunks([zlibStored(raw)]);
+  }
+
+  /** 统一成「片段数组 + 总长」（注入实现可能返回数组或单块） */
+  function normalizeChunks(v) {
+    const chunks = Array.isArray(v) ? v : [v];
+    let length = 0;
+    for (const c of chunks) length += c.length;
+    return { chunks, length };
+  }
+
   async function deflateCompress(u8) {
     if (deflateImpl) return deflateImpl(u8);
     const CS = root.CompressionStream;
@@ -136,12 +221,9 @@
   }
 
   async function encodePngAsync(rgba, width, height) {
-    const stride = width * 4;
-    const raw = new Uint8Array((stride + 1) * height);
-    for (let y = 0; y < height; y++) {
-      raw[y * (stride + 1)] = 0;
-      raw.set(rgba.subarray(y * stride, (y + 1) * stride), y * (stride + 1) + 1);
-    }
+    // 流式：按 64 行一块喂 deflate，**不构造整张"过滤后扫描线"**（4096² 时那是 67MB），
+    //   也不再把它转成 Buffer（`Buffer.from` 是又一次 67MB 全量拷贝）。
+    //   产物与旧实现**逐字节相同**（分块不影响 deflate 输出，已实测三种块大小）。
     const ihdr = new Uint8Array(13);
     const dv = new DataView(ihdr.buffer);
     dv.setUint32(0, width);
@@ -149,8 +231,46 @@
     ihdr[8] = 8;
     ihdr[9] = 6;
     const sig = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-    const idat = await deflateCompress(raw);
-    return B.concatBytes([sig, chunk('IHDR', ihdr), chunk('IDAT', idat), chunk('IEND', new Uint8Array(0))]);
+    const { chunks, length } = await deflateScanlines(rgba, width, height);
+    return assemblePng(sig, ihdr, chunks, length);
+  }
+
+  const IHDR_TAG = new Uint8Array([0x49, 0x48, 0x44, 0x52]);   // 'IHDR'
+  const IDAT_TAG = new Uint8Array([0x49, 0x44, 0x41, 0x54]);   // 'IDAT'
+  const IEND_TAIL = new Uint8Array([0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82]); // 长度0 + 'IEND' + 固定 CRC
+
+  /**
+   * 一次分配最终 PNG 并逐段写入。
+   *
+   * 为什么不再走「chunk() 造 IDAT + concatBytes 汇总」那套：
+   *   那会为 IDAT 额外分配两次（chunk 的输出 + CRC 用的 crcBuf）+ 汇总再复制一次，
+   *   单张 4096² 的 IDAT 约 18MB ⇒ 白扔 3 份 18MB。
+   *   这里总长已知（deflate 片段收完就有 length），所以只分配一次，
+   *   单 IDAT 形态**不变** ⇒ 产物逐字节不变。
+   * @param {Uint8Array} sig 8 字节签名
+   * @param {Uint8Array} ihdr 13 字节图像头
+   * @param {Uint8Array[]} chunks deflate 输出片段
+   * @param {number} length 片段总长
+   */
+  function assemblePng(sig, ihdr, chunks, length) {
+    // sig(8) + IHDR(4+4+13+4) + IDAT(4+4+length+4) + IEND(12)
+    const png = new Uint8Array(8 + 25 + (12 + length) + 12);
+    const dv = new DataView(png.buffer);
+    let o = 0;
+    png.set(sig, o); o += 8;
+    // IHDR
+    dv.setUint32(o, 13); o += 4;
+    png.set(IHDR_TAG, o); o += 4;
+    png.set(ihdr, o); o += 13;
+    dv.setUint32(o, crc32OfParts([IHDR_TAG, ihdr])); o += 4;
+    // IDAT（单块：长度 + 类型 + 数据 + CRC；CRC 对"类型+数据"增量算）
+    dv.setUint32(o, length); o += 4;
+    png.set(IDAT_TAG, o); o += 4;
+    for (const c of chunks) { png.set(c, o); o += c.length; }
+    dv.setUint32(o, crc32OfParts([IDAT_TAG, ...chunks])); o += 4;
+    // IEND（长度 0 + 'IEND' + 固定 CRC）
+    png.set(IEND_TAIL, o);
+    return png;
   }
 
   // ---------------------------------------------------------------- 解码
@@ -300,5 +420,5 @@
     return { diffPixels: diff, maxChannelDiff: maxDiff, expectedWidth: ref.width, expectedHeight: ref.height, mismatchSample: sample };
   }
 
-  NS.png = { encodePng, encodePngAsync, decodePng, compareWithPng, setInflate, setDeflate, crc32, adler32, zlibStored };
+  NS.png = { encodePng, encodePngAsync, decodePng, compareWithPng, setInflate, setDeflate, setDeflateStream, crc32, adler32, zlibStored };
 }
