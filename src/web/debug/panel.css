@@ -69,7 +69,7 @@
 }
 
 /* ---------------------------------------------------------------- 收起 / 展开
-   收起后由右下角一颗胶囊按钮承载（照旧端 8803）：info 图标 + 「日志」 + 计数徽标 + chevron-up。
+   收起后由右下角一颗胶囊按钮承载：info 图标 + 「日志」 + 计数徽标 + chevron-up。
    动画口径（契约 docs/契约/交互与实现约束.md：只用 CSS transition，不写 element.style）：
      · 高度用 grid 的 0fr ↔ 1fr（height:auto 不能 transition，也不必猜固定高度）
      · 配合 opacity + 轻微位移/缩放，从右下角"长出来"（transform-origin: right bottom）
@@ -156,11 +156,11 @@
 }
 
 .dbg-pill:hover {
-  /* 旧端 hover:bg-accent —— 用 secondary 这一档（accent 在本项目里没有同名 token） */
+
   background: color-mix(in srgb, var(--dbg-fg) 8%, var(--dbg-card));
 }
 
-/* 胶囊里的 info 图标用主色（旧端 text-primary） */
+/* 胶囊里的 info 图标用主色 */
 .dbg-pill .dbg-icon-info {
   width: 14px;
   height: 14px;
@@ -169,7 +169,7 @@
 
 .dbg-pill-text { color: var(--dbg-fg); }
 
-/* 计数徽标：主色 10% 底 + 主色字（旧端 bg-primary/10 text-primary text-[10px]） */
+/* 计数徽标：主色 10% 底 + 主色字 + 10px */
 .dbg-pill-count {
   padding: 0 6px;
   border-radius: 999px;

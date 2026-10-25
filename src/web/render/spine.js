@@ -63,7 +63,7 @@ export function createSpineRenderer({ stage, onMsaa } = {}) {
     throw new Error('createSpineRenderer: 需要提供 load 能力的 stage');
   }
   /**
-   * 取当前引擎实例（MSAA 重建会换实例，所以每次用都重新取，避免拿到已销毁的旧引擎）。
+   * 取当前引擎实例。
    * @returns {object|null}
    */
   const engineOf = () => {

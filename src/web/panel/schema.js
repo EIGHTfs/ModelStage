@@ -7,7 +7,7 @@
 //   2. 控件清单可被 test/panel-actions.js 直接枚举核对（数量对齐、disabled 断言）；
 //   3. 单个文件不会因为"控件多"而膨胀（分组表 ≈ 数据，不掺渲染代码）。
 //
-// 取值口径（全部照旧前端 8803 实测 DOM，不自己编）：
+// 取值口径（取值域按实际行为实测定，不自己编）：
 //   · 9 个手风琴分组名、设置组 10 个子项的标题与选项文字逐字照旧；
 //   · 每个控件都带 `pending: true` 语义（M3 一律不接线，渲染成 disabled + data-pending）。
 
@@ -39,7 +39,7 @@ export const RENDERER_INDEPENDENT = [
 /** 占位说明（M3 不接线；M6 会把动态内容填进这些分组） */
 const PLACEHOLDER = (what) => ({ kind: 'note', note: `${what}（M6 接线）` });
 
-/** 右侧面板的 9 个分组（顺序与旧前端一致） */
+/** 右侧面板的 9 个分组（顺序） */
 export const PANEL_GROUPS = [
   {
     id: 'motion',
@@ -67,7 +67,7 @@ export const PANEL_GROUPS = [
     id: 'play',
     title: '播放',
     controls: [
-      // 顺序照旧端：速度 → 混合时长（两个连续值滑块，标签左、当前值右）
+      // 顺序速度 → 混合时长（两个连续值滑块，标签左、当前值右）
       // 播放速度：统一入口（spine 缩动画时间轴 / Live2D 缩整帧时间）
       {
         kind: 'slider',
@@ -133,12 +133,12 @@ export const PANEL_GROUPS = [
     id: 'pma',
     title: 'PMA 预乘',
     controls: [
-      // 与旧端一致的四档：自动推断 / 强制已预乘 / 强制非预乘 / 上传时转预乘（切换都会重传贴图）
+      // 的四档：自动推断 / 强制已预乘 / 强制非预乘 / 上传时转预乘（切换都会重传贴图）
       {
         kind: 'segmented',
         label: 'PMA 预乘',
         id: 'ctl-pma', capabilityKey: 'pma',
-        // 2×2 网格（对齐旧端布局：用户已经习惯了那个排列），下方跟随四行只读诊断
+        // 2×2 网格（用户已经习惯这个排列），下方跟随四行只读诊断
         layout: 'grid-2',
         diag: 'pma',
         options: ['自动', '已预乘', '非预乘', '转预乘'],
@@ -234,15 +234,15 @@ export const PANEL_GROUPS = [
           { text: '动画全程', title: '采样全部动画帧，保证播放过程不超出屏幕' },
         ],
       },
-      // 旧端默认是「最邻近」（不是双线性），默认项按旧端对齐
+      // 默认「最邻近」（不是双线性）—— 与实机观感一致
       { kind: 'segmented', label: '纹理过滤', id: 'ctl-filter', capabilityKey: 'textureFilter', options: ['双线性', '最邻近'], values: ['linear', 'nearest'], defaultValue: 'nearest' },
       { kind: 'segmented', label: '抗锯齿（MSAA）', id: 'ctl-msaa', capabilityKey: 'msaa', options: ['自动', '关闭'], values: ['auto', 'off'], defaultValue: 'auto' },
       // 注：不设「模型导入模式（替换/追加）」——本项目的模型来源是资源根目录扫描，
       //     不存在"往当前场景导入单个模型"这条路径，留着会是一个点了没意义的入口
       {
         // 内存容量保护：与下面「防卡死保护」并列但**不是一回事**
-        //   （前者防 OOM / 页面崩溃；后者防画面停住没人知道）。旧端同名开关绑的是内存预检，
-        //   新端沿用同名的那个是帧停滞看门狗，所以这里新开一项，不改 hang-guard 的语义。
+        //   （前者防 OOM / 页面崩溃；后者防画面停住没人知道）。护」这个开关历史上绑的是内存预检，
+        //   本实现沿用同名的那个是帧停滞看门狗，所以这里新开一项，不改 hang-guard 的语义。
         kind: 'switch',
         label: '内存保护（解包准入 + 堆占用）',
         id: 'ctl-memory-guard', core: true, defaultOn: true,

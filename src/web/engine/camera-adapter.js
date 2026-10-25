@@ -2,7 +2,7 @@
 //
 // 分层约束：**档位/范围/夹取属于 `render/camera/index.js`（唯一钳制点）**；
 //   本文件只负责"把数值落到 spine 相机上"，因此这里出现的 MIN/MAX 仅作最后一道保险，
-//   正常调用链不会依赖它（旧引擎在 applyZoom 内部夹取，容易与统一入口形成双重钳制）。
+//   正常调用链不会依赖它。
 
 import { CAMERA } from '../render/camera/constants.js';
 import { computeFit, computeSubjectBounds, clampSubjectBox, intersectBox } from './fit.js';
@@ -33,7 +33,7 @@ export function zoomStep(engine, dir) {
 /**
  * 相机收尾：同步视口并重算矩阵。
  * 为什么必须 update：spine 的 OrthoCamera 改了 zoom/viewport 后不会自动重算投影矩阵，
- *   不调用就会用上一次（或默认 800×600）的矩阵渲染 —— 表现为"模型忽大忽小"，且只和旧引擎差几倍。
+ *   不调用就会用上一次（或默认 800×600）的矩阵渲染 —— 表现为"模型忽大忽小"，且只和差几倍。
  * @param {object} engine
  */
 export function syncCamera(engine) {
@@ -58,9 +58,9 @@ export function applyUserScale(engine) {
 
 /**
  * 平移：屏幕像素 → 相机世界位移。
- * 公式与旧引擎逐字一致：`s = (camera.zoom ?? camera.scale ?? 1) * 2`，
+ * 公式：`s = (camera.zoom ?? camera.scale ?? 1) * 2`，
  *   `position.x -= dx * flipX * s`，`position.y += dy * flipY * s`，随后 update。
- * 为什么必须照抄：这里乘 2 与 flip 处理是已验收手感的一部分，换成"按 DPR 换算"会让拖动速度不同。
+ * 为什么必须这样：这里乘 2 与 flip 处理是已验收手感的一部分，换成"按 DPR 换算"会让拖动速度不同。
  * @param {object} engine
  * @param {number} dx
  * @param {number} dy
@@ -137,7 +137,7 @@ export function pickBounds(engine) {
   if (mode === 'animation') return animationBounds(engine) || full;
   const rawSubject = computeSubjectBounds({ skeleton: engine.skeleton, skeletonData: engine.skeletonData });
   // 只有"显著超出整体"时才取交：两个包围盒来自不同顶点路径，端点常有 1e-6 量级差异，
-  //   无条件求交会把 subject 削掉极小量 → baseZoom 末位与旧引擎不一致（实测 1 ULP）。
+  //   无条件求交会把 subject 削掉极小量 → baseZoom 末位会有差异（实测 1 ULP）。
   const subject = rawSubject ? trimOnlyIfOutside(rawSubject, full) : null;
   if (!subject) return full;
   const n = area(subject);
@@ -155,7 +155,7 @@ export function pickBounds(engine) {
 
 /** 按当前 fit 模式重新 fit */
 export function applyFit(engine) {
-  // 与旧引擎同序：先摆 setup pose + 更新世界变换，再在"全部皮肤合并"形态下测量
+  // 顺序：先摆 setup pose + 更新世界变换，再在"全部皮肤合并"形态下测量
   if (engine.adapters) {
     engine.adapters.skeleton.setupPose(engine.skeleton);
     engine.adapters.skeleton.updateWorldTransform(engine.skeleton);
@@ -169,7 +169,7 @@ export function applyFit(engine) {
   if (engine.camera && engine.camera.position) engine.camera.position.set(fit.centerX, fit.centerY, 0);
   applyUserScale(engine);
   syncCamera(engine);
-  // 与旧引擎同格式的 fit 日志（便于两边逐项对照 bbox / zoom / viewport）
+  // 输出与相机 fit 同一格式的日志（便于逐项对照 bbox / zoom / viewport）
   try {
     const b = bounds || { x: 0, y: 0, w: 0, h: 0 };
     engine.log('info', `相机 fit[${mode}]: bbox=[${b.x.toFixed(1)}, ${b.y.toFixed(1)}] ${b.w.toFixed(1)}x${b.h.toFixed(1)}, `

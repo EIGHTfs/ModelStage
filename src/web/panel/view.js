@@ -34,7 +34,7 @@ function triText(value, { yes, no, unknown }) {
   return unknown;
 }
 
-/** 实际生效的技术名 → 展示名（旧端用英文技术名，二者语义一致） */
+/** 实际生效的技术名 → 展示名（展示名映射到英文技术名） */
 const EFFECTIVE_TEXT = { premultiplied: 'Premultiplied', straight: 'Straight', upload: 'Unpack' };
 
 /**
@@ -102,13 +102,13 @@ function readPmaDebug() {
 function renderPmaDiag() {
   const box = el('div', 'ctl-diag');
   box.dataset.ctlDiag = 'pma';
-  // 固定四行：顺序与旧端一致（Atlas 声明 → 像素检测 → 直通支持 → 实际生效）
+  // 固定四行：顺序（Atlas 声明 → 像素检测 → 直通支持 → 实际生效）
   for (const key of ['atlas', 'pixel', 'straight', 'effective']) {
     const row = el('div', 'ctl-diag-row');
     row.dataset.diagKey = key;
     const label = el('span', 'ctl-diag-label', { atlas: 'Atlas 声明：', pixel: '像素检测：', straight: '直通支持：', effective: '实际生效：' }[key]);
     const value = el('span', 'ctl-diag-value', '—');
-    // "实际生效"是最终结论，最该被看到：主色 + 加重（旧端 text-primary font-medium）
+    // "实际生效"是最终结论，最该被看到：主色 + 加重
     if (key === 'effective') value.classList.add('is-primary');
     row.append(label, value);
     box.append(row);
@@ -184,7 +184,7 @@ function renderSegmented(ctl, ctx) {
   row.append(el('span', 'ctl-label', ctl.label));
   const group = el('div', 'ctl-seg');
   group.dataset.ctl = ctl.id || '';
-  // 布局声明（目前只有 PMA 用 grid-2：四档排成 2×2，对齐旧端）
+  // 布局声明（目前只有 PMA 用 grid-2：四档排成 2×2，对齐既有口径）
   if (ctl.layout) group.dataset.layout = ctl.layout;
   // 该控件带只读诊断块（目前只有 PMA）：在按钮组下方追加四行
   ensurePmaDiagRefresh();
@@ -236,7 +236,7 @@ function renderSegmented(ctl, ctx) {
 
 /**
  * 开关：label + 开关（role=switch）。
- * 未接线的开关**仍按旧端默认态显示**（defaultOn），只是不可点——避免"默认值看起来是关"的错配。
+ * 未接线的开关**仍按 schema 声明默认态显示**（defaultOn），只是不可点——避免"默认值看起来是关"的错配。
  */
 function renderSwitch(ctl, ctx) {
   // 未声明能力的控件由 applyCapabilities 置 ctl.disabled：这里一并压制交互（禁用+原因，不静默）
@@ -343,7 +343,7 @@ function renderGroup(group, ctx) {
   trigger.type = 'button';
   trigger.setAttribute('aria-expanded', String(!!group.defaultOpen));
   trigger.setAttribute('aria-controls', `acc-body-${group.id}`);
-  // 同旧端：标题前彩色图标（主色），箭头在右
+  // ：标题前彩色图标（主色），箭头在右
   if (GROUP_ICONS[group.id]) trigger.append(svgIcon(GROUP_ICONS[group.id]));
   trigger.append(el('span', 'acc-title', group.title));
   trigger.append(el('span', 'acc-arrow'));
@@ -424,7 +424,7 @@ export function mountPanel({ headEl, bodyEl, onSetting, wiredIds, groups, initia
     disabledReason: (id) => disabledMap.get(id) || null,
   };
 
-  // 面板头：标题 + 「收起菜单」（旧前端在面板右缘有这个按钮；M3 未接线故 disabled）
+  // 面板头：标题 + 「收起菜单」（面板右缘有该按钮，未接线故 disabled）
   const title = el('span', 'panel-title', '控制面板');
   // 「收起菜单」：点击由 main.js 在 #panel-head 委托绑定（面板重建不丢监听）
   const collapse = el('button', 'mini-btn has-icon', '收起菜单');
@@ -463,7 +463,7 @@ export function mountPanel({ headEl, bodyEl, onSetting, wiredIds, groups, initia
     const asList = box.classList.contains('ctl-list'); // 皮肤列表：列表行；其它：横向 chips
     const ctlDef = byId.get(id) || null;
     if (asList && options.length === 0 && ctlDef && ctlDef.emptyText) {
-      // 空态照旧端：居中一行弱化小字（如"默认皮肤"），不留空白区
+      // 空态居中一行弱化小字（如"默认皮肤"），不留空白区
       box.append(el('div', 'ctl-list-empty', ctlDef.emptyText));
       return true;
     }

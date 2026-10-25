@@ -378,7 +378,7 @@ function bindTransportMotionWatcher() {
  * @returns {number} 列出的条数
  */
 /**
- * 造一行动作（样式照旧端：左名称溢出省略 + 右时长等宽小字，选中主色描边）。
+ * 造一行动作（样式左名称溢出省略 + 右时长等宽小字，选中主色描边）。
  * 单独成函数：列表重绘逻辑本身要保持在可读范围，行构造细节拆出来。
  * @param {{id: string, label: string, duration: number|null}} anim
  * @param {string} currentId 当前播放中的动作 id
@@ -415,10 +415,10 @@ export function refreshPanelAnimations() {
   document.documentElement.dataset.refreshListLen = String(list.length);
   const currentId = currentAnimationId();
   box.replaceChildren();
-  box.classList.add('ctl-list'); // 容器行样式（旧端 space-y-1 / max-h-48 / overflow-y-auto）
+  box.classList.add('ctl-list'); // 容器行样式（见 panel.css 的 .ctl-list）
   if (!list.length) {
     const hint = document.createElement('p');
-    hint.className = 'ctl-list-empty'; // 旧端空态：居中弱化小字
+    hint.className = 'ctl-list-empty'; // 空态：居中弱化小字
     hint.textContent = state.selectedModel ? '该模型没有动作' : '选中模型后显示';
     box.append(hint);
     return 0;

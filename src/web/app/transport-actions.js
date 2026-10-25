@@ -254,7 +254,7 @@ function fillTransportOptions(info) {
 /**
  * 混合模式（动作组）：只控制**动画切换**是否交叉淡化（引擎 mixTime 0.2s / 0）。
  * 与「皮肤」组那个开关是两件独立的事：一个管动作过渡、一个管换肤过渡，
- *   旧端也是分开的两个开关，互不同步。
+ *   两个开关分开、互不同步。
  */
 function applyMixMode(on) {
   // 经渲染器下发（INV-01）：混合模式 = 动作切换是否交叉淡化，Spine 面有实现、Live2D 面没有

@@ -76,7 +76,7 @@ function renderControl(ctl) {
  */
 /**
  * 播放/暂停按钮的双态图标（lucide Play / Pause 的 path 原文）。
- * 语义同 8803：**播放中显示"暂停"图标**（点它=暂停），暂停后显示"播放"三角。
+ * 语义：**播放中显示"暂停"图标**（点它=暂停），暂停后显示"播放"三角。
  */
 const PLAY_ICONS = {
   play: '<polygon points="6 3 20 12 6 21 6 3"/>',
@@ -303,7 +303,7 @@ export function mountTransport(footerEl, handlers = {}) {
     return node ? node.getAttribute('aria-pressed') === 'true' : null;
   }
 
-  // 初始为"播放中"：按 8803 语义，播放中显示暂停图标 + aria-pressed=true
+  // 初始为"播放中"：按语义，播放中显示暂停图标 + aria-pressed=true
   setIcon('transport-play', 'pause');
   setPressed('transport-play', true);
 

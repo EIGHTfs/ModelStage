@@ -1,8 +1,8 @@
 /* ============================================================================
-   ModelStage 新前端 · 布局与基础样式（M1）
-   - 色板逐值取自旧前端 styles.css 的 :root（--color-background / --color-card …），
+   ModelStage 本实现 · 布局与基础样式（M1）
+   - 色板为本项目自有令牌（--color-background / --color-card …，五套主题各一份，见 docs/设计/界面与状态.md），
      目的是"看起来一样"，不是重新设计。
-   - 五个区域的几何值与旧前端在 1920x1080 下的实测 rect 一致，见 index.html 头注释。
+   - 五个区域的几何值按 1920×1080 实测标定，见 index.html 头注释。
    - 这个文件只管：变量、基础重置、舞台、五个区域的容器几何。
      控件外观（按钮、列表、横幅）在 components.css。
    ========================================================================== */
@@ -19,7 +19,7 @@
 }
 
 :root {
-  /* 主色板（取自旧前端 :root） */
+  /* 主色板（五套主题共用同一批令牌名） */
   --color-background: #131416;
   --color-foreground: #e9ebed;
   --color-card: #1f2326;
@@ -34,7 +34,7 @@
   --scroll-thumb-hover: #3e3e48;
   --color-danger: #e06c75;
 
-  /* 布局尺寸（与旧前端实测一致） */
+  /* 布局尺寸 */
   --header-h: 3rem;      /* 48px */
   --left-w: 19rem;       /* 304px */
   --right-w: 15rem;      /* 240px（176px 太窄：控件名被压成一个字、按钮竖排） */
@@ -65,7 +65,7 @@ body {
 }
 
 /* 字号只设在 body 上：html 保持浏览器默认 16px，
-   否则下面的 rem 尺寸（--header-h 等）会按 13px 折算，整页比旧前端小一圈 */
+   否则下面的 rem 尺寸（--header-h 等）会按 13px 折算，整页小一圈 */
 body {
   font-size: 13px;
 }
@@ -83,7 +83,7 @@ button:disabled {
   opacity: 0.45;
 }
 
-/* 滚动条与旧前端一致：细窄、暗色 */
+/* 滚动条：细窄、暗色 */
 ::-webkit-scrollbar {
   width: 5px;
   height: 5px;
@@ -107,7 +107,7 @@ button:disabled {
   z-index: 0;
 }
 
-/* 棋盘格：色值与格边长取自旧前端 .checkerboard（14px，大屏 24px） */
+/* 棋盘格：格边长 14px，大屏 24px */
 .checkerboard {
   --cb: 14px;
   background-color: #17191b;
@@ -190,7 +190,7 @@ button:disabled {
   color: var(--color-foreground);
   z-index: 30;
   overflow: hidden;
-  /* 面板显示/隐藏用位移动画（与旧前端一致），不是 display 切换 */
+  /* 面板显示/隐藏用位移动画，不是 display 切换 */
   transition: transform 0.2s ease, opacity 0.2s ease;
 }
 

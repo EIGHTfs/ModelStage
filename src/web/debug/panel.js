@@ -190,9 +190,9 @@ function createBarRow(doc) {
 }
 
 /**
- * 收起态的胶囊按钮（照旧端 8803 的收起态：info 图标 + 「日志」 + 计数徽标 + chevron）。
+ * 收起态的胶囊按钮（info 图标 + 「日志」 + 计数徽标 + chevron）。
  *
- * 为什么单独做一颗按钮而不是"把面板缩到只剩标题栏"：旧端收起后是一个小胶囊浮在右下角，
+ * 为什么单独做一颗按钮而不是"把面板缩到只剩标题栏"：收起后是一个小胶囊浮在右下角，
  *   用户点它就是"再打开"。这颗胶囊承载"已收起了多少条日志"的信息，比只剩一个图标更清楚。
  * @param {Document} doc
  * @returns {{pill: HTMLButtonElement, badge: HTMLElement}}
@@ -258,7 +258,7 @@ function renderEntry(entry, { isCollapsed }) {
   const body = el('div', 'dbg-body');
   const meta = el('div', 'dbg-meta');
   meta.append(el('span', 'dbg-time', formatTime(entry.ts)));
-  // tag 在 DOM 里保持小写，显示靠 CSS text-transform: uppercase（与旧端一致）
+  // tag 在 DOM 里保持小写，显示靠 CSS text-transform: uppercase
   // 来源（app/error/net/…）：一眼看出这条是"应用自己说的"还是"探针抓到的"
   meta.append(el('span', `dbg-src dbg-src-${String(entry.src || 'app').toLowerCase()}`, String(entry.src || 'app')));
   meta.append(el('span', 'dbg-tag', `[${String(entry.tag || '').toLowerCase()}]`));
@@ -407,7 +407,7 @@ function createRenderer({ log, list, countEl, badgeEl, state }) {
 }
 
 /**
- * 让面板显隐跟随日志开关（关闭只是隐藏，实例保留 —— 与旧端开关的显隐语义一致）。
+ * 让面板显隐跟随日志开关（关闭只是隐藏，实例保留）。
  * @param {{root: HTMLElement, view: object, log: object}} ctx
  * @returns {() => void} 取消订阅
  */

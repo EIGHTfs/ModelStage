@@ -15,7 +15,7 @@
 }
 
 /* ============================================================================
-   ModelStage 新前端 · 控件外观（M1）
+   ModelStage 本实现 · 控件外观（M1）
    只管"控件长什么样"：品牌、按钮、资源根列表、右栏分组行、底栏分组、错误横幅。
    布局与几何在 style.css，两个文件由 index.html 一起引入。
    ========================================================================== */
@@ -88,7 +88,7 @@
   border-color: var(--color-border);
 }
 
-/* 图标版顶栏按钮：与旧端一致 —— 方形、只放图标，名称走 aria-label/title */
+/* 图标版顶栏按钮：方形、只放图标，名称走 aria-label/title */
 .icon-btn:has(> svg) {
   width: 30px;
   padding: 0;
@@ -144,7 +144,7 @@
   background: var(--color-secondary);
 }
 
-/* 主操作按钮（左栏「选择目录」）：配色照旧前端 */
+/* 主操作按钮（左栏「选择目录」）：配色*/
 .mini-btn.is-primary {
   border-color: transparent;
   background: var(--color-accent-action);
@@ -291,7 +291,7 @@
   font-weight: 400;
 }
 
-/* 变体行的类型标签：Spine 蓝 / Live2D 与资源包 紫（配色照旧前端） */
+/* 变体行的类型标签：Spine 蓝 / Live2D 与资源包 紫（配色） */
 .tree-type {
   flex: 0 0 auto;
   padding: 0 5px;
@@ -326,7 +326,7 @@
   text-overflow: ellipsis;
 }
 
-/* 选中态：变体行高亮（与旧前端 .selected-item 同一语义） */
+/* 选中态：变体行高亮 */
 .tree-variant.is-selected {
   background: rgba(31, 192, 197, 0.14);
   box-shadow: inset 2px 0 0 var(--color-primary);

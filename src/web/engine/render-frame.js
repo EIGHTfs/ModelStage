@@ -15,7 +15,7 @@ export function renderFrame(engine) {
   if (!gl || !skeleton || !renderTarget || !engine.adapters) return;
   gl.clearColor(0, 0, 0, 0);
   gl.clear(gl.COLOR_BUFFER_BIT);
-  // 与旧引擎一致：批处理器的 premultiplied 参数由 pmaInfo.blendMode 决定（不是纹理是否预乘）
+  // ：批处理器的 premultiplied 参数由 pmaInfo.blendMode 决定（不是纹理是否预乘）
   const blendPma = !!(engine.pmaInfo && engine.pmaInfo.blendMode === 'premultiplied');
   // 部件过滤要在绘制前摘件、绘制后挂回（finally 保证异常路径也不缺件）
   hideFilteredSlots(engine);

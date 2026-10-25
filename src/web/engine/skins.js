@@ -1,6 +1,6 @@
 // engine/skins.js —— 皮肤与插槽过滤（从 player 拆出，保持单文件规模）
 //
-// 语义与旧引擎一致：
+// 语义：
 //   · getSkins 取骨架数据里的皮肤名列表（default 也在内，顺序同运行时）；
 //   · setSkins 用第一个皮肤名设置，并记住整份列表（切 PMA 重建后要继续生效）；
 //   · setSlotFilter 只记关键词，实际隐藏由 hideFilteredSlots/restoreFilteredSlots 在绘制前后做
@@ -13,7 +13,7 @@ export function getSkins(engine) {
 }
 
 /**
- * 应用皮肤（多皮肤时按旧引擎做法合成一个临时皮肤）。
+ * 应用皮肤。
  * @param {object} engine
  * @param {string[]} list
  */
@@ -49,7 +49,7 @@ export function setSkins(engine, list) {
 
 /**
  * 隐藏命中关键词的插槽（绘制前调用）。
- * 口径与旧引擎一致：槽名或附件名小写包含任一关键词即命中；命中时把 attachment 摘成 null，
+ * 口径：槽名或附件名小写包含任一关键词即命中；命中时把 attachment 摘成 null，
  *   绘制后再挂回 —— 不销毁附件，否则切回不过滤时部件就再也画不出来了。
  * @param {object} engine
  * @returns {number} 本次隐藏的槽数（0 表示没过滤）

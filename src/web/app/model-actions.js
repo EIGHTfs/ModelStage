@@ -290,7 +290,7 @@ async function loadRoots(opts = {}) {
     const [data, autoRestore] = await Promise.all([getJson('/api/roots'), loadWebConfig()]);
     const roots = Array.isArray(data?.roots) ? data.roots : [];
     state.roots = roots;
-    // 语义上报：资源根即"渲染能力来源"，其就绪对应旧端的 plugin.load
+    // 语义上报：资源根即"渲染能力来源"，其就绪对应 plugin.load
     diagEvent('plugin.load', {
       roots: roots.length,
       kinds: [...new Set(roots.map((r) => r.kind || 'spine'))],

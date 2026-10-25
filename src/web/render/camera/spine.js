@@ -42,7 +42,7 @@ export function createStageCamera({ getEngine } = {}) {
   }
 
   const camera = {
-    /** 缩放一档。dir 与旧端一致：滚轮向下 = -1，其余 = +1 */
+    /** 缩放一档。dir ：滚轮向下 = -1，其余 = +1 */
     zoomStep(dir) {
       const engine = engineOf();
       if (!engine) return null;

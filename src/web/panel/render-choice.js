@@ -58,7 +58,7 @@ export function renderChips(ctl, ctx) {
   const wired = ctx.isWired(ctl.id) && ctl.disabled !== true;
   const row = el('div', 'ctl-row ctl-row-chips');
   row.append(el('span', 'ctl-label', ctl.label));
-  // layout:'list' → 纵向列表容器（皮肤列表照旧端的行样式）；否则仍是横向 chips（滤镜预设等）
+  // layout:'list' → 纵向列表容器（皮肤列表的行样式）；否则仍是横向 chips（滤镜预设等）
   const box = el('div', ctl.layout === 'list' ? 'ctl-chips ctl-list' : 'ctl-chips');
   box.dataset.ctl = ctl.id || '';
   box.setAttribute('role', 'group');
@@ -85,7 +85,7 @@ export function renderChips(ctl, ctx) {
 }
 
 /**
- * 单选列表的一行（与旧端动作/皮肤列表同一套样式）：
+ * 单选列表的一行：
  *   左名右值、选中主色描边、hover 变色、名称溢出省略。
  * @param {{text: string, value: string}} opt
  * @param {{selected?: boolean, timeText?: string, title?: string}} [opts]

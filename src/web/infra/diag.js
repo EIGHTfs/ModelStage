@@ -14,7 +14,7 @@ import { createLogger } from './log.js';
 // 出口：内存环形缓冲（默认 500 条）+ 批量 POST /api/diag 落盘（data/diag.jsonl）；
 //   落盘失败静默降级为仅内存 —— 探针永远不能影响页面本身。面板显示留到 M6。
 //
-// 与旧前端 legacy/patches/diag.js 的关系：**API 名称与语义逐字一致**（同一套检查代码可对两端跑）。
+// API 名称与语义保持稳定（同一套检查代码可在不同页面复用，不需要为改名改脚本））。
 // 结构：本文件按职责拆成若干小函数（每函数 ≤50 行，便于审计与维护），installDiag 只做编排。
 
 /** 配置默认值（页面可在 installDiag 之前设置 window.__DIAG_CONFIG__ 覆盖） */
@@ -422,7 +422,7 @@ function captureInteractions(st) {
 
 // ---------------------------------------------------------------- 对外接口
 
-/** 组装 window.__DIAG__（API 名称与旧前端 legacy/patches/diag.js 完全一致） */
+/** 组装 window.__DIAG__（API 名称稳定，供外部脚本与测试复用） */
 function createApi(st) {
   return {
     __installed: true,

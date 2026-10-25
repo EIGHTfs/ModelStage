@@ -23,7 +23,7 @@ function transparentEntry(file, size) {
   return { name: file.name, width: canvas.width, height: canvas.height, img: null, canvas, transparent: true };
 }
 
-/** 页名 → 已上传纹理：精确 → 去扩展名 → 互相包含（与旧引擎的匹配顺序一致） */
+/** 页名 → 已上传纹理：精确 → 去扩展名 → 互相包含 */
 function matchTexture(map, pageName) {
   if (map.has(pageName)) return map.get(pageName);
   const key = String(pageName || '').split(/[\\/]/).pop().toLowerCase();
@@ -40,7 +40,7 @@ function matchTexture(map, pageName) {
 }
 
 /**
- * 解码全部贴图页。多页图集里 <100px 的页按旧引擎做法用透明画布跳过
+ * 解码全部贴图页。多页图集里 <100px 的页按做法用透明画布跳过
  * （这类页通常是占位，参与像素检测会把结论带偏）。
  */
 async function decodePages({ descriptor, pageSizes, multiPage, wantSamples, log }) {
@@ -63,7 +63,7 @@ async function decodePages({ descriptor, pageSizes, multiPage, wantSamples, log 
       const entry = { name: file.name, width: decoded.width, height: decoded.height, img: decoded.img, canvas: null, transparent: false };
       entries.set(file.name, entry);
       if (wantSamples) {
-        // 照搬旧端：同步 canvas 取样
+        // 同步 canvas 取样
         const sampled = sampleSourceImageData(entry);
         if (sampled) samples.push(sampled);
       }
@@ -127,7 +127,7 @@ export async function prepareAtlas(ctx) {
   // 上传口径已固定：**一律 UNPACK_PREMULTIPLY_ALPHA_WEBGL=false（不再乘）**，
   //   理由与实测数字见 pma.js uploadTextures 的注释（源 HTMLImageElement 解码即预乘，再乘是双乘）。
   //   所以这里不再计算 gpuUnpack —— 它已经不影响任何行为，留着会误导下一个人。
-  // 与旧引擎同文案（生效口径 + 运行时是否支持直通），便于两引擎日志直接对拉
+  // 与同文案（生效口径 + 运行时是否支持直通），便于两引擎日志直接对拉
   log('info', `PMA: 用户=${pmaMode}, atlas声明=${atlasDeclared === null ? '未声明' : String(atlasDeclared)}, `
     + `文件名=${filenameHint === null ? '无线索' : String(filenameHint)}, 像素检测=${detection.pixelDetected === null ? '未检测' : String(detection.pixelDetected)}, `
     + `生效=${pmaInfo.effectiveMode}, 运行时直通=${pmaInfo.runtimeSupportsStraight ? '支持' : '不支持'}`, 'pma');

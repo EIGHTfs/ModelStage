@@ -1,9 +1,9 @@
-// main.js —— ModelStage 新前端入口（M4）
+// main.js —— ModelStage 本实现入口（M4）
 //
 // 做什么：
 //   1. 装配各区域 DOM 引用并向 window.__WEB__ 暴露（自动化断言与手工排查都读它）；
 //   2. 拉 GET /api/brand 应用品牌（标题 + 图标），未配置时回落到默认品牌名；
-//   3. 接上顶栏「模型库」按钮 = 左栏显示/隐藏切换（与旧前端的面板开关语义一致）；
+//   3. 接上顶栏「模型库」按钮 = 左栏显示/隐藏切换；
 //   4. 拉 /api/roots 后把名册三级树挂到左栏（roster-view.js，首次展开某游戏才请求该游戏模型）；
 //      失败时在左栏显示红色横幅，不抛到控制台；
 //   5. 挂右侧控制面板与底部播放条的骨架（panel.js / transport.js）——
@@ -11,7 +11,7 @@
 // 为什么把状态放在 window.__WEB__.state：M7 要做持久化，需要一个显式 store；
 //   现在先立最小形态（不引框架），后续里程碑往里加字段，避免各处散落全局变量。
 
-// 诊断探针必须最先装：后面的模块/渲染出问题时才有取证（API 与旧前端 legacy/patches/diag.js 一致）
+// 诊断探针必须最先装：后面的模块/渲染出问题时才有取证（API 名称保持稳定，测试脚本依赖它）
 import { installDiag } from './infra/diag.js';
 import { markStage, installReadyApi, trackElementStage, trackElementWhenReady } from './infra/ready.js';
 import { installMemStats, memStats } from './infra/mem-stats.js';
@@ -317,7 +317,7 @@ async function applyMsaa(mode) {
 
 
 
-/** 左栏显示/隐藏：位移 + 淡出，与旧前端「模型库」按钮的过渡一致 */
+/** 左栏显示/隐藏：位移 + 淡出（与顶栏「模型库」按钮共用同一套过渡） */
 function toggleLeftPanel() {
   state.leftPanelVisible = !state.leftPanelVisible;
   dom.leftPanel.classList.toggle('is-hidden', !state.leftPanelVisible);

@@ -130,7 +130,7 @@ function parseImportText(text) {
 
 /**
  * 从解析结果里认出三类内容。
- * 兼容三种来源：本项目导出（view/panel）、旧端 settings-io（viewer）、最早期的"顶层直接是偏好"。
+ * 兼容三种来源：本项目导出（view/panel）、旧版实现导出（viewer）、最早期的"顶层直接是偏好"。
  * @param {object} parsed
  * @returns {{projectFiles: object|null, viewPrefs: object|null, panelPrefs: object|null}}
  */

@@ -1,6 +1,6 @@
 // render/interaction.js —— 舞台相机交互（拖动平移 / 滚轮缩放 / 双指捏合）
 //
-// 对齐基准：旧前端（dist/index.html）的事件层，逐条对应：
+// 交互语义逐条对应如下：
 //   · 滚轮   t = (deltaY > 0 ? -1 : 1) → engine.applyZoom(t)    一档 ±10%，锚点=视图中心
 //   · 拖动   每次 pointermove 把原始屏幕像素差值交给 engine.applyPan(dx, dy)
 //   · 捏合   zoom = 起始userScale × (当前两指距离 / 起始两指距离)，中点位移另走 applyPan
@@ -364,7 +364,7 @@ function reportDrag(ctx) {
   resetDragAcc();
 }
 
-/** 建捏合基线：起始 userScale + 两指距离（与旧端一致，绝对式换算，不逐帧累积） */
+/** 建捏合基线：起始 userScale + 两指距离 */
 function makePinchStart(camera, a, b) {
   const scale = camera.scale();
   return { scale: Number.isFinite(scale) ? scale : null, dist: distance(a, b) };
@@ -391,7 +391,7 @@ function queuePinch(panScheduler, zoomReporter, pinchStart, pinchMid, a, b) {
 
 function createPointerHandler(ctx, panScheduler, zoomScheduler, zoomReporter) {
   const active = new Map(); // pointerId → 最近一次画布内坐标
-  /** 捏合基线：起始 userScale 与起始两指距离（与旧端一致，绝对式换算，不逐帧累积） */
+  /** 捏合基线：起始 userScale 与起始两指距离 */
   let pinchStart = null;
   /** 上一帧两指中点（用于双指平移） */
   let pinchMid = null;
@@ -446,7 +446,7 @@ function createPointerHandler(ctx, panScheduler, zoomScheduler, zoomReporter) {
     }
   }
 
-  /** 滚轮：只看方向、每次一档（与旧端一致）；锚点是视图中心 */
+  /** 滚轮：只看方向、每次一档；锚点是视图中心 */
   function onWheel(event) {
     event.preventDefault();
     zoomReporter.onWheelTick(event.deltaY > 0 ? -1 : 1);

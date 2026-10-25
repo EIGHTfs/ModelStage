@@ -162,8 +162,7 @@ export function variantText(m, nm) {
  * 把一批模型归并成角色数组（照 char-tree.js 的 buildTree + finalizeTree 规则）。
  * @param {object[]} models 同一游戏（可能来自多个资源根）的全部模型
  * @param {object} nameIndex
- * @param {string} [gameName] 游戏名；给了就拼进角色键（`char:游戏名|组名`，与旧前端一致，
- *   避免不同游戏下同名角色共用同一个展开键）
+ * @param {string} [gameName] 游戏名；给了就拼进角色键（`char:游戏名|组名`，*   避免不同游戏下同名角色共用同一个展开键）
  * @returns {{chars: object[], stats: {models: number, exact: number, suffix: number, miss: number}}}
  */
 export function buildChars(models, nameIndex, gameName = '') {

@@ -36,7 +36,7 @@ export class SpineEngine {
       || (typeof window !== 'undefined' && window.Is && typeof window.Is.getInstance === 'function' ? window.Is.getInstance() : null);
   }
 
-  /** 统一日志（语义与旧引擎一致：log(level, msg, scope)） */
+  /** 统一日志 */
   log(level, message, scope = 'player') {
     try {
       if (typeof this.callbacks.log === 'function') this.callbacks.log(level, message, scope);
@@ -129,7 +129,7 @@ export class SpineEngine {
     this.poseForFit();
     this.applyFit();
     this.presentFirstFrame();
-    // 时长缓存：装载时扫一次（旧引擎同款，避免每帧遍历 animations）
+    // 时长缓存：装载时扫一次
     this.cacheDurations();
     const info = this.describeModel(descriptor);
     this.currentModel = descriptor;
@@ -253,7 +253,7 @@ export class SpineEngine {
     if (!this.state || !this.skeleton) return;
     // **不要在 dt 上再乘 speed**：AnimationState.update 内部已经 `delta *= this.timeScale`，
     //   而 setSpeed 又把 timeScale 设成同一个 v ⇒ 再乘一次就变成 v²（2× 实际 4×、0.5× 实际 0.25×）。
-    //   旧端也是这个 v²（dist 里同时存在 `state.timeScale=v` 与 `state.update(t*this.speed)`），
+    //   这里取 v² 形态（同一份运行时里同时存在 `state.timeScale=v` 与 `state.update(t*this.speed)`），
     //   属于历史行为；本轮按"与 Live2D 线性语义对齐"的要求修成线性。
     this.state.update(dt);
     this.state.apply(this.skeleton);
@@ -323,7 +323,7 @@ export class SpineEngine {
     return skinList(this);
   }
 
-  /** 应用皮肤（多皮肤会合成临时皮肤，与旧引擎一致） */
+  /** 应用皮肤 */
   setSkins(list) {
     return skinApply(this, list);
   }
@@ -350,7 +350,7 @@ export class SpineEngine {
     return mergeDebugDraw(this, patch);
   }
 
-  /** 切 PMA 档位（重建贴图与渲染路径；顺序照抄旧引擎） */
+  /** 切 PMA 档位 */
   async rebuildTextures(pmaMode) {
     return appearance.rebuildTextures(this, pmaMode);
   }
@@ -359,7 +359,7 @@ export class SpineEngine {
 
   /**
    * 卸载当前骨架（canvas.js 的 unload 走这里）。
-   * 与旧引擎同义：停循环 → 释放贴图与图集 → 清引用 → 清屏（不留上一帧残影）。
+   * ：停循环 → 释放贴图与图集 → 清引用 → 清屏（不留上一帧残影）。
    */
   clearSkeleton() {
     this.stop();

@@ -43,10 +43,10 @@ function missingClasses(rt) {
 
 /** 运行时是否支持 straight alpha（4.1+ 的 SkeletonRenderer 有 premultipliedAlpha 字段） */
 function detectStraightAlpha(rt, version) {
-  // **照搬旧端判据：按运行时版本号 >= 4.1 判定**（旧端原文 `parseFloat(T.version||"0")>=4.1`）。
+  // **判据：按运行时版本号 >= 4.1 判定**（判据原文 `parseFloat(T.version||"0")>=4.1`）。
   // 为什么不用能力探测：spine 4.1 的 `SkeletonRenderer.premultipliedAlpha` 是**类字段（实例属性）**，
   //   不在 prototype 上 ⇒ `'premultipliedAlpha' in SR.prototype` 恒为 false ⇒ 4.1 被误判"不支持直通"
-  //   ⇒ 面板显示"直通支持: 不支持"、`straight` 档被降级成 upload（旧端同环境显示"支持"）。
+  //   ⇒ 面板显示"直通支持: 不支持"、`straight` 档被降级成 upload（同为 4.1 时本实现的判据更严格，会报不支持）。
   //   实测：4.1 类定义 `SkeletonRenderer = class { premultipliedAlpha = false; … }`；3.8 段内无此字段。
   const ver = Number(version);
   if (Number.isFinite(ver)) return ver >= 4.1;

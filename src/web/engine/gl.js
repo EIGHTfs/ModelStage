@@ -1,9 +1,9 @@
 // engine/gl.js —— WebGL 上下文、像素尺寸、DPR 与渲染器探测
 //
 // 边界：只管"画布与上下文"，不碰骨架/动画/相机（相机在 camera-adapter，B2 落地）。
-// DPR 语义沿用旧引擎：auto 时软件渲染钳 1，否则 min(deviceDpr, 2)。
+// DPR 语义auto 时软件渲染钳 1，否则 min(deviceDpr, 2)。
 
-/** 软件渲染探测正则（与旧引擎同一条，判定是否启用性能保护） */
+/** 软件渲染探测正则 */
 const SOFTWARE_RE = /swiftshader|llvmpipe|softpipe|basic render|software|warp|mesa offscreen/i;
 
 /**

@@ -154,7 +154,7 @@ function unionKeep(items, { coreBox, coreSignificant, margin, ref }) {
 /**
  * 两个包围盒求交（subject 并集 ∩ 整体包围盒）。
  * 为什么需要：并集可能因个别远端附件（如超大挂件）比整体还大，
- *   旧引擎实测的 subject 结果始终落在整体范围内；取交可剔除这类离群部件。
+ *   实测的 subject 结果始终落在整体范围内；取交可剔除这类离群部件。
  * @param {{x: number, y: number, w: number, h: number}} a
  * @param {{x: number, y: number, w: number, h: number}} b
  */
@@ -169,7 +169,7 @@ export function intersectBox(a, b) {
   return { x, y, w: right - x, h: bottom - y };
 }
 
-/** subject 结果的"横向对称收窄"（旧引擎的 FIT_MAX_RATIO 处理） */
+/** subject 结果的"横向对称收窄" */
 export function clampSubjectBox(box) {
   if (!box) return null;
   const symHalf = Math.max(Math.abs(box.x), Math.abs(box.x + box.w));
@@ -190,7 +190,7 @@ export function computeFit({ bounds, viewW, viewH }) {
   if (!bounds || !(viewW > 0) || !(viewH > 0) || !(bounds.w > 0) || !(bounds.h > 0)) return null;
   const need = Math.max(bounds.w / viewW, bounds.h / viewH);
   if (!Number.isFinite(need) || need <= 0) return null;
-  // 与旧引擎一致：baseZoom = max(宽比, 高比)，不再额外除以 (1-FIT_MARGIN)
+  // ：baseZoom = max(宽比, 高比)，不再额外除以 (1-FIT_MARGIN)
   const baseZoom = need;
   if (!Number.isFinite(baseZoom) || baseZoom <= 0) return null;
   return { baseZoom, centerX: bounds.x + bounds.w / 2, centerY: bounds.y + bounds.h / 2 };

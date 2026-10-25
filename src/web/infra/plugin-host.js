@@ -1,10 +1,10 @@
 // infra/plugin-host.js —— 前端插件宿主（资产提供者 canHandle/resolve 的调用方）
 //
 // 为什么需要它：插件是**浏览器脚本**（plugins/<id>/index.js 顶层读 window.SpineViewerPlugins），
-//   新前端之前完全没有宿主 —— 所以插件产出的资源（bundle 类）根本进不了渲染链路。
+//   本实现之前完全没有宿主 —— 所以插件产出的资源（bundle 类）根本进不了渲染链路。
 //   这个文件补的就是那一层：注入脚本 → 收集 provider → 提供取字节通道 → 供上层 findProvider/resolve。
 //
-// 与 legacy/patches/plugin-host.js 的关系：那份是旧页面（8803）的实现，这里是按同一形态重写的 ESM 版；
+// 宿主注入面：插件看到的接口形态在页面重写后保持稳定（插件不需要跟着改）的 ESM 版；
 //   插件侧**零改动**（这是方案 B 的核心优点）。
 //
 // 契约依据：资产提供者契约 §一（canHandle/resolve 形状）、插件契约 §3.1（canHandle 纯判定）、

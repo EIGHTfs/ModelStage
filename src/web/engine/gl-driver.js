@@ -48,7 +48,7 @@ export function resizeEngine(engine, w, h) {
   refreshResolution(engine);
 }
 
-/** DPR 模式（设置后连刷两帧，沿用旧引擎行为） */
+/** DPR 模式 */
 export function setDprMode(engine, mode) {
   engine.dprMode = mode;
   refreshResolution(engine);

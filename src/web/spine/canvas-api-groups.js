@@ -154,7 +154,7 @@ api.getView = () => viewOf(st);
 /**
  * 兼容入口（交互层仍调用 setView）。这里**只转发**，不换算：
  *   · zoom → camera.zoomTo(基准 × 倍数)（倍乘即「相对 fit 的倍数」，clamp 由引擎负责）
- *   · panX/panY → camera.panBy(增量)，单位是屏幕像素，与旧端一致
+ *   · panX/panY → camera.panBy(增量)，单位是屏幕像素，
  */
 api.setView = (patch = {}) => {
   const camera = st.camera;
@@ -228,7 +228,7 @@ api.setFilter = (id) => {
 
 /**
  * 切换 MSAA：GL 的 antialias 只在建上下文时生效，必须换 canvas 节点重建。
- * 流程：换节点 → dispose 旧引擎 → init(antialias) → 重新加载最近一次的模型。
+ * 流程：换节点 → dispose → init(antialias) → 重新加载最近一次的模型。
  * @param {boolean} on
  * @returns {Promise<{antialias:boolean, restoreMs:number, restored:boolean}>}
  */

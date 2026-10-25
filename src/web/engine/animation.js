@@ -110,10 +110,10 @@ export function seek(engine, t) {
  *   · Live2D（pixi-live2d-display）：模型实例 emit `'motionFinish'`，**model 级一次**，且是 `isFinished()` 为真才报。
  *
  * 归一后的约定（三条，写死在实现里）：
- *   1. **只报主轨/当前动作**（Spine 过滤 trackIndex === 0，与旧端 onAnimationComplete 同款判据）；
+ *   1. **只报主轨/当前动作**（Spine 过滤 trackIndex === 0）；
  *   2. **循环动作不报**：Spine 的 Loop 条目没有 complete；Live2D 的 isFinished() 在循环动作上永远 false。
  *      两边行为因此天然一致 —— 轮播要的是"播完一次"，循环动作没有这个时刻。
- *   3. **多轨混合态不推进**由调用方判断（旧端用 `T.current` 为真时 return）；本函数只如实上报事件。
+ *   3. **多轨混合态不推进**由调用方判断（当前动作为真时不推进）；本函数只如实上报事件。
  *
  * @param {object} target Spine 的 engine（有 `.state.addListener`）或 Live2D 的模型实例（有 `.on/.off`）
  * @param {(e: {name: string, trackIndex: number, source: 'spine'|'live2d'}) => void} cb 完成回调

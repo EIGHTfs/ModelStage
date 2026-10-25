@@ -1,13 +1,13 @@
 // engine/appearance.js —— 外观装配：滤镜着色器、混合钩子、PMA 档位切换（rebuildTextures）
 //
-// 本文件承担"外观层"的三个易错点，全部照抄旧引擎语义：
+// 本文件承担「外观层」的三个易错点：
 //   ① 滤镜：换 batcherShader + 保存/还原默认着色器（filters.js 提供纯函数）
 //   ② 混合：给 gl 装 blendFuncSeparate 钩子（straight 档没有它就是错的画面）
 //   ③ rebuildTextures：PMA 档位必须走"释放→重载贴图→重放动画/皮肤→首帧"的完整顺序
 //
-// 关于失败是否回滚档位：旧引擎原文（行 205 @25827 起的 async rebuildTextures）的 catch 只做
-//   `this.pendingPresent=!1; this.log("error", "重建纹理失败: …")`，finally 里 `loadingModel=!1`
-//   —— **不回滚 pmaMode**。本实现照抄不回滚（回滚是旧引擎没有的行为，会造成"面板显示与实际口径"另一种分裂）。
+// 关于失败是否回滚档位：重建纹理的 catch 只清 `pendingPresent` 并记一条 error 日志，
+//   finally 里清 `loadingModel` —— **不回滚 pmaMode**。
+//   本实现保持同一语义：重建失败也不回滚档位（否则用户会看到档位自己跳回去）。
 
 import { reconcileFilter, hasFilter, DEFAULT_FILTER } from './filters.js';
 import { installBlendHooks, patchRuntimeBlendConverter } from './pma.js';
@@ -15,7 +15,7 @@ import { buildModel } from './loader.js';
 import { applyTextureFilter } from './textures.js';
 import { pickClass } from './runtime.js';
 
-/** 给 gl 装混合钩子 + 给运行时打 Screen 映射补丁（都幂等；照搬旧端 initRenderer 的两步） */
+/** 给 gl 装混合钩子 + 给运行时打 Screen 映射补丁（都幂等；initRenderer 的两步） */
 export function installBlend(engine) {
   try { patchRuntimeBlendConverter(engine.spine || (engine.adapter && engine.adapter.spine)); } catch { /* 忽略 */ }
   return installBlendHooks(engine.gl, engine);
@@ -55,7 +55,7 @@ export function setFilter(engine, id) {
 }
 
 /**
- * 设纹理过滤并重挂已有纹理（旧引擎 setTextureFilter 的行为）。
+ * 设纹理过滤并重挂已有纹理。
  * @param {object} engine
  * @param {string} mode 'linear' | 'nearest'
  */
@@ -69,7 +69,7 @@ export function setTextureFilter(engine, mode) {
 }
 
 /**
- * 切 PMA 档位：重建纹理并重放动画/皮肤（顺序照抄旧引擎）。
+ * 切 PMA 档位：重建纹理并重放动画/皮肤。
  * @param {object} engine
  * @param {string} mode auto | premultiplied | straight | upload
  * @returns {Promise<boolean>}

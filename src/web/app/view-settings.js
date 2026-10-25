@@ -34,7 +34,7 @@ export function readViewSettings() {
   return s;
 }
 
-/** 写视图设置：只覆盖自己管的键，其余字段原样保留（与旧端共用同一份） */
+/** 写视图设置：只覆盖自己管的键，其余字段原样保留 */
 export function saveViewSettings(patch) {
   try {
     const cur = readViewSettings();

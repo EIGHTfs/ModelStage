@@ -1,6 +1,6 @@
 // engine/loader.js —— 描述符（骨架/图集/纹理 ArrayBuffer）→ 可渲染对象
 //
-// 贴图解码/PMA/上传全部交给 pipeline.js（旧引擎 loadAtlas 的可读版），本文件只负责：
+// 贴图解码/PMA/上传全部交给 pipeline.js，本文件只负责：
 //   ① 把 pipeline 产出的 atlas 接到骨架解析上；② 不出现任何版本判断（类名解析在 adapters/runtime-capabilities）。
 
 import { prepareAtlas } from './pipeline.js';
@@ -16,7 +16,7 @@ function sniffJson(buf) {
   return false;
 }
 
-/** 解析骨架数据（JSON 或二进制；尾逗号防御沿用旧引擎做法） */
+/** 解析骨架数据 */
 function readSkeletonData(adapters, descriptor, attachmentLoader) {
   const buf = descriptor.skeletonFile.content;
   if (sniffJson(buf)) {

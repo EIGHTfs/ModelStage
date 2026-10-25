@@ -16,7 +16,7 @@
 //   log.clear(); log.setEnabled(bool); log.getEnabled();
 //
 // 硬规则（都在代码里落实）：
-//   1. 默认开启（与旧端「调试日志」开关的初始态一致）；关闭时 log() 立即返回、不产生任何对象；
+//   1. 默认开启；关闭时 log() 立即返回、不产生任何对象；
 //   2. 单条 message ≤ 300 字，超出截断并注明；
 //   3. 环形缓冲默认 500 条，超出丢最旧；
 //   4. 日志绝不抛异常、不阻塞渲染（订阅者异常各自隔离）。
@@ -220,7 +220,7 @@ function createNotifier() {
 export function createDebugLog(options = {}) {
   const buffer = createBuffer(normalizeCapacity(options.capacity));
   const bus = createNotifier();
-  // 默认开启（旧端开关初始为开）；显式传 { enabled: false } 可关闭
+  // 默认开启；显式传 { enabled: false } 可关闭
   let enabled = options.enabled === undefined ? true : !!options.enabled;
 
   /** 组装一条内部条目（唯一构造点，保证字段齐全） */

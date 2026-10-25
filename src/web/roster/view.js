@@ -5,7 +5,7 @@
 //   2. 二级：角色跨根归并——同一角色在多个根下的模型归到一个角色节点（不是把各根的行拼起来）；
 //   3. 三级：变体（模型）。行上带类型标签（Spine / Live2D / 资源包）与来源根 id；
 //   4. 搜索：前端过滤（角色名 / 服装名 / 资源名 / 目录名），命中即自动展开到变体层；
-//   5. 选中态：点变体行高亮并记录（M4 渲染用），状态写 localStorage（键名/结构沿用旧前端）；
+//   5. 选中态：点变体行高亮并记录（M4 渲染用），状态写 localStorage（键名/结构沿用既有）；
 //   6. 顶部「收起」只清空展开状态，面板本身保留（面板显隐由顶栏「模型库」按钮控制）。
 //
 // 状态全部收在 state 里，DOM 只是投影：这样"点一下到底改了什么"可以直接读 state 验证。
@@ -20,7 +20,7 @@ import {
 import { el, renderGameRow, renderCharRow, renderVariantRow } from './rows.js';
 import { formatError } from '../infra/api.js';
 
-/** localStorage 键名：与旧前端一致，不得改名（M7 要用它做持久化，改名会让用户既有状态失效） */
+/** localStorage 键名：不得改名（M7 要用它做持久化，改名会让用户既有状态失效） */
 
 /** 渲染上限：每个游戏最多渲染多少角色行（避免 2000+ 角色一次铺满）。
  *  默认值只是兜底，可用 window.__WEB_CONFIG__.renderLimitPerGame 覆盖 */
@@ -33,7 +33,7 @@ function renderLimitPerGame() {
 /**
  * 名册状态：games 是按 name 合并后的游戏列表；loaded 按资源根缓存加载结果；
  * gameChars 按游戏缓存跨根归并后的角色；expandedGames/expandedChars 是两级展开键；
- * keyword 是搜索词；selected 是当前选中变体；activeGame 是最后活跃的游戏名（与旧前端同义）。
+ * keyword 是搜索词；selected 是当前选中变体；activeGame 是最后活跃的游戏名。
  */
 
 /** 创建名册视图并挂到容器上；返回对外 API（供 main.js 与自动化验证使用） */
@@ -157,7 +157,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
   /**
    * 重新归并某游戏的角色（跨根）：把该游戏所有已就绪根的模型并成一个数组再归并。
    * 为什么在游戏层归并：同一角色可能同时有 Live2D 与 Spine 变体（来自不同根），
-   *   按根各自归并会得到两个同名角色节点，与旧前端行为不一致。
+   *   按根各自归并会得到两个同名角色节点，造成不一致。
    * @param {object} game
    */
   function rebuildGameChars(game) {
@@ -240,7 +240,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
         rendered += 1;
         const charOpen = state.expandedChars.has(c.key) || searching;
         listEl.append(renderCharRow(game, c, charOpen));
-        // 变体数按数据统计（不依赖是否展开），与旧前端「N 游戏 / M 角色 / K 变体」口径一致
+        // 变体数按数据统计（不依赖是否展开），与「N 游戏 / M 角色 / K 变体」口径一致
         totalVariants += c.variants.length;
         if (!charOpen) continue;
         for (const v of c.variants) listEl.append(renderVariantRow(game, c, v, selectedId));
@@ -250,7 +250,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
       }
     }
 
-    // 计数文案：全量已加载时用旧前端的口径（N 游戏 / M 角色 / K 变体），否则标注已加载多少
+    // 计数文案：全量已加载时用统一口径（N 游戏 / M 角色 / K 变体），否则标注已加载多少
     const allLoaded = loadedGames === state.games.length;
     const prefix = allLoaded ? `${state.games.length} 游戏` : `${state.games.length} 游戏 / 已加载 ${loadedGames}`;
     countEl.textContent = searching

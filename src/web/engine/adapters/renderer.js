@@ -91,7 +91,7 @@ export function createRendererAdapter({ caps, canvas, gl, size, onWarn }) {
 
   /**
    * 八类开关 → SkeletonDebugRenderer 的 draw* 属性。
-   * 属性名按运行时实际存在才写（不同版本命名有差异），映射口径照旧引擎：
+   * 属性名按运行时实际存在才写（不同版本命名有差异），映射口径：
    *   bones→drawBones  regions→drawRegionAttachments  boundingBoxes→drawBoundingBoxes
    *   hulls→drawMeshHull  meshes→drawMeshTriangles  paths→drawPaths
    *   points→drawPoints  clipping→drawClipping

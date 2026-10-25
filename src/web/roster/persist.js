@@ -14,7 +14,7 @@ import * as uiState from '../app/ui-state.js';
  */
 export const LS_KEY = uiState.TREE_STATE_KEY;
 
-/** 读展开态与上次选中（结构照旧前端的 {games, chars, activeGame, lastByGame}） */
+/** 读展开态与上次选中（结构的 {games, chars, activeGame, lastByGame}） */
 export function readSaved() {
   try {
     const s = uiState.getTreeState();
@@ -32,7 +32,7 @@ export function readSaved() {
 }
 
 /**
- * 写展开态与每个游戏上次选中的变体（键名/结构沿用旧前端：activeGame 存游戏名）。
+ * 写展开态与每个游戏上次选中的变体（键名/结构沿用既有：activeGame 存游戏名）。
  * @param {object} state 名册状态（读 expandedGames/expandedChars/activeGame/selected）
  */
 export function saveState(state) {

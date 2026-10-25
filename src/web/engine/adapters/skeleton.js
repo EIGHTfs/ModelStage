@@ -70,7 +70,7 @@ export function createSkeletonAdapter({ caps, spine, onWarn }) {
 
   /**
    * 在"全部皮肤合并"的形态下取一次值，然后还原原皮肤与 setup pose。
-   * 为什么要合并：旧引擎算 fit 包围盒前会把所有皮肤合成一个临时 skin，
+   * 为什么要合并：算 fit 包围盒前会把所有皮肤合成一个临时 skin，
    *   否则只按默认皮肤测量，多皮肤模型的包围盒会偏小（实测 7 动作模型 reset 后 zoom 差 0.18%）。
    * @param {object} ctx {skeleton, skeletonData}
    * @param {Function} fn 测量回调

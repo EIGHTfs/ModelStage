@@ -5,9 +5,9 @@
 //   ② atlas 声明 `pma: true|false`（必须行首）
 //   ③ 文件名线索 -pma / _pma / .pma / -nonpma / _nonpma / -straight
 //   ④ 全部无线索 → 默认按预乘，并 warn
-// 模式映射（旧引擎 sk()，行 104 @6171）见 resolvePmaInfo。
+// 模式映射见 resolvePmaInfo。
 
-/** 像素检测参数（与旧引擎 ik(step=2, minSamples=2048, tolerance=16) 一致） */
+/** 像素检测参数 */
 const PIXEL_STEP = 2;
 const PIXEL_MIN_SAMPLES = 2048;
 const PIXEL_TOLERANCE = 16;
@@ -36,14 +36,14 @@ export function filenamePmaHint(name) {
 }
 
 /**
- * 单张图的像素检测（主线程版，与旧引擎 ak() 一致：Worker 失败时的回退路径）。
+ * 单张图的像素检测。
  * @param {ImageData} imageData
  * @param {number} step
  * @param {number} minSamples
  * @param {number} tolerance
  */
 export function detectPmaFromImageData(imageData, step = PIXEL_STEP, minSamples = PIXEL_MIN_SAMPLES, tolerance = PIXEL_TOLERANCE) {
-  const data = imageData.data;  // dsh-skip-quality 照搬旧端的探测实现，本轮未改判定逻辑
+  const data = imageData.data;  // dsh-skip-quality 探测实现沿用既有算法，本轮未改判定逻辑
   let samples = 0;
   let violates = 0;
   let useStep = step;
@@ -51,7 +51,7 @@ export function detectPmaFromImageData(imageData, step = PIXEL_STEP, minSamples 
   while (count < minSamples && useStep > 1) { useStep -= 1; count = Math.floor(data.length / 4 / useStep); }
   for (let i = 0; i < data.length; i += 4 * useStep) {
     const a = data[i + 3];
-    if (a === 0 || a === 255) continue;  // dsh-skip-quality 全透明/全不透明跳过（旧端一致）
+    if (a === 0 || a === 255) continue;  // dsh-skip-quality 全透明/全不透明跳过
     samples += 1;
     if (Math.max(data[i], data[i + 1], data[i + 2]) > a + tolerance) violates += 1;
   }
@@ -59,7 +59,7 @@ export function detectPmaFromImageData(imageData, step = PIXEL_STEP, minSamples 
   const ratio = violates / samples;
   return {
     isPremultiplied: ratio <= PIXEL_VIOLATE_MAX,
-    confidence: Math.min(1, samples / 2000),  // dsh-skip-quality 置信度归一化常量，旧端同款
+    confidence: Math.min(1, samples / 2000),  // dsh-skip-quality 置信度归一化常量
     samples,
     ratio,
   };
@@ -99,7 +99,7 @@ export function detectPma({ atlasDeclared, filenameHint, samples }, log = () => 
     return { atlasDeclared, filenameHint, pixelDetected: m.isPremultiplied, finalIsPremultiplied: m.isPremultiplied, reason: reason.join('；') };
   }
   if (atlasDeclared !== null) {
-    // atlas 未声明（null）⇒ 同旧端按"已预乘"处理（见上：多乘的代价远大于少乘）
+    // atlas 未声明（null）⇒ 按"已预乘"处理（见上：多乘的代价远大于少乘）
     return {
       atlasDeclared, filenameHint, pixelDetected: null,
       finalIsPremultiplied: atlasDeclared === null ? true : atlasDeclared,
@@ -114,7 +114,7 @@ export function detectPma({ atlasDeclared, filenameHint, samples }, log = () => 
 }
 
 /**
- * 用户档位 + 检测结论 + 运行时直通能力 → 生效模式（旧引擎 sk()）。
+ * 用户档位 + 检测结论 + 运行时直通能力 → 生效模式。
  * @param {string} mode auto | premultiplied | straight | upload
  * @param {{finalIsPremultiplied: boolean}} detection
  * @param {boolean} supportsStraight 运行时是否支持非预乘直通混合
@@ -133,9 +133,9 @@ export function resolvePmaInfo(mode, detection, supportsStraight) {
     case 'auto':
     default: {
       // 三态处理：明确预乘 / 明确非预乘 / **检测不出**
-      //   检测不出（auto 为 null/undefined）时**按已预乘**，对齐旧端三条兜底（init-default / safe-fallback /
+      //   检测不出（auto 为 null/undefined）时**按已预乘**，对齐既有口径三条兜底（init-default / safe-fallback /
       //   atlas 未声明）都默认 true 的做法。
-      //   理由不是"抄旧端"，而是**失败代价不对称**：
+      //   理由与「沿袭既有」无关，而是**失败代价不对称**：
       //     · 兜底成"非预乘" ⇒ needPremultiply=true ⇒ 若图其实是预乘的 ⇒ **双重预乘 ⇒ 明显黑圈**
       //     · 兜底成"已预乘" ⇒ 不乘 ⇒ 若图其实是直通 ⇒ 只是混合略暗
       //   少乘的可接受程度远高于多乘，所以不确定时选"不乘"。
@@ -149,9 +149,9 @@ export function resolvePmaInfo(mode, detection, supportsStraight) {
 
 
 
-// ============================ 预乘：混合钩子（原 blend.js，照搬旧端） ============================
+// ============================ 预乘：混合钩子（原 blend.js） ============================
 
-/** 防止同一上下文重复挂钩子（旧引擎用 gl.__bvBlendHooked 标记） */
+/** 防止同一上下文重复挂钩子 */
 const HOOK_FLAG = '__bvBlendHooked';
 
 /**
@@ -178,7 +178,7 @@ export function installBlendHooks(gl, engine) {
     if (dst === glONE_MINUS_SRC_COLOR || alphaDst === glONE_MINUS_SRC_COLOR) {
       a = straight ? glSRC_ALPHA : glDST_ALPHA; b = glONE_MINUS_SRC_COLOR; c = glZERO; d = glONE;
     } else if (dst === glONE) {
-      // 照搬旧端：加性混合的 alphaDst 是 ONE（不是 ONE_MINUS_SRC_ALPHA）——
+      // 加性混合的 alphaDst 是 ONE（不是 ONE_MINUS_SRC_ALPHA）——
       //   写错会让加性部件（高光/发丝阴影层）在预乘口径下变暗发黑。
       a = src; b = dst; c = straight ? glZERO : glONE; d = glONE;
     } else {
@@ -197,7 +197,7 @@ export function installBlendHooks(gl, engine) {
  * 为什么必须打：spine 运行时对 `BlendMode.Screen` 的默认映射不是标准 screen 混合，
  *   而 3D 预览里 Screen 常被用在发光/高光层；映射不对 ⇒ 这些部件画成暗块/黑块
  *   （现场形态：面内竖条纹/斑块，容易被误当成 PMA 问题）。
- *   旧端在 `initRenderer` 里就调了这个 patch，我们此前完全没有 —— 属于照搬缺失。
+ *   这个 patch 必须在建渲染器时调用，否则混合模式不生效。
  *
  * @param {object} spine 运行时命名空间（含 webgl.WebGLBlendModeConverter 与 BlendMode）
  * @returns {boolean} 是否新打了补丁
@@ -223,18 +223,18 @@ export function hasBlendHooks(gl) {
   return !!(gl && gl[HOOK_FLAG]);
 }
 
-// ============================ 预乘：纹理上传（唯一路径，照搬旧端） ============================
+// ============================ 预乘：纹理上传（唯一路径） ============================
 
 /**
  * 按 PMA 口径上传贴图。**这是全项目唯一的纹理上传路径**（预乘相关代码都收在本文件）。
  *
- * 做法逐字对齐旧端 `loadAtlas`（dist 展开后）：原图直传 + `UNPACK_PREMULTIPLY_ALPHA_WEBGL = !pma`，
+ * 做法逐字对齐既有口径 `loadAtlas`（dist 展开后）：原图直传 + `UNPACK_PREMULTIPLY_ALPHA_WEBGL = !pma`，
  *   让浏览器在 `texImage2D` 那一下完成预乘，**不经 2D canvas 中转**。
  * 为什么不经 canvas：2D canvas 的后备存储是预乘的，`texImage2D(canvas)` 在 `UNPACK=false` 时会
  *   把 alpha **除回去**（un-premultiply）⇒ "CPU 先乘一遍"白做，上传到 GPU 仍是直通数据。
  *   只用 `Uint8Array` 源或原图 + UNPACK 才能真正控制上传字节。
  *
- * pma 语义（旧端同名属性）：`pma = true` 表示**这张图已经是预乘的** ⇒ 上传时 `!pma = false`，不再乘。
+ * pma 语义：`pma = true` 表示**这张图已经是预乘的** ⇒ 上传时 `!pma = false`，不再乘。
  *
  * @param {{gl: WebGLRenderingContext, GLTextureCtor: Function|null, entries: Map,
  *          effectiveMode: string, needPremultiply: boolean, textureFilter: string,
@@ -274,7 +274,7 @@ function uploadOnePage(gl, GLTextureCtor, pageName, entry, plan) {
   return uploadManually(gl, pageName, entry, source, plan);
 }
 
-/** 用运行时的 GLTexture 上传（构造期即完成上传；必要时照旧端写法补一次 update） */
+/** 用运行时的 GLTexture 上传（构造期即完成上传；必要时写法补一次 update） */
 function uploadViaGLTexture(gl, GLTextureCtor, pageName, entry, source, plan) {
   const prevUnpack = readUnpack(gl);
   try {
@@ -293,7 +293,7 @@ function uploadViaGLTexture(gl, GLTextureCtor, pageName, entry, source, plan) {
   }
 }
 
-/** 3.8 类运行时的纹理带 pma 属性：照旧端写法设置并触发一次 update（4.1 无该属性 ⇒ 整块跳过） */
+/** 3.8 类运行时的纹理带 pma 属性：写法设置并触发一次 update（4.1 无该属性 ⇒ 整块跳过） */
 function refreshTextureIfNeeded(gl, tex, plan, prevUnpack) {
   if (!('pma' in tex)) return;
   tex.pma = plan.pmaFlag;

@@ -8,7 +8,7 @@
 //   ctx.api 是装配期注册表：stage.js 依次建好各模块后挂进来，模块之间不直接 import（避免环）。
 import { CAMERA } from '../render/camera/constants.js';
 
-/** 覆盖层容器 id（与参考实现区分：这是新前端的独立覆盖层） */
+/** 覆盖层容器 id */
 export const OVERLAY_ID = 'live2d-overlay';
 /** 覆盖层内 canvas 的 id */
 export const OVERLAY_CANVAS_ID = 'live2d-overlay-canvas';

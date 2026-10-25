@@ -1,14 +1,14 @@
-// engine/textures.js —— 贴图解码、预乘口径与 GPU 上传（逐段照抄旧引擎行 284 @32100–34000）
+// engine/textures.js —— 贴图解码、预乘口径与 GPU 上传
 //
 // 为什么单独成文件：PMA 的正确性 90% 在"上传时怎么处理像素"，与渲染/相机无关；
-//   旧引擎在这里有四个必须保留的细节，漏任何一个都会造成画面颜色不对但不报错：
+//   在这里有四个必须保留的细节，漏任何一个都会造成画面颜色不对但不报错：
 //   ① 多页图集里 <100px 的页用透明画布跳过（不参与像素检测，避免误判）
 //   ② GPU 的 UNPACK_PREMULTIPLY_ALPHA_WEBGL 优先，不可用时回退 CPU 整页预乘
 //   ③ 运行时的 GLTexture.pma 标志与 update() 重传（straight 档还要手工 texImage2D）
 //   ④ GLTexture 构造失败时回退"手工建纹理 + 包一层纹理样对象"
 
-/** 多页图集中被认为"太小、多半是占位/噪点"的边长阈值（旧引擎 g=100） */
-/** 多页图集中被视为占位的边长阈值（旧引擎 g=100） */
+/** 多页图集中被认为"太小、多半是占位/噪点"的边长阈值 */
+/** 多页图集中被视为占位的边长阈值 */
 export const SMALL_PAGE_PX = 100;
 
 /** 取文件名末段并小写（页名匹配用） */
@@ -40,7 +40,7 @@ export function parseAtlasPageSizes(atlasText) {
 }
 
 /** ArrayBuffer/Blob → <img> 元素（并等解码） */
-export function loadImageElement(entry) {  // dsh-skip-complexity 照搬旧端的图片解码实现，本轮未改动函数体
+export function loadImageElement(entry) {  // dsh-skip-complexity 的图片解码实现，本轮未改动函数体
   return new Promise((resolve, reject) => {
     const img = new Image();
     let url = null;
@@ -91,7 +91,7 @@ export async function decodeImageSource(entry) {
  * @returns {Promise<ImageData|null>}
  */
 export function sampleSourceImageData(entry) {
-  // **照搬旧端**（dist: this.sampleSourceImageData）：画到 2D canvas 再 getImageData，同步。
+  // ****（dist: this.sampleSourceImageData）：画到 2D canvas 再 getImageData，同步。
   // 之前我改成 async + createImageBitmap + WebGL 精确取样，都属于自创，已删；
   //   （当时用"违反占比"判据得到的结论也不可靠——那个判据抓不到"变暗"，见排查记录。）
   try {
@@ -106,7 +106,7 @@ export function sampleSourceImageData(entry) {
     } else {
       return null;
     }
-    return canvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, canvas.width, canvas.height);  // dsh-skip-quality 照搬旧端的取样实现，本轮未改动
+    return canvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, canvas.width, canvas.height);  // dsh-skip-quality 的取样实现，本轮未改动
   } catch {
     return null;
   }
@@ -155,7 +155,7 @@ function manualTexture(gl, source, filterMode) {
 }
 
 /**
- * 设纹理过滤（旧引擎 applyTextureFilter：有 setFilters 用它，否则直接 texParameteri）。
+ * 设纹理过滤（applyTextureFilter：有 setFilters 用它，否则直接 texParameteri）。
  */
 export function applyTextureFilter(gl, texture, mode) {
   if (!gl || !texture) return;

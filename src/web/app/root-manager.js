@@ -210,7 +210,7 @@ export function createRootManager({ els, onChanged, formatError } = {}) {
   /** 目录浏览器的默认起点（上次添加的目录的父目录）；空则从 / 开始 */
   let pickerStart = '';
 
-  // 「选择目录」：打开服务端目录浏览器（旧端同一交互），选完目录直接添加，面板里不填路径
+  // 「选择目录」：打开服务端目录浏览器，选完目录直接添加，面板里不填路径
   if (els.triggerBtn) {
     els.triggerBtn.addEventListener('click', () => {
       if (!els.picker) { notify('目录浏览器未就绪', 'err'); return; }

@@ -1,5 +1,5 @@
 /* ============================================================================
-   ModelStage 新前端 · 右侧控制面板 + 底部播放条样式（M3）
+   ModelStage 本实现 · 右侧控制面板 + 底部播放条样式（M3）
    只管这两个区域内部的样子：手风琴、分段按钮、开关、占位说明、播放条控件。
    区域几何（右栏贴右、播放条居中）仍在 style.css，不在这里重复。
    配色沿用 style.css 的变量（--color-card / --color-border / --color-primary …）。
@@ -108,7 +108,7 @@
   white-space: nowrap;
 }
 
-/* ---- 选中态与按压反馈（旧端同一口径：选中的那一档用主色描边 + 主色文字 + 主色淡底）----
+/* ---- 选中态与按压反馈（选中的那一档用主色描边 + 主色文字 + 主色淡底）----
    为什么必须补：分段按钮/芯片组此前只有"可点"样式、没有"已选中"样式，
    用户点完看不出当前生效的是哪一档；而芯片（滤镜 12 档）连基础样式都没有，是裸按钮。 */
 .ctl-chips {
@@ -117,8 +117,8 @@
   gap: 4px;
 }
 
-/* ---- 面板内可选列表（动作列表 / 皮肤列表）：与旧端同一套行样式 ----
-   旧端（dist/index.html）原文：
+/* ---- 面板内可选列表（动作列表 / 皮肤列表）：同一套行样式 ----
+   既有的原文：
      容器  className="space-y-1 max-h-48 overflow-y-auto pr-1"
      行    className="w-full text-left px-2 lg:px-3 py-1 lg:py-1.5 rounded-md text-sm transition-colors
                      flex items-center justify-between
@@ -129,10 +129,10 @@
 .ctl-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;                      /* 旧端 space-y-1 */
-  max-height: 192px;             /* 旧端 max-h-48 */
-  overflow-y: auto;              /* 旧端 overflow-y-auto */
-  padding-right: 4px;            /* 旧端 pr-1 */
+  gap: 4px;
+  max-height: 192px;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .ctl-list-row {
@@ -152,31 +152,31 @@
 }
 
 @media (min-width: 1024px) {
-  .ctl-list-row { padding: 6px 12px; }   /* 旧端 lg:py-1.5 lg:px-3 */
+  .ctl-list-row { padding: 6px 12px; }
 }
 
 .ctl-list-row:not(:disabled):hover {
-  background: var(--color-secondary);    /* 旧端 hover:bg-accent/60 */
+  background: var(--color-secondary);
 }
 
 .ctl-list-row[aria-pressed='true'] {
   background: rgba(255, 255, 255, 0.06);
-  background: color-mix(in srgb, var(--color-primary) 15%, transparent); /* 旧端 bg-primary/15 */
+  background: color-mix(in srgb, var(--color-primary) 15%, transparent);
   border-color: var(--color-primary);
   color: var(--color-primary);
 }
 
 .ctl-list-name {
   overflow: hidden;
-  text-overflow: ellipsis;   /* 旧端 truncate */
+  text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
 }
 
 .ctl-list-time {
-  flex: 0 0 auto;            /* 旧端 shrink-0 */
-  margin-left: 8px;          /* 旧端 ml-2 */
-  font-size: 10px;           /* 旧端 text-[10px] */
+  flex: 0 0 auto;
+  margin-left: 8px;
+  font-size: 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   color: var(--color-muted-foreground);
 }
@@ -200,7 +200,7 @@
   flex-direction: column;
 }
 
-/* ---- 目录浏览器（「选择目录」弹层，照旧端 roots-ui.js 的结构）---- */
+/* ---- 目录浏览器（「选择目录」弹层，roots-ui.js 的结构）---- */
 .dir-picker {
   position: fixed;
   inset: 0;
@@ -259,7 +259,7 @@
 .dir-picker-list { display: flex; flex-direction: column; gap: 4px; }
 .dir-picker-nav { width: 100%; text-align: left; }
 
-/* ---- 左栏「选择目录」：与旧端一致，面板上只有一个按钮 ---- */
+/* ---- 左栏「选择目录」：面板上只有一个按钮 ---- */
 .root-add {
   display: flex;
   flex-direction: column;
@@ -388,7 +388,7 @@
 
 /* --------------------------------------------------- 底部播放条内部 */
 
-/* 三段布局：左中右（与旧前端一致），组内按需换行不溢出 */
+/* 三段布局：左中右，组内按需换行不溢出 */
 #app-footer .transport-group {
   display: flex;
   align-items: center;
@@ -413,7 +413,7 @@
   font-size: 11px;
 }
 
-/* 主题：dark-cyan（色值取自旧端 8803 的 --color-* 变量，逐值一致） */
+/* 主题：dark-cyan（色值取自既有的 --color-* 变量，逐值一致） */
 [data-ui-theme="dark-cyan"] {
   --color-background: #131416;
   --color-foreground: #e9ebed;
@@ -427,7 +427,7 @@
   --color-border: #353a3e;
 }
 
-/* 主题：eye-gray（色值取自旧端 8803 的 --color-* 变量，逐值一致） */
+/* 主题：eye-gray（色值取自既有的 --color-* 变量，逐值一致） */
 [data-ui-theme="eye-gray"] {
   --color-background: #262624;
   --color-foreground: #f0eee9;
@@ -441,7 +441,7 @@
   --color-border: #4a4843;
 }
 
-/* 主题：day-paper（色值取自旧端 8803 的 --color-* 变量，逐值一致） */
+/* 主题：day-paper（色值取自既有的 --color-* 变量，逐值一致） */
 [data-ui-theme="day-paper"] {
   --color-background: #f4f1ea;
   --color-foreground: #262420;
@@ -455,7 +455,7 @@
   --color-border: #d8d2c4;
 }
 
-/* 主题：neon-violet（色值取自旧端 8803 的 --color-* 变量，逐值一致） */
+/* 主题：neon-violet（色值取自既有的 --color-* 变量，逐值一致） */
 [data-ui-theme="neon-violet"] {
   --color-background: #0b0814;
   --color-foreground: #ece8f7;
@@ -469,7 +469,7 @@
   --color-border: #352b49;
 }
 
-/* 主题：cloud-blue（色值取自旧端 8803 的 --color-* 变量，逐值一致） */
+/* 主题：cloud-blue（色值取自既有的 --color-* 变量，逐值一致） */
 [data-ui-theme="cloud-blue"] {
   --color-background: #eef2f7;
   --color-foreground: #16202e;
@@ -483,7 +483,7 @@
   --color-border: #cbd5e1;
 }
 
-/* 舞台底色：背景模式（旧端只写存储不改画面，这里是新端的真实实现，属有意增强）
+/* 舞台底色：背景模式（本实现同时写存储与画面，切换即时生效）
    三种模式互斥：棋盘格画图案、纯色只上色、透明完全不上色；每条都显式清掉另一条的属性。 */
 #stage { --stage-solid: #2a2a2a; }
 
@@ -796,8 +796,8 @@
   text-overflow: clip;
 }
 
-/* ---- PMA 预乘：档位 2×2 + 四行只读诊断（照搬旧端布局与信息量）----
-   旧端是 grid-cols-2 的四个档位 + text-[11px] 的一组 space-y-0.5 小字。
+/* ---- PMA 预乘：档位 2×2 + 四行只读诊断（布局与信息量）----
+   布局：2×2 四个档位 + 下方一组 11px 小字诊断行。
    四行的意义：让人（和 AI）一眼看出"这个模型到底按哪种预乘在渲染"——
    Atlas 声明 / 像素检测 是输入证据，直通支持 是运行时能力，实际生效 是最终结论。 */
 #right-panel .ctl-seg[data-layout='grid-2'] {
@@ -807,7 +807,7 @@
 }
 
 #right-panel .ctl-seg[data-layout='grid-2'] .seg-btn {
-  /* 旧端是 h-8（32px）+ rounded-md(6px) + text-xs(12px) + px-3：比默认 chip 大一档，才像按钮 */
+  /* 比默认 chip 大一档（高 32px / 圆角 6px / 字号 12px / 左右内边距 12px），才像按钮 */
   justify-content: center;
   min-width: 0;
   min-height: 32px;
@@ -842,14 +842,14 @@
   white-space: nowrap;
 }
 
-/* 实际生效 = 最终结论：主色 + 加重（旧端 text-primary font-medium） */
+/* 实际生效 = 最终结论：主色 + 加重 */
 #right-panel .ctl-diag-value.is-primary {
   font-weight: 500;
   color: var(--color-primary);
 }
 
 /* ---------------- 滑块控件（播放速度 / 混合时长） ----------------
-   结构：标签在左、当前值在右（等宽），滑块单独一行占满宽度 —— 与旧端一致。
+   结构：标签在左、当前值在右（等宽），滑块单独一行占满宽度 —— 。
    契约《禁止内联 CSS 与 JS》：颜色/尺寸/字体全部走 CSS 变量，JS 不写任何 element.style；
    轨道与手柄用原生 `accent-color` 跟随主题主色，无需自绘。 */
 .ctl-slider {

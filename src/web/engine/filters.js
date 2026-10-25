@@ -1,9 +1,9 @@
-// engine/filters.js —— 滤镜预设表 + 着色器注入/还原（语义照抄旧引擎 qd/pk/gk/vk/reconcileFilter）
+// engine/filters.js —— 滤镜预设表 + 着色器注入/还原
 //
-// 片元模板的做法与旧引擎一致：先把预乘色还原成直通 `c`，套上预设表达式 `__FILTER__`，
+// 片元模板的做法：先把预乘色还原成直通 `c`，套上预设表达式 `__FILTER__`，
 //   再乘回 alpha 输出 —— 所以滤镜效果与 PMA 口径解耦，切滤镜不需要重传纹理。
 
-/** 滤镜预设表（12 项，顺序与旧引擎 qd 一致；id 稳定，面板按 id 下发） */
+/** 滤镜预设表 */
 export const FILTER_PRESETS = [
   { id: 'original', name: '原画', body: 'c' },
   { id: 'bright', name: '亮部增强', body: 'clamp(c * 1.14 + 0.04, 0.0, 1.0)' },
@@ -27,7 +27,7 @@ export function hasFilter(id) {
   return FILTER_PRESETS.some((p) => p.id === id);
 }
 
-/** 顶点着色器（与旧引擎 pk 同结构：透传位置/颜色/UV） */
+/** 顶点着色器 */
 export const VERTEX_SHADER = `
 attribute vec4 a_position;
 attribute vec4 a_color;
@@ -81,7 +81,7 @@ export function shaderSourceOf(id) {
 }
 
 /**
- * 把滤镜着色器装上/还原（旧引擎 reconcileFilter，行 284 @51770）。
+ * 把滤镜着色器装上/还原。
  * 关键约定：
  *   · `savedDefaultBatcherShader` **只在第一次装滤镜时保存一次**，避免把"滤镜着色器"当成默认存进去；
  *   · 编译失败 → warn 并保持原渲染（不置空、不抛）；
