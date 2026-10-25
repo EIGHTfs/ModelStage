@@ -267,8 +267,7 @@ function onSelectModel(model) {
   //   自动换源会让用户以为"点哪个都一样"，也会掩盖真实的数据问题。
   const missingTex = (entry.meta && entry.meta.missingTextures) || [];
   if (missingTex.length) {
-    const msg = `该模型缺纹理文件 ${missingTex.join('、')}（资产残缺，无法渲染）。`
-      + '可选：① 改用该角色的资源包版本（若有）② 补齐上述文件后重试';
+    const msg = `该模型缺纹理文件 ${missingTex.join('、')}（资产残缺，无法渲染）。`;
     state.stageError = msg;
     stageLog('error', msg, { source: 'model-actions' });
     document.documentElement.dataset.stageReady = 'error';
@@ -353,7 +352,26 @@ async function loadRoots(opts = {}) {
   }
 }
 
-export { refreshSkinList, showRootsError, onSelectModel, loadRoots };
+/**
+ * 切换模型的**统一入口**（所有"不是用户点左栏"的切换都走这里）。
+ *
+ * 一次切换要同步的东西不少：装载本身（底栏皮肤/动作、右栏列表、渲染）+ 左栏树的高亮/展开/定位。
+ * 分散在各入口手写就会漏（实测：翻页时左栏高亮停在上一个模型）。
+ * @param {object} model 模型条目（catalog entry 或补过 entry 的条目）
+ * @param {{syncTree?: boolean}} [opts] syncTree=false 时不碰左栏（左栏自己点选时用）
+ * @returns {unknown} onSelectModel 的结果
+ */
+function selectModel(model, opts = {}) {
+  if (!model) return null;
+  const roster = state.roster;
+  if (opts.syncTree !== false && roster && typeof roster.selectById === 'function') {
+    // 左栏同步可能要懒加载游戏（异步）：失败不影响装载，只影响高亮
+    Promise.resolve(roster.selectById(model.id)).catch(() => { /* 高亮失败不影响播放 */ });
+  }
+  return onSelectModel(model);
+}
+
+export { refreshSkinList, showRootsError, onSelectModel, selectModel, loadRoots };
 
 // 面板重建后需要按当前模型重刷皮肤列表：把本模块的实现注入回去（避免循环依赖）
 connectPanelRefresh(refreshSkinList);

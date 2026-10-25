@@ -8,7 +8,8 @@ import { dom, stage, state } from './context.js';
 import { setPlaybackPaused } from '../render/playback.js';
 import { getRendererSetting, setRendererSetting } from './renderer-setting.js';
 import { stageLog, stageStatus } from './status.js';
-import { formatError, getJson } from '../infra/api.js';
+import { buildChars, createNameIndex, mergeNameTable, loadRootNames } from '../roster/list.js';
+import { formatError } from '../infra/api.js';
 import {
   buildAnimationList, isCycleLoop, labelWithDuration, notePlaying, playAnimation, setCycleLoop,
 } from './anim-list.js';
@@ -65,22 +66,134 @@ function toggleTransportPlay() {
   setPlaying(state.playing === false);
 }
 /** 单动循环：切换 settings.loop（引擎 setLoop 走通用 setter） */
-async function stepVariant(dir) {
-  const cur = state.selectedModel;
-  if (!cur || !cur.rootId || !cur.directory) { stageLog('warn', '切换变体失败：当前没有可用的兄弟变体', { reason: 'no-current-model' }); return; }
-  try {
-    const data = await getJson(`/api/models?root=${encodeURIComponent(cur.rootId)}`);
-    const peers = (data.models || []).filter((m) => m.directory === cur.directory);
-    if (peers.length < 2) { stageLog('warn', '切换变体失败：当前角色只有 1 个变体', { peers: peers.length }); return; }
-    const at = peers.findIndex((m) => m.id === cur.id || m.name === cur.name);
-    const next = peers[(at + dir + peers.length) % peers.length];
-    document.documentElement.dataset.transportVariant = next.name;
-    stageStatus(`切换变体 → ${next.name}`, 'info');
-    onSelectModel(next);
-  } catch (err) {
-    stageLog('error', `切换变体失败：${formatError(err)}`, { err: formatError(err) });
-  }
+/**
+ * 判断两个条目是否属于「同一个角色（同一组变体）」。
+ *
+ * 字段来源不统一：catalog 条目用 `srcDir`（根内相对目录），旧 models 条目用 `directory`（带根名前缀）。
+ * 优先比 srcDir，缺失时回落到 directory —— 两边都取不到就判为不同组，宁可不合并也不乱合并。
+ * @param {object} m 候选条目
+ * @param {object} cur 当前模型
+ * @param {string} dir 当前模型的目录（兜底）
+ * @returns {boolean}
+ */
+/**
+ * 把条目补成"可装载形态"（**兜底**：树里的条已自带 entry.url）。
+ *
+ * 为什么需要：/api/catalog 的条目自带 `entry.url`，但历史路径（如从别处传入的裸模型对象）
+ *   可能只有 `skeletonFile`；这里统一补齐，避免装载入口报"条目缺少资产地址"。
+ * @param {object} m 模型条目
+ * @returns {object} 补好 entry 的条目（已有 entry 时原样返回）
+ */
+function withEntry(m) {
+  if (!m || typeof m !== 'object') return m;
+  if (m.entry && m.entry.url) return m;
+  const url = (m.skeletonFile && m.skeletonFile.url) || m.modelUrl || null;
+  return url ? { ...m, entry: { url } } : m;
 }
+
+/** 取名册树实例（翻页的池子与"同角色变体"都从它取，见下方说明） */
+function rosterApi() {
+  const r = state.roster;
+  return r && typeof r.listVariants === 'function' && typeof r.variantsOf === 'function' ? r : null;
+}
+
+/**
+ * 装载并同步左栏（统一入口；装载实现仍然是 model-actions 的 onSelectModel）。
+ * @param {object} model
+ */
+async function applyPicked(model) {
+  const { selectModel } = await import('./model-actions.js');
+  selectModel(withEntry(model));
+}
+
+/**
+ * 翻变体（同一角色的不同皮肤/服装）。
+ * @param {number} dir -1 上一个 / +1 下一个
+ * @param {object[]} [peersArg] 已取到的兄弟列表（调用方复用查询结果时传）
+ */
+async function stepVariant(dir, peersArg) {
+  const cur = state.selectedModel;
+  if (!cur) { stageLog('warn', '切换变体失败：当前没有选中的模型', { reason: 'no-current-model' }); return; }
+  const api = rosterApi();
+  if (!api) { stageLog('warn', '切换变体失败：名册树尚未就绪', { reason: 'no-roster' }); return; }
+  const peers = peersArg || (await api.variantsOf(cur.id));
+  if (peers.length < 2) { stageLog('warn', '切换变体失败：当前角色只有 1 个变体', { peers: peers.length }); return; }
+  const at = peers.findIndex((p) => p.model && p.model.id === cur.id);
+  const next = peers[(Math.max(at, 0) + dir + peers.length) % peers.length];
+  if (!next || !next.model) return;
+  stageStatus(`切换变体 → ${next.model.name}`, 'info');
+  await applyPicked(next.model);
+}
+
+/**
+ * 翻模型（**按左栏树从上到下的顺序**，末尾回绕）。
+ *
+ * 池子必须是树，不能是某个接口的清单：
+ *   树的「游戏」节点是**同名根合并**出来的（例如「碧蓝航线」= azurlane + azurlane_spine + azurlane_bundle），
+ *   按单个 rootId 取清单会漏掉同名的其它根 ⇒ 表现为"只能在 live2d 之间翻、翻不到 spine"（实测过的现场）。
+ * @param {number} dir -1 上一个 / +1 下一个
+ * @param {object[]} [flatArg] 已取到的树序序列
+ */
+async function stepModel(dir, flatArg) {
+  const cur = state.selectedModel;
+  if (!cur) { stageLog('warn', '切换模型失败：当前没有选中的模型', { reason: 'no-current-model' }); return; }
+  const api = rosterApi();
+  if (!api) {
+    stageLog('warn', '切换模型失败：名册树尚未就绪', { reason: 'no-roster' });
+    stageStatus('切换失败：模型列表尚未就绪', 'warn');
+    return;
+  }
+  let flat = flatArg;
+  if (!flat) {
+    try { flat = await api.listVariants(); } catch (err) {
+      stageLog('error', `切换模型失败：读取模型列表出错（${formatError(err)}）`, { err: formatError(err) });
+      stageStatus('切换失败：读取模型列表出错', 'warn');
+      return;
+    }
+  }
+  if (!flat || flat.length === 0) {
+    stageLog('warn', '切换模型失败：当前没有可切换的模型', { total: 0 });
+    stageStatus('当前没有可切换的模型', 'warn');
+    return;
+  }
+  if (flat.length === 1) {
+    stageLog('warn', '切换模型失败：库中只有 1 个模型', { total: 1 });
+    stageStatus('库中只有 1 个模型，没有可切换的下一个', 'warn');
+    return;
+  }
+  const at = flat.findIndex((p) => p.model && p.model.id === cur.id);
+  const from = at < 0 ? (dir > 0 ? -1 : 0) : at;
+  const nextAt = (from + dir + flat.length) % flat.length;
+  const next = flat[nextAt];
+  if (!next || !next.model) return;
+  // 回绕提示只在真的"跳过头"时出现：往后翻到第 0 个、往前翻到最后一个
+  if (dir > 0 && nextAt === 0 && at !== 0) stageStatus('已返回第一个模型', 'info');
+  else if (dir < 0 && nextAt === flat.length - 1 && at !== flat.length - 1) stageStatus('已到最后一个模型（回绕）', 'info');
+  else stageStatus(`切换模型 → ${next.model.name}`, 'info');
+  await applyPicked(next.model);
+}
+
+/**
+ * 「上一个 / 下一个」的唯一入口（快捷键 A/S 与底栏两个按钮共用）。
+ *
+ * 粒度：当前角色有多个变体 ⇒ 翻变体（想看的是同角色另一套衣服）；否则 ⇒ 按树序翻模型。
+ * @param {number} dir -1 上一个 / +1 下一个
+ */
+async function stepUnit(dir) {
+  const cur = state.selectedModel;
+  if (!cur) { stageLog('warn', '上一个/下一个失败：当前没有选中的模型', { reason: 'no-current-model' }); return; }
+  const api = rosterApi();
+  if (!api) {
+    stageLog('warn', '上一个/下一个失败：名册树尚未就绪', { reason: 'no-roster' });
+    stageStatus('切换失败：模型列表尚未就绪', 'warn');
+    return;
+  }
+  const peers = await api.variantsOf(cur.id);
+  if (peers.length > 1) { await stepVariant(dir, peers); return; }
+  await stepModel(dir);
+}
+
+
 /** 动作下拉选择：切动画并回填 dataset；右栏高亮与下拉互相跟随（同一份清单） */
 function applyTransportMotion(id) {
   if (!id) return;
@@ -179,6 +292,6 @@ function skinSwitchMixTime(fn) {
 }
 
 export {
-  toggleTransportPlay, setPlaying, syncPlayUi, stepVariant, applyAnimLoop,
+  toggleTransportPlay, setPlaying, syncPlayUi, stepVariant, stepModel, stepUnit, applyAnimLoop,
   applyTransportMotion, fillTransportOptions, applyMixMode, applySkinMix, skinSwitchMixTime,
 };

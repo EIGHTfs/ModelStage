@@ -186,7 +186,7 @@ export function toSpineEntry(cfg, m) {
     entry: { url: fileUrl(m.skeletonFile.path), name: m.skeletonFile.name, size: m.skeletonFile.size },
     assets,
     // ---- 渲染器兼容字段 ----
-    // 为什么补：/api/models 的条目带 skeletonFile / atlasFile / textureFiles，渲染器直接读这三组；
+    // 为什么补：/api/spine/models 的条目带 skeletonFile / atlasFile / textureFiles，渲染器直接读这三组；
     //   catalog 条目原本只有 entry / assets，拿它直接 mount 会 404。
     // 只补字段：entry / assets 的内容与含义保持不变，已用它们的调用方不受影响。
     skeletonFile: { name: m.skeletonFile.name, path: m.skeletonFile.path, url: fileUrl(m.skeletonFile.path), size: m.skeletonFile.size },

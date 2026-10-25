@@ -95,7 +95,7 @@ bash web.sh start|stop|restart|status     # 默认 8804（独立服务）
 > 历史说明：早期版本用 `UPSTREAM=http://127.0.0.1:8803` 把 `/api` `/files` `/icons` `/live2d-lib` 反代到旧端；
 > 该路径已在「新端自带服务端」之后**整体移除**，现在两个端口互不依赖。
 
-> 为什么现在不需要反代：新端自带服务端，页面与接口同源，`/api/tree`、`/api/models` 直接可用，
+> 为什么现在不需要反代：新端自带服务端，页面与接口同源，`/api/tree`、`/api/spine/models` 直接可用，
 > 也不再受「上游没发 CORS 头」的限制。
 
 ## 三、品牌与标题

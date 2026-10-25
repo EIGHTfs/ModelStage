@@ -53,7 +53,7 @@ data.bundleProbe.probeBundle(id, p) // → Promise<{ status, body }>
 
 ## 技术债（抽离阶段刻意保留原行为，不在重构中顺带修改）
 
-1. **6 个接口未校验 HTTP method**：`/api/tree`、`/api/models`、`/api/live2d/models`、
+1. **6 个接口未校验 HTTP method**：`/api/tree`、`/api/spine/models`、`/api/live2d/models`、
    `/api/names`、`/api/browse`、`/api/file` 不检查 `req.method`，POST 也会照常返回数据。
    抽离阶段以「行为逐字不变」为唯一目标，未修正；后续单独任务处理（补 405）。
 2. **无 `Range` / `HEAD` 支持**：静态文件与 `/api/file` 等大文件一律 `Content-Length` + 全量流，

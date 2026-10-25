@@ -15,9 +15,11 @@
 import { installDiag } from './infra/diag.js';
 import { markStage, installReadyApi, trackElementStage, trackElementWhenReady } from './infra/ready.js';
 import { installMemStats, memStats } from './infra/mem-stats.js';
+import { registerShortcuts } from './infra/shortcuts.js';
 import { getJson, formatError } from './infra/api.js';
 import { getSharedVirtualFS } from './infra/vfs.js';
 import { createPluginHost } from './infra/plugin-host.js';
+import { buildAnimationList } from './app/anim-list.js';
 import { mountTransport } from './panel/transport.js';
 import { createSpineStage } from './spine/canvas.js';
 import { createStageSurface } from './render/surface.js';
@@ -40,10 +42,10 @@ import { recent as recentLogs } from './infra/log.js';
 import { resetViewViaRenderer } from './render/reset-view.js';
 import { applyTopbarIcons } from './panel/icons.js';
 import {
-  bindCinemaKeys, bindSidebarStateSync, exportScreenshot, retrackStage, syncSidebarButtons, toggleCinema, toggleRightPanel,
+  bindCinemaKeys, bindSidebarStateSync, exitCinemaIfActive, exportScreenshot, retrackStage, syncSidebarButtons, toggleCinema, toggleRightPanel,
 } from './app/topbar-actions.js';
 import {
-  applyTransportMotion, stepVariant, toggleTransportPlay,
+  applyTransportMotion, stepUnit, toggleTransportPlay,
 } from './app/transport-actions.js';
 
 // 页面级第一件事：装诊断探针（幂等，重复调用不会重复包装 console）
@@ -359,10 +361,51 @@ async function toggleFullscreen() {
 
 
 
+/**
+ * 动作级翻页（快捷键 Z / X）：在当前模型的动作清单里前后走一格。
+ *
+ * 与"变体/模型翻页"（A/S）是**两条互不干扰**的路径：这条只换动作，不换模型。
+ * @param {number} dir -1 上一个 / +1 下一个
+ */
+function stepMotion(dir) {
+  const list = buildAnimationList();
+  if (!list.length) return;
+  if (list.length < 2) { stageStatus('当前模型只有 1 个动作', 'info'); return; }
+  const curId = String(state.transportMotion || '');
+  const at = list.findIndex((a) => a.id === curId || a.label === curId);
+  const next = list[(Math.max(at, 0) + dir + list.length) % list.length];
+  if (!next) return;
+  applyTransportMotion(next.id);
+  // 底栏下拉是"当前动作"的唯一真相（契约 §七）：动作换了必须同步它，否则两处显示分叉
+  const pk = state.transport && typeof state.transport.picker === 'function' ? state.transport.picker('transport-motion') : null;
+  if (pk && typeof pk.setValue === 'function') { try { pk.setValue(next.id); } catch { /* 下拉同步失败不影响播放 */ } }
+  stageStatus(`切换动作 → ${next.label || next.id}`, 'info');
+}
+
+/**
+ * 注册全部快捷键（键位表在 infra/shortcuts.js，这里是"动作 → 实现"的唯一映射）。
+ *
+ * 影院模式语义照旧：H 是进/出切换，Esc 只负责退出（不会因为误按 Esc 反而进入影院）。
+ */
+function bindShortcuts() {
+  registerShortcuts({
+    togglePlay: () => toggleTransportPlay(),
+    prev: () => stepUnit(-1),
+    next: () => stepUnit(1),
+    prevMotion: () => stepMotion(-1),
+    nextMotion: () => stepMotion(1),
+    resetView: () => resetViewViaRenderer(state.currentRenderer),
+    screenshot: () => exportScreenshot(),
+    toggleCinema: () => toggleCinema(),
+    exitCinema: () => exitCinemaIfActive(),
+  });
+}
+
 /** 绑定事件（只给"有真实行为"的控件挂处理器；其余控件在 HTML 里 disabled） */
 function bindEvents() {
   applyTopbarIcons();          // 顶栏图标唯一来源：panel/icons.js
   bindSidebarStateSync();      // 高亮与边栏真实显隐同步（含影院/收起/过渡）
+  bindShortcuts();             // 全局快捷键（唯一监听在 infra/shortcuts.js）
   dom.btnLibrary.addEventListener('click', toggleLeftPanel);
   dom.btnFullscreen.addEventListener('click', toggleFullscreen);
   // 顶栏两个真动作：截图导出（canvas→blob→下载）与影院模式（切 data-cinema，显隐在 CSS）
@@ -431,8 +474,8 @@ function boot() {
   const transportInfo = mountTransport(dom.footer, {
     'transport-reset-view': () => resetViewViaRenderer(state.currentRenderer),
     'transport-play': () => toggleTransportPlay(),
-    'transport-prev': () => stepVariant(-1),
-    'transport-next': () => stepVariant(1),
+    'transport-prev': () => stepUnit(-1),
+    'transport-next': () => stepUnit(1),
     'transport-motion': (name) => applyTransportMotion(name),
     'transport-skin': (name) => { if (stage && stage.setSkin) stage.setSkin(name); },
   });

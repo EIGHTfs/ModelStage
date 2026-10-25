@@ -2,7 +2,7 @@
 //
 // 覆盖：
 //   /api/roots /api/plugins /api/brand /api/web-config   资源根/插件/品牌/前端配置
-//   /api/tree /api/models /api/live2d/models /api/names  目录/模型清单/名表
+//   /api/tree /api/spine/models /api/live2d/models /api/names  目录/模型清单/名表
 //   /api/browse                                          服务端目录浏览（登记资源根用）
 //   /api/catalog /api/bundle/probe /api/model-meta       按需 import 的三条
 //   /api/file /files/<rootId>/<rel> /icons/... /live2d-lib/...  二进制资源（含越界防护）
@@ -54,13 +54,17 @@ function apiData(ctx, res, p, url) {
     const r = data.tree.listTree(url.searchParams.get('root') || '', url.searchParams.get('path') || '');
     return sendJson(res, r.status, r.body);
   }
-  if (p === '/api/models' || p === '/api/live2d/models') {
+  // /api/spine/models 与 /api/live2d/models 是**单路原始扫描**（各自只管一种渲染器，
+  //   返回形状也各不相同）。要"某个根下的全部模型"一律走 /api/catalog（它内部复用这两个，
+  //   输出统一 ModelEntry）。历史教训：曾叫 /api/models，名字像"所有模型"但实际只返回 Spine，
+  //   导致在纯 Live2D 的资源根上翻页/加载拿到 0 个模型而误判为"根目录为空"。
+  if (p === '/api/spine/models' || p === '/api/live2d/models') {
     const rootId = url.searchParams.get('root') || '';
     const force = url.searchParams.get('refresh') === '1';
     const cfg = data.config.readConfig().find((r) => r.id === rootId);
     if (!cfg) return sendJson(res, 400, { error: `未找到资源根: ${rootId}` });
     try {
-      const isSpine = p === '/api/models';
+      const isSpine = p === '/api/spine/models';
       const r = isSpine ? data.models.getModels(cfg, force) : data.live2d.getLive2DModels(cfg, force);
       return sendJson(res, 200, {
         root: { id: cfg.id, name: cfg.name },
@@ -70,7 +74,7 @@ function apiData(ctx, res, p, url) {
         models: r.models,
       });
     } catch (e) {
-      return sendJson(res, 500, { error: `${p === '/api/models' ? '扫描失败' : 'Live2D 扫描失败'}: ${e.message}` });
+      return sendJson(res, 500, { error: `${p === '/api/spine/models' ? 'Spine 扫描失败' : 'Live2D 扫描失败'}: ${e.message}` });
     }
   }
   if (p === '/api/names') return apiNames(ctx, res, url);

@@ -320,15 +320,26 @@ export function toggleRightPanel(force) {
 }
 
 /**
- * 影院模式的快速开关：Esc 退出 + **舞台中心区域双击**进出。
+ * 退出影院模式（**仅在影院态下才有动作**）。
+ *
+ * 为什么要有这个守卫：toggleCinema(false) 在"本来就没进影院"时也会写状态、重排阶段、记一条日志，
+ *   按 Esc 反复触发会刷出一串无意义的「影院模式：关」。Esc 的语义是"只退不进"。
+ * @returns {boolean} 是否真的退出了
+ */
+export function exitCinemaIfActive() {
+  if (document.documentElement.dataset.cinema !== 'on') return false;
+  toggleCinema(false);
+  return true;
+}
+
+/**
+ * 影院模式的**鼠标**入口：舞台中心区域双击进出。
  * 为什么限定中心区域：四角/边缘留给拖拽与面板操作，避免"想微调视角却把界面收掉"。
  * 双击判定用原生 dblclick（两次 click 间隔由浏览器判定），无需自己计时。
+ *
+ * 键盘入口不在这里：Esc 退出 / H 切换统一登记在 infra/shortcuts.js（唯一键盘真相源）。
  */
 export function bindCinemaKeys() {
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && document.documentElement.dataset.cinema === 'on') toggleCinema(false);
-  });
-
   const stageEl = document.getElementById('stage');
   if (stageEl) {
     stageEl.addEventListener('dblclick', (e) => {

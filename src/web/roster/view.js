@@ -412,6 +412,87 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
   }
 
   /**
+   * 把左栏树**从上到下**摊平成变体序列（翻页的池子就是它）。
+   *
+   * 为什么不让外部自己请求接口：树的"游戏"节点是**同名根合并**出来的
+   *   （例如「碧蓝航线」= azurlane + azurlane_spine + azurlane_bundle 三个根），
+   *   外部按单个 rootId 取清单会漏掉另外两个根 ⇒ 表现为"只能在 live2d 之间翻，翻不到 spine"。
+   * 用树自己的数据结构（含合并、含排序）作唯一真相源，顺序天然与用户看到的一致。
+   * @returns {Promise<Array<{model:object, gameKey:string, charKey:string}>>}
+   */
+  async function listVariants() {
+    const out = [];
+    for (const game of state.games) {
+      if (state.expandedGames && !state.expandedGames.size) { /* 未展开也要能翻：下面统一加载 */ }
+      // 目标游戏可能还没加载（用户没展开过）：按需加载一次，保证序列完整
+      if (!state.gameChars.get(game.key)) {
+        try { await ensureGameLoaded(game); } catch { continue; }
+      }
+      const entry = state.gameChars.get(game.key);
+      if (!entry) continue;
+      for (const c of entry.chars) {
+        for (const v of c.variants) {
+          if (v && v.model && v.model.id) out.push({ model: v.model, gameKey: game.key, charKey: c.key });
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * 取某个变体的**兄弟变体**（同一角色/同一 charKey 下的全部变体）。
+   * @param {string} modelId
+   * @returns {Promise<Array<{model:object, gameKey:string, charKey:string}>>}
+   */
+  async function variantsOf(modelId) {
+    for (const game of state.games) {
+      if (!state.gameChars.get(game.key)) {
+        try { await ensureGameLoaded(game); } catch { continue; }
+      }
+      const entry = state.gameChars.get(game.key);
+      if (!entry) continue;
+      for (const c of entry.chars) {
+        const hit = c.variants.some((v) => v && v.model && v.model.id === modelId);
+        if (hit) return c.variants.filter((v) => v && v.model).map((v) => ({ model: v.model, gameKey: game.key, charKey: c.key }));
+      }
+    }
+    return [];
+  }
+
+  /**
+   * 按 modelId 选中某个变体并同步左栏（**外部入口专用**）。
+   *
+   * 为什么需要它：左栏点击时选中态由 onVariantClick 自己维护，但"上一个/下一个"、快捷键等
+   *   外部入口只调装载、不碰左栏 ⇒ 树上高亮停在上一个模型，看起来像没切过去。
+   *   这里把"选中态 + 展开 + 渲染 + 定位 + 存盘"收成一处，外部入口只调它。
+   * 不触发 onSelect：装载由调用方的统一入口负责，避免同一次切换装载两遍。
+   * @param {string} modelId
+   * @param {{reveal?: boolean}} [opts] reveal=false 时不滚动定位（默认滚到可视区）
+   * @returns {Promise<{ok:boolean, gameKey?:string, charKey?:string, reason?:string}>}
+   */
+  async function selectById(modelId, opts = {}) {
+    if (!modelId) return { ok: false, reason: 'no-id' };
+    for (const game of state.games) {
+      // 目标可能属于还没展开/加载的游戏：按需加载一次（与启动恢复同策略，不预取全部）
+      if (!state.gameChars.get(game.key)) {
+        try { await ensureGameLoaded(game); } catch { continue; }
+      }
+      const hit = findVariant(game, modelId);
+      if (!hit) continue;
+      state.selected = { modelId, gameKey: game.key, gameName: game.name, charKey: hit.charKey };
+      state.activeGame = game.name;
+      // 不展开的话目标行根本没渲染出来，高亮也就无从显示
+      state.expandedGames.add(game.key);
+      state.expandedChars.add(hit.charKey);
+      render();
+      if (opts.reveal !== false) state.lastReveal = reveal.revealActive();
+      saveState(state);
+      return { ok: true, gameKey: game.key, charKey: hit.charKey };
+    }
+    return { ok: false, reason: 'not-found' };
+  }
+
+  /**
    * 启动恢复：按存档把上次选中的变体重新选中并渲染。
    * 懒加载顺序：目标变体所属游戏可能还没加载 ⇒ 先按游戏逐个加载再看命中，不预取全部。
    * 失效兜底：所有游戏都找过仍没有 ⇒ 安静回落空舞台（不展开、不报错、不留半选中状态）。
@@ -449,7 +530,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
   }
 
   return {
-    mount, state, snapshot, render, ensureGameLoaded,
+    mount, state, snapshot, render, ensureGameLoaded, selectById, listVariants, variantsOf,
     restoreLast,
     revealActive: reveal.revealActive,
     markUserScroll: reveal.markUserScroll,
