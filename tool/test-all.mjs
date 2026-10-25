@@ -22,6 +22,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { acquireTestLock, releaseOnExit, describeHolder, EXIT_SKIPPED, HELD_ENV } from './lib/test-lock.mjs';
 import { findBadPerms, summarizeBadPerms } from './lib/check-perms.mjs';
+import { checkSingleSource, formatViolations } from './check-single-source.mjs';
 import { memAvailableMB, tailLines, classifyOutcome, openRun, writeSuiteResult, updateSummary, finishRun } from './lib/test-report.mjs';
 
 // 必须用 fileURLToPath：项目路径含中文/空格，URL.pathname 是百分号编码，直接当路径会找不到文件
@@ -47,6 +48,19 @@ if (BAD_PERMS.files.length || BAD_PERMS.dirs.length) {
   console.error('[test-all] ❌ 源码权限预检失败 —— 不跑测试（否则结果全是假红）：');
   console.error(summarizeBadPerms(BAD_PERMS));
   process.exit(1);
+}
+
+// **门禁：前端单一数据源**（静态检查，与权限预检同层：失败即中止，不占回归套件名额）
+//   为什么是门禁而不是第 20 套：19 套是回归清单，"19 套全绿"本身是个可读信号；
+//   静态约束挂在前面当门禁，红得早、也不会让人误以为"多了一套测试"。
+//   规则与例外见 doc/契约/单一数据源.md。
+{
+  const { ok, violations } = checkSingleSource();
+  if (!ok) {
+    console.error('[test-all] ❌ 单一数据源门禁失败 —— 不跑测试（改法是确定性的，先修再跑）：');
+    console.error(formatViolations(violations));
+    process.exit(1);
+  }
 }
 
 // **--bg 必须在 test-lock 之前分流**：父进程立刻退出，否则它会先拿锁、子进程反而被互斥挡掉(退出 75)。
