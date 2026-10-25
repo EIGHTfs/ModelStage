@@ -190,7 +190,9 @@ function renderSegmented(ctl, ctx) {
   ensurePmaDiagRefresh();
   group.setAttribute('role', 'group');
   group.setAttribute('aria-label', ctl.label);
-  const defaultIdx = wired && ctl.defaultValue !== undefined ? ctl.values.indexOf(ctl.defaultValue) : -1;
+  const ivSeg = ctx && typeof ctx.initialValue === 'function' ? ctx.initialValue(ctl.id) : undefined;
+  const wantVal = ivSeg === undefined ? ctl.defaultValue : ivSeg;
+  const defaultIdx = wired && wantVal !== undefined ? ctl.values.indexOf(wantVal) : -1;
 
   ctl.options.forEach((opt, i) => {
     const item = typeof opt === 'string' ? { text: opt } : opt;
@@ -246,7 +248,11 @@ function renderSwitch(ctl, ctx) {
   btn.id = ctl.id || '';
   btn.type = 'button';
   btn.setAttribute('role', 'switch');
-  btn.setAttribute('aria-checked', String(!!ctl.defaultOn));
+  {
+    const iv = ctx && typeof ctx.initialValue === 'function' ? ctx.initialValue(ctl.id) : undefined;
+    // 有用户值就用用户值，没有才用 schema 默认（契约 R2：读回早于首次渲染）
+    btn.setAttribute('aria-checked', String(iv === undefined ? !!ctl.defaultOn : !!iv));
+  }
   if (wired) {
     btn.title = ctl.title || ctl.label;
     btn.addEventListener('click', () => {
@@ -367,7 +373,7 @@ function renderGroup(group, ctx) {
  *   onSetting：已接线控件的回传口（面板只把"点了哪个选项"翻成机器值，具体生效由接线方决定）
  * @returns {{groups: number, controls: number, setFps: (fps: number|null) => void}}
  */
-export function mountPanel({ headEl, bodyEl, onSetting, wiredIds, groups }) {
+export function mountPanel({ headEl, bodyEl, onSetting, wiredIds, groups, initialValue }) {
   // schema 可由调用方按渲染器能力过滤后传入；缺省用全量 PANEL_GROUPS（保持原有行为）
   const schema = Array.isArray(groups) && groups.length ? groups : PANEL_GROUPS;
   // 滑块 id → 控件声明：外部同步（恢复上次设置 / 生效值回显）时要按声明格式化读数
@@ -407,6 +413,12 @@ export function mountPanel({ headEl, bodyEl, onSetting, wiredIds, groups }) {
   }
   const ctx = {
     onSetting: typeof onSetting === 'function' ? onSetting : () => {},
+    /**
+     * 控件的**当前值**（来自 app/ui-state 工厂）。
+     * 契约 R2：首次渲染就要显示用户值，而不是"先渲染默认值再命令式补"——
+     *   后者会闪，且面板重建后必丢（本项目的 P0 bug 就是这么来的）。
+     */
+    initialValue: typeof initialValue === 'function' ? initialValue : () => undefined,
     isWired: (id) => !!id && wiredSet.has(id) && !disabledMap.has(id),
     /** 能力层禁用原因（有值 ⇒ 该控件按"当前渲染器不支持"禁用） */
     disabledReason: (id) => disabledMap.get(id) || null,

@@ -149,7 +149,6 @@ function applyMixMode(on) {
   const applied = getRendererSetting('mixMode');
   const value = ok && applied === true ? 0.2 : 0;
   state.mixMode = !!on;
-  if (state.panel) state.panel.setChecked('ctl-mix-mode', !!on);
   document.documentElement.dataset.mixMode = on ? 'on' : 'off';
   return value;
 }
@@ -161,7 +160,6 @@ function applyMixMode(on) {
  */
 function applySkinMix(on) {
   state.skinMix = !!on;
-  if (state.panel) state.panel.setChecked('ctl-skin-mix', !!on);
   document.documentElement.dataset.skinMix = on ? 'on' : 'off';
   return state.skinMix;
 }

@@ -20,7 +20,11 @@ export function renderSelect(ctl, ctx) {
     o.textContent = opt.text;
     sel.append(o);
   }
-  if (ctl.defaultValue !== undefined) sel.value = ctl.defaultValue;
+  {
+    const ivSel = ctx && typeof ctx.initialValue === 'function' ? ctx.initialValue(ctl.id) : undefined;
+    const wantSel = ivSel === undefined ? ctl.defaultValue : ivSel;
+    if (wantSel !== undefined && [...sel.options].some((o) => o.value === String(wantSel))) sel.value = String(wantSel);
+  }
   if (wired) {
     sel.addEventListener('change', () => {
       try { ctx.onSetting(ctl.id, sel.value); } catch { /* 接线失败保持选择 */ }
@@ -55,8 +59,12 @@ export function renderChips(ctl, ctx) {
   box.dataset.ctl = ctl.id || '';
   box.setAttribute('role', 'group');
   box.setAttribute('aria-label', ctl.label);
+  const ivChips = ctx && typeof ctx.initialValue === 'function' ? ctx.initialValue(ctl.id) : undefined;
+  const wantChips = ivChips === undefined ? ctl.defaultValue : ivChips;
   for (const opt of ctl.options) {
     const btn = buildOptionNode(ctl, opt);
+    // 首次渲染就高亮当前值（契约 R2）：以前 chips 首屏无选中，要等命令式 setValue 补
+    if (wantChips !== undefined && String(opt.value) === String(wantChips)) btn.setAttribute('aria-pressed', 'true');
     if (wired) {
       btn.title = opt.text || opt.value;
       btn.addEventListener('click', () => {

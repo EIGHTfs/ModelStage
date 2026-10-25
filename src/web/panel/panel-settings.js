@@ -8,6 +8,7 @@
 import { dom, stage, state } from '../app/context.js';
 import { resetStage, trackElementStage } from '../infra/ready.js';
 import { rendererSupports, setRendererSetting } from '../app/renderer-setting.js';
+import * as uiState from '../app/ui-state.js';
 import { stageLog, stageStatus } from '../app/status.js';
 import { PANEL_GROUPS, applyCapabilities, selfCheck, settingKeyOf } from './schema.js';
 import { mountPanel } from './view.js';
@@ -89,44 +90,75 @@ const WIRED_IDS = (() => {
  * 记住一项面板设置并落盘（刷新后保持）。
  * 与视图偏好共用同一存储键的 panel 字段：一处读写，避免两套持久化各说一套。
  */
-/** 启动回放默认值时暂停落盘：否则默认值会覆盖用户上次保存的设置 */
+/**
+ * 启动回放默认值时暂停落盘：否则默认值会覆盖用户上次保存的设置。
+ * 真正的"暂停"状态由工厂持有（写盘只有工厂一条路径，契约 R1）；这里只做转发，
+ *   保持 main.js 的调用方式不变（S2 会把这段时序整体收进工厂）。
+ */
 let persistSuspended = false;
 export function suspendPanelPersist(on) {
   persistSuspended = !!on;
+  uiState.setPersistSuspended(persistSuspended);
 }
 
+/**
+ * 记住一项面板设置（**唯一写入口**，契约 R1）。
+ * 去抖落盘、校验回落默认、写 dataset 都在工厂里，这里不重复实现。
+ * @param {string} id
+ * @param {unknown} value
+ */
 function rememberPanelSetting(id, value) {
   // 一次性动作不记（见 ONE_SHOT_IDS：记了就会在下次启动回放时重放）
   if (ONE_SHOT_IDS.has(String(id))) return;
-  state.panelSettings = { ...(state.panelSettings || {}), [id]: value };
-  document.documentElement.dataset.panelSetting = JSON.stringify(state.panelSettings);
-  if (persistSuspended) return; // 回放阶段不落盘，避免默认值覆盖用户保存值
-  try { saveViewSettings({ panel: { ...state.panelSettings } }); } catch { /* 存储不可用就只保留内存态 */ }
+  uiState.set(id, value, { persist: !persistSuspended });
 }
 
-/** 启动时把上次保存的面板设置重新应用一遍（跳过有专门恢复通道的项） */
+/**
+ * 启动时把上次保存的面板设置读回并应用。
+ *
+ * 契约 R2：读回必须是**纯内存**的一步（工厂 loadAll），应用与显示重放交给 applyAll。
+ * @param {Set<string>} [skipIds] 有专门恢复通道的项（STARTUP_SKIP：主题/背景/MSAA）
+ * @returns {number} 读回的项数
+ */
 export function restorePanelSettings(skipIds) {
-  const saved = (readViewSettings().panel) || {};
-  const skip = skipIds instanceof Set ? skipIds : new Set();
-  // 历史脏数据迁移：旧版本把一次性动作控件也存进了 panel（典型表现是"导出过设置后每次刷新又导出一次"）。
-  //   这里就地清掉并写回存储，否则每次启动都要绕一遍（用户重装/换浏览器后又从旧备份带回这份脏数据）。
-  const stale = Object.keys(saved).filter((id) => ONE_SHOT_IDS.has(id));
-  if (stale.length) {
-    for (const id of stale) delete saved[id];
-    try { saveViewSettings({ panel: { ...saved } }); } catch { /* 存储不可用就只跳过 */ }
-    stageLog('warn', '已清理面板设置里的一次性动作记录（旧版本遗留，会导致每次启动重放）', { removed: stale });
-    state.panelSettings = { ...(state.panelSettings || {}) };
-    for (const id of stale) delete state.panelSettings[id];
+  const skip = skipIds instanceof Set ? skipIds : new Set(skipIds || []);
+  // 历史脏数据迁移：旧版本把一次性动作控件也存进了 panel（"导出过设置后每次刷新又导出一次"）。
+  //   就地清掉并写回存储，否则每次启动都要绕一遍。
+  try {
+    const saved = (readViewSettings().panel) || {};
+    const stale = Object.keys(saved).filter((id) => ONE_SHOT_IDS.has(id));
+    if (stale.length) {
+      for (const id of stale) delete saved[id];
+      try { saveViewSettings({ panel: { ...saved } }); } catch { /* 存储不可用就只跳过 */ }
+      stageLog('warn', '已清理面板设置里的一次性动作记录（旧版本遗留，会导致每次启动重放）', { removed: stale });
+    }
+  } catch { /* 迁移失败不影响读回 */ }
+
+  uiState.setApplySkip(skip);
+  const info = uiState.loadAll();          // 纯内存读回（在首次面板渲染之后调用时，值仍会覆盖显示态）
+  uiState.applyAll({ render: true });      // 生效 + 重放显示态（幂等）
+  if (info.rejected.length) {
+    stageLog('warn', '面板设置里有非法值，已回落默认', { rejected: info.rejected });
   }
-  for (const [id, value] of Object.entries(saved)) {
-    if (skip.has(id)) continue;
-    try { applyPanelSetting(id, value); } catch { /* 单项失败继续 */ }
-  }
-  return Object.keys(saved).length;
+  return info.loaded;
 }
 
 /** 面板控件回调：外壳项直接处理，其余一律经 renderer.setSetting（回显用生效值） */
 function applyPanelSetting(id, value) {
+  // 一次性动作（导出/导入/恢复默认）：执行，不进持久化（ONE_SHOT_IDS 已在工厂侧双保险）
+  if (ONE_SHOT_IDS.has(String(id))) { runSettingsAction(value); return; }
+  // 其余一律经工厂：校验 → apply（生效）→ render（显示）→ 去抖落盘。
+  //   这样"谁是真相"只有一处（契约 R1），也就不会出现"值对但显示错"。
+  uiState.set(id, value);
+}
+
+/**
+ * 只负责**生效**（下发给外壳实现或渲染器），不落盘、不碰显示态。
+ * 由工厂的 apply() 调用 ⇒ 契约 R3 的 apply/render 分离。
+ * @param {string} id
+ * @param {unknown} value
+ */
+function applyCore(id, value) {
   const shell = SHELL_APPLIERS[id];
   if (shell) {
     // 外壳项里也有"依赖渲染面能力"的（皮肤/混合模式/部件筛除）：
@@ -138,7 +170,6 @@ function applyPanelSetting(id, value) {
       return;
     }
     shell(value);
-    rememberPanelSetting(id, value);
     return;
   }
   const cap = settingKeyOf(id);
@@ -155,11 +186,46 @@ function applyPanelSetting(id, value) {
   try { applied = renderer.getSetting ? renderer.getSetting(key) : null; } catch { applied = null; }
   if (!ok) {
     stageLog('warn', `渲染器不支持设置 ${key}（已回退到生效值 ${String(applied)}）`, { id, key, requested: value, applied });
-    if (state.panel && applied !== null) state.panel.setValue(id, applied);
+    if (applied !== null) uiState.commit(id, applied, { render: true });
     return;
   }
-  rememberPanelSetting(id, applied === null ? value : applied);
+  // 生效值可能被渲染器钳制（INV-08）：把**生效值**记进工厂（commit=只记录不重发，防自递归）
+  const effective = applied === null ? value : applied;
+  if (effective !== value) uiState.commit(id, effective, { render: true });
 }
+// ---------------------------------------------------------------- 工厂装配（契约 R3）
+/** id → 控件声明（render 需要知道形态：开关用 setChecked，其余用 setValue） */
+const CTL_BY_ID = new Map();
+for (const group of PANEL_GROUPS) {
+  for (const ctl of (group && group.controls) || []) {
+    if (ctl && ctl.id) CTL_BY_ID.set(String(ctl.id), ctl);
+  }
+}
+
+/**
+ * 把值重放到**当前已存在的 DOM**（契约 R3 的 render）。
+ * 幂等：可以在每次面板重建后反复调用；`state.panel` 还没建好时静默跳过。
+ * @param {string} id
+ * @param {unknown} value
+ */
+function renderControl(id, value) {
+  if (!state.panel) return;
+  const ctl = CTL_BY_ID.get(String(id));
+  if (ctl && ctl.kind === 'switch' && typeof state.panel.setChecked === 'function') {
+    state.panel.setChecked(id, value === true);
+    return;
+  }
+  if (typeof state.panel.setValue === 'function') state.panel.setValue(id, value);
+}
+
+// 注册全部"有状态"控件：apply 只负责生效，render 只负责显示（两者失败模式不同，见契约 R3）
+uiState.registerAppliers(Object.fromEntries(
+  uiState.SPEC.map((it) => [it.id, {
+    apply: (v) => applyCore(it.id, v),
+    render: (v) => renderControl(it.id, v),
+  }]),
+));
+
 /** 面板三态快照（断言用：可用项 / 禁用项 / 隐藏项） */
 function panelSnapshot() {
   const on = [];
@@ -247,6 +313,8 @@ function rebuildPanelFor(renderer) {
       if (state.playing === false) { try { repaintActive(state.surface); } catch { /* 忽略 */ } }
     },
     wiredIds: WIRED_IDS,
+    // 首次渲染就显示用户值（契约 R2）：工厂里已经有 loadAll 读回的值
+    initialValue: (id) => uiState.getValue(id),
   });
   // 先把句柄补完，再暴露 state.panel。
   //   为什么顺序重要：设置下拉的同步会**触发面板重建**，重建期间若 state.panel 指向
@@ -260,6 +328,10 @@ function rebuildPanelFor(renderer) {
   state.panelWired = WIRED_IDS.filter((id) => builtIds.includes(id));
   exposePanelWired();
   startFpsReadout(info);
+  // 契约 §三/§3.1（**唯一汇聚点**）：面板 DOM 刚被重建 ⇒ 当前 DOM 的显示态全是 schema 默认值，
+  //   必须立刻按工厂里的生效值重放一次，否则「引擎在循环、开关显示关」会再次出现。
+  try { document.dispatchEvent(new CustomEvent('panel:rebuilt')); } catch { /* 无 DOM 环境忽略 */ }
+  try { uiState.applyAll({ render: true }); } catch { /* 回填失败不影响面板可用 */ }
   refreshSkinHook();
   // 自定义背景图列表：面板重建后重新拉一次（切面/重开面板都会走到这里）
   refreshBackgrounds().catch(() => { /* 列表拉取失败只是少一块内容，不影响面板其余部分 */ });

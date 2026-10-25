@@ -161,13 +161,20 @@ export function renderSlider(ctl, ctx, el, markDisabled) {
 
   const head = el('div', 'ctl-slider-head');
   head.append(el('span', 'ctl-slider-label', ctl.label));
-  const readout = el('span', 'ctl-slider-value', formatSliderValue(ctl, ctl.defaultValue));
+  // 契约 R2：首次渲染就用工厂里的当前值（有则覆盖 schema 默认），避免"先默认后跳"
+  const ivSlider = ctx && typeof ctx.initialValue === 'function' ? ctx.initialValue(ctl.id) : undefined;
+  const seed = ivSlider === undefined ? ctl.defaultValue : ivSlider;
+  const readout = el('span', 'ctl-slider-value', formatSliderValue(ctl, seed));
   readout.dataset.readout = ctl.id || '';
   readout.setAttribute('aria-live', 'polite');
   head.append(readout);
 
   const track = el('div', 'ctl-slider-track');
   const input = buildRangeInput(ctl, cv, el);
+  // 滑块 input.value 存的是**格位**（非线性滑块要换算），所以按 posOf 定位而不是直接写数值
+  if (ivSlider !== undefined) {
+    try { input.value = String(Math.round(posOf(ctl, ivSlider))); } catch { /* 换算失败就用默认位置 */ }
+  }
   track.append(input);
   box.append(head, track);
 

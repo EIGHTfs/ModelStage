@@ -28,6 +28,7 @@ import { attachStageInteraction } from './render/interaction.js';
 import { dom, setStage, stage, state } from './app/context.js';
 import { diagEvent } from './app/status.js';
 import { stageLog, stageStatus } from './app/status.js';
+import * as uiState from './app/ui-state.js';
 import { VIEW_SETTINGS_KEY, applyBackground, applyTheme, readViewSettings, saveViewSettings } from './app/view-settings.js';
 import {
   WIRED_IDS, applyPanelSetting, panelSnapshot, rebuildPanelFor, restorePanelSettings,
@@ -382,6 +383,12 @@ function boot() {
 
   attachInteraction();
 
+  // 契约 R2：**读回早于首次渲染**。loadAll 是纯内存操作（不碰 DOM），
+  //   之后 rebuildPanelFor 建面板时即以读回的持久值渲染，而不是"先默认再命令式补"。
+  try {
+    const loaded = uiState.loadAll();
+    if (loaded.rejected.length) stageLog('warn', '面板设置里有非法值，已回落默认', { rejected: loaded.rejected });
+  } catch { /* 读回失败就按默认继续，不能挡住启动 */ }
   // 面板三态由当前渲染器能力决定；切换渲染器时必须重算 + 重跑自检（契约 INV-05）
   rebuildPanelFor(state.currentRenderer);
   if (state.surface && typeof state.surface.onRendererChange === 'function') {
