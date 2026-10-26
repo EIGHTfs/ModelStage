@@ -30,9 +30,11 @@ import { fileURLToPath } from 'node:url';
 import { createSandbox, loadIntoContext, badInputs, isThenable } from './check-plugin-host.mjs';
 import { runContractChecks, printCoverageTable, findDefaultSample } from './lib/contract-checks.mjs';
 import { parseJsonc } from './parse-jsonc.mjs';
+// 契约 §9.6：effects 校验与运行期共用同一份实现（禁止两处各写一套）
+import { PLUGIN_ROLES, validateEffects } from '../src/server/plugins/registry.mjs';
 
-/** 契约 §一 的五类角色（A4 值域） */
-const ROLES = ['asset-provider', 'renderer', 'editor', 'exporter', 'panel'];
+/** 契约 §一 的五类角色（A4 值域）—— 单一真相在 registry.mjs 的 PLUGIN_ROLES */
+const ROLES = PLUGIN_ROLES;
 /** 契约 §四 的内容类型（A5 值域） */
 const CONTENT_KINDS = ['spine', 'live2d'];
 /** 容器类型：只能出现在 fileKinds，不得进 produces.kind（§四） */
@@ -149,6 +151,34 @@ export async function checkPlugin(dir, options = {}) {
     rep.fail('A6', 'fileKinds 非空但缺 produces.kind（§2 有解析能力时必填）', '§二');
   } else {
     rep.ok('A6', `fileKinds 已声明：${manifest.fileKinds.length ? manifest.fileKinds.join(' / ') : '[]（不参与解析）'}`, '§二');
+  }
+
+  // ---------------- A7 受限扩展点 effects（契约 §九） ----------------
+  //   与运行期共用 registry.mjs:validateEffects —— 两处口径必须一致，各写一遍必然漂移。
+  //   声明了 effects 才读脚本内容（无 effects 的插件零额外 I/O）。
+  {
+    let scriptText = null;
+    if (Array.isArray(manifest.effects) && manifest.effects.length) {
+      try {
+        scriptText = files
+          .map((f) => fs.readFileSync(path.join(abs, String(f).replace(/^\.?\//, '')), 'utf8'))
+          .join('\n');
+      } catch {
+        // 读不到就按"找不到 registerEffect(" 处理，让 A7 明确变红，而不是跳过
+        scriptText = '';
+      }
+    }
+    const effectsError = validateEffects(manifest.effects, {
+      provides: Array.isArray(manifest.provides) ? manifest.provides : [],
+      scriptText,
+      seenIds: options.seenEffectIds || null,
+    });
+    if (effectsError) {
+      rep.fail('A7', effectsError, '§九');
+    } else {
+      const declared = Array.isArray(manifest.effects) ? manifest.effects : [];
+      rep.ok('A7', declared.length ? `effects 合法：${declared.map((x) => x.id).join(' / ')}` : '未声明 effects（无需效果校验）', '§九');
+    }
   }
 
   // ---------------- B 代码层（vm 垫片） ----------------
@@ -487,7 +517,9 @@ async function main(argv) {
 
   const results = [];
   const manifestPath = args.includes('--manifest') ? args[args.indexOf('--manifest') + 1] : null;
-  for (const d of targets) results.push(await checkPlugin(d, { samplePath, sampleOrigin, manifestPath }));
+  // 效果 id 必须跨插件全局唯一（契约 §9.1）⇒ 这批插件共用一个已见集合
+  const seenEffectIds = new Set();
+  for (const d of targets) results.push(await checkPlugin(d, { samplePath, sampleOrigin, manifestPath, seenEffectIds }));
   // 覆盖表每轮都打：让"PL1–PL8 各自被哪项检查覆盖"自证，不靠口头说明
   if (!jsonMode) printCoverageTable();
   if (jsonMode) {

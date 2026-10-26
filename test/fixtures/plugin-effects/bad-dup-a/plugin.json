@@ -1,0 +1,7 @@
+{
+  "id": "bad-dup-a",
+  "name": "占位：先占用 dup_effect",
+  "provides": ["renderer"],
+  "files": ["index.js"],
+  "effects": [{ "id": "dup_effect", "label": "重复效果 A", "params": [] }]
+}

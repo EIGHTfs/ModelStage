@@ -1,0 +1,7 @@
+{
+  "id": "bad-dup-b",
+  "name": "非法样本：effect id 与 bad-dup-a 重复",
+  "provides": ["renderer"],
+  "files": ["index.js"],
+  "effects": [{ "id": "dup_effect", "label": "重复效果 B", "params": [] }]
+}

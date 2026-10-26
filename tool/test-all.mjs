@@ -138,6 +138,10 @@ const SUITES = [
   { name: 'log', runner: 'node-test', file: 'test/log.test.mjs' },
   // 清单签名比对（含「根目录不存在=稳定状态」边界；P0 回归）
   { name: 'manifest-stamp', runner: 'node-test', file: 'test/manifest-stamp.test.mjs' },
+  // 插件清单校验器自己的回归（契约 §九 effects / §9.6 同口径）：
+  //   检查器"报通过"时没人会再回头看它；一旦它悄悄失去检测能力，所有插件都会"看起来合法"。
+  //   样本在 test/fixtures/plugin-effects/，按 A7 行断言（门禁与运行期共用一份实现）。
+  { name: 'check-plugin', runner: 'node-test', file: 'test/check-plugin.test.mjs' },
   // model3 动作清单的提取与缺失过滤（bug B 回归）
   { name: 'catalog-motions', runner: 'node-test', file: 'test/catalog-motions.test.mjs' },
   // PMA 判定与兜底三态（检测不出 ⇒ 按已预乘）

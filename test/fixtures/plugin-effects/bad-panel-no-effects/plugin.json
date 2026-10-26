@@ -1,0 +1,6 @@
+{
+  "id": "bad-panel-no-effects",
+  "name": "非法样本：有 panel 角色但没 effects",
+  "provides": ["panel"],
+  "files": ["index.js"]
+}

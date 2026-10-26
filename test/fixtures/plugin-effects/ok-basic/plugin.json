@@ -1,0 +1,15 @@
+{
+  "id": "ok-basic",
+  "name": "合法样本：清晰度",
+  "provides": ["renderer", "panel"],
+  "files": ["index.js"],
+  "effects": [
+    {
+      "id": "sharpness",
+      "label": "清晰度",
+      "params": [
+        { "key": "u_amount", "type": "float", "min": 0, "max": 1, "default": 0.35 }
+      ]
+    }
+  ]
+}

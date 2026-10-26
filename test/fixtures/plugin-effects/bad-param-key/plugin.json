@@ -1,0 +1,11 @@
+{
+  "id": "bad-param-key",
+  "name": "非法样本：param key 不以 u_ 开头",
+  "provides": ["renderer"],
+  "files": ["index.js"],
+  "effects": [{
+    "id": "badkey",
+    "label": "坏 key",
+    "params": [{ "key": "amount", "type": "float", "min": 0, "max": 1, "default": 0.5 }]
+  }]
+}

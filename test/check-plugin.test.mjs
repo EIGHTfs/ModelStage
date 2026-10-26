@@ -145,6 +145,48 @@ try {
     const { rc, out } = run(['--all', path.join(ROOT, 'plugins')]);
     rec('--all plugins 退出码 0（现有两个插件都合规）', rc === 0 && out.includes('总计'), `rc=${rc}`);
   }
+  // ---------------- effects 样本（契约 §九）：门禁与运行期必须同口径 ----------------
+  //
+  // 样本在 test/fixtures/plugin-effects/（不在 plugins/，否则服务端天天扫到非法清单）。
+  // 这里一次 --all 跑全部样本，正好覆盖「跨插件 id 重复」这种只能成对验的规则。
+  {
+    const FX = path.join(HERE, 'fixtures', 'plugin-effects');
+    const { out } = run(['--all', FX, '--json', '--no-sample']);
+    let parsed = null;
+    try {
+      parsed = JSON.parse(out.slice(out.indexOf('{')));
+    } catch {
+      parsed = null;
+    }
+    /** 取某样本的 A7 行（kind: ok / warn / fail） */
+    const a7Of = (dirName) => {
+      const r = (parsed && parsed.results || []).find((x) => path.basename(x.dir) === dirName);
+      return r ? (r.rows || []).filter((x) => x.code === 'A7') : [];
+    };
+    // 期望表：目录 → 'ok'（A7 必须通过）或 'fail'（A7 必须报错）
+    const EXPECT = [
+      ['ok-basic', 'ok'],
+      ['bad-no-id', 'fail'],
+      ['bad-param-key', 'fail'],
+      ['bad-default-range', 'fail'],
+      ['bad-panel-no-effects', 'fail'],
+      ['bad-no-register-call', 'fail'],
+      ['bad-dup-a', 'ok'],       // 先占位，单看合法
+      ['bad-dup-b', 'fail'],     // 与 bad-dup-a 撞 id ⇒ 必须报重复
+    ];
+    if (!parsed) {
+      rec('effects 样本可被检查器解析（--json）', false, `输出无法解析：${out.slice(0, 120)}`);
+    } else {
+      for (const [dirName, want] of EXPECT) {
+        const rows = a7Of(dirName);
+        const gotFail = rows.some((x) => x.kind === 'fail');
+        const gotOk = rows.some((x) => x.kind === 'ok');
+        const pass = want === 'fail' ? gotFail : (gotOk && !gotFail);
+        rec(`effects/${dirName} 期望 ${want}`, pass, rows.map((x) => `${x.kind}:${x.text}`).join(' | ').slice(0, 120));
+      }
+    }
+  }
+
 } finally {
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* 清理失败不影响结论 */ }
 }

@@ -1,0 +1,7 @@
+{
+  "id": "bad-no-register-call",
+  "name": "非法样本：声明 effects 但脚本没有 registerEffect(",
+  "provides": ["renderer"],
+  "files": ["index.js"],
+  "effects": [{ "id": "noreg", "label": "没注册", "params": [] }]
+}

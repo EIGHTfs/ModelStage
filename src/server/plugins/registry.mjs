@@ -13,6 +13,109 @@ import { parseJsonc } from '../../../tool/parse-jsonc.mjs';
  */
 export const PLUGIN_ROLES = ['asset-provider', 'renderer', 'editor', 'exporter', 'panel'];
 
+// ---------------- 契约 §九（受限扩展点 effects / controls）的共用校验 ----------------
+// 这份实现同时被「运行期注册」（本文件 readPluginManifest）与「离线门禁」（tool/check-plugin.mjs）
+//   调用 —— 契约 §9.6 要求两处同口径，各写一遍必然漂移。
+
+/** 效果 id 命名规则（契约 §9.1：只允许 [a-z][a-z0-9_-]*） */
+const EFFECT_ID_RE = /^[a-z][a-z0-9_-]*$/;
+/** 参数键的 uniform 命名空间前缀（避免与内建着色器变量撞名，契约 §9.1） */
+const EFFECT_PARAM_KEY_PREFIX = 'u_';
+/** 当前允许的参数类型（契约 §9.1：先只开 float） */
+const EFFECT_PARAM_TYPES = ['float'];
+/** 声明了 effects 就必须在插件脚本里找得到的注册调用（契约 §9.6） */
+const EFFECT_REGISTER_CALL = 'registerEffect(';
+
+/**
+ * 校验单个效果的 params 数组。
+ * @param {unknown} params 原始 params
+ * @param {string} where 报错前缀（如 `effects[0]`）
+ * @returns {string|null} 错误文本；null 表示通过
+ */
+function validateEffectParams(params, where) {
+  if (params !== undefined && !Array.isArray(params)) return `${where}.params 必须是数组`;
+  const list = Array.isArray(params) ? params : [];
+  for (let i = 0; i < list.length; i += 1) {
+    const param = list[i];
+    const paramWhere = `${where}.params[${i}]`;
+    if (!param || typeof param !== 'object' || Array.isArray(param)) return `${paramWhere} 必须是对象`;
+    const key = String(param.key || '');
+    if (!key) return `${paramWhere}.key 必填`;
+    if (!key.startsWith(EFFECT_PARAM_KEY_PREFIX)) {
+      return `${paramWhere}.key「${key}」必须以 ${EFFECT_PARAM_KEY_PREFIX} 开头（uniform 命名空间）`;
+    }
+    if (!EFFECT_PARAM_TYPES.includes(param.type)) {
+      return `${paramWhere}.type 非法：${param.type}（当前只允许 ${EFFECT_PARAM_TYPES.join(' / ')}）`;
+    }
+    for (const field of ['min', 'max', 'default']) {
+      if (typeof param[field] !== 'number' || !Number.isFinite(param[field])) {
+        return `${paramWhere}.${field} 必填且必须是有限数字`;
+      }
+    }
+    if (!(param.min < param.max)) return `${paramWhere} 要求 min < max（当前 ${param.min} / ${param.max}）`;
+    if (param.default < param.min || param.default > param.max) {
+      return `${paramWhere}.default=${param.default} 越界（应在 [${param.min}, ${param.max}]）`;
+    }
+  }
+  return null;
+}
+
+/**
+ * 校验 plugin.json 的 `effects[]`（契约 §9.1 / §9.6）。
+ *
+ * 三条容易漏的语义：
+ *   · 声明了 panel 角色却没有任何 effects ⇒ 报错（控件必须对应一个效果，不许出现"点了没反应"的控件）
+ *   · 声明了 effects，但脚本里 grep 不到 `registerEffect(` ⇒ 报错（不是静默忽略）
+ *   · id 必须**跨插件全局唯一** —— 因此 `seenIds` 由调用方跨插件持有并传进来
+ *
+ * @param {unknown} effects 清单里的 effects（可缺省）
+ * @param {{provides?: string[], scriptText?: string|null, seenIds?: Set<string>|null}} opts
+ *   scriptText 为 null 表示"不检查脚本调用"（离线门禁里没读源码时用）
+ * @returns {string|null} 错误文本；null 表示通过
+ */
+export function validateEffects(effects, opts = {}) {
+  const { provides = [], scriptText = null, seenIds = null } = opts;
+  if (effects !== undefined && !Array.isArray(effects)) return 'effects 必须是数组';
+  const list = Array.isArray(effects) ? effects : [];
+  const hasPanelRole = Array.isArray(provides) && provides.includes('panel');
+  if (!list.length) {
+    return hasPanelRole ? '声明了 panel 角色却没有 effects：控件必须对应一个效果（契约 §9.6）' : null;
+  }
+  const localIds = new Set();
+  for (let i = 0; i < list.length; i += 1) {
+    const effect = list[i];
+    const where = `effects[${i}]`;
+    if (!effect || typeof effect !== 'object' || Array.isArray(effect)) return `${where} 必须是对象`;
+    const id = String(effect.id || '');
+    if (!id) return `${where}.id 必填`;
+    if (!EFFECT_ID_RE.test(id)) return `${where}.id「${id}」命名非法（只允许 [a-z][a-z0-9_-]*）`;
+    if (localIds.has(id)) return `${where}.id「${id}」在同一插件内重复`;
+    if (seenIds && seenIds.has(id)) return `${where}.id「${id}」与其他插件的效果 id 重复（必须跨插件唯一）`;
+    if (typeof effect.label !== 'string' || !effect.label.trim()) return `${where}.label 必填且非空字符串`;
+    const paramsErr = validateEffectParams(effect.params, where);
+    if (paramsErr) return paramsErr;
+    // 全部通过后再登记，避免"半合法"的 id 污染跨插件唯一性判断
+    localIds.add(id);
+    if (seenIds) seenIds.add(id);
+  }
+  // 形状全通过后再查脚本调用：否则"脚本缺注册调用"会掩盖真正的形状错误（id/params 才是首要原因）
+  if (scriptText !== null && !stripComments(String(scriptText)).includes(EFFECT_REGISTER_CALL)) {
+    return `声明了 effects 但插件脚本里没有 ${EFFECT_REGISTER_CALL} 调用（契约 §9.6）`;
+  }
+  return null;
+}
+
+/**
+ * 去掉 JS 注释后再判"有没有调用某函数"。
+ * 为什么必须剥：注释里写一句「这里要调 registerEffect(」就会让朴素 includes 假通过 ——
+ *   本仓库踩到过（样本的说明注释直接让一份非法清单过检）。只剥注释，不做完整语法解析。
+ * @param {string} code 源码文本
+ * @returns {string} 去掉注释后的文本
+ */
+function stripComments(code) {
+  return code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+}
+
 /**
  * PL1 校验：`provides` 必选，且只能含已知角色。
  *
@@ -45,7 +148,7 @@ export function validateProvides(provides) {
 /** 服务端日志（统一形状 {at,level,tag,msg,detail}） */
 const log = createLogger('plugins');
 
-export function readPluginManifest(pluginsDir, dirName, isFile, disabled) {
+export function readPluginManifest(pluginsDir, dirName, isFile, disabled, seenEffectIds = null) {
   let m = null;
   try {
     m = JSON.parse(fs.readFileSync(path.join(pluginsDir, dirName, 'plugin.json'), 'utf8'));
@@ -70,6 +173,22 @@ export function readPluginManifest(pluginsDir, dirName, isFile, disabled) {
     log.warn('注册失败', { plugin: pid, reason: badProvides });
     return null;
   }
+  // 契约 §九：effects 与 provides 的 panel 角色互相约束，非法就不进入运行期（不静默忽略）
+  //   只在**声明了 effects** 时才读脚本内容做 grep（无 effects 的插件零额外 I/O）
+  let scriptText = null;
+  if (Array.isArray(m.effects) && m.effects.length) {
+    try {
+      scriptText = files.map((f) => fs.readFileSync(path.join(pluginsDir, dirName, f), 'utf8')).join('\n');
+    } catch (e) {
+      log.warn('效果校验：读取脚本失败，按"找不到 registerEffect(" 处理', { plugin: pid, err: e.message });
+      scriptText = '';
+    }
+  }
+  const badEffects = validateEffects(m.effects, { provides: m.provides, scriptText, seenIds: seenEffectIds });
+  if (badEffects) {
+    log.warn('注册失败', { plugin: pid, reason: badEffects });
+    return null;
+  }
   return {
     id: pid,
     name: String(m.name || dirName),
@@ -82,6 +201,8 @@ export function readPluginManifest(pluginsDir, dirName, isFile, disabled) {
     produces: m.produces && typeof m.produces === 'object' ? m.produces : null,
     errorCodes: Array.isArray(m.errorCodes) ? m.errorCodes.map(String) : [],
     files: files.map((f) => `${dirName}/${f}`),
+    /** 受限扩展点（契约 §九）：空数组表示"没声明"，前端据此建能力键白名单 */
+    effects: Array.isArray(m.effects) ? m.effects : [],
     manifest: true,
   };
 }
@@ -111,6 +232,9 @@ export function readPlugins(pluginsDir, switchFile) {
   try { entries = fs.readdirSync(pluginsDir, { withFileTypes: true }); } catch { return out; }
   entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
 
+  // 效果 id 必须跨插件全局唯一（契约 §9.1）⇒ 整个扫描共享一个已见集合
+  const seenEffectIds = new Set();
+
   const isFile = (rel) => {
     const abs = path.join(pluginsDir, rel);
     try { return fs.existsSync(abs) && fs.statSync(abs).isFile(); } catch { return false; }
@@ -129,7 +253,7 @@ export function readPlugins(pluginsDir, switchFile) {
 
     const manifestPath = path.join(pluginsDir, e.name, 'plugin.json');
     if (fs.existsSync(manifestPath) && fs.statSync(manifestPath).isFile()) {
-      const entry = readPluginManifest(pluginsDir, e.name, isFile, disabled);
+      const entry = readPluginManifest(pluginsDir, e.name, isFile, disabled, seenEffectIds);
       if (entry) out.push(entry);
       continue;
     }

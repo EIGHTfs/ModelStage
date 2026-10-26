@@ -1,0 +1,7 @@
+{
+  "id": "bad-no-id",
+  "name": "非法样本：effect 缺 id",
+  "provides": ["renderer"],
+  "files": ["index.js"],
+  "effects": [{ "label": "没有 id 的效果", "params": [] }]
+}

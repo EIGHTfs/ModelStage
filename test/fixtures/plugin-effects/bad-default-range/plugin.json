@@ -1,0 +1,11 @@
+{
+  "id": "bad-default-range",
+  "name": "非法样本：default 越界",
+  "provides": ["renderer"],
+  "files": ["index.js"],
+  "effects": [{
+    "id": "badrange",
+    "label": "越界",
+    "params": [{ "key": "u_amount", "type": "float", "min": 0, "max": 1, "default": 5 }]
+  }]
+}
