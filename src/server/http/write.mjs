@@ -19,7 +19,7 @@ const MAX_BODY_CHARS = 1e6;
 const MAX_NAME_CHARS = 60;
 /** 支持的写动作（改这里要同步左栏 UI 与文档） */
 const ROOT_ACTIONS = ['add', 'remove', 'rename', 'toggle'];
-/** 导入请求体上限（字符）：名表可能较大，与旧端一致取 5MB */
+/** 导入请求体上限（字符）：名表可能较大，取 5MB */
 const MAX_IMPORT_CHARS = 5e6;
 /** 备份保留份数：更早的移入 config/.trash/（可恢复），避免反复导入把 config/ 堆满 */
 const BACKUP_KEEP = 5;
@@ -294,7 +294,7 @@ export function createWriteApi({ paths, config, models, names }) {
   /**
    * 备份 config/ 下的一个文件到 config/.bak-<时间戳>/<相对路径>。
    *
-   * 为什么沿用旧端的 `.bak-<时间戳>` 目录约定：备份要和配置文件放在一起（同一个卷、
+   * 为什么用 `.bak-<时间戳>` 目录约定：备份要和配置文件放在一起（同一个卷、
    *   同一个备份根），这样"找备份"只有一处；用目录而不是单文件后缀，是因为一次导入
    *   可能涉及多个文件，同一次操作应当归到同一个备份目录里。
    *
@@ -425,7 +425,7 @@ export function createWriteApi({ paths, config, models, names }) {
       if (name.length > MAX_NAME_CHARS) {
         return { ok: false, status: 400, error: `name 超过 ${MAX_NAME_CHARS} 个字符` };
       }
-      // kind 是可选声明，原样透传（只有它影响扫描策略；旧端遗留的选配置字段已删除）
+      // kind 是可选声明，原样透传（只有它影响扫描策略）
       const root = { id, name, path: dir, enabled: payload.enabled !== false };
       if (payload.kind) root.kind = String(payload.kind);
       next.push(root);

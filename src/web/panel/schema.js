@@ -9,7 +9,7 @@
 //
 // 取值口径（取值域按实际行为实测定，不自己编）：
 //   · 9 个手风琴分组名、设置组 10 个子项的标题与选项文字逐字照旧；
-//   · 每个控件都带 `pending: true` 语义（M3 一律不接线，渲染成 disabled + data-pending）。
+//   · 控件可声明 `pending: true` 表示暂不可用，渲染成 disabled + data-pending。
 
 /**
  * @typedef {{kind: string, label?: string, options?: Array<string|{text: string, title?: string}>,

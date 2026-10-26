@@ -40,7 +40,7 @@ const MAX_NAME_LEN = 30;
 const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 
 /**
- * 默认 5 个（旧端原色；用户点名要恢复的是绿幕/蓝幕）。
+ * 默认 5 个（原色板；绿幕/蓝幕是常用项）。
  * id 用**确定性 slug**：reset 是幂等操作，产出变化的 id 反直觉；确定性 id 也让测试能直接断言。
  */
 export const DEFAULT_SOLIDS = [

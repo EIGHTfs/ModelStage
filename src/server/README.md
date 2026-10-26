@@ -1,7 +1,6 @@
 # src/server/ —— 共用服务端数据层
 
-把原先内联在 `server.mjs` 里的只读数据逻辑抽成**不依赖 http、不读端口**的模块，让 8803（旧前端）
-与 8804（新前端）可以共用同一份实现，最终新前端能脱离旧端独立运行。
+只读数据逻辑抽成**不依赖 http、不读端口**的模块，可被任意入口复用。
 
 过渡期仍由 `server.mjs` 继续服务（本目录与旧实现并行存在），切换在后续步骤进行。
 
@@ -39,7 +38,7 @@ data.bundleProbe.probeBundle(id, p) // → Promise<{ status, body }>
 | `probe.mjs` | 版本号/atlas 键/贴图页探测、越界路径解析、MIME 表（纯函数） |
 | `models.mjs` | Spine 模型扫描与清单缓存（`config/models.<rootId>.json`） |
 | `live2d.mjs` | Live2D 模型扫描与清单缓存（`config/live2d.<rootId>.json`）、运行时库探测 |
-| `names.mjs` | 角色名表读取（`config/names/<id>.json`） |
+| `names.mjs` | 角色名表读取（`config/index/<id>.index.json`；规则在 `src/shared/names.mjs`） |
 | `tree.mjs` | 目录树列举（`/api/tree` 数据层：Spine 三件套识别、bundle 可见性） |
 | `model-meta.mjs` | Spine 元数据（`/api/model-meta` 数据层，按需 import 解析器 + 动作规则缓存） |
 | `bundle-probe.mjs` | UnityFS 资源包预检（`/api/bundle/probe` 数据层） |
@@ -61,7 +60,7 @@ data.bundleProbe.probeBundle(id, p) // → Promise<{ status, body }>
 3. **写接口未进本层**：`/api/roots`(POST)、`/api/config/import`、`/api/diag` 仍留在 `server.mjs`，
    过渡期维持单写者；等 8804 完全独立后再评估（需先解决两进程写同一份 `config/` 的竞态）。
 4. **静态托管与首页注入仍在 `server.mjs`**：`index.html` 的 store 锚点注入、防闪屏 CSS、
-   `window.__APP_BRAND__` 都是旧前端（`dist/` + React）特化逻辑，共用层不应知道这些。
+   `window.__APP_BRAND__` 这类浏览器宿主的特化逻辑，共用层不应知道这些。
 5. **`/api/names` 未切到本层（保留 `server.mjs` 旧实现）**：本层的 `getNameTable()` 带
    **进程内缓存**，且只有「有时返回表 / 无时返回 null」两态；而旧路由是「**每次现读文件** +
    文件缺失返回 404 + 解析失败返回 500」三态。直接切换会改变可观测行为（结果被缓存化、404 变 200），

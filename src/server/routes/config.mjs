@@ -3,7 +3,7 @@
 // 导出是只读（把 config/resources.json 与 names/*.json 打包成 {files,count}）；
 // 导入是写路径，与 /api/roots 共用 http/write.mjs 的"校验 → 备份 → 写 → 回读自检"管道。
 //
-// 为什么请求体上限单独放宽到 5MB：名表 JSON 可能较大（与旧端一致），
+// 为什么请求体上限单独放宽到 5MB：名表 JSON 可能较大，
 //   默认 2MB 会让大名表在中途被断开，用户只看到笼统的失败。
 
 /**
