@@ -45,10 +45,21 @@ const RUNTIME_DIR = path.join(ROOT, 'src', 'spine-runtimes');
 const PLUGINS_DIR = path.join(ROOT, 'plugins');
 const PORT = Number(process.env.PORT) || Number(process.argv[2]) || 8804;
 
+/**
+ * 头像根解析：`--avatar-root <dir>` > 环境变量 `MODELSTAGE_AVATAR_ROOT` > `<项目根>/avatars`（默认占位）。
+ * 为什么要可配置：头像仓是独立私有仓，而项目根可能在 CIFS/SMB 上（不允许 chmod ⇒ 那里 clone 不出来），
+ *   所以头像仓要能放到任意可写位置再指过来（见 docs/设计/名表.md §4.1）。
+ */
+function resolveAvatarRoot() {
+  const i = process.argv.indexOf('--avatar-root');
+  const fromArg = i >= 0 ? process.argv[i + 1] : '';
+  return fromArg || process.env.MODELSTAGE_AVATAR_ROOT || '';
+}
+
 /** 服务端日志（统一形状 {at,level,tag,msg,detail}；error→stderr，其余→stdout） */
 const log = createLogger('serve');
 
-const data = createServerData({ root: ROOT });
+const data = createServerData({ root: ROOT, avatarRoot: resolveAvatarRoot() || undefined });
 // 静态/资源类路由（/plugins、/spine-runtimes、src/web 静态）单独成模块
 const staticRoutes = createStaticRoutes({ root: ROOT, webRoot: WEB_ROOT, runtimeDir: RUNTIME_DIR, pluginsDir: PLUGINS_DIR });
 const diag = createDiag(data.paths);

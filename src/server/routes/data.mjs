@@ -87,23 +87,38 @@ function apiData(ctx, res, p, url) {
 }
 
 /**
- * 名表：与旧实现完全一致（每次现读、缺文件 404、解析失败 500）。
- * 为什么不复用 getNameTable：那个带进程内缓存且只有两态，会改变对外可观测行为。
+ * 名表（v2 index 优先、v1 兜底）：返回**归一化**后的表。
+ *
+ * 为什么不再每次现读 JSON：归一化逻辑（v1 字符串值 → {char,how}、name+nameZh → 多语言数组）
+ *   只在 names.mjs 里存在一份；这里再读一遍就等于复制第二份解析规则。
+ *   缓存失效由 names.clearNameCache()（导入配置时）负责，对外行为仍是"导入后立刻生效"。
+ *
+ * 三种情况必须可区分（不能静默返回空表 —— 那会让整片名字消失且界面无任何提示）：
+ *   ① 该根没配 names        → 200 + names:null + reason（不是错误，是配置选择）
+ *   ② 配了但两个文件都没有   → 404 + 明确说明"index 与 v1 都不存在"
+ *   ③ 文件坏了             → 500 + 解析失败原因
  */
 function apiNames(ctx, res, url) {
-  const { data, fs, path, sendJson } = ctx;
+  const { data, sendJson } = ctx;
   const rootId = url.searchParams.get('root') || '';
   const cfg = data.config.readConfig().find((r) => r.id === rootId);
   if (!cfg) return sendJson(res, 400, { error: `未找到资源根: ${rootId}` });
   if (!cfg.names) return sendJson(res, 200, { root: rootId, names: null, reason: '该资源根未配置 names 名表' });
-  const file = path.join(data.paths.namesDir, `${cfg.names}.json`);
-  if (!fs.existsSync(file)) return sendJson(res, 404, { error: `名表文件不存在: config/names/${cfg.names}.json` });
-  try {
-    const table = JSON.parse(fs.readFileSync(file, 'utf8'));
-    return sendJson(res, 200, { root: rootId, tableId: cfg.names, ...table });
-  } catch (e) {
-    return sendJson(res, 500, { error: `名表解析失败: ${e.message}` });
+
+  const { table, error, detail } = data.names.loadNamesTable(cfg.names);
+  if (!table) {
+    const status = error === 'BROKEN' ? 500 : 404;
+    return sendJson(res, status, { root: rootId, tableId: cfg.names, error: detail, code: error });
   }
+  return sendJson(res, 200, {
+    root: rootId,
+    tableId: cfg.names,
+    source: table.source,          // 'index' | 'v1'：让前端/排查脚本一眼看出读的是哪一代
+    specVersion: table.specVersion,
+    game: table.game,
+    characters: table.characters,
+    byAsset: table.byAsset,
+  });
 }
 
 /** 需要按需 import 的三条（catalog / bundle probe / model meta） */
@@ -183,6 +198,33 @@ function serveIcon(ctx, req, res, p) {
   return true;
 }
 
+/**
+ * /avatars/<game>/<文件名>：头像仓（v2 主路）。
+ *
+ * 与 /icons/ 的区别：`/icons/` 读的是"每个资源根自己配的 icons.dir"（v1 遗留，一个根一套）；
+ *   `/avatars/` 读的是**全局可配置的头像根**（`<avatarRoot>/<game>/<file>`），
+ *   因为头像仓是独立私有仓、与资源根无关（见 docs/设计/名表.md §4.1）。
+ *
+ * `<game>` 直接落在文件系统路径里 ⇒ 必须防越界：只接受一层合法目录名 + 一层合法文件名，
+ *   两级都做 path.resolve 后的前缀校验（防 `../` 与绝对路径注入）。
+ */
+function serveAvatar(ctx, req, res, p) {
+  const { data, fs, path, sendFile } = ctx;
+  if (!p.startsWith('/avatars/')) return false;
+  const rest = decodeURIComponent(p.slice('/avatars/'.length));
+  const parts = rest.split('/').filter(Boolean);
+  if (parts.length !== 2) { res.writeHead(404); res.end('bad avatar path'); return true; }
+  const game = path.basename(parts[0]);
+  const name = path.basename(parts[1]);
+  if (game !== parts[0] || name !== parts[1]) { res.writeHead(403); res.end('forbidden'); return true; }
+  const root = path.resolve(data.paths.avatarRoot);
+  const abs = path.resolve(root, game, name);
+  if (!abs.startsWith(root + path.sep)) { res.writeHead(403); res.end('forbidden'); return true; }
+  if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) { res.writeHead(404); res.end('not found'); return true; }
+  sendFile(req, res, abs);
+  return true;
+}
+
 /** /live2d-lib/<文件>：Cubism Core 等运行时库（由 resolver 探测出的映射表） */
 function serveLive2DLib(ctx, req, res, p) {
   const { data, path, sendJson, sendFile } = ctx;
@@ -231,6 +273,7 @@ export function handleData(req, res, p, url, ctx) {
   if (apiAsync(ctx, req, res, p, url)) return true;
   if (serveModelFile(ctx, req, res, p, url)) return true;
   if (serveIcon(ctx, req, res, p)) return true;
+  if (serveAvatar(ctx, req, res, p)) return true;
   if (serveLive2DLib(ctx, req, res, p)) return true;
   return false;
 }

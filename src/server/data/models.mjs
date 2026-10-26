@@ -18,18 +18,39 @@ function live2dModelsFile(configFile, rootId) {
 }
 
 /**
- * 头像解析：① 名表记录的文件名（走 /icons/）② 模型目录自带 icon.png（走 /files/）。
+ * 头像解析（三条候选路，按优先级）：
+ *   ① 头像仓：<avatarRoot>/<names>/<avatar>（v2 主路；avatarRoot 可配置，见 docs/设计/名表.md §4.1）
+ *   ② 旧 icons.dir：/icons/<rootId>/<文件名>（v1 兼容，双轨期保留）
+ *   ③ 模型目录自带的 icon.png：/files/<rootId>/<相对路径>
+ * 都没有 ⇒ null（前端用占位图，不阻塞）。
+ *
+ * 为什么头像仓要**先 stat 再返回 URL**：头像仓可能与 index 不同步（index 里写了 avatar 文件名，
+ *   但 png 还没提取）。不 stat 就给 URL，前端会拿到 404 的 img，比"没有头像"更难看。
+ *
  * @param {Function} getNameTable 名表读取函数（由调用方注入，避免本模块依赖项目根）
+ * @param {{avatarRoot?: string}} [opts] avatarRoot = 头像仓根（可配置）
  */
-export function resolveIconUrl(root, relPath, modelName, dirFiles, getNameTable) {
-  // ① 名表记录的头像文件名
+export function resolveIconUrl(root, relPath, modelName, dirFiles, getNameTable, opts = {}) {
+  // 名表已归一化（names.mjs）：byAsset 的值统一是 { char, costume, how }，characters[id].avatar 是文件名。
+  //   仍兼容字符串值：双轨期若有旧的未归一化来源（测试直接塞对象）也不会炸。
   const t = getNameTable(root);
-  const id = (t && t.byAsset) ? t.byAsset[String(modelName).toLowerCase()] : null;
-  const icon = (id && t.characters && t.characters[id]) ? String(t.characters[id].icon || '') : '';
-  if (icon && root.icons && root.icons.dir) {
-    return `/icons/${encodeURIComponent(root.id)}/${encodeURIComponent(icon)}`;
+  const key = String(modelName).toLowerCase();
+  const map = (t && t.byAsset) ? t.byAsset[key] : null;
+  const id = map ? (typeof map === 'string' ? map : map.char) : null;
+  const entry = (id && t.characters) ? t.characters[id] : null;
+  const avatar = entry ? String(entry.avatar || '') : '';
+  // ① 头像仓优先
+  if (avatar && opts.avatarRoot && root.names) {
+    const abs = path.join(opts.avatarRoot, String(root.names), avatar);
+    if (fs.existsSync(abs)) {
+      return `/avatars/${encodeURIComponent(root.names)}/${encodeURIComponent(avatar)}`;
+    }
   }
-  // ② 模型目录自带的 icon.png（Live2D）
+  // ② 旧路：icons.dir（v1 兼容）
+  if (avatar && root.icons && root.icons.dir) {
+    return `/icons/${encodeURIComponent(root.id)}/${encodeURIComponent(avatar)}`;
+  }
+  // ③ 模型目录自带的 icon.png（Live2D）
   if (dirFiles && dirFiles.has('icon.png')) {
     const rel = relPath ? `${relPath}/icon.png` : 'icon.png';
     return `/files/${encodeURIComponent(root.id)}/${encodePath(rel)}`;
@@ -103,7 +124,8 @@ export function buildModelServer(root, relPath, baseName, skel, atlas, dirFiles,
     fileSize: skel.size + atlas.size + textures.reduce((s, t) => s + t.size, 0),
     // atlasPma：true/false/null(未声明=未知)。不可硬编码 false —— 那等于断言"非预乘"
     atlasPma: atlas.atlasPma ?? null,
-    iconUrl: resolveIconUrl(root, relPath, assetKey, new Set(dirFiles.map((f) => f.name)), deps.getNameTable),
+    // avatarRoot 来自 paths（可配置：--avatar-root > MODELSTAGE_AVATAR_ROOT > <root>/avatars）
+    iconUrl: resolveIconUrl(root, relPath, assetKey, new Set(dirFiles.map((f) => f.name)), deps.getNameTable, { avatarRoot: p.avatarRoot }),
     animations: [],
     skins: [],
     boneCount: 0,

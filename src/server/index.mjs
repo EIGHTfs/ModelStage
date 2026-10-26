@@ -24,11 +24,14 @@ import * as probe from './assets/probe.mjs';
 
 /**
  * 装配数据层。
- * @param {{root: string}} options root = 项目根（含 config/、plugins/、tool/、data/）
+ * @param {{root: string, avatarRoot?: string}} options
+ *   root = 项目根（含 config/、plugins/、tool/、data/）
+ *   avatarRoot = 头像根（可选，缺省 <root>/avatars）。由调用方解析 CLI/env 后传入 ——
+ *     本层保持"不读 process.argv"的约束（见文件头设计约束）。
  */
-export function createServerData({ root }) {
+export function createServerData({ root, avatarRoot }) {
   if (!root) throw new Error('createServerData: 需要 root');
-  const paths = createPaths({ root });
+  const paths = createPaths({ root, avatarRoot });
   const env = createEnv(paths);
   const config = createConfig(paths);
   const plugins = createPlugins(paths);
