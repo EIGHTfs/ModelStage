@@ -394,20 +394,40 @@ export function createUnpackStore(opts) {
       }
       sampleRss();
       const memBefore = rssNow();
+      // 分段打点（先量再改）：解压 / 落盘 / 索引探针 三段分别计时。
+      //   为什么要量：服务端解包 10~11s，而前端本地解同一包只要 4s ——
+      //   慢的到底是解压还是写盘，不量就只能猜（写盘目标是 SMB 挂载 + 23~39 个小文件，最可疑）。
+      const tUnpack0 = Date.now();
       const res = await unpackFile({ rootId: req.rootId, rel: req.rel, absPath: req.absPath });
+      const unpackWallMs = Date.now() - tUnpack0;
       const memAfter = rssNow();
       if (!res.ok) {
         counters.failures += 1;
         return { ok: false, fingerprint: fp, reason: res.reason, message: res.message };
       }
+      const tWrite0 = Date.now();
       const { index } = await writeResult(fp, res, { ...req, size: stat.size, mtimeMs: stat.mtimeMs, pluginId: runnerInfo().pluginId, pluginVersion: version });
+      const writeMs = Date.now() - tWrite0;
+      const tProbe0 = Date.now();
       // 实测回填必须在 writeResult **之后**：产物是"临时目录 rename 到 <fp>"落的盘，
       //   目标目录若被提前创建（写 probe.json 会 mkdir）会让 rename 报 ENOTEMPTY。
       if (res.ok) recordMeasuredPeak(fp, memBefore, memAfter, decl);
+      const probeMs = Date.now() - tProbe0;
       counters.unpackCount += 1;
       counters.lastUnpackMs = Date.now() - t0;
       sampleRss();
-      return { ok: true, hit: false, fingerprint: fp, prefix: index.prefix, entry: index.entry, files: index.files, unpackMs: index.unpackMs, memBasis: mem.basis, peakEstMb: mem.peakEstMb };
+      // phases 随响应回给调用方（排查与验收要能看到"时间花在哪一段"）
+      // 解压段再细分：readMs = 从盘读整包（19MB 走 SMB 可能就要几秒）、pluginResolveMs = 插件真正解压
+      const phases = {
+        readMs: res.readMs,
+        pluginResolveMs: res.unpackMs,
+        unpackWallMs,
+        writeMs,
+        probeMs,
+        totalMs: Date.now() - t0,
+        files: index.files.length,
+      };
+      return { ok: true, hit: false, fingerprint: fp, prefix: index.prefix, entry: index.entry, files: index.files, unpackMs: index.unpackMs, phases, memBasis: mem.basis, peakEstMb: mem.peakEstMb };
     }).finally(() => inflight.delete(fp));
     inflight.set(fp, task);
     const out = await task;
@@ -462,5 +482,68 @@ export function createUnpackStore(opts) {
     };
   }
 
-  return { resolve, memoryOf, peek, readIndex, filePathOf, stats, cleanup, fingerprintOf };
+  /**
+   * 把**前端解出来的产物**落盘到同一个缓存键（新增的第二个写入者）。
+   *
+   * 为什么要有第二个写入者：服务端解包要 11.4s（慢在 vm 沙箱里跑插件，实测解压占 93.6%），
+   *   而前端本地解同一个包只要 4.3s。与其把服务端变快（那要动隔离模型），
+   *   不如让前台走快的（前端解），解完把产物交给服务端存起来 —— 这样：
+   *     首次 4.3s（原来等 11.4s）、第二次 137ms（命中），服务端那条慢路只留给预热/直调。
+   *
+   * 硬约束：
+   *   · **指纹由服务端自己算**（它拿得到源包 absPath + stat）。前端只报 rootId/rel 与产物，
+   *     不重复实现 hash —— 否则键一旦不一致，就会出现"存进去了但查不到"。
+   *   · 已存在同一指纹的缓存 ⇒ 直接返回 hit（幂等，不重复写盘）。
+   *   · 落盘失败**不影响本次加载**：数据在前端内存里已经可用，这里失败只让下次再解一遍。
+   *
+   * @param {{rootId:string, rel:string, absPath:string, prefix:string, entry:string,
+   *          files: Array<{name:string, bytes:Buffer}>, pluginId?:string, pluginVersion?:string}} req
+   * @returns {Promise<{ok:boolean, hit?:boolean, fingerprint?:string, files?:number, ms?:number, reason?:string, message?:string}>}
+   */
+  async function storeResolved(req) {
+    let stat;
+    try {
+      stat = fs.statSync(req.absPath);
+    } catch (e) {
+      return { ok: false, reason: 'read-failed', message: String((e && e.message) || e) };
+    }
+    const fp = fingerprintOf({ rootId: req.rootId, rel: req.rel, absPath: req.absPath, stat });
+    const cachedIdx = readIndex(fp);
+    const verdict = hitCheck(cachedIdx, stat);
+    if (verdict.hit) {
+      // 幂等：已经有同一份产物的缓存，不必再写一遍（并发/重试都会走到这里）
+      return { ok: true, hit: true, fingerprint: fp, files: (cachedIdx.files || []).length, skipped: 'already-cached' };
+    }
+    const list = Array.isArray(req.files) ? req.files : [];
+    if (!list.length) return { ok: false, reason: 'empty-files', message: '产物为空' };
+    // 构造 writeResult 认得的"文件视图"（鸭子类型：entries + take + release），复用同一条落盘路径
+    const bytesMap = new Map(list.map((f) => [String(f.name), f.bytes]));
+    const resLike = {
+      files: {
+        entries: list.map((f) => ({ path: String(f.name) })),
+        take: async (p) => bytesMap.get(String(p)) || null,
+        release: (p) => { bytesMap.delete(String(p)); },
+      },
+      prefix: String(req.prefix || ''),
+      entry: String(req.entry || ''),
+      unpackMs: 0,
+    };
+    const t0 = Date.now();
+    try {
+      const { index } = await writeResult(fp, resLike, {
+        rootId: req.rootId,
+        rel: req.rel,
+        size: stat.size,
+        mtimeMs: stat.mtimeMs,
+        pluginId: req.pluginId || 'frontend',
+        pluginVersion: req.pluginVersion || 'frontend',
+      });
+      cleanup();
+      return { ok: true, hit: false, fingerprint: fp, files: index.files.length, ms: Date.now() - t0 };
+    } catch (e) {
+      return { ok: false, reason: 'write-failed', message: String((e && e.message) || e) };
+    }
+  }
+
+  return { resolve, storeResolved, memoryOf, peek, readIndex, filePathOf, stats, cleanup, fingerprintOf };
 }

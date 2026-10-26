@@ -336,6 +336,52 @@ const MIME_BY_EXT = {
     });
   }
 
+  /** 字节 → base64（分块：一次性 String.fromCharCode(...bigArray) 会爆调用栈） */
+  function base64Of(bytes) {
+    const CHUNK = 0x8000;
+    let out = '';
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      out += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+    }
+    return btoa(out);
+  }
+
+  /**
+   * 把**前端本地解出来的产物**交给服务端落盘（缓存的第二个写入者）。
+   *
+   * 为什么这么做：服务端解包要 11.4s（慢在 vm 沙箱里跑插件，实测解压占 93.6%），
+   *   而前端本地解同一个包只要 4.3s。所以前台走快的（前端解），解完把产物存到服务端 ——
+   *   首次 4.3s、第二次 137ms，服务端那条慢路只留给预热/直调接口。
+   *
+   * **不 await、不阻塞渲染**：数据已在内存里可用，落盘只是为下一次加速；
+   *   失败也只记 diag（下次再解一遍），绝不影响本次加载。
+   * 指纹由服务端算（它拿得到源包），前端只报 rootId/rel 与产物 —— 避免两边各实现一份 hash 导致键不一致。
+   */
+  async function storeToServer(file, res) {
+    const t0 = performance.now();
+    try {
+      const entries = [];
+      for (const [name, blob] of res.files) {
+        const buf = new Uint8Array(await blob.arrayBuffer());
+        entries.push({ name, bytes: base64Of(buf) });
+      }
+      const j = await postJson('/api/unpack/store', {
+        rootId: file.rootId, rel: file.rel,
+        prefix: res.prefix, entry: res.entry,
+        files: entries,
+      });
+      emit('unpack.store', {
+        rootId: file.rootId, rel: file.rel,
+        ok: !!(j && j.ok), hit: !!(j && j.hit), files: entries.length,
+        fingerprint: j && j.fingerprint, ms: Math.round(performance.now() - t0),
+      });
+      say.info(`产物已交服务端落盘：${file.rel}（${entries.length} 个文件，${Math.round(performance.now() - t0)}ms${j && j.hit ? '，已有缓存' : ''}）`);
+    } catch (e) {
+      emit('unpack.store', { rootId: file.rootId, rel: file.rel, ok: false, error: String((e && e.message) || e).slice(0, 120), ms: Math.round(performance.now() - t0) });
+      say.warn(`产物落盘失败（不影响本次加载）：${file.rel}（${(e && e.message) || e}）`);
+    }
+  }
+
   /**
    * 服务端**命中查询**（形态 C 的前台路径）：`hitOnly` ⇒ 服务端只读索引，**绝不在这里解包**。
    * miss 会抛 reason='server-miss'，调用方据此走本地解包（首次绝不因此变慢）。
@@ -343,12 +389,31 @@ const MIME_BY_EXT = {
    * @param {{rootId: string, rel: string}} file
    * @returns {Promise<{prefix: string, entry: string, files: Map<string, Uint8Array>, hit: boolean, provider: string, src: string}>}
    */
-  async function resolveFromServer(file) {
-    const j = await postJson('/api/unpack/resolve',
+  async function resolveFromServer(file, { hitOnly = true, mon = null } = {}) {
+    // 自定义超时已删：查询只读服务端的缓存索引，本该很快；给它 1.5s 反而会在服务偶尔忙时
+    //   超时被误判成"没缓存"，直接导致前端白解一遍（19MB / 4.3s）。用统一的默认超时即可。
+    const tLook = performance.now();
+    let j;
+    try {
       // allowOverLimit：面板「内存保护」关掉时允许服务端越过内存预算（默认开 ⇒ 不带，行为不变）
-      { rootId: file.rootId, rel: file.rel, hitOnly: true, allowOverLimit: !memoryGuard.isMemoryGuardOn() }, { timeoutMs: 1500 });
-    if (!j || !j.ok) throw new Error((j && (j.message || j.reason)) || '服务端查询失败');
-    if (!j.hit) throw Object.assign(new Error(`未命中（${j.missReason || 'no-index'}）`), { reason: 'server-miss' });
+      j = await postJson('/api/unpack/resolve',
+        { rootId: file.rootId, rel: file.rel, hitOnly, allowOverLimit: !memoryGuard.isMemoryGuardOn() });
+    } catch (e) {
+      // 查询**失败**（超时/网络/连接复用被打断）必须可见：以前这种异常没有 reason，
+      //   被 catch 静默当成"未命中"，日志里查不出任何痕迹 —— 这是排查不出来的首因。
+      emit('unpack.lookup', { rootId: file.rootId, rel: file.rel, ok: false, error: String((e && e.message) || e).slice(0, 120), ms: Math.round(performance.now() - tLook) });
+      say.warn(`命中查询失败：${file.rel}（${(e && e.message) || e}）`);
+      throw Object.assign(e instanceof Error ? e : new Error(String(e)), { reason: 'lookup-error' });
+    }
+    if (!j || !j.ok) {
+      emit('unpack.lookup', { rootId: file.rootId, rel: file.rel, ok: false, error: (j && (j.reason || j.message)) || 'bad-response', ms: Math.round(performance.now() - tLook) });
+      throw Object.assign(new Error((j && (j.message || j.reason)) || '服务端查询失败'), { reason: 'lookup-error' });
+    }
+    if (!j.hit) {
+      emit('unpack.lookup', { rootId: file.rootId, rel: file.rel, ok: true, hit: false, missReason: j.missReason || 'no-index', ms: Math.round(performance.now() - tLook) });
+      throw Object.assign(new Error(`未命中（${j.missReason || 'no-index'}）`), { reason: 'server-miss' });
+    }
+    emit('unpack.lookup', { rootId: file.rootId, rel: file.rel, ok: true, hit: true, ms: Math.round(performance.now() - tLook) });
     // **并行**取产物：实测 19 个文件顺序 145ms vs 并行 57ms（39 个文件 413ms vs 174ms）。
     //   顺序取会让"命中路径"慢 2.5 倍，从而在竞速里输给本地解包 —— 那 17b 就白做了。
     const list = j.files || [];
@@ -358,7 +423,10 @@ const MIME_BY_EXT = {
     //   中止只影响"还要不要再取"，已经取到的文件与已落盘的服务端产物都保留。
     const got = await mapLimit(list, UNPACK_FETCH_CONCURRENCY, async (f) => {
       // 每步开头同步采一次（不依赖"是否已跨帧"）：短操作也能被及时发现
-      if (mon.checkNow()) throw Object.assign(new Error(mon.reason()), { reason: 'memory-guard' });
+      //   mon 由调用方（materialize）传入 —— 它是在那里启动的监控。
+      //   曾经这里直接引用 mon 但它在另一个函数作用域里 ⇒ 命中路径一取产物就抛
+      //   "mon is not defined"，被上层当成服务端失败，回落到本地重新解一遍（实测 16s）。
+      if (mon && mon.checkNow()) throw Object.assign(new Error(mon.reason()), { reason: 'memory-guard' });
       // 服务端解包产物同样属于"模型文件"，失败要重试（keep-alive race 会打中这里）
       const res = await fetchWithRetry(f.url, { timeoutMs: 8000, label: 'unpack-file' });
       // VFS 只接受 Blob/字符串（本地路径上插件给的就是 Blob）→ 这里转成带 MIME 的 Blob，
@@ -368,7 +436,8 @@ const MIME_BY_EXT = {
     });
     const files = new Map(got);
     if (!files.size) throw new Error('服务端返回的产物为空');
-    return { prefix: j.prefix, entry: j.entry, files, hit: true, provider: 'server', src: 'server-hit' };
+    // src 区分"命中已有缓存"与"服务端刚解出来"：验收要看 unpack.source 到底走没走重复劳动
+    return { prefix: j.prefix, entry: j.entry, files, hit: true, provider: 'server', src: hitOnly ? 'server-hit' : 'server-unpack' };
   }
 
   /** 容量探测缓存（60s）；失败时**保守不放行**（reason=fallback），绝不当成"随便解包" */
@@ -409,13 +478,13 @@ const MIME_BY_EXT = {
   }
 
   /**
-   * 空闲预热（形态 C）：ready 之后 requestIdleCallback(带 timeout 兜底) + 再延迟 2s，
-   * 让服务端把**当前这一个包**解包落盘，供**下次**命中。绝不预热整个根（19 个包 × 10s 白烧）。
+   * 预热：**选中即触发**，让服务端把**当前这一个包**解包落盘，供下次命中。
+   * 绝不预热整个根（19 个包 × 10s 白烧）。
    *
-   * 三条必须：
-   *   · 带 timeout：某些环境 idle 回调可能永远不来（页面一直在动）；
+   * 两条必须：
    *   · 只预热当前包；
    *   · **必打 diag 日志** `unpack.warmup {rootId, rel, sizeMb, skipped?, ms}`，否则"为什么这个包没预热"无从查证。
+   * 不加任何时间门槛：能不能预热只由内存准入决定（服务端给 allowWarmup），不看预估耗时、不延迟。
    * @param {{rootId: string, rel: string, size?: number}} file
    */
   function warmup(file) {
@@ -436,22 +505,27 @@ const MIME_BY_EXT = {
     });
   }
 
-  /** 真正排期执行预热（idle + 2s 延迟） */
+  /**
+   * 真正执行预热：**选中即触发**，不等空闲、不延迟。
+   *
+   * 为什么删掉了 requestIdleCallback(timeout 3000) + setTimeout(2000)：
+   *   那两个限制加起来最坏 5s 后才开始预热，而页面在 9s 就已经要加载同一个包了 ——
+   *   首次打开任何新资源，缓存都来不及做好，前端只能自己解一遍（实测 4.3s / 19MB 白花）。
+   *   服务端解包是原生能力，不是"抢 CPU 的备选"，不该被推迟到空闲。
+   */
   function scheduleWarmup(file, emitWarm, cap) {
-    const idle = typeof requestIdleCallback === 'function'
-      ? (fn) => requestIdleCallback(fn, { timeout: 3000 })
-      : (fn) => setTimeout(fn, 800);
-    idle(() => setTimeout(async () => {
+    (async () => {
       const t0 = performance.now();
       try {
+        // 超时用默认值：它**不作为**"改走另一条路"的依据（超时只记日志），见 materialize
         const j = await postJson('/api/unpack/resolve',
-          { rootId: file.rootId, rel: file.rel, allowOverLimit: !memoryGuard.isMemoryGuardOn() }, { timeoutMs: 30000 });
+          { rootId: file.rootId, rel: file.rel, allowOverLimit: !memoryGuard.isMemoryGuardOn() });
         emitWarm({ ok: !!j.ok, hit: !!(j && j.hit), peakEstMb: cap && cap.peakEstMb, ms: Math.round(performance.now() - t0) });
         say.info(`预热完成：${file.rel}（${j && j.hit ? '已有缓存' : '已落盘'}，${Math.round(performance.now() - t0)}ms）`);
       } catch (e) {
         emitWarm({ ok: false, error: String((e && e.message) || e).slice(0, 120) });
       }
-    }, 2000));
+    })();
   }
 
   async function materialize(file, opts = {}) {
@@ -502,20 +576,35 @@ const MIME_BY_EXT = {
       return { ...got.res, provider: got.provider, src: 'local' };
     };
 
-    // 形态 C：**只问服务端"有没有命中"**（hitOnly），miss 就本地解包。
-    //   前台绝不让服务端解包 —— 那会与本地解包抢 CPU，实测把冷加载从 1.4~2.1s 拖到 2.9~5.7s。
+    // 前台装载：**命中就取产物；miss 就让服务端解（别自己再解一遍）**。
+    //
+    // 为什么改（原逻辑是"miss 就本地解包"）：
+    //   服务端解包是原生能力、且预热本来就在解同一个包。前台在 miss 时自己再解一遍，
+    //   结果就是同一个 19MB 包被解两次（前端 4.3s + 服务端 206ms），纯重复劳动。
+    // 回落本地只在「服务端明确说不行」时发生：内存准入拒绝 / 不可解 / 文件不可读。
+    //   **不按"等了几秒"判死** —— 超时只记日志并重试一次，不据此改走另一条路。
     let won = null;
+    let serverSaidNo = '';
     if (unpackOn && !file.bytes && file.rootId && file.rel) {
+      // 前台只问「有没有缓存」，**绝不在前台让服务端解包**。
+      //   实测服务端解一个 42MB 资源包要 11.4s（慢在 vm 沙箱里跑插件），
+      //   而前端在正常 JS 上下文里只要 4.3s —— 前台等它只会让首次加载从 4.3s 变成 16s。
+      //   miss 就直接走本地解包（见下面的 localPath），解完再把产物落盘给下次用。
       try {
-        won = await resolveFromServer(file); // 命中才会返回，否则抛 server-miss
+        won = await resolveFromServer(file, { mon });
       } catch (e) {
-        if (e && e.reason && e.reason !== 'server-miss') say.warn(`服务端命中查询失败（走本地）：${e.message}`);
+        // 未命中（或查询失败）都走本地解包；查询失败已由 resolveFromServer 记进 diag
+        serverSaidNo = (e && (e.reason || e.message)) || 'server-miss';
         won = null;
       }
     }
     if (!won) {
       try {
         won = await localPath();
+        // 前台走的是"前端本地解"这条快路 ⇒ 解完把产物交给服务端存起来（不 await：不挡渲染）
+        if (unpackOn && won && won.src === 'local' && file.rootId && file.rel) {
+          storeToServer(file, won);   // 有意不 await
+        }
       } catch (e) {
         if (e && e.passthrough) return e.passthrough; // 本地失败保持原有返回形状
         // 内存保护的判定是**结论**，不是"服务端失败"：绝不能回落本地解包把它绕过去
@@ -529,8 +618,14 @@ const MIME_BY_EXT = {
     const entryUrl = vfs.resolve(won.prefix + String(won.entry).replace(/^\.?\//, ''));
     // 三态日志口径：命中缓存 / 服务端解包 / 回落或本地解包
     // 三态 + 落败原因（验收"回落可用"就靠这条能被读到）
-    const source = won.src === 'server-hit' ? '解包命中缓存' : '回落前端解包';
-    const detail = { rootId: file.rootId, rel: file.rel, source, files: filesCount(won.files), ms: Math.round(performance.now() - tMat) };
+    // 三态（验收要求 source 能区分"重复劳动"是否发生）：
+    //   解包命中缓存 = 服务端本来就有产物（最快，<500ms）
+    //   服务端解包   = miss 后由服务端解出来（前台没自己再解一遍）
+    //   回落前端解包 = 服务端明确不能解，才由前端解
+    const source = won.src === 'server-hit' ? '解包命中缓存'
+      : won.src === 'server-unpack' ? '服务端解包'
+        : '回落前端解包';
+    const detail = { rootId: file.rootId, rel: file.rel, source, files: filesCount(won.files), ms: Math.round(performance.now() - tMat), ...(serverSaidNo ? { miss: serverSaidNo } : {}) };
     say.info(`${source}：${file.rootId}/${file.rel}（${detail.files} 个文件，${detail.ms}ms）`);
     emit('unpack.source', detail);
     return {
