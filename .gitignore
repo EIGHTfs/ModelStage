@@ -73,7 +73,8 @@ config/*.tmp
 config/resources.json
 
 # ---- 刻意排除：名表（上游数据，待重新设计后再定归属）----
-# config/names/<游戏>.json 是从上游抓取的名称/图标映射，体积大且来源随版本变化。
+# config/names/<游戏完整中文名>.json 是手工维护的名表数据（体积大、与代码历史无关）。
+#   实际内容存在 names 分支；主分支只留忽略规则。取用：git checkout names -- config/names
 # 缺失时不影响模型加载与渲染，只是回退显示拼音目录名、没有图标。
 config/names/
 

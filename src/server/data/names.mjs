@@ -37,7 +37,7 @@ export function createNames(p) {
    *   也不会出现"服务端理解一份形状、前端理解另一份"的两套知识。
    *   结构不合法由 tool/check-index.mjs 在提交前拦，不在运行期兜底。
    *
-   * @param {string} namesId 名表 id（= resources.json 里根的 names 字段，如 azurlane）
+   * @param {string} namesId 名表 id（= resources.json 里该根的 names 字段，即 config/names/<id>.json 的文件名）
    * @returns {{table: object|null, error: string|null, detail: string}}
    */
   function loadNamesTable(namesId) {
