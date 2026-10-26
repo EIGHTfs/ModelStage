@@ -211,16 +211,46 @@ function initRenderer() {
   // 兼容层：对外仍是一个 renderer（camera 按当前面取，mount 走 Surface 的唯一入口）
   const facade = {
     id: 'renderer-2d',
-    // 能力一律取当前激活渲染器的声明（不再硬编码兜底，否则"默认全支持"的缺陷会静默存在）
-    get capabilities() { return surface.capabilities ? surface.capabilities() : null; },
+    // 能力一律取当前激活渲染器的声明（不再硬编码兜底，否则"默认全支持"的缺陷会静默存在），
+    // 并追加**已注册的插件效果 id**（契约 §9.3 的能力键白名单）。
+    // 为什么挂在这一处：白名单有两个消费方 —— ①面板 applyCapabilities（控件显不显示）
+    //   ②app/renderer-setting.js:rendererSupports（这次设置能不能下发）。
+    //   只在①处追加会让②判"不支持"⇒ 值存了却推不到渲染器，就是"选了没反应"。
+    get capabilities() {
+      const caps = surface.capabilities ? surface.capabilities() : null;
+      if (!caps || !Array.isArray(caps.settings)) return caps;
+      const host = state.pluginHost;
+      const extra = host && typeof host.registeredEffectIds === 'function' ? host.registeredEffectIds() : [];
+      if (!extra.length) return caps;
+      // 只在返回值里追加：渲染器自己声明的原生能力保持原样，不被插件污染
+      const merged = caps.settings.slice();
+      for (const id of extra) if (!merged.includes(id)) merged.push(id);
+      return { ...caps, settings: merged };
+    },
     setSetting: (key, value) => {
       const r = surface.activeRenderer ? surface.activeRenderer() : null;
-      if (!r || typeof r.setSetting !== 'function') return false;
-      try { return r.setSetting(key, value) === true; } catch { return false; }
+      if (r && typeof r.setSetting === 'function') {
+        try { if (r.setSetting(key, value) === true) return true; } catch { /* 落到下面判断 */ }
+      }
+      // 插件效果键：渲染器不实现这个键（真正作用于像素是效果链的事），
+      // 但值已由调用方存进设置工厂 ⇒ 对自检/调用方算"已接住"。
+      // 不这么做的话，自检按 capabilities 逐键试 setSetting 会一直报"声明支持但未实现"。
+      const host = state.pluginHost;
+      return !!(host && typeof host.registeredEffectIds === 'function'
+        && host.registeredEffectIds().includes(String(key)));
     },
     getSetting: (key) => {
       const r = surface.activeRenderer ? surface.activeRenderer() : null;
-      try { return r && r.getSetting ? r.getSetting(key) : null; } catch { return null; }
+      let got = null;
+      try { got = r && r.getSetting ? r.getSetting(key) : null; } catch { got = null; }
+      if (got !== null && got !== undefined) return got;
+      // 插件效果键：渲染器只认 uniform、不持有"档位文本"的语义 ⇒ 回读走设置工厂
+      //   （与面板同一个来源：uiState 才是这档值的真相，别在渲染器里另存一份）
+      const host = state.pluginHost;
+      const isEffect = host && typeof host.registeredEffectIds === 'function'
+        && host.registeredEffectIds().includes(String(key));
+      if (!isEffect) return got;
+      try { return uiState.getValue(key); } catch { return got; }
     },
     get camera() { return surface.activeCamera() || stage.camera; },
     mount(document) { return surface.activate(document); },
