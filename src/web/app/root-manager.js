@@ -145,17 +145,24 @@ export function createRootManager({ els, onChanged, formatError } = {}) {
     return Array.isArray(next) ? next : state.roots;
   }
 
+  /** 最近一次"添加资源根"的失败原因（空 = 上次成功或还没试过） */
+  let lastAddError = '';
+
   // ------------------------------------------------------------------ 四个动作
 
   /** 新增：path 必填（服务端绝对路径）；name 可空（空则用目录名） */
   async function submitAdd(pathValue, nameValue) {
     const path = String(pathValue || '').trim();
     const name = String(nameValue || '').trim();
-    if (!path) { notify('请填写要添加的目录（服务端绝对路径）', 'err'); return false; }
+    // 失败原因要能被目录选择对话框取到：它弹在屏幕中央，左栏那行提示在用户背后（实测用户看不到）。
+    //   返回值仍是布尔（既有调用方与测试都按布尔断言），文案另存一份。
+    const fail = (msg) => { lastAddError = msg; notify(msg, 'err'); return false; };
+    lastAddError = '';
+    if (!path) return fail('请填写要添加的目录（服务端绝对路径）');
     const body = { action: 'add', path };
     if (name) body.name = name;
     const res = await post(body);
-    if (!res.ok) { notify(describeError(res.status, res.data, formatError), 'err'); return false; }
+    if (!res.ok) return fail(describeError(res.status, res.data, formatError));
     const merged = !!(res.data && res.data.changed && res.data.changed.merged);
     const root = (res.data && res.data.changed && res.data.changed.root) || {};
     applyResult(res.data);
@@ -235,6 +242,8 @@ export function createRootManager({ els, onChanged, formatError } = {}) {
     /** 设置目录浏览器的默认起点（由装配方按现有根推算） */
     setPickerStart(path) { pickerStart = String(path || ''); },
     submitAdd, submitRename, submitToggle, submitRemove,
+    /** 最近一次添加失败的原因（对话框用它把错误显示在自己身上） */
+    getLastAddError: () => lastAddError,
     get roots() { return state.roots; },
     get last() { return state.last; },
   };

@@ -323,6 +323,10 @@ async function loadRoots(opts = {}) {
           picker: createDirPicker({
             formatError,
             onPick: ({ path, name }) => state.rootManager.submitAdd(path, name),
+            // 失败文案由 root-manager 记录（它才知道服务端回了什么），对话框据此显示在自己身上
+            getLastError: () => (state.rootManager && typeof state.rootManager.getLastAddError === 'function'
+              ? state.rootManager.getLastAddError()
+              : ''),
           }),
         },
         formatError,

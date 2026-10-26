@@ -1232,3 +1232,47 @@
 .mem-bar-host--panel {
   margin-top: 2px;
 }
+
+
+/* ---- 目录选择对话框：失败原因行 ----
+   为什么放在对话框内部：它弹在屏幕中央，而资源根列表的提示在左栏（用户背后）⇒ 等于没有提示。
+   失败时对话框不关，用户在原地改完就能重试。 */
+.dir-picker-alert {
+  margin: 0 14px 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-danger);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+  color: var(--color-danger);
+  font-size: 12px;
+  line-height: 1.5;
+  /* 长错误（带路径/原因）要能换行，别把对话框撑破 */
+  word-break: break-word;
+}
+
+/* ---- 目录选择对话框：「添加」主操作 ----
+   与面板按钮同一套语言：描边强调色 + 淡色底 + 加粗。
+   原来用 .mini-btn.is-primary（高饱真实心底 + 反白字），在暗色描边对话框里像另一套设计。 */
+.dir-picker-add {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+  font-weight: 600;
+}
+
+.dir-picker-add:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 22%, transparent);
+}
+
+/* 底部输入框与两个按钮等高对齐（原来输入框比按钮高一截，视觉参差） */
+.dir-picker-foot input,
+.dir-picker-foot .mini-btn {
+  height: 28px;
+  box-sizing: border-box;
+}
+
+.dir-picker-foot .mini-btn {
+  display: inline-flex;
+  align-items: center;
+}

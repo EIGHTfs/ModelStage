@@ -18,7 +18,7 @@ const LAST_DIR_KEY = 'modelstage.dirpicker.last';
  * @param {{onPick: (payload: {path: string, name: string}) => Promise<boolean>|boolean, formatError?: Function}} deps
  *   onPick 返回 true 表示添加成功（面板会自行关闭）
  */
-export function createDirPicker({ onPick, formatError } = {}) {
+export function createDirPicker({ onPick, formatError, getLastError } = {}) {
   let panel = null;      // 遮罩层（含面板）
   let currentPath = '';  // 当前浏览到的目录
   let pickedPath = '';   // 用户点过"选择此目录"的目录（空 = 还没选）
@@ -48,10 +48,12 @@ export function createDirPicker({ onPick, formatError } = {}) {
           <button type="button" class="mini-btn" data-role="close">关闭</button>
         </div>
         <div class="dir-picker-body" data-role="body"></div>
+        <!-- 失败原因显示在对话框**自己身上**：它弹在屏幕中央，左栏那行提示在用户背后等于没有 -->
+        <div class="dir-picker-alert" data-role="alert" role="alert" hidden></div>
         <div class="dir-picker-foot">
           <span class="muted-hint">显示名称（同名会合并成一个游戏，用于归类原版／Mod）</span>
           <input type="text" data-role="name" placeholder="如：棕色尘埃2" aria-label="资源根显示名称" />
-          <button type="button" class="mini-btn is-primary" data-role="add">添加</button>
+          <button type="button" class="mini-btn dir-picker-add" data-role="add">添加</button>
         </div>
       </div>`;
     document.body.append(panel);
@@ -141,13 +143,52 @@ export function createDirPicker({ onPick, formatError } = {}) {
     const nameInput = q('[data-role="name"]');
     const name = nameInput ? nameInput.value.trim() : '';
     if (!path) return;
+    clearAlert();
     busy = true;
     try {
-      const ok = await (typeof onPick === 'function' ? onPick({ path, name }) : false);
-      if (ok) { rememberDir(path); close(); }
+      const res = typeof onPick === 'function' ? await onPick({ path, name }) : false;
+      // onPick 可能返回布尔（既有实现）或 { ok, error }（更细的实现）——两种都认
+      const ok = res && typeof res === 'object' ? res.ok === true : res === true;
+      if (ok) { rememberDir(path); close(); return; }
+      // 失败：**对话框不关**，把原因写在底部输入行上方，用户改完就能重试
+      showAlert(pickErrorText(res));
     } finally {
       busy = false;
     }
+  }
+
+  /**
+   * 取失败原因文本。
+   * 优先用 onPick 直接给回来的 error（{ ok:false, error }）；
+   * 否则问 getLastError（root-manager 会把上一次失败文案记下来）。
+   * @param {unknown} res onPick 的返回值
+   * @returns {string}
+   */
+  function pickErrorText(res) {
+    if (res && typeof res === 'object' && typeof res.error === 'string' && res.error) return res.error;
+    try {
+      if (typeof getLastError === 'function') {
+        const t = getLastError();
+        if (typeof t === 'string' && t) return t;
+      }
+    } catch { /* 取不到就退回通用文案 */ }
+    return '添加失败，请检查目录路径与名称后重试';
+  }
+
+  /** 把失败原因显示在对话框内 */
+  function showAlert(text) {
+    const box = q('[data-role="alert"]');
+    if (!box) return;
+    box.textContent = String(text || '');
+    box.hidden = !box.textContent;
+  }
+
+  /** 收起错误行（重试时先清掉，避免旧错误杵在那儿） */
+  function clearAlert() {
+    const box = q('[data-role="alert"]');
+    if (!box) return;
+    box.textContent = '';
+    box.hidden = true;
   }
 
   /** 打开面板（默认从上次目录或 / 开始） */
