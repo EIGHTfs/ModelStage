@@ -1215,17 +1215,52 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* 舞台那条：紧贴在状态行（.stage-hint，位于舞台左下 left:12px/bottom:12px）的**上方**。
-   为什么不去底部居中：底部那条是 transport 栏，居中会与它重叠（实测截图确认）。
-   为什么 pointer-events:none：本条不可点，绝不能挡住舞台上的其它交互。 */
-#stage-hint + .mem-bar-host,
-.mem-bar-host--stage {
-  position: absolute;
-  left: 12px;
-  bottom: 44px;
-  width: min(360px, 70vw);
+/* 顶栏内的内存条宿主：吃掉 brand 与右侧操作之间的弹性空间，垂直居中。
+   为什么不再绝对定位：浮在舞台上会遮挡画面，而且顶栏进（影院模式滑出）时它留在原地。
+   pointer-events:none：本条不可点，不能挡住顶栏按钮的点击热区。 */
+.mem-bar-host--header {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
   pointer-events: none;
-  z-index: 3;
+}
+
+/* 顶栏里尺寸收一档：48px 高的顶栏要放下「6px 条 + 一行文字」 */
+.mem-bar-host--header .mem-bar {
+  margin-top: 0;
+  gap: 3px;
+  width: 100%;
+  max-width: 420px;
+}
+
+.mem-bar-host--header .mem-bar-track {
+  height: 6px;
+  border-radius: 3px;
+  /* 顶栏背景（--color-card）与底槽色（--mem-total）明度太近，"其他"段会与背景融在一起 ——
+     实拍确认只看得见绿色那段。给轨道加一圈描边把全长圈出来，不改任何颜色令牌。 */
+  border: 1px solid var(--color-border);
+  box-sizing: content-box;
+}
+
+.mem-bar-host--header .mem-bar-text {
+  font-size: 11px;
+  line-height: 1.2;
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* 窄屏（触摸端为主）：字号与条再收一档，尽量让三段数值都挤进顶栏 */
+@media (max-width: 720px) {
+  .mem-bar-host--header .mem-bar-text { font-size: 10px; }
+  .mem-bar-host--header .mem-bar-track { height: 5px; }
+}
+
+@media (max-width: 480px) {
+  .mem-bar-host--header .mem-bar-text { font-size: 9px; }
+  .mem-bar-host--header .mem-bar { max-width: none; }
 }
 
 /* 设置面板里那一条：撑满面板宽度，允许点选其它控件（本条不可点，别挡路） */

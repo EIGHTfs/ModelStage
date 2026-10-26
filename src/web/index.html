@@ -35,9 +35,6 @@
   <!-- 渲染器（PIXI）挂在这块画布上；画布常驻，换模型只换内容 -->
   <canvas id="stage-canvas" class="stage-canvas"></canvas>
   <p id="stage-hint" class="stage-hint"></p>
-  <!-- 内存三色条（panel/memory-bar.js 填内容）：默认空且 hidden，有数据才出现；
-       受「显示状态信息」开关控制（与上面的状态行同一策略）。 -->
-  <div id="mem-bar-stage" class="mem-bar-host mem-bar-host--stage" hidden></div>
 </main>
 
 <!-- ============ 顶栏（第 1 区域） ============ -->
@@ -52,6 +49,11 @@
     </span>
     <span id="brand-title" class="brand-title">ModelStage</span>
   </div>
+  <!-- 内存三色条（panel/memory-bar.js 填内容）：顶栏中部，brand 与右侧操作之间。
+       默认空且 hidden，有数据才出现；受「显示状态信息」开关控制。
+       放在顶栏内部而不是浮在舞台上，是为了不遮挡画面、并跟着顶栏一起进退
+       （影院模式顶栏滑出时它自动一起隐藏）。 -->
+  <div id="mem-bar-stage" class="mem-bar-host mem-bar-host--header" hidden></div>
   <nav class="header-actions" aria-label="顶栏操作">
     <!-- 顶栏：图标用内联 SVG（不引图标库）；可访问名走 aria-label + title -->
     <button type="button" class="icon-btn" id="btn-library" aria-label="模型库（显示/隐藏左栏）" title="模型库（显示/隐藏左栏）">
