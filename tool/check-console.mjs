@@ -33,6 +33,9 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// 兄弟目录候选：项目可能嵌在 <base>/工作区/ModelStage，也可能直接是 <base>/ModelStage
+const SIBLINGS = [path.resolve(ROOT, '..'), path.resolve(ROOT, '..', '..')];
+
 import { acquireTestLock as acquireLock, releaseOnExit as releaseLockOnExit, describeHolder as describeLockHolder, EXIT_SKIPPED as EXIT_LOCK_SKIPPED } from './lib/test-lock.mjs';
 
 // ---------------------------------------------------------------- 参数解析
@@ -88,7 +91,11 @@ const WARN_IS_ERROR = flag('--allow-warn');
 // 自探测而不是写死：本机有项目自带的无头壳，也可能有系统 chromium。
 function findChrome() {
   if (process.env.CHROME_BIN) return process.env.CHROME_BIN;
-  const base = '/volume1/VirtualDSM/DeepSeekHarness/pwviewer/browsers';
+  // 浏览器目录：CHROME_DIR 显式指定；否则按「项目根的上一级 / 上两级」探测 pwviewer/browsers
+  //   （项目在不同机器上可能嵌在不同层级）。不写真机绝对路径，避免带出个人目录结构。
+  const base = process.env.CHROME_DIR
+    || SIBLINGS.map((b) => path.join(b, 'pwviewer', 'browsers')).find((d) => fs.existsSync(d))
+    || '';
   const cands = [];
   try {
     for (const d of fs.readdirSync(base)) {
@@ -126,8 +133,8 @@ const ENV = { ...process.env };
 const LIB_SYSROOT_CANDIDATES = process.env.CHROME_LIBS
   ? [process.env.CHROME_LIBS]
   : [
-    '/volume1/VirtualDSM/DeepSeekHarness/pwviewer/lib',
-    '/volume1/VirtualDSM/DeepSeekHarness/chromium-libs/root',
+    ...SIBLINGS.map((b) => path.join(b, 'pwviewer', 'lib')),
+    ...SIBLINGS.map((b) => path.join(b, 'chromium-libs', 'root')),
   ];
 const LIB_SUBDIRS = ['usr/lib/x86_64-linux-gnu', 'lib/x86_64-linux-gnu', 'usr/lib', 'lib'];
 const libDirs = [];
@@ -138,7 +145,9 @@ for (const root of LIB_SYSROOT_CANDIDATES) {
   }
 }
 if (libDirs.length) ENV.LD_LIBRARY_PATH = [...libDirs, ENV.LD_LIBRARY_PATH || ''].filter(Boolean).join(':');
-const fontConf = '/volume1/VirtualDSM/DeepSeekHarness/fonts/fonts.conf';
+const fontConf = process.env.FONTCONFIG_FILE
+  || SIBLINGS.map((b) => path.join(b, 'fonts', 'fonts.conf')).find((f) => fs.existsSync(f))
+  || '';
 if (fs.existsSync(fontConf)) ENV.FONTCONFIG_FILE = fontConf;
 
 // ------------------------------------------------------------- CDP 极简客户端

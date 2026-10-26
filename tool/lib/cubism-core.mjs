@@ -24,11 +24,11 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..');
 
-// Core 的候选路径（本机实测可用的两个位置；都找不到就报可读错误）
+// Core 的候选路径（项目自带优先；也可用 CUBISM_CORE 指到别处）
 const CORE_CANDIDATES = [
   path.join(ROOT, 'tool', 'vendor', 'live2dcubismcore.min.js'),
-  '/volume1/VirtualDSM/DeepSeekHarness/工作区/AzurLane-Live2D-Viewer-full/js/lib/live2dcubismcore.min.js',
-];
+  process.env.CUBISM_CORE || '',
+].filter(Boolean);
 
 let sandboxCache = null;
 
