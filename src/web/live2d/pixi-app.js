@@ -18,7 +18,11 @@ export function createPixiApp(ctx) {
       const el = document.createElement('script');
       el.src = src;
       el.onload = () => resolve(src);
-      el.onerror = () => reject(new Error(`Live2D 运行时加载失败：${src}`));
+      el.onerror = () => {
+        // 失败的标签必须摘掉：否则重试时页面上留着坏标签，后续排查也分不清哪次是失败的
+        el.remove();
+        reject(new Error(`Live2D 运行时加载失败：${src}`));
+      };
       document.head.appendChild(el);
     });
   }
@@ -35,7 +39,14 @@ export function createPixiApp(ctx) {
           throw new Error('PIXI.live2d 不存在：运行时库顺序或版本不匹配（live2dcubismcore 必须最先）');
         }
         note(`Live2D 运行时就绪（PIXI ${PIXI.VERSION || '?'}）`);
-      })();
+      })().catch((err) => {
+        // **失败不缓存**：一次瞬时失败（服务重启、网络抖动、脚本被中断）如果留着这个
+        //   rejected promise，Live2D 就永久激活不了，只能刷新页面 —— 实测踩到过
+        //   （服务重启打断 cubismcore 加载 ⇒ 之后每次切 Live2D 都是 activate-failed）。
+        //   清掉缓存让下一次激活重新尝试；已成功加载的库浏览器有缓存，重试很便宜。
+        st.libsReady = null;
+        throw err;
+      });
     }
     return st.libsReady;
   }
