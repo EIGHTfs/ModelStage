@@ -13,6 +13,8 @@
 //   4. 汇总：每套 failed/total/problems，任一 failed>0 则退出码 1。
 //
 // 用法：node tool/test-all.mjs [--url http://host:port/] [--keep-profiles]
+//       [--all] [--only a,b] [--browser] [--list] [--out <dir>] [--bg]
+//   --browser  把浏览器注入套件（test/browser/*.js）也纳入自动门禁；默认只跑 node-test
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -141,6 +143,14 @@ const SUITES = [
   { name: 'anim-list', wait: 4500 },
 ];
 
+/** 浏览器注入套件：需要真实 chrome + 页面渲染，慢且吃资源。
+ *  默认**不进自动门禁** —— 自动门禁只跑 node-test（快、稳定、可在任何环境跑）。
+ *  要跑它们：单套 `--only <name>`（开发时最常见的用法），或全部 `--browser`。 */
+const BROWSER_SUITES = new Set([
+  'engine-b1', 'f1-controls', 'f2-topbar', 'f3-reveal', 'f4-roots',
+  'spine-actions', 'panel-actions', 'roster-actions', 'anim-list',
+]);
+
 /** 单套耗时估计（秒）：只为打印"预计多久"，不参与判定；取自实测均值 */
 const EST_SEC = {
   'renderer-contract': 1,
@@ -197,6 +207,8 @@ const RULES = [
   { re: /^test\/helpers\//, suites: ['renderer-contract', 'live2d-lifecycle'] },
   // test/<名>.js 或 test/<名>.test.mjs：改了哪个套件就只跑哪个（静态套件同样适用）
   { re: /^test\/([^/]+?)(?:\.test)?\.m?js$/, suiteFromName: true },
+  // test/browser/<名>.js：浏览器注入套件已归档到此（默认不跑，见 BROWSER_SUITES）
+  { re: /^test\/browser\/([^/]+?)\.js$/, suiteFromName: true },
 ];
 
 /** 文档/配置类改动：不影响渲染回归（命中这些就跳过，除非显式 --all） */
@@ -272,8 +284,16 @@ function planFromFiles(files) {
     hit.forEach((name) => picked.add(name));
     rows.push({ file, label: hit.join(', ') });
   }
-  const all = SUITES.map((s) => s.name);
+  // --browser 才把浏览器套件纳入自动门禁；否则自动模式只跑 node-test
+  const all = SUITES.map((s) => s.name).filter((n) => WANT_BROWSER || !BROWSER_SUITES.has(n));
   const suites = (sawAll || unmapped.length) ? all : all.filter((n) => picked.has(n));
+  // 改了浏览器套件、但它们默认不跑 ⇒ 必须说出来。静默跳过等于"改了却没测"，
+  //   而这正是本项目最想避免的那类问题（要么跑，要么明确告诉人没跑）。
+  const skippedBrowser = [...picked].filter((n) => BROWSER_SUITES.has(n) && !WANT_BROWSER);
+  if (skippedBrowser.length) {
+    say(`[test-all] ℹ️ 命中浏览器套件但默认不跑：${skippedBrowser.join(', ')}`);
+    say('[test-all]    开发时单跑：--only <名字>；要全部纳入：--browser');
+  }
   return { suites, rows, unmapped, ignored, sawAll };
 }
 
@@ -291,6 +311,8 @@ function printPlan(files, plan) {
 
 const argv = process.argv.slice(2);
 const keepProfiles = argv.includes('--keep-profiles');
+// --browser：把 test/browser/*.js 那批浏览器注入套件也纳入（默认不跑，见 BROWSER_SUITES 注释）
+const WANT_BROWSER = argv.includes('--browser');
 // --out <dir>：结果落盘目录（每套一份 JSON + run-summary.json + latest.json）
 const outIdx = argv.indexOf('--out');
 const OUT_DIR = outIdx >= 0 && argv[outIdx + 1]
@@ -444,7 +466,7 @@ function runNodeTestSuite(suite) {
 function runSuite(suite) {
   // 静态契约套件：`node --test <file>`，从 TAP 汇总行解析 pass/fail（无浏览器、无服务依赖）
   if (suite.runner === 'node-test') return runNodeTestSuite(suite);
-  const script = path.join(PROJECT, 'test', `${suite.name}.js`);
+  const script = path.join(PROJECT, 'test', 'browser', `${suite.name}.js`);
   if (!fs.existsSync(script)) return { name: suite.name, missing: true };
   let url = BASE;
   if (suite.needProbe) {

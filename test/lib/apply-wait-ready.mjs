@@ -65,7 +65,18 @@ function injectInto(file) {
   return { file, changed };
 }
 
-const targets = files.length ? files : ['test/spine-actions.js', 'test/panel-actions.js', 'test/f1-controls.js'];
+// 默认目标：自动发现 test/browser/ 下所有含生成块的脚本。
+//   不写死名单 —— 名单会漏（原先只列了 3 个，实际有 9 个都嵌了生成块），
+//   漏掉的脚本在源块更新后会静默停在旧版本。浏览器套件已归档到 test/browser/。
+const BROWSER_DIR = 'test/browser';
+const discovered = fs.existsSync(BROWSER_DIR)
+  ? fs.readdirSync(BROWSER_DIR)
+    .filter((f) => f.endsWith('.js'))
+    .map((f) => `${BROWSER_DIR}/${f}`)
+    .filter((f) => fs.readFileSync(f, 'utf8').includes('[wait-ready] begin'))
+    .sort()
+  : [];
+const targets = files.length ? files : discovered;
 let n = 0;
 for (const t of targets) {
   const r = injectInto(t);
