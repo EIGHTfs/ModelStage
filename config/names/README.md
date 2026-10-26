@@ -6,11 +6,12 @@
 ## 内容
 
 ```
-config/names/azurlane.json   碧蓝航线
-config/names/bd2.json        棕色尘埃2
-config/names/dcg.json        天命之子
+config/names/碧蓝航线.json     碧蓝航线
+config/names/棕色尘埃2.json    棕色尘埃2
+config/names/天命之子.json     天命之子
 ```
 
+文件名 = 游戏完整中文名（与 `resources.json` 里根的 `names` 字段逐字一致）。
 格式见主分支 `docs/设计/名表.md`：`characters` 以角色 id 为键、`byAsset` 是「资源文件名 → 角色 id」，
 `name` / `costume` 是多语言数组，`_meta.mergeBy` 声明归并字段。
 
