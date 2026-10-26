@@ -79,6 +79,8 @@ export const SPEC = (() => {
  */
 export function registerSpecItems(ctls) {
   let added = 0;
+  /** 拒绝登记的表单项（含原因）：让"为什么没被工厂接管"当场可见 */
+  const skipped = [];
   for (const ctl of ctls || []) {
     const id = String((ctl && ctl.id) || '');
     if (!id || byId.has(id)) continue;
@@ -99,11 +101,43 @@ export function registerSpecItems(ctls) {
       defaultValue: hasValue ? ctl.defaultValue : (isSwitch ? (ctl.defaultOn === true) : firstOption),
       store: 'panel',
     };
+    // 强制断言（设计 §1.5「默认值唯一来源」）：进工厂的控件必须能算出默认值。
+    //   没有默认值 ⇒「恢复默认」会漏掉它、spec 断言也没法比对 ⇒ 宁可拒绝登记并在
+    //   skipped 里报出来（让"为什么这个控件没被工厂接管"当场可见，而不是以后靠猜）。
+    if (item.defaultValue === undefined) {
+      skipped.push({ id, reason: '无法确定默认值（档位控件缺 options / 开关缺 defaultOn）' });
+      continue;
+    }
     SPEC.push(item);
     byId.set(id, item);
     added += 1;
   }
-  return added;
+  return { added, skipped };
+}
+
+/**
+ * 清掉存档里"确认已无主"的键（插件被真删掉之后留下的残留）。
+ *
+ * 什么时候才敢调：**插件声明全部交完之后**（`spineviewer:plugins-loaded`）。
+ *   在那之前 SPEC 里可能只是"还没来得及登记"，此时清理会误删用户已经设好的值。
+ *   调用时机由 panel-settings 保证（先 rebuildPanelFor 登记 SPEC，再调本函数）。
+ *
+ * 判据就是 SPEC：它是"当前所有有效控件"的唯一清单（内置 + 已加载插件）。
+ *   不在 SPEC 里的面板键，说明对应控件已经不存在了 ⇒ 值留着只会变成永远读不到的垃圾。
+ * @returns {string[]} 被清掉的键
+ */
+export function pruneUnregistered() {
+  let saved = {};
+  try { saved = (readViewSettings() || {}).panel || {}; } catch { return []; }
+  const orphans = Object.keys(saved).filter((key) => !byId.has(key));
+  if (!orphans.length) return [];
+  const next = { ...saved };
+  for (const key of orphans) {
+    delete next[key];
+    values.delete(key);
+  }
+  try { saveViewSettings({ panel: next }); } catch { /* 存储不可用：内存里也已删掉 */ }
+  return orphans;
 }
 
 /** id → SPEC 声明 */

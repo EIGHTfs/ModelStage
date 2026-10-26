@@ -328,7 +328,13 @@ export function bindPluginPanelRebuild() {
   if (pluginRebuildBound) return false;
   pluginRebuildBound = true;
   window.addEventListener('spineviewer:plugins-loaded', () => {
-    try { rebuildPanelFor(state.currentRenderer); } catch (e) {
+    try {
+      // 先重建面板（这一步把当前插件控件登记进 SPEC），**再**清孤儿键：
+      //   顺序反了会把"还没来得及登记"的键当成残留删掉。
+      rebuildPanelFor(state.currentRenderer);
+      const orphans = uiState.pruneUnregistered();
+      if (orphans.length) stageLog('info', `已清理失效的面板设置键：${orphans.join(' / ')}`, { source: 'plugin-controls' });
+    } catch (e) {
       stageLog('warn', `插件控件合并失败：${(e && e.message) || e}`, { source: 'plugin-controls' });
     }
   });
@@ -351,7 +357,24 @@ function rebuildPanelFor(renderer) {
   });
   // 插件控件登记进 SPEC：这样它们是走既有的 loadAll/set/flush 通道，不新开存储路径
   const pluginControls = merged.groups.flatMap((g) => (g.controls || []).filter((c) => c && c.pluginId));
-  if (pluginControls.length) uiState.registerSpecItems(pluginControls);
+  if (pluginControls.length) {
+    const reg = uiState.registerSpecItems(pluginControls);
+    // 拒绝登记的要当场说清楚：否则表现为"控件在面板上、却不被工厂接管（恢复默认跳过它）"
+    if (reg && Array.isArray(reg.skipped) && reg.skipped.length) {
+      for (const s of reg.skipped) {
+        stageLog('warn', `插件控件未进入设置工厂：${s.id}（${s.reason}）`, { source: 'plugin-controls' });
+      }
+    }
+  }
+  // 新增项还要补 applier：工厂的 appliers 是模块加载时按 SPEC **快照**注册的，
+  //   插件控件晚于那一刻才进 SPEC ⇒ 不补的话 set() 只存值、不 render，
+  //   表现为「恢复默认」后存储已变回关、面板选中态却还停在强（实测缺口）。
+  if (pluginControls.length) {
+    uiState.registerAppliers(Object.fromEntries(pluginControls.map((c) => [String(c.id), {
+      apply: (v) => applyCore(String(c.id), v),
+      render: (v) => renderControl(String(c.id), v),
+    }])));
+  }
   // 已声明但注册失败的那些：置灰而不是消失（契约 §9.3）
   const keepDisabled = new Set(pluginControls.filter((c) => c.disabled === true && c.id).map((c) => String(c.id)));
   PLUGIN_DISABLED_IDS.clear();

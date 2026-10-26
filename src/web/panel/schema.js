@@ -368,6 +368,12 @@ export function normalizePluginSection(section, ctx) {
       //   （契约 §9.2 的插件声明里只有 options，所以"选项文本即取值"这层翻译由宿主补 ——
       //    缺了它 String(undefined[i]) 会抛错，而一个控件抛错会拖掉**整组**，实测踩过）
       ...(optionTexts ? { options: optionTexts, values: optionTexts.slice() } : {}),
+      // 默认值权威 = options[0]（第 0 档即"关"）。这是设计裁定：面板档位控件的默认值
+      //   只有一个来源，plugin.json 的 params[].default 只是"设置值缺失时的 uniform 兜底"。
+      //   没有这个字段时工厂拿不到默认值（view.js 只收 defaultValue !== undefined 的控件）
+      //   ⇒「恢复默认」不会重置插件控件。
+      ...(kind === 'segmented' ? { defaultValue: optionTexts[0] } : {}),
+      ...(kind === 'toggle' ? { defaultOn: false } : {}),
       // 能力键**一律**显式声明为 effect id：
       //   已注册 ⇒ 宿主把它追加进 capabilities.settings ⇒ 正常可用；
       //   未注册 ⇒ 不在白名单 ⇒ 走 keepDisabled 分支置灰（并显示下面的原因）。
