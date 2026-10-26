@@ -1,0 +1,4016 @@
+{
+ "_meta": {
+  "v": 2,
+  "game": "棕色尘埃2",
+  "mergeBy": "id"
+ },
+ "characters": {
+  "9016": {
+   "id": "9016",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Marianne Dumain (Npc)"
+    }
+   ],
+   "costume": [],
+   "icon": ""
+  },
+  "9018": {
+   "id": "9018",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Eda (Npc)"
+    }
+   ],
+   "costume": [],
+   "icon": ""
+  },
+  "100101": {
+   "id": "100101",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Gynt"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Lugo Hunter"
+    }
+   ],
+   "icon": "icon_char100101.png"
+  },
+  "100201": {
+   "id": "100201",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Fred"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Lugo Defense Force"
+    }
+   ],
+   "icon": "icon_char100201.png"
+  },
+  "100301": {
+   "id": "100301",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Lisianne"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Wandering Priest"
+    }
+   ],
+   "icon": "icon_char100301.png"
+  },
+  "100401": {
+   "id": "100401",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Remnunt"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Combat Doctor"
+    }
+   ],
+   "icon": "icon_char100401.png"
+  },
+  "100501": {
+   "id": "100501",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Wiggle"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Bomb Fanatic"
+    }
+   ],
+   "icon": "icon_char100501.png"
+  },
+  "100502": {
+   "id": "100502",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Wiggle"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Bomb in the Hoodie"
+    }
+   ],
+   "icon": "icon_char100502.png"
+  },
+  "100601": {
+   "id": "100601",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Lucrezia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Seductive Wings"
+    }
+   ],
+   "icon": "icon_char100601.png"
+  },
+  "100801": {
+   "id": "100801",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Bernie"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Righteous Raider Girl"
+    }
+   ],
+   "icon": "icon_char100801.png"
+  },
+  "101101": {
+   "id": "101101",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Seir"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Demon's Daughter"
+    }
+   ],
+   "icon": "icon_char101101.png"
+  },
+  "101102": {
+   "id": "101102",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Seir"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "B-Rank Idol"
+    }
+   ],
+   "icon": "icon_char101102.png"
+  },
+  "101103": {
+   "id": "101103",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Seir"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "New Hire"
+    }
+   ],
+   "icon": "icon_char101103.png"
+  },
+  "101201": {
+   "id": "101201",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Jayden"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Beautiful Girl Devotee"
+    }
+   ],
+   "icon": "icon_char101201.png"
+  },
+  "101202": {
+   "id": "101202",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Jayden"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Manga Research Club"
+    }
+   ],
+   "icon": "icon_char101202.png"
+  },
+  "101301": {
+   "id": "101301",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Emma"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Haggard Delinquent"
+    }
+   ],
+   "icon": "icon_char101301.png"
+  },
+  "101302": {
+   "id": "101302",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Emma"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "School Queen"
+    }
+   ],
+   "icon": "icon_char101302.png"
+  },
+  "101401": {
+   "id": "101401",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Samay"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Kind Liberator"
+    }
+   ],
+   "icon": "icon_char101401.png"
+  },
+  "101402": {
+   "id": "101402",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Samay"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Kind Student"
+    }
+   ],
+   "icon": "icon_char101402.png"
+  },
+  "101501": {
+   "id": "101501",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Kry"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Liberated Marauder"
+    }
+   ],
+   "icon": "icon_char101501.png"
+  },
+  "101502": {
+   "id": "101502",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Kry"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Violent Student"
+    }
+   ],
+   "icon": "icon_char101502.png"
+  },
+  "101601": {
+   "id": "101601",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Celia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "The Curse"
+    }
+   ],
+   "icon": "icon_char101601.png"
+  },
+  "103201": {
+   "id": "103201",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Carlson"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "The Mercenary Knight"
+    }
+   ],
+   "icon": "icon_char103201.png"
+  },
+  "103301": {
+   "id": "103301",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Lydia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Apprentice Spearman"
+    }
+   ],
+   "icon": "icon_char103301.png"
+  },
+  "103401": {
+   "id": "103401",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Rigenette"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Little Hunter"
+    }
+   ],
+   "icon": "icon_char103401.png"
+  },
+  "103501": {
+   "id": "103501",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Beatrice"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "The Mighty Warrior of the Tribe"
+    }
+   ],
+   "icon": "icon_char103501.png"
+  },
+  "103601": {
+   "id": "103601",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Maria"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Archmage"
+    }
+   ],
+   "icon": "icon_char103601.png"
+  },
+  "103701": {
+   "id": "103701",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Arines"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Priest of Vitality"
+    }
+   ],
+   "icon": "icon_char103701.png"
+  },
+  "200551": {
+   "id": "200551",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Determined Researcher (Npc)"
+    }
+   ],
+   "costume": [],
+   "icon": ""
+  },
+  "300103": {
+   "id": "300103",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Garinoth (Npc)"
+    }
+   ],
+   "costume": [],
+   "icon": ""
+  },
+  "300104": {
+   "id": "300104",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Asmode (Npc)"
+    }
+   ],
+   "costume": [],
+   "icon": ""
+  },
+  "300601": {
+   "id": "300601",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Guild Receptionist Liza (Npc)"
+    }
+   ],
+   "costume": [],
+   "icon": ""
+  },
+  "300701": {
+   "id": "300701",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Veila (Npc)"
+    }
+   ],
+   "costume": [],
+   "icon": ""
+  },
+  "400001": {
+   "id": "400001",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Young Liberta (Npc)"
+    }
+   ],
+   "costume": [],
+   "icon": ""
+  },
+  "400017": {
+   "id": "400017",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Young Hansen (Npc)"
+    }
+   ],
+   "costume": [],
+   "icon": ""
+  },
+  "400018": {
+   "id": "400018",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Hansen (Npc)"
+    }
+   ],
+   "costume": [],
+   "icon": ""
+  },
+  "400034": {
+   "id": "400034",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Greta (Npc)"
+    }
+   ],
+   "costume": [],
+   "icon": ""
+  },
+  "400042": {
+   "id": "400042",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Night World Lathel (Npc)"
+    }
+   ],
+   "costume": [],
+   "icon": ""
+  },
+  "400049": {
+   "id": "400049",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "King of Rotein Gray (Npc)"
+    }
+   ],
+   "costume": [],
+   "icon": ""
+  },
+  "400050": {
+   "id": "400050",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Spatti (Npc)"
+    }
+   ],
+   "costume": [],
+   "icon": ""
+  },
+  "400056": {
+   "id": "400056",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Eleanor (Npc)"
+    }
+   ],
+   "costume": [],
+   "icon": ""
+  },
+  "400064": {
+   "id": "400064",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Casual Valze (Npc)"
+    }
+   ],
+   "costume": [],
+   "icon": ""
+  },
+  "400070": {
+   "id": "400070",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Nekyndalia (Npc)"
+    }
+   ],
+   "costume": [],
+   "icon": ""
+  },
+  "400098": {
+   "id": "400098",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Casino Rudina (Npc)"
+    }
+   ],
+   "costume": [],
+   "icon": ""
+  },
+  "400100": {
+   "id": "400100",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Rudina (Npc)"
+    }
+   ],
+   "costume": [],
+   "icon": ""
+  },
+  "400123": {
+   "id": "400123",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Valze (Npc)"
+    }
+   ],
+   "costume": [],
+   "icon": ""
+  },
+  "400135": {
+   "id": "400135",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Young Justia (Npc)"
+    }
+   ],
+   "costume": [],
+   "icon": ""
+  },
+  "101101_c": {
+   "id": "101101_c",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Seir"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Demon's Daughter (Censored)"
+    }
+   ],
+   "icon": ""
+  },
+  "101102_c": {
+   "id": "101102_c",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Seir"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "B-Rank Idol (Censored)"
+    }
+   ],
+   "icon": ""
+  },
+  "000001": {
+   "id": "000001",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Roche (Npc)"
+    }
+   ],
+   "costume": [],
+   "icon": ""
+  },
+  "000004": {
+   "id": "000004",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Ailee (Npc)"
+    }
+   ],
+   "costume": [],
+   "icon": ""
+  },
+  "000101": {
+   "id": "000101",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Lathel"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Herb Tracker"
+    }
+   ],
+   "icon": "icon_char000101.png"
+  },
+  "000102": {
+   "id": "000102",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Lathel"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Lonely Survivor"
+    }
+   ],
+   "icon": "icon_char000102.png"
+  },
+  "000103": {
+   "id": "000103",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Lathel"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Homunculus"
+    }
+   ],
+   "icon": "icon_char000103.png"
+  },
+  "000104": {
+   "id": "000104",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Lathel"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Dark Knight"
+    }
+   ],
+   "icon": "icon_char000104.png"
+  },
+  "000105": {
+   "id": "000105",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Lathel"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Promise of Vengeance"
+    }
+   ],
+   "icon": "icon_char000105.png"
+  },
+  "000106": {
+   "id": "000106",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Lathel"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Pool Party"
+    }
+   ],
+   "icon": "icon_char000106.png"
+  },
+  "000201": {
+   "id": "000201",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Justia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Knight of Blood"
+    }
+   ],
+   "icon": "icon_char000201.png"
+  },
+  "000202": {
+   "id": "000202",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Justia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "White Reaper"
+    }
+   ],
+   "icon": "icon_char000202.png"
+  },
+  "000203": {
+   "id": "000203",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Justia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Blood Glutton"
+    }
+   ],
+   "icon": "icon_char000203.png"
+  },
+  "000204": {
+   "id": "000204",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Justia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Kendo Club"
+    }
+   ],
+   "icon": "icon_char000204.png"
+  },
+  "000206": {
+   "id": "000206",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Justia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Pool Party"
+    }
+   ],
+   "icon": "icon_char000206.png"
+  },
+  "000296": {
+   "id": "000296",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Justia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Hot Summer Dream"
+    }
+   ],
+   "icon": "icon_char000296.png"
+  },
+  "000301": {
+   "id": "000301",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Scheherazade"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "The Lapis Witch"
+    }
+   ],
+   "icon": "icon_char000301.png"
+  },
+  "000303": {
+   "id": "000303",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Scheherazade"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "The Magic School Professor"
+    }
+   ],
+   "icon": "icon_char000303.png"
+  },
+  "000304": {
+   "id": "000304",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Scheherazade"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Code Name S"
+    }
+   ],
+   "icon": "icon_char000304.png"
+  },
+  "000306": {
+   "id": "000306",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Scheherazade"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Pool Party"
+    }
+   ],
+   "icon": "icon_char000306.png"
+  },
+  "000396": {
+   "id": "000396",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Scheherazade"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Deliberate Ace"
+    }
+   ],
+   "icon": "icon_char000396.png"
+  },
+  "000401": {
+   "id": "000401",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Gray"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "The Sharpshooter of the Mist"
+    }
+   ],
+   "icon": "icon_char000401.png"
+  },
+  "000402": {
+   "id": "000402",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Gray"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "B-Rank Manager"
+    }
+   ],
+   "icon": "icon_char000402.png"
+  },
+  "000403": {
+   "id": "000403",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Gray"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Vanguard"
+    }
+   ],
+   "icon": "icon_char000403.png"
+  },
+  "000406": {
+   "id": "000406",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Gray"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Pool Party"
+    }
+   ],
+   "icon": "icon_char000406.png"
+  },
+  "000501": {
+   "id": "000501",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Rou"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "White Cat"
+    }
+   ],
+   "icon": "icon_char000501.png"
+  },
+  "000502": {
+   "id": "000502",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Rou"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Red Riding Hood"
+    }
+   ],
+   "icon": "icon_char000502.png"
+  },
+  "000502_c": {
+   "id": "000502_c",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Rou"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Red Riding Hood (Censored)"
+    }
+   ],
+   "icon": ""
+  },
+  "000504": {
+   "id": "000504",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Rou"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Nature's Claw"
+    }
+   ],
+   "icon": "icon_char000504.png"
+  },
+  "000506": {
+   "id": "000506",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Rou"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Stray Cat"
+    }
+   ],
+   "icon": "icon_char000506.png"
+  },
+  "000601": {
+   "id": "000601",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Olstein"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "The Fiend Scholar"
+    }
+   ],
+   "icon": "icon_char000601.png"
+  },
+  "000604": {
+   "id": "000604",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Olstein"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Sage of Blue Clouds"
+    }
+   ],
+   "icon": "icon_char000604.png"
+  },
+  "000701": {
+   "id": "000701",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Eclipse"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Dimension Witch"
+    }
+   ],
+   "icon": "icon_char000701.png"
+  },
+  "000706": {
+   "id": "000706",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Eclipse"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Nightmare Bunny"
+    }
+   ],
+   "icon": "icon_char000706.png"
+  },
+  "000707": {
+   "id": "000707",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Eclipse"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Beach Vacation"
+    }
+   ],
+   "icon": "icon_char000707.png"
+  },
+  "000708": {
+   "id": "000708",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Eclipse"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Dream Bride"
+    }
+   ],
+   "icon": "icon_char000708.png"
+  },
+  "000801": {
+   "id": "000801",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Rubia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Thorn of the Desert"
+    }
+   ],
+   "icon": "icon_char000801.png"
+  },
+  "000804": {
+   "id": "000804",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Rubia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "The Empress of the Ocean"
+    }
+   ],
+   "icon": "icon_char000804.png"
+  },
+  "000806": {
+   "id": "000806",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Rubia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Maid Name C"
+    }
+   ],
+   "icon": "icon_char000806.png"
+  },
+  "000807": {
+   "id": "000807",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Rubia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Maid Bikini"
+    }
+   ],
+   "icon": "icon_char000807.png"
+  },
+  "001001": {
+   "id": "001001",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Sylvia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Desert Flower"
+    }
+   ],
+   "icon": "icon_char001001.png"
+  },
+  "001002": {
+   "id": "001002",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Sylvia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "The Sword Queen"
+    }
+   ],
+   "icon": "icon_char001002.png"
+  },
+  "001004": {
+   "id": "001004",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Sylvia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Admiral"
+    }
+   ],
+   "icon": "icon_char001004.png"
+  },
+  "001006": {
+   "id": "001006",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Sylvia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Bikini Agent"
+    }
+   ],
+   "icon": "icon_char001006.png"
+  },
+  "001092": {
+   "id": "001092",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Sylvia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Crimson Lotus"
+    }
+   ],
+   "icon": "icon_char001092.png"
+  },
+  "001101": {
+   "id": "001101",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Teresse"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Angel of Destruction"
+    }
+   ],
+   "icon": "icon_char001101.png"
+  },
+  "001106": {
+   "id": "001106",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Teresse"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Medical Club"
+    }
+   ],
+   "icon": "icon_char001106.png"
+  },
+  "001107": {
+   "id": "001107",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Teresse"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Beachside Angel"
+    }
+   ],
+   "icon": "icon_char001107.png"
+  },
+  "001197": {
+   "id": "001197",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Teresse"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Milky Bikini"
+    }
+   ],
+   "icon": "icon_char001197.png"
+  },
+  "001201": {
+   "id": "001201",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Liatris"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Rodev's Star"
+    }
+   ],
+   "icon": "icon_char001201.png"
+  },
+  "001206": {
+   "id": "001206",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Liatris"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Neon Stalker"
+    }
+   ],
+   "icon": "icon_char001206.png"
+  },
+  "001207": {
+   "id": "001207",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Liatris"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Maid Name R"
+    }
+   ],
+   "icon": "icon_char001207.png"
+  },
+  "002401": {
+   "id": "002401",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Diana"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Adventurer of the Unknown"
+    }
+   ],
+   "icon": "icon_char002401.png"
+  },
+  "002403": {
+   "id": "002403",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Diana"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Magical Innovator"
+    }
+   ],
+   "icon": "icon_char002403.png"
+  },
+  "002406": {
+   "id": "002406",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Diana"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Anti-dystopia"
+    }
+   ],
+   "icon": "icon_char002406.png"
+  },
+  "003001": {
+   "id": "003001",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Layla"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Anvil of Creation"
+    }
+   ],
+   "icon": "icon_char003001.png"
+  },
+  "003101": {
+   "id": "003101",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Elpis"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Hand of Salvation"
+    }
+   ],
+   "icon": "icon_char003101.png"
+  },
+  "003201": {
+   "id": "003201",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Loen"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Last Hope"
+    }
+   ],
+   "icon": ""
+  },
+  "003202": {
+   "id": "003202",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Loen"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Track and Field Team"
+    }
+   ],
+   "icon": "icon_char003202.png"
+  },
+  "003203": {
+   "id": "003203",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Loen"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Celebrity Bunny"
+    }
+   ],
+   "icon": "icon_char003203.png"
+  },
+  "003301": {
+   "id": "003301",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Nebris"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Labyrinth Gatekeeper"
+    }
+   ],
+   "icon": "icon_char003301.png"
+  },
+  "003302": {
+   "id": "003302",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Nebris"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Laid-back Lifeguard"
+    }
+   ],
+   "icon": "icon_char003302.png"
+  },
+  "003303": {
+   "id": "003303",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Nebris"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "New Hire"
+    }
+   ],
+   "icon": "icon_char003303.png"
+  },
+  "003392": {
+   "id": "003392",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Nebris"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Lucky Bikini"
+    }
+   ],
+   "icon": "icon_char003392.png"
+  },
+  "003401": {
+   "id": "003401",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Morpeah"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Beach Vacation"
+    }
+   ],
+   "icon": "icon_char003401.png"
+  },
+  "003402": {
+   "id": "003402",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Morpeah"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Daydream Bunny"
+    }
+   ],
+   "icon": "icon_char003402.png"
+  },
+  "003403": {
+   "id": "003403",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Morpeah"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Apostle"
+    }
+   ],
+   "icon": "icon_char003403.png"
+  },
+  "003501": {
+   "id": "003501",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Sacred Justia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Reclaimed Destiny"
+    }
+   ],
+   "icon": "icon_char003501.png"
+  },
+  "003601": {
+   "id": "003601",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Olivier"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Faithful Wings"
+    }
+   ],
+   "icon": "icon_char003601.png"
+  },
+  "003602": {
+   "id": "003602",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Olivier"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Apostle"
+    }
+   ],
+   "icon": "icon_char003602.png"
+  },
+  "003603": {
+   "id": "003603",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Olivier"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Fallen Wings"
+    }
+   ],
+   "icon": "icon_char003603.png"
+  },
+  "003604": {
+   "id": "003604",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Olivier"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Retired Legend"
+    }
+   ],
+   "icon": "icon_char003604.png"
+  },
+  "003701": {
+   "id": "003701",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Blade"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Apostle"
+    }
+   ],
+   "icon": "icon_char003701.png"
+  },
+  "003702": {
+   "id": "003702",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Blade"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Onsen Swordfighter"
+    }
+   ],
+   "icon": "icon_char003702.png"
+  },
+  "003703": {
+   "id": "003703",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Blade"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Young Lady"
+    }
+   ],
+   "icon": "icon_char003703.png"
+  },
+  "003793": {
+   "id": "003793",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Blade"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Tender Dream"
+    }
+   ],
+   "icon": "icon_char003793.png"
+  },
+  "003801": {
+   "id": "003801",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Liberta"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Dark Saintess"
+    }
+   ],
+   "icon": "icon_char003801.png"
+  },
+  "003802": {
+   "id": "003802",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Liberta"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Onsen Manager"
+    }
+   ],
+   "icon": "icon_char003802.png"
+  },
+  "003803": {
+   "id": "003803",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Liberta"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Miracle Rose"
+    }
+   ],
+   "icon": "icon_char003803.png"
+  },
+  "003892": {
+   "id": "003892",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Liberta"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Hedonist"
+    }
+   ],
+   "icon": "icon_char003892.png"
+  },
+  "003901": {
+   "id": "003901",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Sonya"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Shadowed Dream"
+    }
+   ],
+   "icon": "icon_char003901.png"
+  },
+  "003902": {
+   "id": "003902",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Sonya"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Little Pumpkin Girl"
+    }
+   ],
+   "icon": "icon_char003902.png"
+  },
+  "004001": {
+   "id": "004001",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Darian"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Prophetic Dream"
+    }
+   ],
+   "icon": "icon_char004001.png"
+  },
+  "004002": {
+   "id": "004002",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Darian"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Bittersweet Bunny"
+    }
+   ],
+   "icon": "icon_char004002.png"
+  },
+  "004091": {
+   "id": "004091",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Darian"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Herald of Enlightenment"
+    }
+   ],
+   "icon": "icon_char004091.png"
+  },
+  "004101": {
+   "id": "004101",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Tyr"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Starlight Guardian"
+    }
+   ],
+   "icon": "icon_char004101.png"
+  },
+  "004102": {
+   "id": "004102",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Tyr"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Innocent Bunny"
+    }
+   ],
+   "icon": "icon_char004102.png"
+  },
+  "004201": {
+   "id": "004201",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Palette"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Shattered Dream"
+    }
+   ],
+   "icon": "icon_char004201.png"
+  },
+  "004202": {
+   "id": "004202",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Palette"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Miracle Violet"
+    }
+   ],
+   "icon": "icon_char004202.png"
+  },
+  "004301": {
+   "id": "004301",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Nekyndalia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Deadeye"
+    }
+   ],
+   "icon": "icon_char004301.png"
+  },
+  "020001": {
+   "id": "020001",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Eris"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Esteemed Adventurer"
+    }
+   ],
+   "icon": "icon_char020001.png"
+  },
+  "020002": {
+   "id": "020002",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Eris"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Your Very Own Cat"
+    }
+   ],
+   "icon": "icon_char020002.png"
+  },
+  "020101": {
+   "id": "020101",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Roxy"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Respected Master"
+    }
+   ],
+   "icon": "icon_char020101.png"
+  },
+  "020102": {
+   "id": "020102",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Roxy"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Emerging Desire"
+    }
+   ],
+   "icon": "icon_char020102.png"
+  },
+  "020201": {
+   "id": "020201",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Yomi"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Gentle Destroyer"
+    }
+   ],
+   "icon": "icon_char020201.png"
+  },
+  "020301": {
+   "id": "020301",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Yozakura"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Fist of Conviction"
+    }
+   ],
+   "icon": "icon_char020301.png"
+  },
+  "020401": {
+   "id": "020401",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Yumi"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Dancing Snowflake"
+    }
+   ],
+   "icon": "icon_char020401.png"
+  },
+  "020501": {
+   "id": "020501",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Hikage"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Kind Ruthlessness"
+    }
+   ],
+   "icon": "icon_char020501.png"
+  },
+  "020601": {
+   "id": "020601",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Goblin Slayer"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Orcbolg"
+    }
+   ],
+   "icon": "icon_char020601.png"
+  },
+  "020701": {
+   "id": "020701",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Priestess"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Earth Mother Believer"
+    }
+   ],
+   "icon": "icon_char020701.png"
+  },
+  "020801": {
+   "id": "020801",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "High Elf Archer"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Daughter of Starwind"
+    }
+   ],
+   "icon": "icon_char020801.png"
+  },
+  "020901": {
+   "id": "020901",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Sword Maiden"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Supreme God Archbishop"
+    }
+   ],
+   "icon": "icon_char020901.png"
+  },
+  "021001": {
+   "id": "021001",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Ikaruga"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Noble Flame"
+    }
+   ],
+   "icon": "icon_char021001.png"
+  },
+  "021101": {
+   "id": "021101",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Kyouka Uzen"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Eternal Chains"
+    }
+   ],
+   "icon": "icon_char021101.png"
+  },
+  "021201": {
+   "id": "021201",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Tenka Izumo"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Ame-no-Mitori"
+    }
+   ],
+   "icon": "icon_char021201.png"
+  },
+  "021291": {
+   "id": "021291",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Tenka Izumo"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Special Date"
+    }
+   ],
+   "icon": "icon_char021291.png"
+  },
+  "021301": {
+   "id": "021301",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "山城恋"
+    },
+    {
+     "lang": "en",
+     "text": "Ren Yamashiro"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Lord of the Cosmos"
+    }
+   ],
+   "icon": "icon_char021301.png"
+  },
+  "021391": {
+   "id": "021391",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "山城恋"
+    },
+    {
+     "lang": "en",
+     "text": "Ren Yamashiro"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Role Reversal"
+    }
+   ],
+   "icon": "icon_char021391.png"
+  },
+  "060301": {
+   "id": "060301",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Alec"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "The Destruction"
+    }
+   ],
+   "icon": "icon_char060301.png"
+  },
+  "060302": {
+   "id": "060302",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Alec"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Sword Breaker"
+    }
+   ],
+   "icon": "icon_char060302.png"
+  },
+  "060402": {
+   "id": "060402",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Celia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Descendant of the Great Witch"
+    }
+   ],
+   "icon": "icon_char060402.png"
+  },
+  "060403": {
+   "id": "060403",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Celia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Masquerade Bunny"
+    }
+   ],
+   "icon": "icon_char060403.png"
+  },
+  "060501": {
+   "id": "060501",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Anastasia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Gentle Maid"
+    }
+   ],
+   "icon": "icon_char060501.png"
+  },
+  "060502": {
+   "id": "060502",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Anastasia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Fire Graffiti"
+    }
+   ],
+   "icon": "icon_char060502.png"
+  },
+  "060601": {
+   "id": "060601",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Lecliss"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Killer Doll"
+    }
+   ],
+   "icon": "icon_char060601.png"
+  },
+  "060602": {
+   "id": "060602",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Lecliss"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Android Queen"
+    }
+   ],
+   "icon": "icon_char060602.png"
+  },
+  "060701": {
+   "id": "060701",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Rafina"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Steel Engine"
+    }
+   ],
+   "icon": "icon_char060701.png"
+  },
+  "060702": {
+   "id": "060702",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Rafina"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Code Name A"
+    }
+   ],
+   "icon": "icon_char060702.png"
+  },
+  "060706": {
+   "id": "060706",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Rafina"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Game Club"
+    }
+   ],
+   "icon": "icon_char060706.png"
+  },
+  "060801": {
+   "id": "060801",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Elise"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Lovely Lady"
+    }
+   ],
+   "icon": "icon_char060801.png"
+  },
+  "060802": {
+   "id": "060802",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Elise"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Code Name O"
+    }
+   ],
+   "icon": "icon_char060802.png"
+  },
+  "060804": {
+   "id": "060804",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Elise"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Naive Lady"
+    }
+   ],
+   "icon": "icon_char060804.png"
+  },
+  "061001": {
+   "id": "061001",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Helena"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Top Idol"
+    }
+   ],
+   "icon": "icon_char061001.png"
+  },
+  "061002": {
+   "id": "061002",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Helena"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "B-Rank Idol"
+    }
+   ],
+   "icon": "icon_char061002.png"
+  },
+  "061003": {
+   "id": "061003",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Helena"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Sunny Inn Hand"
+    }
+   ],
+   "icon": "icon_char061003.png"
+  },
+  "061092": {
+   "id": "061092",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Helena"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Rising Star"
+    }
+   ],
+   "icon": "icon_char061092.png"
+  },
+  "061101": {
+   "id": "061101",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Eleaneer"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Piercing Magic Bow"
+    }
+   ],
+   "icon": "icon_char061101.png"
+  },
+  "061102": {
+   "id": "061102",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Eleaneer"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "B-Rank Idol"
+    }
+   ],
+   "icon": "icon_char061102.png"
+  },
+  "061103": {
+   "id": "061103",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Eleaneer"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Shadow Bunny"
+    }
+   ],
+   "icon": "icon_char061103.png"
+  },
+  "061302": {
+   "id": "061302",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Dalvi"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Bright Moon"
+    }
+   ],
+   "icon": "icon_char061302.png"
+  },
+  "061305": {
+   "id": "061305",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Dalvi"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Summer Vacation"
+    }
+   ],
+   "icon": "icon_char061305.png"
+  },
+  "061306": {
+   "id": "061306",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Dalvi"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Tricky Lover"
+    }
+   ],
+   "icon": "icon_char061306.png"
+  },
+  "061392": {
+   "id": "061392",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Dalvi"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Butterfly Dream"
+    }
+   ],
+   "icon": "icon_char061392.png"
+  },
+  "061402": {
+   "id": "061402",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Zenith"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Robin Hood"
+    }
+   ],
+   "icon": "icon_char061402.png"
+  },
+  "061404": {
+   "id": "061404",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Zenith"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Poolside Guardian"
+    }
+   ],
+   "icon": "icon_char061404.png"
+  },
+  "061492": {
+   "id": "061492",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Zenith"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Stranger Bunny"
+    }
+   ],
+   "icon": "icon_char061492.png"
+  },
+  "062001": {
+   "id": "062001",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Andrew"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Loyal Butler"
+    }
+   ],
+   "icon": "icon_char062001.png"
+  },
+  "062002": {
+   "id": "062002",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Andrew"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Specialist"
+    }
+   ],
+   "icon": "icon_char062002.png"
+  },
+  "063001": {
+   "id": "063001",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Ingrid"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Kardis' Bullet"
+    }
+   ],
+   "icon": "icon_char063001.png"
+  },
+  "063301": {
+   "id": "063301",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Cynthia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Warmth within the Severe Cold"
+    }
+   ],
+   "icon": "icon_char063301.png"
+  },
+  "063401": {
+   "id": "063401",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Julie"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Healer"
+    }
+   ],
+   "icon": "icon_char063401.png"
+  },
+  "065102": {
+   "id": "065102",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Yuri"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Whitebolt"
+    }
+   ],
+   "icon": "icon_char065102.png"
+  },
+  "065103": {
+   "id": "065103",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Yuri"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Comeback Idol"
+    }
+   ],
+   "icon": "icon_char065103.png"
+  },
+  "065193": {
+   "id": "065193",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Yuri"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Forever Mascot"
+    }
+   ],
+   "icon": "icon_char065193.png"
+  },
+  "065802": {
+   "id": "065802",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Nartas"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Anonymous Sage"
+    }
+   ],
+   "icon": "icon_char065802.png"
+  },
+  "066401": {
+   "id": "066401",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Angelica"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "The Fallen"
+    }
+   ],
+   "icon": "icon_char066401.png"
+  },
+  "066402": {
+   "id": "066402",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Angelica"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Pool Party"
+    }
+   ],
+   "icon": "icon_char066402.png"
+  },
+  "066403": {
+   "id": "066403",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Angelica"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Neon Savior"
+    }
+   ],
+   "icon": "icon_char066403.png"
+  },
+  "066801": {
+   "id": "066801",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Refithea"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "The Gluttonous"
+    }
+   ],
+   "icon": "icon_char066801.png"
+  },
+  "066802": {
+   "id": "066802",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Refithea"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Pure White Blessing"
+    }
+   ],
+   "icon": "icon_char066802.png"
+  },
+  "066802_c": {
+   "id": "066802_c",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Refithea"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Pure White Blessing (Censored)"
+    }
+   ],
+   "icon": ""
+  },
+  "066803": {
+   "id": "066803",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Refithea"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Poolside Fairy"
+    }
+   ],
+   "icon": "icon_char066803.png"
+  },
+  "066902": {
+   "id": "066902",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Glacia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Alice"
+    }
+   ],
+   "icon": "icon_char066902.png"
+  },
+  "066906": {
+   "id": "066906",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Glacia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Disciplinary Committee"
+    }
+   ],
+   "icon": "icon_char066906.png"
+  },
+  "066907": {
+   "id": "066907",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Glacia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Heavenly Guardian Successor"
+    }
+   ],
+   "icon": "icon_char066907.png"
+  },
+  "067002": {
+   "id": "067002",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Ventana"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Snow White"
+    }
+   ],
+   "icon": "icon_char067002.png"
+  },
+  "067003": {
+   "id": "067003",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Ventana"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Comeback Idol"
+    }
+   ],
+   "icon": "icon_char067003.png"
+  },
+  "067004": {
+   "id": "067004",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Ventana"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Onsen Practitioner"
+    }
+   ],
+   "icon": "icon_char067004.png"
+  },
+  "067101": {
+   "id": "067101",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Granhildr"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "The Void"
+    }
+   ],
+   "icon": "icon_char067101.png"
+  },
+  "067102": {
+   "id": "067102",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Granhildr"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Comeback Idol"
+    }
+   ],
+   "icon": "icon_char067102.png"
+  },
+  "067103": {
+   "id": "067103",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Granhildr"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Boo Ghost"
+    }
+   ],
+   "icon": "icon_char067103.png"
+  },
+  "067104": {
+   "id": "067104",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Granhildr"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Combat Medic"
+    }
+   ],
+   "icon": "icon_char067104.png"
+  },
+  "067201": {
+   "id": "067201",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Venaka"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "DJ"
+    }
+   ],
+   "icon": "icon_char067201.png"
+  },
+  "067202": {
+   "id": "067202",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Venaka"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Wind Dancer"
+    }
+   ],
+   "icon": "icon_char067202.png"
+  },
+  "067301": {
+   "id": "067301",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Levia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Track and Field Captain"
+    }
+   ],
+   "icon": "icon_char067301.png"
+  },
+  "067302": {
+   "id": "067302",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Levia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Night of Jealousy"
+    }
+   ],
+   "icon": "icon_char067302.png"
+  },
+  "067303": {
+   "id": "067303",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Levia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Overheat"
+    }
+   ],
+   "icon": "icon_char067303.png"
+  },
+  "067401": {
+   "id": "067401",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Michaela"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Beachside Justice"
+    }
+   ],
+   "icon": "icon_char067401.png"
+  },
+  "067402": {
+   "id": "067402",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Michaela"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Queen of Signatures"
+    }
+   ],
+   "icon": "icon_char067402.png"
+  },
+  "067403": {
+   "id": "067403",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Michaela"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Acting Archbishop"
+    }
+   ],
+   "icon": "icon_char067403.png"
+  },
+  "067491": {
+   "id": "067491",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Michaela"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "True Liberation"
+    }
+   ],
+   "icon": "icon_char067491.png"
+  },
+  "067502": {
+   "id": "067502",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Luvencia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Deal Snatcher"
+    }
+   ],
+   "icon": "icon_char067502.png"
+  },
+  "067503": {
+   "id": "067503",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Luvencia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Wild Dog"
+    }
+   ],
+   "icon": "icon_char067503.png"
+  },
+  "067504": {
+   "id": "067504",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Luvencia"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Ocean Vanguard"
+    }
+   ],
+   "icon": "icon_char067504.png"
+  },
+  "067601": {
+   "id": "067601",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Wilhelmina"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Iron Monarch"
+    }
+   ],
+   "icon": "icon_char067601.png"
+  },
+  "067603": {
+   "id": "067603",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Wilhelmina"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Water Park Queen"
+    }
+   ],
+   "icon": "icon_char067603.png"
+  },
+  "067604": {
+   "id": "067604",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Wilhelmina"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Frozen Queen"
+    }
+   ],
+   "icon": "icon_char067604.png"
+  },
+  "067701": {
+   "id": "067701",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Granadair"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Shrine Maiden of Purification"
+    }
+   ],
+   "icon": "icon_char067701.png"
+  },
+  "067702": {
+   "id": "067702",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Granadair"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Queen of Gluttis"
+    }
+   ],
+   "icon": "icon_char067702.png"
+  },
+  "067801": {
+   "id": "067801",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Mamonir"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Night of Death"
+    }
+   ],
+   "icon": "icon_char067801.png"
+  },
+  "067803": {
+   "id": "067803",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Mamonir"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Miracle Marine"
+    }
+   ],
+   "icon": "icon_char067803.png"
+  },
+  "067901": {
+   "id": "067901",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Aquila"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Savage Warrior"
+    }
+   ],
+   "icon": "icon_char067901.png"
+  },
+  "ellin": {
+   "id": "ellin",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Ellin (Npc)"
+    }
+   ],
+   "costume": [],
+   "icon": ""
+  },
+  "minigame1": {
+   "id": "minigame1",
+   "name": [
+    {
+     "lang": "zh",
+     "text": "Minigame"
+    }
+   ],
+   "costume": [
+    {
+     "lang": "zh",
+     "text": "Slap Slap Pop"
+    }
+   ],
+   "icon": ""
+  }
+ },
+ "byAsset": {
+  "illust_talk9016": "9016",
+  "illust_talk9018": "9018",
+  "char100101": "100101",
+  "char100201": "100201",
+  "char100301": "100301",
+  "char100401": "100401",
+  "char100501": "100501",
+  "cutscene_char100501": "100501",
+  "char100502": "100502",
+  "char100601": "100601",
+  "char100801": "100801",
+  "char101101": "101101",
+  "cutscene_char101101": "101101",
+  "char101102": "101102",
+  "cutscene_char101102": "101102",
+  "char101103": "101103",
+  "cutscene_char101103": "101103",
+  "char101201": "101201",
+  "char101202": "101202",
+  "char101301": "101301",
+  "char101302": "101302",
+  "char101401": "101401",
+  "char101402": "101402",
+  "char101501": "101501",
+  "char101502": "101502",
+  "char101601": "101601",
+  "cutscene_char060401": "101601",
+  "char103201": "103201",
+  "cutscene_char103201": "103201",
+  "char103301": "103301",
+  "cutscene_char103301": "103301",
+  "char103401": "103401",
+  "cutscene_char103401": "103401",
+  "char103501": "103501",
+  "cutscene_char103501": "103501",
+  "char103601": "103601",
+  "char103701": "103701",
+  "npc200551": "200551",
+  "npc300103": "300103",
+  "npc300104": "300104",
+  "npc300601": "300601",
+  "npc300701": "300701",
+  "npc400001": "400001",
+  "npc400017": "400017",
+  "npc400018": "400018",
+  "npc400034": "400034",
+  "npc400042": "400042",
+  "npc400049": "400049",
+  "npc400050": "400050",
+  "npc000005": "400056",
+  "npc400064": "400064",
+  "npc400070": "400070",
+  "npc400098": "400098",
+  "npc400100": "400100",
+  "npc400123": "400123",
+  "npc400135": "400135",
+  "char101101_c": "101101_c",
+  "char101102_c": "101102_c",
+  "npc000001": "000001",
+  "npc000004": "000004",
+  "char000101": "000101",
+  "cutscene_char000101": "000101",
+  "char000102": "000102",
+  "char000103": "000103",
+  "cutscene_char000103": "000103",
+  "char000104": "000104",
+  "char000105": "000105",
+  "char000106": "000106",
+  "char000201": "000201",
+  "cutscene_char000201": "000201",
+  "char000202": "000202",
+  "cutscene_char000202": "000202",
+  "char000203": "000203",
+  "cutscene_char000203": "000203",
+  "char000204": "000204",
+  "cutscene_char000204": "000204",
+  "char000206": "000206",
+  "cutscene_char000206": "000206",
+  "char000296": "000296",
+  "cutscene_char000296": "000296",
+  "illust_dating7": "000296",
+  "char000301": "000301",
+  "cutscene_char000301": "000301",
+  "char000303": "000303",
+  "cutscene_char000303": "000303",
+  "char000304": "000304",
+  "cutscene_char000304": "000304",
+  "char000306": "000306",
+  "cutscene_char000306": "000306",
+  "char000396": "000396",
+  "cutscene_char000396": "000396",
+  "illust_dating18": "000396",
+  "char000401": "000401",
+  "cutscene_char000401": "000401",
+  "char000402": "000402",
+  "char000403": "000403",
+  "char000406": "000406",
+  "char000501": "000501",
+  "cutscene_char000501": "000501",
+  "char000502": "000502",
+  "cutscene_char000502": "000502",
+  "char000502_c": "000502_c",
+  "char000504": "000504",
+  "cutscene_char000504": "000504",
+  "char000506": "000506",
+  "cutscene_char000506": "000506",
+  "char000601": "000601",
+  "char000604": "000604",
+  "cutscene_char000604": "000604",
+  "char000701": "000701",
+  "cutscene_char000701": "000701",
+  "char000706": "000706",
+  "cutscene_char000706": "000706",
+  "illust_dating11": "000706",
+  "char000707": "000707",
+  "cutscene_char000707": "000707",
+  "char000708": "000708",
+  "cutscene_char000708": "000708",
+  "char000801": "000801",
+  "cutscene_char000801": "000801",
+  "char000804": "000804",
+  "cutscene_char000804": "000804",
+  "char000806": "000806",
+  "cutscene_char000806": "000806",
+  "char000807": "000807",
+  "cutscene_char000807": "000807",
+  "char001001": "001001",
+  "cutscene_char001001": "001001",
+  "char001002": "001002",
+  "cutscene_char001002": "001002",
+  "char001004": "001004",
+  "cutscene_char001004": "001004",
+  "char001006": "001006",
+  "cutscene_char001006": "001006",
+  "illust_dating8": "001006",
+  "char001092": "001092",
+  "cutscene_char001092": "001092",
+  "char001101": "001101",
+  "cutscene_char001101": "001101",
+  "char001106": "001106",
+  "cutscene_char001106": "001106",
+  "illust_dating4": "001106",
+  "char001107": "001107",
+  "cutscene_char001107": "001107",
+  "char001197": "001197",
+  "cutscene_char001197": "001197",
+  "illust_dating9": "001197",
+  "char001201": "001201",
+  "cutscene_char001201": "001201",
+  "char001206": "001206",
+  "cutscene_char001206": "001206",
+  "char001207": "001207",
+  "cutscene_char001207": "001207",
+  "char002401": "002401",
+  "cutscene_char002401": "002401",
+  "char002403": "002403",
+  "cutscene_char002403": "002403",
+  "char002406": "002406",
+  "cutscene_char002406": "002406",
+  "char003001": "003001",
+  "char003101": "003101",
+  "cutscene_char003101": "003101",
+  "npc300501": "003201",
+  "cutscene_char003201": "003201",
+  "char003202": "003202",
+  "cutscene_char003202": "003202",
+  "char003203": "003203",
+  "cutscene_char003203": "003203",
+  "illust_dating3": "003203",
+  "char003301": "003301",
+  "cutscene_char003301": "003301",
+  "char003302": "003302",
+  "cutscene_char003302": "003302",
+  "char003303": "003303",
+  "cutscene_char003303": "003303",
+  "illust_dating1": "003303",
+  "char003392": "003392",
+  "cutscene_char003392": "003392",
+  "char003401": "003401",
+  "cutscene_char003401": "003401",
+  "char003402": "003402",
+  "cutscene_char003402": "003402",
+  "illust_dating2": "003402",
+  "char003403": "003403",
+  "cutscene_char003403": "003403",
+  "char003501": "003501",
+  "cutscene_char003501": "003501",
+  "char003601": "003601",
+  "cutscene_char003601": "003601",
+  "char003602": "003602",
+  "cutscene_char003602": "003602",
+  "char003603": "003603",
+  "cutscene_char003603": "003603",
+  "char003604": "003604",
+  "cutscene_char003604": "003604",
+  "illust_dating16": "003604",
+  "char003701": "003701",
+  "cutscene_char003701": "003701",
+  "char003702": "003702",
+  "cutscene_char003702": "003702",
+  "char003703": "003703",
+  "cutscene_char003703": "003703",
+  "char003793": "003793",
+  "cutscene_char003793": "003793",
+  "char003801": "003801",
+  "cutscene_char003801": "003801",
+  "char003802": "003802",
+  "cutscene_char003802": "003802",
+  "char003803": "003803",
+  "cutscene_char003803": "003803",
+  "char003892": "003892",
+  "cutscene_char003892": "003892",
+  "illust_dating14": "003892",
+  "char003901": "003901",
+  "cutscene_char003901": "003901",
+  "char003902": "003902",
+  "cutscene_char003902": "003902",
+  "char004001": "004001",
+  "cutscene_char004001": "004001",
+  "char004002": "004002",
+  "cutscene_char004002": "004002",
+  "char004091": "004091",
+  "cutscene_char004091": "004091",
+  "char004101": "004101",
+  "cutscene_char004101": "004101",
+  "char004102": "004102",
+  "cutscene_char004102": "004102",
+  "illust_dating13": "004102",
+  "char004201": "004201",
+  "cutscene_char004201": "004201",
+  "char004202": "004202",
+  "cutscene_char004202": "004202",
+  "illust_dating17": "004202",
+  "char004301": "004301",
+  "cutscene_char004301": "004301",
+  "char020001": "020001",
+  "cutscene_char020001": "020001",
+  "char020002": "020002",
+  "cutscene_char020002": "020002",
+  "char020101": "020101",
+  "cutscene_char020101": "020101",
+  "char020102": "020102",
+  "cutscene_char020102": "020102",
+  "char020201": "020201",
+  "cutscene_char020201": "020201",
+  "char020301": "020301",
+  "cutscene_char020301": "020301",
+  "char020401": "020401",
+  "cutscene_char020401": "020401",
+  "char020501": "020501",
+  "cutscene_char020501": "020501",
+  "char020601": "020601",
+  "cutscene_char020601": "020601",
+  "char020701": "020701",
+  "cutscene_char020701": "020701",
+  "char020801": "020801",
+  "cutscene_char020801": "020801",
+  "char020901": "020901",
+  "cutscene_char020901": "020901",
+  "char021001": "021001",
+  "cutscene_char021001": "021001",
+  "char021101": "021101",
+  "cutscene_char021101": "021101",
+  "char021201": "021201",
+  "cutscene_char021201": "021201",
+  "char021291": "021291",
+  "cutscene_char021291": "021291",
+  "char021301": "021301",
+  "cutscene_char021301": "021301",
+  "char021391": "021391",
+  "cutscene_char021391": "021391",
+  "char060301": "060301",
+  "char060302": "060302",
+  "char060402": "060402",
+  "cutscene_char060402": "060402",
+  "char060403": "060403",
+  "cutscene_char060403": "060403",
+  "char060501": "060501",
+  "cutscene_char060501": "060501",
+  "char060502": "060502",
+  "cutscene_char060502": "060502",
+  "char060601": "060601",
+  "cutscene_char060601": "060601",
+  "char060602": "060602",
+  "cutscene_char060602": "060602",
+  "char060701": "060701",
+  "cutscene_char060701": "060701",
+  "char060702": "060702",
+  "cutscene_char060702": "060702",
+  "char060706": "060706",
+  "cutscene_char060706": "060706",
+  "char060801": "060801",
+  "cutscene_char060801": "060801",
+  "char060802": "060802",
+  "cutscene_char060802": "060802",
+  "illust_dating5": "060802",
+  "char060804": "060804",
+  "cutscene_char060804": "060804",
+  "char061001": "061001",
+  "cutscene_char061001": "061001",
+  "char061002": "061002",
+  "cutscene_char061002": "061002",
+  "char061003": "061003",
+  "cutscene_char061003": "061003",
+  "char061092": "061092",
+  "cutscene_char061092_a": "061092",
+  "char061101": "061101",
+  "cutscene_char061101": "061101",
+  "char061102": "061102",
+  "cutscene_char061102": "061102",
+  "char061103": "061103",
+  "cutscene_char061103": "061103",
+  "char061302": "061302",
+  "cutscene_char061302": "061302",
+  "illust_dating20": "061302",
+  "char061305": "061305",
+  "cutscene_char061305": "061305",
+  "char061306": "061306",
+  "cutscene_char061306": "061306",
+  "char061392": "061392",
+  "cutscene_char061392": "061392",
+  "char061402": "061402",
+  "cutscene_char061402": "061402",
+  "char061404": "061404",
+  "cutscene_char061404": "061404",
+  "char061492": "061492",
+  "cutscene_char061492": "061492",
+  "illust_dating12": "061492",
+  "char062001": "062001",
+  "char062002": "062002",
+  "char063001": "063001",
+  "char063301": "063301",
+  "char063401": "063401",
+  "char065102": "065102",
+  "cutscene_char065102": "065102",
+  "char065103": "065103",
+  "cutscene_char065103": "065103",
+  "char065193": "065193",
+  "cutscene_char065193": "065193",
+  "illust_dating21": "065193",
+  "char065802": "065802",
+  "cutscene_char065802": "065802",
+  "char066401": "066401",
+  "cutscene_char066401": "066401",
+  "char066402": "066402",
+  "cutscene_char066402": "066402",
+  "char066403": "066403",
+  "cutscene_char066403": "066403",
+  "illust_dating10": "066403",
+  "char066801": "066801",
+  "cutscene_char066801": "066801",
+  "char066802": "066802",
+  "cutscene_char066802": "066802",
+  "char066802_c": "066802_c",
+  "char066803": "066803",
+  "cutscene_char066803": "066803",
+  "char066902": "066902",
+  "cutscene_char066902": "066902",
+  "char066906": "066906",
+  "cutscene_char066906": "066906",
+  "char066907": "066907",
+  "cutscene_char066907": "066907",
+  "char067002": "067002",
+  "cutscene_char067002": "067002",
+  "char067003": "067003",
+  "cutscene_char067003": "067003",
+  "char067004": "067004",
+  "cutscene_char067004": "067004",
+  "illust_dating15": "067004",
+  "char067101": "067101",
+  "cutscene_char067101": "067101",
+  "char067102": "067102",
+  "cutscene_char067102": "067102",
+  "char067103": "067103",
+  "cutscene_char067103": "067103",
+  "char067104": "067104",
+  "cutscene_char067104": "067104",
+  "illust_dating19": "067104",
+  "char067201": "067201",
+  "cutscene_char067201": "067201",
+  "char067202": "067202",
+  "cutscene_char067202": "067202",
+  "char067301": "067301",
+  "cutscene_char067301": "067301",
+  "char067302": "067302",
+  "cutscene_char067302": "067302",
+  "char067303": "067303",
+  "cutscene_char067303": "067303",
+  "char067401": "067401",
+  "cutscene_char067401": "067401",
+  "char067402": "067402",
+  "cutscene_char067402": "067402",
+  "char067403": "067403",
+  "cutscene_char067403": "067403",
+  "char067491": "067491",
+  "cutscene_char067491": "067491",
+  "char067502": "067502",
+  "cutscene_char067502": "067502",
+  "char067503": "067503",
+  "cutscene_char067503": "067503",
+  "char067504": "067504",
+  "cutscene_char067504": "067504",
+  "char067601": "067601",
+  "cutscene_char067601": "067601",
+  "char067603": "067603",
+  "cutscene_char067603": "067603",
+  "illust_dating6": "067603",
+  "char067604": "067604",
+  "cutscene_char067604": "067604",
+  "char067701": "067701",
+  "cutscene_char067701": "067701",
+  "char067702": "067702",
+  "cutscene_char067702": "067702",
+  "char067801": "067801",
+  "cutscene_char067801": "067801",
+  "char067803": "067803",
+  "cutscene_char067803": "067803",
+  "char067901": "067901",
+  "cutscene_char067901": "067901",
+  "npc_ellin": "ellin",
+  "rhythmhitanim": "minigame1"
+ }
+}
