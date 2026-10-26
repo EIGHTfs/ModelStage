@@ -25,7 +25,7 @@ data.bundleProbe.probeBundle(id, p) // → Promise<{ status, body }>
   `JSON.stringify` 无缩进，与 `server.mjs` 的 `sendJson` 一致，便于逐字节比对）；
 - 项目根由调用方注入（`createPaths({ root })`），模块内不写死绝对路径；
 - 写接口（`/api/roots` POST、`/api/config/import`、`/api/diag`）**不在此层**：过渡期保持
-  「单写者」（只有 8803 写 `config/` 与 `data/`），避免两进程并行写产生竞态。
+  「单写者」（服务进程独占写 `config/` 与 `data/`），避免多进程并行写产生竞态。
 
 ## 模块划分
 
@@ -48,7 +48,7 @@ data.bundleProbe.probeBundle(id, p) // → Promise<{ status, body }>
 ## 等价性验证
 
 抽离后必须证明「响应逐字节不变」，验证方式是：用本目录模块重放同一批 URL 的响应体，
-与旧实现（8803）的真实响应比 `sha256`。已覆盖的 URL 与结果记录在交付报告里。
+与迁移前实现的真实响应比 `sha256`（历史交付记录）。
 
 ## 技术债（抽离阶段刻意保留原行为，不在重构中顺带修改）
 

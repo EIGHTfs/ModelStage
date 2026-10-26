@@ -1,6 +1,6 @@
 // index.mjs —— 共用服务端数据层的装配入口
 //
-// 用法（8803 / 8804 / 测试脚本一致）：
+// 用法（服务进程与测试脚本一致）：
 //   import { createServerData } from './src/server/index.mjs';
 //   const data = createServerData({ root: <项目根绝对路径> });
 //   data.config.readConfig() / data.tree.listTree(id, rel) / ...

@@ -40,14 +40,14 @@ const PATTERNS = [
   { re: /\.style\.height\s*=/, what: 'style.height =' },
 ];
 
-/** 递归收集 .js 文件（跳过 node_modules / legacy / 构建产物） */
+/** 递归收集 .js 文件（跳过 node_modules / .git / 构建产物） */
 function walk(dir, out = []) {
   let ents = [];
   try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
   for (const e of ents) {
     const full = path.join(dir, e.name);
     if (e.isDirectory()) {
-      if (e.name === 'node_modules' || e.name === 'legacy' || e.name === '.git') continue;
+      if (e.name === 'node_modules' || e.name === '.git') continue;
       walk(full, out);
     } else if (e.isFile() && e.name.endsWith('.js')) {
       out.push(full);

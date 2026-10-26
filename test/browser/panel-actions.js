@@ -4,7 +4,7 @@
 //   1. 手风琴 9 组逐个展开/折叠（真实行为，aria-expanded 与可见性同步翻转）；
 //   2. 所有未接线控件逐个断言 disabled + data-pending="true"（给总数）；
 //   3. 已接线控件（模型库 / 全屏 / 左栏收起）各操作一次并记录变化；
-//   4. 区域 rect 与控件计数一并回传，供与旧前端对比。
+//   4. 区域 rect 与控件计数一并回传，供几何回归对照。
 //
 // 用法（项目根执行；地址由参数给，脚本内不写死）：
 //   node tool/check-console.mjs http://127.0.0.1:8804/ --script test/panel-actions.js
@@ -327,7 +327,7 @@ async function runWiredLists(C, I) {
 async function runDefaultValues(C, I) {
   const { rec } = C;
   const { triggers } = I;
-  // 分组标题与旧前端逐字对照
+  // 分组标题与声明口径对照
   const titles = triggers.map((t) => t.textContent.trim());
   const expectTitles = ['动作', '皮肤', '播放', '滤镜', 'PMA 预乘', '运行时', '主题背景', '调试绘制', '设置'];
   // 视图与引擎必须一致：每个已接线控件声明的默认值，启动后必须已经落到舞台设置里
@@ -432,11 +432,11 @@ async function runDisabledStyle(C, I) {
 }
 
 
-/** 分组标题与旧前端逐字对照 */
+/** 分组标题与声明口径对照 */
 async function runGroupTitles(C, J) {
   const { titles, expectTitles } = J;
   const { rec } = C;
-  rec('分组标题对照', '#right-panel .acc-trigger', '枚举', '与旧前端 9 组逐字一致',
+  rec('分组标题对照', '#right-panel .acc-trigger', '枚举', '与声明口径 9 组逐字一致',
     titles.join(' / '), JSON.stringify(titles) === JSON.stringify(expectTitles));
 }
 
@@ -671,7 +671,7 @@ async function runRects(C) {
     Number.isFinite(rightVarPx) && Math.abs(rightRect[2] - rightVarPx) <= 1
       && rightRect[0] + rightRect[2] === 1920 && rightRect[1] === 48);
   // 播放条不再是固定 720px：宽度由内容决定（fit-content），整体居中，高度随内容（≥42）。
-  //   所以这里断言"性质"而不是"旧前端快照数字"：宽度=内容宽、水平居中、高度够用。
+  //   所以这里断言"性质"而不是"某一版快照数字"：宽度=内容宽、水平居中、高度够用。
   const footEl = q('#app-footer');
   const footW = footEl ? footEl.offsetWidth : 0;
   const footScroll = footEl ? footEl.scrollWidth : 0;

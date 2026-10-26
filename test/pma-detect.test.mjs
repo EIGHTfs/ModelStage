@@ -1,9 +1,9 @@
-// test/pma-detect.test.mjs —— PMA 判定与兜底（对齐旧端的"检测不出 ⇒ 按已预乘"）
+// test/pma-detect.test.mjs —— PMA 判定与兜底（口径：检测不出 ⇒ 按已预乘）
 //
 // 背景：auto 档有三种结论，必须分开处理：
 //   · 明确预乘   → premultiplied（不再乘）
 //   · 明确非预乘 → upload（上传时预乘一次）
-//   · **检测不出** → 按已预乘（对齐旧端 init-default / safe-fallback / atlas 未声明三条兜底都 true）
+//   · **检测不出** → 按已预乘（init-default / safe-fallback / atlas 未声明三条兜底都为 true）
 // 为什么检测不出要选"已预乘"：失败代价不对称——兜成"非预乘"会给已预乘的图**再乘一次**（明显黑圈）；
 //   兜成"已预乘"最多是直通图混合略暗。少乘远比多乘可接受。
 import test from 'node:test';
@@ -33,7 +33,7 @@ test('resolvePmaInfo：显式档位不受兜底影响', () => {
   assert.equal(degraded.degraded, true);
 });
 
-test('detectPma：像素不足且 atlas 未声明 ⇒ 按已预乘（旧端 safe-fallback）', () => {
+test('detectPma：像素不足且 atlas 未声明 ⇒ 按已预乘（safe-fallback）', () => {
   const d = detectPma({ atlasDeclared: null, filenameHint: null, samples: [] });
   assert.equal(d.pixelDetected, null, '没有像素样本 ⇒ 无像素结论');
   assert.equal(d.finalIsPremultiplied, true, '无任何线索时按已预乘');

@@ -217,7 +217,7 @@ server.keepAliveTimeout = 65000;
 server.headersTimeout = 66000;
 server.requestTimeout = 0; // 0 = 不主动超时（长请求如大模型文件不被中途砍断）
 server.listen(PORT, '0.0.0.0', () => {
-  log.info(`新端自带服务 on http://0.0.0.0:${PORT}`);
+  log.info(`内置服务 on http://0.0.0.0:${PORT}`);
   log.info(`静态根 ${WEB_ROOT}`);
   log.info('资源根已登记', { roots: data.config.readConfig().map((r) => `${r.id}=${r.name}`) });
 });

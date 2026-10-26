@@ -92,7 +92,7 @@ node tool/check-plugin.mjs plugins/unity-live2d-bundle
 - 不做 Blob URL 装载、不安装运行时适配器（那些属于旧宿主通道，已删除）
 - 不设单包体积上限（峰值由核心 `revoke` 控住）
 
-## 旧端兼容
+## 只保留一套契约
 
-`probe(ctx)` / `open(ctx)` / `plugin.json` 的 `produces.legacyEntry` **已删除**，只保留新契约 `canHandle` / `resolve`。
-旧端（8803 的 `legacy/patches/plugin-host.js`）的 bundle 功能因此失效——旧端待下线，不再保留兼容层。
+插件只实现 `canHandle` / `resolve` 两个入口（`probe` / `open` / `produces.legacyEntry` 已移除）。
+宿主按这套契约调用，不再保留任何兼容层。

@@ -368,7 +368,7 @@ async function runMenuToggle(C) {
     await waitUntil(() => Math.abs(Math.round(rect(panel).x) - expectOnX) <= POS_TOL, 3000);
     const onAttr = document.documentElement.dataset.right;
     const x2 = Math.round(rect(panel).x);
-    // 面板头「收起菜单」也要能收起（旧端同一行为），收起后靠顶栏「菜单」打开
+    // 面板头「收起菜单」也要能收起；收起后靠顶栏「菜单」重新展开
     click(q('[data-ctl="btn-collapse-menu"]'));
     await waitUntil(() => Math.round(rect(panel).x) >= window.innerWidth - POS_TOL, 3000);
     const off2 = document.documentElement.dataset.right;

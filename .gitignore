@@ -82,21 +82,8 @@ config/names/
 config/.bak-*/
 
 # ---- 注意：以下刻意入库 ----
-#   legacy/baseline/index.html  原版基线（4.17MB），是等价性校验基准，且是运行时兜底来源
-#   legacy/source/app-shell.html   应用外壳（798KB）
 #   config/  tool/       配置与工具脚本
 # 游戏提取资源（.skel/.atlas/.png 等）一律不入库 —— 见 README 合规说明
-
-# ---- 复刻版实验已中止（2026-10-14）：现场移 .trash，git 不再跟踪 ----
-rebuild/
-dist-rebuild/
-
-# ---- P2 解压工作副本（2026-10-14）----
-# legacy/source/.app-shell.orig.html 是 legacy/source/app-shell.html 的逐字节相同副本（sha256 ae8a5cad…），
-# 被 tool/rebuild-from-slices.mjs 用作回填基准。为避免 823KB 纯重复入库，不入库；
-# 需要时重建：cp legacy/source/app-shell.html legacy/source/.app-shell.orig.html
-# （等价信息已由已跟踪的 legacy/source/app-shell.html + legacy/baseline/index.html 提供）
-legacy/baseline/
 
 # ---- 构建必需的原始字节（不入库：内容源自原版单文件，本地保留即可构建与校验）----
 

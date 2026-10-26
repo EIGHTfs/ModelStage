@@ -710,7 +710,7 @@ async function runPersistKeys(C) {
   const raw = localStorage.getItem('modelstage.tree-state.v1');
   const parsed = raw ? JSON.parse(raw) : null;
   rec('localStorage 键名', 'localStorage["modelstage.tree-state.v1"]', '读取',
-    '沿用旧前端键名，结构含 games/chars/activeGame/lastByGame（activeGame 存游戏名）',
+    '持久化键名保持稳定，结构含 games/chars/activeGame/lastByGame（activeGame 存游戏名）',
     parsed ? `keys=${Object.keys(parsed).join(',')} activeGame=${parsed.activeGame} lastByGame=${JSON.stringify(parsed.lastByGame)}` : '未写入',
     !!parsed && ['games', 'chars', 'activeGame', 'lastByGame'].every((k) => k in parsed));
 }
