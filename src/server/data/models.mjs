@@ -1,4 +1,6 @@
-// models.mjs —— Spine 模型扫描与清单缓存（config/models.<rootId>.json）
+// models.mjs —— Spine 模型扫描与清单缓存（config/spine.<rootId>.json）
+//   文件名用 spine 而不是 models：本模块只认 Spine（.skel/.json + 同名 .atlas 配对），
+//   与 Live2D 扫描器（live2d.<rootId>.json）并列时才对等。
 
 const log = createLogger('models');
 //
@@ -263,7 +265,7 @@ export function scanRootServer(root, deps) {
 
 /** 清单文件路径。 */
 export function modelsFile(configFile, rootId) {
-  return path.join(path.dirname(configFile), `models.${rootId}.json`);
+  return path.join(path.dirname(configFile), `spine.${rootId}.json`);
 }
 
 /** 失效某个资源根的清单（不传则失效全部）。Spine 与 Live2D 两套清单一并处理。 */
