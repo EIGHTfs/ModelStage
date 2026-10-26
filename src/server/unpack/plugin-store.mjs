@@ -17,7 +17,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { unpackFile, runnerInfo } from './plugin-runner.mjs';
+import { unpackFile, runnerInfo, providerFingerprint } from './plugin-runner.mjs';
 import { checkUnpackMemory } from './capacity.mjs';
 import { estimateMemoryOf } from './plugin-runner.mjs';
 
@@ -124,9 +124,14 @@ export function createUnpackStore(opts) {
     return rss;
   }
 
-  /** 指纹：源文件 stat + 插件身份（详见文件头第 1 条） */
+  /**
+   * 指纹：源文件 stat + 插件身份（详见文件头第 1 条）。
+   *
+   * 插件身份取 providerFingerprint()（所有可解包插件的集合）而不是写死某个插件名：
+   *   单插件时它返回的就是那个插件 id，与历史硬编码值**逐字相同**，所以现有缓存不会因这次通用化失效。
+   */
   function fingerprintOf({ rootId, rel, stat }) {
-    const raw = [rootId, rel, stat.size, Math.round(stat.mtimeMs), 'unity-live2d-bundle', version].join('\0');
+    const raw = [rootId, rel, stat.size, Math.round(stat.mtimeMs), providerFingerprint(), version].join('\0');
     return crypto.createHash('sha1').update(raw).digest('hex').slice(0, 16);
   }
 
@@ -406,7 +411,7 @@ export function createUnpackStore(opts) {
         return { ok: false, fingerprint: fp, reason: res.reason, message: res.message };
       }
       const tWrite0 = Date.now();
-      const { index } = await writeResult(fp, res, { ...req, size: stat.size, mtimeMs: stat.mtimeMs, pluginId: runnerInfo().pluginId, pluginVersion: version });
+      const { index } = await writeResult(fp, res, { ...req, size: stat.size, mtimeMs: stat.mtimeMs, pluginId: res.pluginId || runnerInfo().pluginId, pluginVersion: version });
       const writeMs = Date.now() - tWrite0;
       const tProbe0 = Date.now();
       // 实测回填必须在 writeResult **之后**：产物是"临时目录 rename 到 <fp>"落的盘，

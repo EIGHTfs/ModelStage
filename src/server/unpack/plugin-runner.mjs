@@ -21,33 +21,88 @@ import vm from 'node:vm';
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+// 插件发现复用 registry 的扫描（纪律第二条：禁止相似功能多处实现）
+import { readPlugins } from '../plugins/registry.mjs';
 
 // ../../.. ← 本文件在 src/server/unpack/，回退三级才是项目根（少算一级会把 plugins 指到 src/plugins）
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
-const PLUGIN_ID = 'unity-live2d-bundle';
-const PLUGIN_DIR = path.join(ROOT, 'plugins', PLUGIN_ID);
-
-/** 插件 lib 的装载顺序（与 17a 的 runner 完全一致，插件内部有依赖顺序） */
-const LIB_FILES = [
-  'lib/errors.js', 'lib/bytes.js', 'lib/common-strings.js', 'lib/unityfs.js', 'lib/serialized.js',
-  'lib/typetree.js', 'lib/extract.js', 'lib/etc2.js', 'lib/dxt.js', 'lib/texdecode.js',
-  'lib/bundle-probe.js', 'lib/png.js', 'lib/anim-to-motion.js', 'lib/model3.js',
-];
-
-/** 已装载的插件 API（模块级单例；失败则记下原因，不反复重试） */
-let cached = null;
-let loadError = null;
-let loadMs = 0;
+const PLUGINS_DIR = path.join(ROOT, 'plugins');
+/** 插件禁用开关（与 registry 同一份配置；被禁用的插件不参与服务端解包） */
+const PLUGIN_SWITCH_FILE = path.join(ROOT, 'config', 'plugins.json');
+/** 能承担服务端解包的角色：契约 §一 的 asset-provider（"能解析资源、交出资产"） */
+const SERVER_UNPACK_ROLE = 'asset-provider';
 
 /**
- * 建沙盒并装载插件（内部只调一次）。
- * @returns {{ok: boolean, api?: {resolve: Function, canHandle: Function}, error?: string, loadMs?: number}}
+ * 已装载插件：插件 id → {ok, api?, error?, loadMs?}。
+ *
+ * 为什么是 Map 而不是单个变量：契约 §一 是「放目录即加能力」，多插件必须能并存；
+ *   原来的单例缓存等于把"只支持一个插件"焊死在代码里（加第二个插件就得改代码）。
+ * 失败的插件也写进 Map（记原因），避免每次调用都重试同一个坏插件。
  */
-export function ensurePlugin() {
-  if (cached) return { ok: true, api: cached, loadMs };
-  if (loadError) return { ok: false, error: loadError };
+const pluginCache = new Map();
+
+/**
+ * 发现能承担服务端解包的插件清单。
+ *
+ * 复用 registry 的扫描（readPlugins）—— 不在这里另写一套目录遍历：
+ *   两套扫描必然漂移（一边认 files[] 顺序、一边认 entry，谁都说不清真相）。
+ * @returns {Array<{id: string, files: string[], version: unknown}>} files 是相对 plugins 目录的 POSIX 路径
+ */
+export function listProviderPlugins() {
+  return readPlugins(PLUGINS_DIR, PLUGIN_SWITCH_FILE)
+    .filter((m) => Array.isArray(m.provides) && m.provides.includes(SERVER_UNPACK_ROLE))
+    .map((m) => ({ id: m.id, files: m.files, version: m.version }));
+}
+
+/**
+ * provider 集合的指纹段（写进解包缓存键，插件升级/增减时缓存自然失效）。
+ *
+ * 单插件时返回该插件 id —— 与历史硬编码值**逐字相同**，所以现有缓存不会因为这次通用化失效；
+ * 多插件时才拼成 `a@1+b@2`（顺序无关，排序后拼）。
+ * @returns {string}
+ */
+export function providerFingerprint() {
+  const list = listProviderPlugins();
+  if (!list.length) return 'none';
+  if (list.length === 1) return list[0].id;
+  return list.map((m) => `${m.id}@${m.version === null || m.version === undefined ? '0' : m.version}`).sort().join('+');
+}
+
+/**
+ * 装载指定插件（同步；按 id 缓存，失败的也缓存原因）。
+ *
+ * 错误隔离：本函数**绝不抛**给上层 —— 一个插件语法错误/装不起来，只让它自己进
+ *   `{ok:false,error}`，其它插件与服务启动都不受影响（上层按 ok 决定跳过）。
+ * @param {string} pluginId 插件 id（= plugins/ 下的目录名 = plugin.json 的 id）
+ * @returns {{ok: boolean, api?: object, error?: string, loadMs?: number}}
+ */
+export function ensurePlugin(pluginId) {
+  const id = String(pluginId || '');
+  if (!id) return { ok: false, error: '缺少 pluginId' };
+  const hit = pluginCache.get(id);
+  if (hit) return hit;
+  let result;
+  try {
+    result = loadPlugin(id);
+  } catch (e) {
+    // 二次兜底：loadPlugin 内部已 catch，这里防"catch 里再抛"把整个调用点带崩
+    result = { ok: false, error: String((e && e.message) || e) };
+  }
+  pluginCache.set(id, result);
+  return result;
+}
+
+/**
+ * 真正建沙盒并装载一个插件。
+ * 加载顺序完全按清单的 `files[]`（插件自己在 plugin.json 里声明先后，runner 不再写死一串 lib 名）。
+ * @param {string} pluginId
+ * @returns {{ok: boolean, api?: object, error?: string, loadMs?: number}}
+ */
+function loadPlugin(pluginId) {
   const t0 = Date.now();
   try {
+    const meta = listProviderPlugins().find((m) => m.id === pluginId);
+    if (!meta) throw new Error(`未找到可解包的插件：${pluginId}（需要 provides 含 ${SERVER_UNPACK_ROLE}）`);
     const sandbox = {
       globalThis: {},
       console,
@@ -63,42 +118,84 @@ export function ensurePlugin() {
     };
     sandbox.globalThis = sandbox;
     vm.createContext(sandbox);
-    for (const rel of LIB_FILES) {
-      vm.runInContext(fs.readFileSync(path.join(PLUGIN_DIR, rel), 'utf8'), sandbox, { filename: rel });
+    // 加载顺序完全取清单 files[]：lib 的先后 + 入口文件都在 plugin.json 里声明，
+    //   runner 不再维护一串写死的 lib 名（加插件/调顺序都不该改代码）
+    for (const rel of meta.files) {
+      vm.runInContext(fs.readFileSync(path.join(PLUGINS_DIR, rel), 'utf8'), sandbox, { filename: rel });
     }
     const NS = sandbox.__ULB__;
-    if (!NS || !NS.bytes) throw new Error('lib/bytes.js 未能挂载 __ULB__');
-    // 这两块能力在浏览器由 DecompressionStream / 原生 API 提供，node 侧注入等价实现
-    NS.bytes.setSha256((u8) => crypto.createHash('sha256').update(u8).digest('hex'));
-    NS.png.setInflate((u8) => new Uint8Array(zlib.inflateSync(Buffer.from(u8))));
-    NS.png.setDeflate((u8) => new Uint8Array(zlib.deflateSync(Buffer.from(u8), { level: 6 })));
-    // 流式版：编码器按 64 行一块喂进来，这里不攒整张、不转 Buffer。
-    //   输出与一次性 deflateSync 逐字节相同（deflate 的切分不影响结果，只要不 flush）。
-    //   最后 Buffer.concat 只分配一次总长（省掉"片段数组再拼一份"的额外拷贝）。
-    NS.png.setDeflateStream(async (chunks) => {
-      const d = zlib.createDeflate({ level: 6 });
-      const out = [];
-      d.on('data', (c) => out.push(c));
-      const done = new Promise((res, rej) => { d.on('end', res); d.on('error', rej); });
-      for (const c of chunks) d.write(c);
-      d.end();
-      await done;
-      // 返回**片段数组**（不 concat）：编码器会把片段直接 set 进一次预分配的 PNG 缓冲，
+    // 清单里有 lib/ 的插件必须把能力挂到 __ULB__（manifest 与代码不一致时要响亮报错）；
+    //   没有 lib/ 的插件不建这个命名空间，跳过即可 —— 通用化后不能强制要求它存在
+    const hasLibDir = meta.files.some((f) => f.includes('/lib/'));
+    if (hasLibDir && (!NS || !NS.bytes)) throw new Error('lib/bytes.js 未能挂载 __ULB__');
+    // 以下几块能力在浏览器由 DecompressionStream / 原生 API 提供，node 侧注入等价实现。
+    //   均按"插件是否建了该命名空间/该钩子"判空注入：别的插件不一定有 bytes/png。
+    if (NS && NS.bytes && typeof NS.bytes.setSha256 === 'function') {
+      NS.bytes.setSha256((u8) => crypto.createHash('sha256').update(u8).digest('hex'));
+    }
+    if (NS && NS.png) {
+      NS.png.setInflate((u8) => new Uint8Array(zlib.inflateSync(Buffer.from(u8))));
+      NS.png.setDeflate((u8) => new Uint8Array(zlib.deflateSync(Buffer.from(u8), { level: 6 })));
+      // 流式版：编码器按 64 行一块喂进来，这里不攒整张、不转 Buffer。
+      //   输出与一次性 deflateSync 逐字节相同（deflate 的切分不影响结果，只要不 flush）。
+      //   返回**片段数组**（不 concat）：编码器会把片段直接 set 进一次预分配的 PNG 缓冲，
       //   多一次 concat 就是多一份 18MB。
-      return out;
-    });
-    vm.runInContext(fs.readFileSync(path.join(PLUGIN_DIR, 'index.js'), 'utf8'), sandbox, { filename: 'index.js' });
+      NS.png.setDeflateStream(async (chunks) => {
+        const d = zlib.createDeflate({ level: 6 });
+        const out = [];
+        d.on('data', (c) => out.push(c));
+        const done = new Promise((res, rej) => { d.on('end', res); d.on('error', rej); });
+        for (const c of chunks) d.write(c);
+        d.end();
+        await done;
+        return out;
+      });
+    }
     const api = sandbox.__ULB_NODE__;
     if (!api || typeof api.resolve !== 'function' || typeof api.canHandle !== 'function') {
-      throw new Error('插件未挂载 __UBL_NODE__ 的 resolve/canHandle');
+      throw new Error('插件未挂载 __ULB_NODE__ 的 resolve/canHandle');
     }
-    cached = api;
-    loadMs = Date.now() - t0;
-    return { ok: true, api, loadMs };
+    return { ok: true, api, loadMs: Date.now() - t0 };
   } catch (e) {
-    loadError = String((e && e.message) || e);
-    return { ok: false, error: loadError };
+    // 只记原因、不抛：一个插件坏掉不能带走别的插件，也不能带走服务启动
+    return { ok: false, error: String((e && e.message) || e) };
   }
+}
+
+/**
+ * 挑一个能处理该文件的插件：按清单顺序逐个试 `canHandle`。
+ *
+ * 返回的 kind 与历史返回值一一对应（单插件时行为逐字不变）：
+ *   picked             找到了（api 可用）
+ *   not-handled        所有插件都说不处理
+ *   canhandle-threw    有插件抛错且无人认领
+ *   plugin-unavailable 所有插件都装不起来（附原因）
+ * @param {object} file 交给插件判定的上下文（含 bytes）
+ * @returns {{kind: string, id?: string, api?: object, message?: string}}
+ */
+function pickPlugin(file) {
+  const candidates = listProviderPlugins();
+  if (!candidates.length) {
+    return { kind: 'plugin-unavailable', message: `没有可用的解包插件（需要 provides 含 ${SERVER_UNPACK_ROLE}）` };
+  }
+  const loadErrors = [];
+  let firstHandleError = null;
+  for (const meta of candidates) {
+    const loaded = ensurePlugin(meta.id);
+    if (!loaded.ok) {
+      loadErrors.push(`${meta.id}: ${loaded.error}`);
+      continue;
+    }
+    try {
+      if (loaded.api.canHandle(file)) return { kind: 'picked', id: meta.id, api: loaded.api };
+    } catch (e) {
+      // 单个插件判定抛错不终止：继续问下一个插件
+      if (!firstHandleError) firstHandleError = `${meta.id}: ${String((e && e.message) || e)}`;
+    }
+  }
+  if (loadErrors.length === candidates.length) return { kind: 'plugin-unavailable', message: loadErrors.join('; ') };
+  if (firstHandleError) return { kind: 'canhandle-threw', message: firstHandleError };
+  return { kind: 'not-handled' };
 }
 
 /** 值是否是"字节/Blob 形状"（跨 realm：一律鸭子类型，不用 instanceof） */
@@ -218,8 +315,6 @@ async function toBytes(v) {
  *   readMs?: number, unpackMs?: number}>}
  */
 export async function unpackFile({ rootId, rel, absPath }) {
-  const p = ensurePlugin();
-  if (!p.ok) return { ok: false, reason: 'plugin-unavailable', message: p.error };
   let bytes;
   const t0 = Date.now();
   try {
@@ -236,15 +331,15 @@ export async function unpackFile({ rootId, rel, absPath }) {
   const readMs = Date.now() - t0;
   const name = path.basename(String(rel));
   const file = { rootId, rel, name, size: bytes.byteLength, bytes };
-  try {
-    if (!p.api.canHandle(file)) return { ok: false, reason: 'not-handled', message: '插件判定不处理该文件' };
-  } catch (e) {
-    return { ok: false, reason: 'canhandle-threw', message: String((e && e.message) || e) };
-  }
+  // 按清单顺序逐个试 canHandle：谁认领谁解（多插件并存，不需要改这里）
+  const picked = pickPlugin(file);
+  if (picked.kind === 'plugin-unavailable') return { ok: false, reason: 'plugin-unavailable', message: picked.message };
+  if (picked.kind === 'canhandle-threw') return { ok: false, reason: 'canhandle-threw', message: picked.message };
+  if (picked.kind === 'not-handled') return { ok: false, reason: 'not-handled', message: '插件判定不处理该文件' };
   const t1 = Date.now();
   let res;
   try {
-    res = await p.api.resolve(file);
+    res = await picked.api.resolve(file);
   } catch (e) {
     return { ok: false, reason: 'resolve-threw', message: String((e && e.message) || e) };
   }
@@ -255,7 +350,7 @@ export async function unpackFile({ rootId, rel, absPath }) {
   const view = filesView(res.files);
   if (!view.ok) return { ok: false, reason: 'empty-files', message: view.error || '产物为空' };
   // prefix/entry 直取插件返回值：不在这里做任何拼装，避免与前端解包路径产生第二套语义
-  return { ok: true, prefix: String(res.prefix), entry: String(res.entry), files: view, readMs, unpackMs };
+  return { ok: true, pluginId: picked.id, prefix: String(res.prefix), entry: String(res.entry), files: view, readMs, unpackMs };
 }
 
 /**
@@ -268,18 +363,19 @@ export async function unpackFile({ rootId, rel, absPath }) {
  * @returns {{decompressedBytes:number, compressedBytes:number}|null}
  */
 export function estimateMemoryOf({ rootId, rel, absPath }) {
-  const p = ensurePlugin();
-  if (!p.ok || typeof p.api.estimateMemory !== 'function') return null;
+  const candidates = listProviderPlugins();
+  if (!candidates.length) return null;
   const name = path.basename(String(rel));
   /**
    * 只读文件头部：块表（blocksInfo）几乎总在头部，读到 256KB 就能算；
    * 少数把块表放文件尾的包（实测 aijier_3）会解析失败 ⇒ 退回全量读。
+   * 头部字节在多个插件间复用（每个插件各读一次纯属浪费）。
    */
-  const readHead = (n) => {
+  const readHead = () => {
     const fd = fs.openSync(absPath, 'r');
     try {
       const size = fs.fstatSync(fd).size;
-      const len = Math.min(size, n);
+      const len = Math.min(size, MEMORY_PROBE_HEAD_BYTES);
       const buf = Buffer.allocUnsafe(len);
       fs.readSync(fd, buf, 0, len, 0);
       return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
@@ -287,30 +383,56 @@ export function estimateMemoryOf({ rootId, rel, absPath }) {
       fs.closeSync(fd);
     }
   };
-  try {
-    let m = null;
-    try { m = p.api.estimateMemory({ rootId, rel, name, size: 0, bytes: readHead(MEMORY_PROBE_HEAD_BYTES) }); } catch { m = null; }
-    if (m && m.decompressedBytes > 0) return m;
-    // 头部不够（块表在尾 / 头部信息不足）⇒ 老老实实读全量再算一次
-    const buf = fs.readFileSync(absPath);
-    const full = { rootId, rel, name, size: buf.length, bytes: new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength) };
-    m = p.api.estimateMemory(full);
-    return (m && m.decompressedBytes > 0) ? m : null;
-  } catch {
-    return null;
+  let headBytes = null;
+  let fullBytes = null;
+  for (const meta of candidates) {
+    const loaded = ensurePlugin(meta.id);
+    // 插件装不起来 / 不提供内存声明 ⇒ 试下一个（不阻断，核心会走回落）
+    if (!loaded.ok || typeof loaded.api.estimateMemory !== 'function') continue;
+    try {
+      if (!headBytes) headBytes = readHead();
+      let declared = null;
+      try {
+        declared = loaded.api.estimateMemory({ rootId, rel, name, size: 0, bytes: headBytes });
+      } catch {
+        declared = null;
+      }
+      if (declared && declared.decompressedBytes > 0) return declared;
+      // 头部不够（块表在尾 / 头部信息不足）⇒ 老老实实读全量再算一次
+      if (!fullBytes) {
+        const buf = fs.readFileSync(absPath);
+        fullBytes = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+      }
+      declared = loaded.api.estimateMemory({ rootId, rel, name, size: fullBytes.byteLength, bytes: fullBytes });
+      if (declared && declared.decompressedBytes > 0) return declared;
+    } catch {
+      // 这个插件算不出来（不是它的格式）：继续问下一个
+    }
   }
+  return null;
 }
 
 /** 内存声明的"只读头部"字节数：块表几乎总在头部，256KB 够绝大部分包 */
 const MEMORY_PROBE_HEAD_BYTES = 256 * 1024;
 
-/** 运行器自身的状态（供 /api/unpack/stats 与排障用） */
+/**
+ * 运行器自身的状态（供 /api/unpack/stats 与排障用）。
+ *
+ * 返回 `plugins[]` 列出每个 provider 插件的装载状态；
+ *   顶层仍保留 pluginId/loaded/loadMs/error/pluginDir —— 单插件时与历史值逐字一致，
+ *   `/api/unpack/stats` 的消费方不用改。注意：这里**只读缓存状态**，不会触发装载。
+ */
 export function runnerInfo() {
-  return {
-    pluginId: PLUGIN_ID,
-    loaded: !!cached,
-    loadMs,
-    error: loadError,
-    pluginDir: path.relative(ROOT, PLUGIN_DIR),
-  };
+  const plugins = listProviderPlugins().map((meta) => {
+    const state = pluginCache.get(meta.id);
+    return {
+      pluginId: meta.id,
+      loaded: !!(state && state.ok),
+      loadMs: (state && state.loadMs) || 0,
+      error: state && state.ok === false ? state.error : null,
+      pluginDir: path.relative(ROOT, path.join(PLUGINS_DIR, meta.id)),
+    };
+  });
+  const first = plugins[0] || { pluginId: null, loaded: false, loadMs: 0, error: null, pluginDir: null };
+  return { ...first, plugins };
 }
