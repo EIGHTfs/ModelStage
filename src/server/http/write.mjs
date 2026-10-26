@@ -11,6 +11,7 @@
 //   写路径的任何异常都必须在函数内部变成响应，不能让 http 回调里的未捕获异常打挂进程。
 import fs from 'node:fs';
 import path from 'node:path';
+import { copyFilePortable } from '../core/fs-portable.mjs';
 import { parseJsonc } from '../../../tool/parse-jsonc.mjs';
 
 /** 请求体上限（字符）：roots 配置体量很小，超过就不正常；拒绝而不是截断，避免写出坏配置 */
@@ -315,7 +316,8 @@ export function createWriteApi({ paths, config, models, names }) {
     fs.mkdirSync(dir, { recursive: true });
     const dst = path.join(dir, rel);
     fs.mkdirSync(path.dirname(dst), { recursive: true });
-    fs.copyFileSync(src, dst);
+    // 备份用可移植复制：CIFS/SMB 上 copyFileSync 会因改权限位 EPERM
+    copyFilePortable(src, dst);
     return path.relative(paths.root, dst).split(path.sep).join('/');
   }
 
@@ -343,7 +345,7 @@ export function createWriteApi({ paths, config, models, names }) {
       if (!fs.existsSync(src)) continue;
       const dst = path.join(dir, rel);
       fs.mkdirSync(path.dirname(dst), { recursive: true });
-      fs.copyFileSync(src, dst);
+      copyFilePortable(src, dst);
     }
     return path.relative(paths.root, dir).split(path.sep).join('/');
   }

@@ -13,6 +13,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { copyFilePortable } from '../core/fs-portable.mjs';
 
 /** 新建文件的默认权限（其他可读；项目 check-perms 前置检查要求 go+r） */
 const FILE_MODE = 0o644;
@@ -135,7 +136,7 @@ export function backupFile(src, dir, prefix, at = Date.now(), keep = 5) {
   let name = `${prefix}${at}.json`;
   try {
     if (fs.existsSync(path.join(dir, name))) name = `${prefix}${at}-${process.pid}.json`;
-    fs.copyFileSync(src, path.join(dir, name));
+    copyFilePortable(src, path.join(dir, name));
     rotateBackups(dir, prefix, keep);
     return name;
   } catch {
