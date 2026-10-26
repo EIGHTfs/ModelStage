@@ -166,6 +166,25 @@ export function serveStatic(ctx, req, res, p) {
     return true;
   }
   if (rel === '/' || rel === '') rel = '/index.html';
+  // 共享模块：src/shared 与 src/web 平级，前端按 /shared/xxx.mjs 引入。
+  //   不加这段会被当成 src/web/shared/... ⇒ 404 ⇒ 引用它的模块整条链路加载失败（页面白屏）。
+  if (rel.startsWith('/shared/')) {
+    const sharedRoot = path.resolve(ctx.webRoot, '..', 'shared');
+    const sub = `.${rel.slice('/shared'.length)}`;
+    const sharedAbs = path.resolve(sharedRoot, sub);
+    if (sharedAbs !== sharedRoot && !sharedAbs.startsWith(sharedRoot + path.sep)) {
+      res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('403: forbidden');
+      return true;
+    }
+    if (!fs.existsSync(sharedAbs) || !fs.statSync(sharedAbs).isFile()) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end(`404: ${p}`);
+      return true;
+    }
+    sendFile(req, res, sharedAbs);
+    return true;
+  }
   const abs = path.resolve(ctx.webRoot, `.${rel}`);
   if (abs !== ctx.webRoot && !abs.startsWith(ctx.webRoot + path.sep)) {
     res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });

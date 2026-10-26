@@ -40,17 +40,33 @@ test('第一次获取成功，第二次被别人挡住并给出可读原因', ()
   assert.ok(fs.existsSync(a.file), '锁文件应当存在');
 
   // 用本进程 pid 伪造"另一个活着的实例"（进程活着 ⇒ 必须挡住）
+  //   startedAtMs 必须写**真实值**（此刻）：锁只可能由"已存在的进程"创建，
+  //   写成几十秒前会与进程真实启动时刻矛盾 —— 那等于伪造了一个 PID 被复用的现场，
+  //   新的复用检测会正确地把这类锁判成陈旧锁并接管（生产逻辑对，是夹具不真实）。
   const livePid = process.pid;
-  fs.writeFileSync(a.file, JSON.stringify({ pid: livePid, startedAt: new Date().toISOString(), startedAtMs: Date.now() - ELAPSED_SAMPLE_MS, host: os.hostname(), label: 'other', tool: 'node other.mjs' }), 'utf8');
+  fs.writeFileSync(a.file, JSON.stringify({ pid: livePid, startedAt: new Date().toISOString(), startedAtMs: Date.now(), host: os.hostname(), label: 'other', tool: 'node other.mjs' }), 'utf8');
 
   const b = acquireTestLock({ root, label: 'second', tool: 'node fake-b.mjs' });
   assert.equal(b.acquired, false, '第二次必须被挡住');
   const txt = describeHolder(b.holder);
   assert.match(txt, /PID \d+/, '原因里要有 PID');
-  assert.match(txt, /已运行 1m0[56]s/, '原因里要有已运行时长');
   assert.match(txt, /other\.mjs/, '原因里要能看出是谁在跑');
   a.release();
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('describeHolder 能把「已运行多久」算成人话', () => {
+  // 纯格式化断言：不经过锁文件，避免为了测时长去伪造一个不合物理的锁状态
+  const txt = describeHolder({
+    pid: 4242,
+    startedAtMs: Date.now() - ELAPSED_SAMPLE_MS,
+    host: 'x',
+    label: 'other',
+    tool: 'node other.mjs',
+  });
+  assert.match(txt, /PID 4242/, '要带 PID');
+  assert.match(txt, /已运行 1m0[56]s/, '65s 应显示成 1m0Xs');
+  assert.match(txt, /other\.mjs/, '要能看出是谁在跑');
 });
 
 test('释放后可以再次获取；释放别人的锁无效', () => {

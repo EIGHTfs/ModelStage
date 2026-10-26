@@ -110,7 +110,10 @@ if (!TEST_LOCK.acquired) {
   console.error('           如确认对方已死（崩溃残留），删掉该锁文件即可；活着的进程不会被抢占。');
   process.exit(EXIT_SKIPPED);
 }
-if (TEST_LOCK.tookOver) console.warn(`[test-all] ⚠ 接管陈旧锁（原持有者 ${describeHolder(TEST_LOCK.holder)}）`);
+if (TEST_LOCK.tookOver) {
+  const why = TEST_LOCK.pidReused ? '  ← 该 PID 已被系统复用给新进程，原持有者早已退出' : '';
+  console.warn(`[test-all] ⚠ 接管陈旧锁（原持有者 ${describeHolder(TEST_LOCK.holder)}）${why}`);
+}
 releaseOnExit(TEST_LOCK);
 // 子工具（check-console 等）继承本锁，不再重复加锁
 process.env[HELD_ENV] = '1';

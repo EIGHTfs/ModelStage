@@ -35,6 +35,28 @@ export function isAlive(pid) {
 }
 
 /**
+ * 进程的真实启动时刻（Linux /proc）。
+ * 用来识别 **PID 复用**：操作系统回收 PID 后会把它分配给新进程，此时 `kill(pid,0)` 依然成功，
+ * 光看 isAlive 会以为锁还被持有 ⇒ 项目被永久锁死。判据：进程启动时刻**晚于**锁创建时刻 ⇒
+ * 它不可能是锁的持有者。
+ * @returns {number|null} epoch 毫秒；非 Linux 或读取失败返回 null（退回旧行为）
+ */
+export function procStartMs(pid) {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    // comm 字段可能含空格与括号（形如 (chrome-headless)，也可能含右括号）⇒ 取最后一个 ')' 之后
+    const rest = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    const startTicks = Number(rest[19]); // 第 22 个字段 starttime（pid/comm/state 之后从 0 数）
+    const btime = Number((fs.readFileSync('/proc/stat', 'utf8').match(/^btime (\d+)$/m) || [])[1]);
+    if (!Number.isFinite(startTicks) || !Number.isFinite(btime)) return null;
+    const CLK_TCK = 100; // 常见值；仅用于量级比较，不做精确计时
+    return btime * 1000 + (startTicks * 1000) / CLK_TCK;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 把锁内容渲染成一句人话（谁在跑 / PID / 开始时间 / 已运行多久）。
  * @param {object} holder
  * @returns {string}
@@ -102,13 +124,23 @@ export function acquireTestLock(opts) {
 
   // 已被占用：判断持有者是否还活着
   const holder = readLock(file);
-  const alive = holder && isAlive(Number(holder.pid));
+  let alive = holder && isAlive(Number(holder.pid));
+  let pidReused = false;
+  if (alive) {
+    // PID 复用检测：进程启动晚于锁创建 ⇒ 抢锁的进程早已退出，这个 PID 是新进程
+    const startMs = procStartMs(Number(holder.pid));
+    const lockMs = Number(holder.startedAtMs) || 0;
+    if (startMs && lockMs && startMs > lockMs + 2000) {
+      alive = false;
+      pidReused = true;
+    }
+  }
   if (alive) return { acquired: false, holder, file, release: () => {} };
 
   // 陈旧锁（进程已死/文件损坏）⇒ 接管；崩溃不该把项目永久锁死
   try {
     fs.writeFileSync(file, JSON.stringify(body, null, 2), 'utf8');
-    return { acquired: true, file, tookOver: true, holder, release: makeRelease(file) };
+    return { acquired: true, file, tookOver: true, pidReused, holder, release: makeRelease(file) };
   } catch (e) {
     return { acquired: false, holder: holder || { pid: 0, label: `锁文件不可写：${e.message}` }, file, release: () => {} };
   }

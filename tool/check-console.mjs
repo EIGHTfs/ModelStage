@@ -64,8 +64,22 @@ if (!CONSOLE_LOCK.acquired) {
   console.error(`   锁文件：${CONSOLE_LOCK.file}`);
   process.exit(EXIT_LOCK_SKIPPED);
 }
-if (CONSOLE_LOCK.tookOver) console.warn(`⚠ 接管陈旧锁（原持有者 ${describeLockHolder(CONSOLE_LOCK.holder)}）`);
+if (CONSOLE_LOCK.tookOver) {
+  const why = CONSOLE_LOCK.pidReused ? '  ← 该 PID 已被系统复用给新进程，原持有者早已退出' : '';
+  console.warn(`⚠ 接管陈旧锁（原持有者 ${describeLockHolder(CONSOLE_LOCK.holder)}）${why}`);
+}
 releaseLockOnExit(CONSOLE_LOCK);
+// 清理历史残留的 profile 目录：每次运行会建 /tmp/check-console-profile-<pid>，
+//   进程被 Ctrl-C / kill 时不会自己删。只删**持有者已死**的那些（别误删正在跑的）。
+for (const name of fs.readdirSync('/tmp').filter((n) => n.startsWith('check-console-profile-'))) {
+  const pid = Number(name.slice('check-console-profile-'.length));
+  if (!Number.isInteger(pid) || pid <= 0) continue;
+  let alive = false;
+  try { process.kill(pid, 0); alive = true; } catch { alive = false; }
+  if (alive) continue;
+  try { fs.rmSync(path.join('/tmp', name), { recursive: true, force: true }); } catch { /* 删不掉不影响运行 */ }
+}
+
 const SHOT = argOf('--shot', null);
 const JSON_ONLY = flag('--json');
 const WARN_IS_ERROR = flag('--allow-warn');
