@@ -37,37 +37,16 @@
 // 实现方式：把整套安装逻辑收进 install()，浏览器与 node 都调它。
 //   为什么不拆成 ESM export：浏览器以 <script> 注入，export 语句在经典脚本里是语法错误，
 //   整个插件会加载失败。所以 node 侧用「条件挂到 globalThis」的方式暴露，文件仍保持经典脚本形态。
-function install() {
-  const hasDom = typeof window !== 'undefined' && typeof document !== 'undefined';
 
-  // 宿主注入面懒获取。浏览器：window.SpineViewerPlugins（由 plugin-host.js 在注入本脚本前挂好）。
-  //   node：没有宿主 → null（不注册，改走 globalThis 导出，见文件末尾）。
-  const host = (typeof window !== 'undefined' && window.SpineViewerPlugins) || null;
-  if (!host && hasDom) {
-    // node 侧无宿主不是错误：服务端解包只需要 resolve()，不需要注册。
-    //   浏览器侧无宿主才是异常（插件脚本被注入了但宿主没就绪），要留可见告警。
-    console.warn('[unity-live2d-bundle] SpineViewerPlugins 未就绪（plugin-host.js 未加载？），插件未注册');
-    return null;
-  }
-  // lib 挂载点：各 lib 文件自己往 globalThis.__ULB__ 挂能力，浏览器里 window 即 globalThis，
-  //   所以统一从 globalThis 取即可（node 侧同样落在 globalThis）。
-  const NS = (typeof globalThis !== 'undefined' && globalThis.__ULB__) || null;
-  if (!NS || !NS.unityfs || !NS.serialized || !NS.extract) {
-    if (hasDom) {
-      console.warn('[unity-live2d-bundle] lib 未加载完整（需要 bytes/common-strings/unityfs/serialized/typetree/extract），插件未注册');
-      return null;
-    }
-    // node 侧 lib 未加载也返回 null：调用方从 globalThis 上拿不到 resolve，会在自己那边报可读错误
-  }
+// ============================================================================
+// 装配工厂（S10 拆分）：原 626 行的 install() 里所有 helper 都困在同一个闭包里，
+//   靠闭包捕获 host / NS / PLUGIN_ID / profileCache / paramTableCache / MIME_*。
+//   这里按「闭包依赖」把它们提到模块级工厂，依赖改为显式参数注入 —— 函数体逐字未改。
+//   两个缓存（profileCache / paramTableCache）仍在工厂内创建，即每次 install() 各一份。
+// ============================================================================
 
-  const PLUGIN_ID = 'unity-live2d-bundle';
-  const profileCache = new Map();
-
-  // Blob 的 MIME 常量集中一处：这三类在 buildFileSet 里各出现一次，
-  //   散着写字面量既难统一改，也让"这个键到底是什么类型"要跳到调用点才看得见。
-  const MIME_OCTET = 'application/octet-stream';   // moc3（Cubism 模型二进制）
-  const MIME_JSON = 'application/json';            // physics3 / motion3 / model3.json
-  const MIME_PNG = 'image/png';                    // 纹理（ETC2/DXT 解码后编码的 PNG）
+/** 统一日志出口：host.log 优先，node 侧（无 host）降级 console。 */
+function createLog({ host, PLUGIN_ID }) {
 
   /**
    * 统一日志出口（契约 §3.4 + §3.6 降级口径）：
@@ -83,6 +62,13 @@ function install() {
     const c = console[level] || console.log;
     if (c) c.call(console, `[${PLUGIN_ID}] ${msg}`);
   };
+  return ulbLog;
+}
+
+/** 游戏适配数据（profiles/<id>.json）读取：含带超时的 fetch 与 profile 缓存。 */
+function createProfileLoader({ host, NS, PLUGIN_ID, ulbLog }) {
+  // profile 缓存随每次 install 新建（不是模块级单例）
+  const profileCache = new Map();
 
   /**
    * 读游戏适配数据（profiles/<id>.json）。
@@ -125,12 +111,11 @@ function install() {
     profileCache.set(name, profileData);
     return profileData;
   }
+  return loadProfile;
+}
 
-  /** 容器魔数判定（只读前 8 字节即可） */
-  function looksLikeUnityFs(bytes) {
-    if (!bytes || bytes.length < 8) return false;
-    return NS.bytes.latin1(bytes, 0, 7) === 'UnityFS' && bytes[7] === 0;
-  }
+/** Cubism Core 元信息探针：画布尺寸 / 包围盒 / 遮罩计数 / 参数表。 */
+function createCoreMetaProbes({ host, NS, ulbLog }) {
 
 
   // 参数表缓存：同一份 moc3 反复 open 时不必重复创建 Cubism Core 的 Model
@@ -317,66 +302,18 @@ function install() {
     } catch { /* 物理文件缺失/损坏都能接受 */ }
     return out;
   }
+  return { collectCoreModelMeta, collectParameterTable, collectParameterNames };
+}
 
-  /**
-   * 把 Unity 集成版抽取出的素材整理成**契约形态的「文件表 + 入口」**：
-   *   moc3 / 纹理 PNG / physics3 / motion3 / 重建的 model3.json 全部按「相对键」进 files，
-   *   model3.json 的 FileReferences 引用 files 内的键（不写 Blob URL）。
-   *
-   * 为什么用相对键而不是 Blob URL（契约 §1.2）：files 的值必须是文件内容（Blob/string），
-   *   URL 不是内容、也没法被 VirtualFS 注册；核心按 prefix 注册后由渲染层解析相对引用。
-   *   旧实现曾把 Blob URL 写进 model3 并给页面加载器装直通中间件，那属于契约 §3.8 点名的问题形态
-   *   （"想给加载器装中间件"= 产物形态设计有问题），现已按契约收敛为纯文件表。
-   *
-   * 键名规则：moc3 → 'moc3.moc3'；纹理 → 'textures/<原纹理名>.png'；
-   *   physics3 → 'physics3.json'；动作 → 'motions/<动作名>.motion3.json'；入口 → 'model3.json'。
-   *   键只按素材角色命名，不含游戏名/资源根路径（契约 §五.6 禁止写死）。
-   *
-   * @returns {Promise<{files: Map<string,Blob>, entry: string}>}
-   */
-  async function buildFileSet(extracted, profile) {
-    const files = new Map();      // 相对键 → Blob（契约 §1.2：Blob|string；二进制一律 Blob）
-    const put = (key, bytes, mime) => { files.set(key, new Blob([bytes], { type: mime || MIME_OCTET })); return key; };
+/** 容器工具：魔数判定 / 取字节 / 解析 CAB+resS / 纹理与动作转换 / 文件表构建。 */
+function createContainerTools({ NS, host, ulbLog, MIME_OCTET, MIME_JSON, MIME_PNG, coreMeta }) {
+  // convertClipMotions 要用参数表白名单：容器组依赖核心元信息组（不是反过来）
+  const { collectParameterNames, collectParameterTable } = coreMeta;
 
-    const KEY_MOC3 = 'moc3.moc3';
-    const KEY_PHYSICS = 'physics3.json';
-    const keyTexture = (n) => `textures/${n}.png`;
-    const keyMotion = (n) => `motions/${n}.motion3.json`;
-
-    const mocRef = put(KEY_MOC3, extracted.moc3, MIME_OCTET);
-    // 纹理：逐张压缩编码（不并发），编完立刻释放 RGBA 缓冲 —— 峰值内存比"两张 67MB 级 PNG 同时生成"低得多。
-    const textureRefs = [];
-    for (const t of extracted.textures) {
-      if (!t.comp) continue;
-      // 解一张 → 编一张：rgba 是**局部变量**，编完随作用域释放（不要挂到 t 上，挂上去就等于常驻）
-      const rgba = NS.texdecode.decode(t, t.comp);
-      const png = await NS.png.encodePngAsync(rgba, t.width, t.height);
-      t.pngBytes = png.length;
-      textureRefs.push(put(keyTexture(t.name), png, MIME_PNG));
-    }
-    const physicsRef = extracted.physics3 ? put(KEY_PHYSICS, extracted.physics3, MIME_JSON) : null;
-
-    // 动作：每个 motion3.json 一个键，并按 profile 规则分组（组内顺序 = 名字序，稳定可复现）
-    const motionDefs = [];
-    for (const m of extracted.motions) {
-      const json = m.json;
-      const ref = put(keyMotion(m.name), new TextEncoder().encode(JSON.stringify(json)), MIME_JSON);
-      motionDefs.push({ name: m.name, url: ref, group: NS.model3.motionGroupOf(m.name, profile), loop: !!json.Meta.Loop, meta: json.Meta });
-    }
-    motionDefs.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-
-    const paramNames = extracted.paramNames || [];
-    const model3 = NS.model3.buildModel3({
-      mocUrl: mocRef,
-      textureUrls: textureRefs,
-      physicsUrl: physicsRef,
-      motions: motionDefs,
-      paramNames,
-      profile,
-    });
-    // 入口：重建的 model3.json 也进 files（契约 §1.2：entry 必须是 files 的键）
-    put('model3.json', new TextEncoder().encode(JSON.stringify(model3)), MIME_JSON);
-    return { files, entry: 'model3.json' };
+  /** 容器魔数判定（只读前 8 字节即可） */
+  function looksLikeUnityFs(bytes) {
+    if (!bytes || bytes.length < 8) return false;
+    return NS.bytes.latin1(bytes, 0, 7) === 'UnityFS' && bytes[7] === 0;
   }
 
   /**
@@ -460,6 +397,74 @@ function install() {
       });
     return { converted, candidates, paramTable };
   }
+
+  /**
+   * 把 Unity 集成版抽取出的素材整理成**契约形态的「文件表 + 入口」**：
+   *   moc3 / 纹理 PNG / physics3 / motion3 / 重建的 model3.json 全部按「相对键」进 files，
+   *   model3.json 的 FileReferences 引用 files 内的键（不写 Blob URL）。
+   *
+   * 为什么用相对键而不是 Blob URL（契约 §1.2）：files 的值必须是文件内容（Blob/string），
+   *   URL 不是内容、也没法被 VirtualFS 注册；核心按 prefix 注册后由渲染层解析相对引用。
+   *   旧实现曾把 Blob URL 写进 model3 并给页面加载器装直通中间件，那属于契约 §3.8 点名的问题形态
+   *   （"想给加载器装中间件"= 产物形态设计有问题），现已按契约收敛为纯文件表。
+   *
+   * 键名规则：moc3 → 'moc3.moc3'；纹理 → 'textures/<原纹理名>.png'；
+   *   physics3 → 'physics3.json'；动作 → 'motions/<动作名>.motion3.json'；入口 → 'model3.json'。
+   *   键只按素材角色命名，不含游戏名/资源根路径（契约 §五.6 禁止写死）。
+   *
+   * @returns {Promise<{files: Map<string,Blob>, entry: string}>}
+   */
+  async function buildFileSet(extracted, profile) {
+    const files = new Map();      // 相对键 → Blob（契约 §1.2：Blob|string；二进制一律 Blob）
+    const put = (key, bytes, mime) => { files.set(key, new Blob([bytes], { type: mime || MIME_OCTET })); return key; };
+
+    const KEY_MOC3 = 'moc3.moc3';
+    const KEY_PHYSICS = 'physics3.json';
+    const keyTexture = (n) => `textures/${n}.png`;
+    const keyMotion = (n) => `motions/${n}.motion3.json`;
+
+    const mocRef = put(KEY_MOC3, extracted.moc3, MIME_OCTET);
+    // 纹理：逐张压缩编码（不并发），编完立刻释放 RGBA 缓冲 —— 峰值内存比"两张 67MB 级 PNG 同时生成"低得多。
+    const textureRefs = [];
+    for (const t of extracted.textures) {
+      if (!t.comp) continue;
+      // 解一张 → 编一张：rgba 是**局部变量**，编完随作用域释放（不要挂到 t 上，挂上去就等于常驻）
+      const rgba = NS.texdecode.decode(t, t.comp);
+      const png = await NS.png.encodePngAsync(rgba, t.width, t.height);
+      t.pngBytes = png.length;
+      textureRefs.push(put(keyTexture(t.name), png, MIME_PNG));
+    }
+    const physicsRef = extracted.physics3 ? put(KEY_PHYSICS, extracted.physics3, MIME_JSON) : null;
+
+    // 动作：每个 motion3.json 一个键，并按 profile 规则分组（组内顺序 = 名字序，稳定可复现）
+    const motionDefs = [];
+    for (const m of extracted.motions) {
+      const json = m.json;
+      const ref = put(keyMotion(m.name), new TextEncoder().encode(JSON.stringify(json)), MIME_JSON);
+      motionDefs.push({ name: m.name, url: ref, group: NS.model3.motionGroupOf(m.name, profile), loop: !!json.Meta.Loop, meta: json.Meta });
+    }
+    motionDefs.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+
+    const paramNames = extracted.paramNames || [];
+    const model3 = NS.model3.buildModel3({
+      mocUrl: mocRef,
+      textureUrls: textureRefs,
+      physicsUrl: physicsRef,
+      motions: motionDefs,
+      paramNames,
+      profile,
+    });
+    // 入口：重建的 model3.json 也进 files（契约 §1.2：entry 必须是 files 的键）
+    put('model3.json', new TextEncoder().encode(JSON.stringify(model3)), MIME_JSON);
+    return { files, entry: 'model3.json' };
+  }
+  return { looksLikeUnityFs, readBundleBytes, parseContainerNodes, collectTextures, convertClipMotions, buildFileSet };
+}
+
+/** 契约接口（资产提供者契约 §一）：canHandle / resolve。 */
+function createProvider({ NS, host, PLUGIN_ID, ulbLog, MIME_OCTET, MIME_JSON, MIME_PNG, loadProfile, container, coreMeta }) {
+  const { looksLikeUnityFs, readBundleBytes, parseContainerNodes, collectTextures, convertClipMotions, buildFileSet } = container;
+  const { collectCoreModelMeta, collectParameterTable, collectParameterNames } = coreMeta;
 
 
   // ------------------------------------------------------------------
@@ -587,24 +592,11 @@ function install() {
     entry = built.entry;
     return { prefix, files, entry };
   }
+  return { canHandle, resolve };
+}
 
-  // 契约 §一：plugin.json 的 provides=["asset-provider"] 让宿主把本插件登记进资产提供者注册表。
-  //   注册对象上 kind 是产出内容类型（live2d），与 fileKinds 的容器类型 bundle 正交；
-  //   kind 的唯一权威来源是 plugin.json 的 produces.kind（插件契约 §3.2），这里带上只为便于调试。
-  if (host) {
-    host.register({
-      id: PLUGIN_ID,
-      name: 'Unity Live2D 资源包',
-      label: 'Live2D包',
-      // 契约 §三 的注册面：只留新契约成员 canHandle/resolve。
-      canHandle,
-      resolve,
-      // 契约 §2.2：让宿主与检查器都能发现"本插件能自己算内存代价"（估得准不准由本插件负责）
-      estimateMemory,
-      kind: 'live2d',
-      fileKinds: ['bundle'],
-    });
-  }
+/** 内存代价声明：分段峰值表 + 容器解压后大小（走 blocksSummary，不解数据块）。 */
+function createMemoryEstimator({ NS }) {
 
   // node 侧返回解析入口：服务端解包（17a）直接从返回值取 resolve/canHandle，不经过宿主注册。
   /**
@@ -660,8 +652,83 @@ function install() {
       return null;   // 判不出来就让核心走回落，绝不因此阻断加载
     }
   }
+  return { peakFromDecompressed, estimateMemory };
+}
 
-  return { canHandle, resolve, estimateMemory, peakFromDecompressed, PLUGIN_ID };
+/** 浏览器侧：把本插件登记进宿主的资产提供者注册表（node 侧 host 为 null，整块跳过）。 */
+function registerWithHost({ host, PLUGIN_ID, api }) {
+  const { canHandle, resolve, estimateMemory } = api;
+
+  // 契约 §一：plugin.json 的 provides=["asset-provider"] 让宿主把本插件登记进资产提供者注册表。
+  //   注册对象上 kind 是产出内容类型（live2d），与 fileKinds 的容器类型 bundle 正交；
+  //   kind 的唯一权威来源是 plugin.json 的 produces.kind（插件契约 §3.2），这里带上只为便于调试。
+  if (host) {
+    host.register({
+      id: PLUGIN_ID,
+      name: 'Unity Live2D 资源包',
+      label: 'Live2D包',
+      // 契约 §三 的注册面：只留新契约成员 canHandle/resolve。
+      canHandle,
+      resolve,
+      // 契约 §2.2：让宿主与检查器都能发现"本插件能自己算内存代价"（估得准不准由本插件负责）
+      estimateMemory,
+      kind: 'live2d',
+      fileKinds: ['bundle'],
+    });
+  }
+}
+
+/**
+ * 插件安装：环境探测 → 装配各职责块 → 宿主注册 → 返回解析入口。
+ * 只做编排；具体实现在上面的 createXxx 工厂里。
+ */
+function install() {
+  const hasDom = typeof window !== 'undefined' && typeof document !== 'undefined';
+
+  // 宿主注入面懒获取。浏览器：window.SpineViewerPlugins（由 plugin-host.js 在注入本脚本前挂好）。
+  //   node：没有宿主 → null（不注册，改走 globalThis 导出，见文件末尾）。
+  const host = (typeof window !== 'undefined' && window.SpineViewerPlugins) || null;
+  if (!host && hasDom) {
+    // node 侧无宿主不是错误：服务端解包只需要 resolve()，不需要注册。
+    //   浏览器侧无宿主才是异常（插件脚本被注入了但宿主没就绪），要留可见告警。
+    console.warn('[unity-live2d-bundle] SpineViewerPlugins 未就绪（plugin-host.js 未加载？），插件未注册');
+    return null;
+  }
+  // lib 挂载点：各 lib 文件自己往 globalThis.__ULB__ 挂能力，浏览器里 window 即 globalThis，
+  //   所以统一从 globalThis 取即可（node 侧同样落在 globalThis）。
+  const NS = (typeof globalThis !== 'undefined' && globalThis.__ULB__) || null;
+  if (!NS || !NS.unityfs || !NS.serialized || !NS.extract) {
+    if (hasDom) {
+      console.warn('[unity-live2d-bundle] lib 未加载完整（需要 bytes/common-strings/unityfs/serialized/typetree/extract），插件未注册');
+      return null;
+    }
+    // node 侧 lib 未加载也返回 null：调用方从 globalThis 上拿不到 resolve，会在自己那边报可读错误
+  }
+
+  const PLUGIN_ID = 'unity-live2d-bundle';
+
+  // Blob 的 MIME 常量集中一处：这三类在 buildFileSet 里各出现一次，
+  //   散着写字面量既难统一改，也让"这个键到底是什么类型"要跳到调用点才看得见。
+  const MIME_OCTET = 'application/octet-stream';   // moc3（Cubism 模型二进制）
+  const MIME_JSON = 'application/json';            // physics3 / motion3 / model3.json
+  const MIME_PNG = 'image/png';                    // 纹理（ETC2/DXT 解码后编码的 PNG）
+  const ulbLog = createLog({ host, PLUGIN_ID });
+  const loadProfile = createProfileLoader({ host, NS, PLUGIN_ID, ulbLog });
+  const coreMeta = createCoreMetaProbes({ host, NS, ulbLog });
+  const container = createContainerTools({ NS, host, ulbLog, MIME_OCTET, MIME_JSON, MIME_PNG, coreMeta });
+  const provider = createProvider({ NS, host, PLUGIN_ID, ulbLog, MIME_OCTET, MIME_JSON, MIME_PNG, loadProfile, container, coreMeta });
+  const mem = createMemoryEstimator({ NS });
+
+  // 键顺序与原 return 字面量完全一致
+  const api = {
+    canHandle: provider.canHandle,
+    resolve: provider.resolve,
+    estimateMemory: mem.estimateMemory,
+    peakFromDecompressed: mem.peakFromDecompressed,
+    PLUGIN_ID,
+  };
+  registerWithHost({ host, PLUGIN_ID, api });
+  return api;
 }
 
 // 执行安装：浏览器里走宿主注册；node 里（无 window）拿到 { canHandle, resolve } 后挂到
