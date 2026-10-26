@@ -454,13 +454,20 @@ function runSuite(suite) {
     url = `${BASE}?f4probe=${encodeURIComponent(probeDir)}`;
   }
   const started = Date.now();
+  // 结果走文件而不是 stdout：本机（SMB 挂载 + 管道捕获）实测 stdout 偶发丢输出 ——
+  //   同一条命令连跑四次，两次 0 字节、一次尾部少 3 字节，退出码都是 0，
+  //   于是被判成"没产出结构化结果"的假失败。--out 让子进程同步把 JSON 落盘，读文件才确定。
+  const outFile = path.join(PROJECT, 'runtime', 'test-results', `.cc-${suite.name}.json`);
+  try { fs.rmSync(outFile, { force: true }); } catch { /* 不存在即可 */ }
   const res = spawnSync(process.execPath, [
     path.join(PROJECT, 'tool', 'check-console.mjs'), url,
-    '--wait', String(suite.wait), '--json', '--script', script,
+    '--wait', String(suite.wait), '--json', '--script', script, '--out', outFile,
   ], { cwd: PROJECT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: SUITE_TIMEOUT_MS });
 
   let parsed = null;
-  try { parsed = JSON.parse(res.stdout); } catch { parsed = null; }
+  try { parsed = JSON.parse(fs.readFileSync(outFile, 'utf8')); } catch { parsed = null; }
+  if (!parsed) { try { parsed = JSON.parse(res.stdout); } catch { parsed = null; } }
+  try { fs.rmSync(outFile, { force: true }); } catch { /* 清理失败不影响结果 */ }
   // scriptResult 有两种形态：多数套件返回 JSON 字符串，engine-b1 直接返回对象。
   //   只认字符串会让对象形态被判成"没产出结果"（曾经的 failed=null 假失败）。
   let result = null;

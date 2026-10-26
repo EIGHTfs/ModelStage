@@ -49,6 +49,11 @@ const argOf = (name, def) => {
 const flag = (name) => argv.includes(name);
 const WAIT_MS = Number(argOf('--wait', '3000'));
 const SCRIPT_FILE = argOf('--script', null);
+// 结果落盘路径：stdout 在本机（SMB 挂载 + 管道捕获）实测**偶发丢输出** ——
+//   同一条命令连跑四次，两次 0 字节、一次尾部少 3 字节，退出码却都是 0。
+//   这类 flaky 无法靠"等冲刷"解决，所以支持把同一份 JSON 额外写进文件，
+//   由调用方读文件而不是读 stdout（文件写入同步，确定性强）。
+const OUT_FILE = argOf('--out', null);
 
 // 并发互斥：单独跑本工具也算"一个测试实例"（它会起浏览器、跑页面脚本）。
 //   被 test-all 调用时环境里有 DSH_TEST_LOCK_HELD=1，不会重复加锁。
@@ -100,11 +105,24 @@ if (!CHROME) {
 
 // 本机无头壳依赖用户态库与字体配置；目录存在才注入，换机器不会误设
 const ENV = { ...process.env };
-const libDirs = [
-  '/volume1/VirtualDSM/DeepSeekHarness/chromium-libs/root/usr/lib/x86_64-linux-gnu',
-  '/volume1/VirtualDSM/DeepSeekHarness/chromium-libs/root/lib/x86_64-linux-gnu',
-  '/volume1/VirtualDSM/DeepSeekHarness/chromium-libs/root/usr/lib',
-].filter((d) => fs.existsSync(d));
+// 用户态库 sysroot：本机系统里没有 libatk / libnss3 / libgbm 等（极简环境），
+//   无头壳要从 sysroot 里借。sysroot 位置会变（历史上在 chromium-libs/root，
+//   后来迁到 pwviewer/lib），所以**按候选列表探测**而不是写死一个；
+//   也可用 CHROME_LIBS 显式指定 sysroot 根目录。
+const LIB_SYSROOT_CANDIDATES = process.env.CHROME_LIBS
+  ? [process.env.CHROME_LIBS]
+  : [
+    '/volume1/VirtualDSM/DeepSeekHarness/pwviewer/lib',
+    '/volume1/VirtualDSM/DeepSeekHarness/chromium-libs/root',
+  ];
+const LIB_SUBDIRS = ['usr/lib/x86_64-linux-gnu', 'lib/x86_64-linux-gnu', 'usr/lib', 'lib'];
+const libDirs = [];
+for (const root of LIB_SYSROOT_CANDIDATES) {
+  for (const sub of LIB_SUBDIRS) {
+    const dir = `${root}/${sub}`;
+    if (fs.existsSync(dir)) libDirs.push(dir);
+  }
+}
 if (libDirs.length) ENV.LD_LIBRARY_PATH = [...libDirs, ENV.LD_LIBRARY_PATH || ''].filter(Boolean).join(':');
 const fontConf = '/volume1/VirtualDSM/DeepSeekHarness/fonts/fonts.conf';
 if (fs.existsSync(fontConf)) ENV.FONTCONFIG_FILE = fontConf;
@@ -241,9 +259,20 @@ async function main() {
       else problems.push({ kind: '请求失败', text: `${errText} (${p.type})` });
     }
   });
-  const send = (method, params) => new Promise((resolve) => {
+  // 请求超时兜底：CDP 的响应靠消息回调 resolve；对端把 ws 关掉时消息永远不来，
+  //   promise 就一直挂着 —— 而挂着的 promise **不占事件循环**，进程会在事件循环空转后
+  //   静默退出（退出码 0、stdout 零字节）。下游因此把它当成"没产出结构化结果"的假失败。
+  //   实测就是这个症状：panel-actions 偶发 0 字节且 `--trace-exit` 完全无输出。
+  //   给每个请求明确上限，卡住就抛错，让失败可见。
+  const send = (method, params) => new Promise((resolve, reject) => {
     const id = ++seq;
-    pending.set(id, resolve);
+    // 页面脚本可能跑几十秒（Runtime.evaluate 要等脚本返回），给它更长的上限
+    const limitMs = method === 'Runtime.evaluate' ? 300000 : 20000;
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error(`CDP 请求超时（${method}，${limitMs}ms 无响应）`));
+    }, limitMs);
+    pending.set(id, (v) => { clearTimeout(timer); resolve(v); });
     ws.send(JSON.stringify({ id, method, params }));
   });
 
@@ -303,8 +332,19 @@ async function main() {
     consoleEntries: all.length,
     responses: responses.filter((r) => !/\.(png|jpg|webp)$/i.test(r.url)).slice(-40),
   };
+  const reportJson = JSON.stringify(report, null, 1);
+  // 先同步落盘（调用方优先读它），再照常打到 stdout（人看日志用）。
+  //   顺序很关键：落盘在前，保证即使 stdout 被截断，结构化结果也已完整写出。
+  if (OUT_FILE) {
+    try {
+      fs.mkdirSync(path.dirname(path.resolve(OUT_FILE)), { recursive: true });
+      fs.writeFileSync(path.resolve(OUT_FILE), reportJson, 'utf8');
+    } catch (e) {
+      console.error('[check-console] 结果落盘失败:', e.message);
+    }
+  }
   if (JSON_ONLY) {
-    console.log(JSON.stringify(report, null, 1));
+    console.log(reportJson);
   } else {
     console.log(`\n[check-console] ${url}`);
     console.log(`  控制台条目 ${all.length} 条 / 网络响应 ${responses.length} 个`);
@@ -324,10 +364,20 @@ async function main() {
     }
     if (shotPath) console.log(`  截图: ${shotPath}`);
   }
-  process.exit(problems.length ? 2 : 0);
+  // 不能直接 process.exit()：它会与 stdout 的异步冲刷竞争，把还没落盘的输出截掉。
+  //   实测症状是「退出码 0 但 stdout 为 0 字节（或尾部少几个字节）」，且**偶发** ——
+  //   同一条命令连跑三次，一次 0 字节、两次正常；下游 test-all 因此报「没产出结构化结果」假失败。
+  //   治法：先主动收尾（杀子进程 / 关 ws），只设 exitCode 让事件循环自然结束 ——
+  //   自然结束会完整冲刷 stdout；再用 unref 定时器兜底（不阻塞自然退出）。
+  cleanup();
+  try { ws.close(); } catch { /* 已关闭 */ }
+  const exitCode = problems.length ? 2 : 0;
+  process.exitCode = exitCode;
+  setTimeout(() => process.exit(exitCode), 2000).unref();
 }
 
 main().catch((e) => {
   console.error('[check-console] 运行失败:', e.message);
-  process.exit(1);
+  process.exitCode = 1;
+  setTimeout(() => process.exit(1), 2000).unref();
 });
