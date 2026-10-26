@@ -46,55 +46,6 @@ export function createUnpackRoutes(deps) {
     return { abs };
   }
 
-  /**
-   * POST /api/unpack/store —— **前端解包产物落盘**（缓存的第二个写入者）
-   *
-   * body: { rootId, rel, prefix, entry, files: [{ name, bytes(base64) }] }
-   *   · 指纹由服务端算（见 store.storeResolved 的注释）
-   *   · 幂等：已有同指纹缓存 ⇒ 返回 hit:true，不重复写
-   *   · 失败不抛 500 打断前端：返回 ok:false + reason，前端只记 diag（本次加载用内存里的产物）
-   */
-  function handleStore(req, res) {
-    // 产物可能几十 MB：base64 后约 1.34 倍 ⇒ 给 96MB 上限（默认 2MB 会 413）
-    return readBody(req, res, async (raw) => {
-      let body = {};
-      try {
-        body = raw ? JSON.parse(raw) : {};
-      } catch {
-        return sendJson(res, 400, { ok: false, reason: 'bad-json', message: '请求体不是合法 JSON' });
-      }
-      const rootId = String(body.rootId || '');
-      const rel = String(body.rel || '');
-      const prefix = String(body.prefix || '');
-      const entry = String(body.entry || '');
-      if (!rootId || !rel || !prefix || !entry) {
-        return sendJson(res, 400, { ok: false, reason: 'bad-args', message: '需要 rootId / rel / prefix / entry' });
-      }
-      const r = resolveRequest(rootId, rel);
-      if (r.error) return sendJson(res, 404, { ok: false, reason: 'not-found', message: r.error });
-      const rawFiles = Array.isArray(body.files) ? body.files : [];
-      if (!rawFiles.length) return sendJson(res, 400, { ok: false, reason: 'empty-files', message: 'files 不能为空' });
-      // 解码 base64 → Buffer（逐个；大包 39 个文件，解码本身是线性的）
-      const files = [];
-      for (const f of rawFiles) {
-        const name = String((f && f.name) || '');
-        if (!name) continue;
-        try {
-          files.push({ name, bytes: Buffer.from(String(f.bytes || ''), 'base64') });
-        } catch {
-          return sendJson(res, 400, { ok: false, reason: 'bad-base64', message: `文件 ${name} 的 bytes 不是合法 base64` });
-        }
-      }
-      if (!files.length) return sendJson(res, 400, { ok: false, reason: 'empty-files', message: '没有可落盘的文件' });
-      try {
-        const out = await store.storeResolved({ rootId, rel, absPath: r.abs, prefix, entry, files });
-        return sendJson(res, out.ok ? 200 : 500, { ok: !!out.ok, rootId, rel, ...out });
-      } catch (e) {
-        return sendJson(res, 500, { ok: false, reason: 'exception', message: String((e && e.message) || e) });
-      }
-    }, 96 * 1024 * 1024);
-  }
-
   /** POST /api/unpack/resolve */
   function handleResolve(req, res) {
     return readBody(req, res, async (raw) => {
@@ -194,10 +145,6 @@ export function createUnpackRoutes(deps) {
   }
 
   return function handle(req, res, p, url) {
-    if (p === '/api/unpack/store' && req.method === 'POST') {
-      handleStore(req, res);
-      return true;
-    }
     if (p === '/api/unpack/resolve' && req.method === 'POST') {
       handleResolve(req, res);
       return true;

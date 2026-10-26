@@ -336,52 +336,6 @@ const MIME_BY_EXT = {
     });
   }
 
-  /** 字节 → base64（分块：一次性 String.fromCharCode(...bigArray) 会爆调用栈） */
-  function base64Of(bytes) {
-    const CHUNK = 0x8000;
-    let out = '';
-    for (let i = 0; i < bytes.length; i += CHUNK) {
-      out += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
-    }
-    return btoa(out);
-  }
-
-  /**
-   * 把**前端本地解出来的产物**交给服务端落盘（缓存的第二个写入者）。
-   *
-   * 为什么这么做：服务端解包要 11.4s（慢在 vm 沙箱里跑插件，实测解压占 93.6%），
-   *   而前端本地解同一个包只要 4.3s。所以前台走快的（前端解），解完把产物存到服务端 ——
-   *   首次 4.3s、第二次 137ms，服务端那条慢路只留给预热/直调接口。
-   *
-   * **不 await、不阻塞渲染**：数据已在内存里可用，落盘只是为下一次加速；
-   *   失败也只记 diag（下次再解一遍），绝不影响本次加载。
-   * 指纹由服务端算（它拿得到源包），前端只报 rootId/rel 与产物 —— 避免两边各实现一份 hash 导致键不一致。
-   */
-  async function storeToServer(file, res) {
-    const t0 = performance.now();
-    try {
-      const entries = [];
-      for (const [name, blob] of res.files) {
-        const buf = new Uint8Array(await blob.arrayBuffer());
-        entries.push({ name, bytes: base64Of(buf) });
-      }
-      const j = await postJson('/api/unpack/store', {
-        rootId: file.rootId, rel: file.rel,
-        prefix: res.prefix, entry: res.entry,
-        files: entries,
-      });
-      emit('unpack.store', {
-        rootId: file.rootId, rel: file.rel,
-        ok: !!(j && j.ok), hit: !!(j && j.hit), files: entries.length,
-        fingerprint: j && j.fingerprint, ms: Math.round(performance.now() - t0),
-      });
-      say.info(`产物已交服务端落盘：${file.rel}（${entries.length} 个文件，${Math.round(performance.now() - t0)}ms${j && j.hit ? '，已有缓存' : ''}）`);
-    } catch (e) {
-      emit('unpack.store', { rootId: file.rootId, rel: file.rel, ok: false, error: String((e && e.message) || e).slice(0, 120), ms: Math.round(performance.now() - t0) });
-      say.warn(`产物落盘失败（不影响本次加载）：${file.rel}（${(e && e.message) || e}）`);
-    }
-  }
-
   /**
    * 服务端**命中查询**（形态 C 的前台路径）：`hitOnly` ⇒ 服务端只读索引，**绝不在这里解包**。
    * miss 会抛 reason='server-miss'，调用方据此走本地解包（首次绝不因此变慢）。
@@ -603,7 +557,6 @@ const MIME_BY_EXT = {
         won = await localPath();
         // 前台走的是"前端本地解"这条快路 ⇒ 解完把产物交给服务端存起来（不 await：不挡渲染）
         if (unpackOn && won && won.src === 'local' && file.rootId && file.rel) {
-          storeToServer(file, won);   // 有意不 await
         }
       } catch (e) {
         if (e && e.passthrough) return e.passthrough; // 本地失败保持原有返回形状

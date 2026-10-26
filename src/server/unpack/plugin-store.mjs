@@ -1,4 +1,4 @@
-// unpack/store.mjs —— 解包产物的落盘缓存（17b 第二步：指纹 / 原子写 / LRU / 并发去重 / stats）
+// plugin-store.mjs —— 解包产物的落盘缓存（17b 第二步：指纹 / 原子写 / LRU / 并发去重 / stats）
 //
 // 目录布局（与方案一致）：
 //   data/unpacked/<fingerprint>/index.json       元信息 + 文件清单 + 源文件 stat 快照
@@ -500,50 +500,7 @@ export function createUnpackStore(opts) {
    *          files: Array<{name:string, bytes:Buffer}>, pluginId?:string, pluginVersion?:string}} req
    * @returns {Promise<{ok:boolean, hit?:boolean, fingerprint?:string, files?:number, ms?:number, reason?:string, message?:string}>}
    */
-  async function storeResolved(req) {
-    let stat;
-    try {
-      stat = fs.statSync(req.absPath);
-    } catch (e) {
-      return { ok: false, reason: 'read-failed', message: String((e && e.message) || e) };
-    }
-    const fp = fingerprintOf({ rootId: req.rootId, rel: req.rel, absPath: req.absPath, stat });
-    const cachedIdx = readIndex(fp);
-    const verdict = hitCheck(cachedIdx, stat);
-    if (verdict.hit) {
-      // 幂等：已经有同一份产物的缓存，不必再写一遍（并发/重试都会走到这里）
-      return { ok: true, hit: true, fingerprint: fp, files: (cachedIdx.files || []).length, skipped: 'already-cached' };
-    }
-    const list = Array.isArray(req.files) ? req.files : [];
-    if (!list.length) return { ok: false, reason: 'empty-files', message: '产物为空' };
-    // 构造 writeResult 认得的"文件视图"（鸭子类型：entries + take + release），复用同一条落盘路径
-    const bytesMap = new Map(list.map((f) => [String(f.name), f.bytes]));
-    const resLike = {
-      files: {
-        entries: list.map((f) => ({ path: String(f.name) })),
-        take: async (p) => bytesMap.get(String(p)) || null,
-        release: (p) => { bytesMap.delete(String(p)); },
-      },
-      prefix: String(req.prefix || ''),
-      entry: String(req.entry || ''),
-      unpackMs: 0,
-    };
-    const t0 = Date.now();
-    try {
-      const { index } = await writeResult(fp, resLike, {
-        rootId: req.rootId,
-        rel: req.rel,
-        size: stat.size,
-        mtimeMs: stat.mtimeMs,
-        pluginId: req.pluginId || 'frontend',
-        pluginVersion: req.pluginVersion || 'frontend',
-      });
-      cleanup();
-      return { ok: true, hit: false, fingerprint: fp, files: index.files.length, ms: Date.now() - t0 };
-    } catch (e) {
-      return { ok: false, reason: 'write-failed', message: String((e && e.message) || e) };
-    }
-  }
 
-  return { resolve, storeResolved, memoryOf, peek, readIndex, filePathOf, stats, cleanup, fingerprintOf };
+
+  return { resolve, memoryOf, peek, readIndex, filePathOf, stats, cleanup, fingerprintOf };
 }
