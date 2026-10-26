@@ -53,7 +53,7 @@ export function createDirPicker({ onPick, formatError, getLastError } = {}) {
         <div class="dir-picker-foot">
           <span class="muted-hint">显示名称（同名会合并成一个游戏，用于归类原版／Mod）</span>
           <input type="text" data-role="name" placeholder="如：棕色尘埃2" aria-label="资源根显示名称" />
-          <button type="button" class="mini-btn dir-picker-add" data-role="add">添加</button>
+          <button type="button" class="mini-btn is-accent" data-role="add">添加</button>
         </div>
       </div>`;
     document.body.append(panel);
@@ -96,7 +96,8 @@ export function createDirPicker({ onPick, formatError, getLastError } = {}) {
     // 选择此目录（已选过就变成"✓ 已选择"，再点仍是选中当前）
     const pick = document.createElement('button');
     pick.type = 'button';
-    pick.className = pickedPath === currentPath ? 'mini-btn is-primary' : 'mini-btn';
+    // 已选中态用描边强调（与「选择目录」「添加」同一套语言），不再用实心高饱和
+    pick.className = pickedPath === currentPath ? 'mini-btn is-accent' : 'mini-btn';
     pick.dataset.pick = currentPath;
     pick.textContent = pickedPath === currentPath ? '✓ 已选择此目录' : '选择此目录';
     pick.addEventListener('click', () => { pickedPath = currentPath; renderBody(); });

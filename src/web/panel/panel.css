@@ -1250,20 +1250,8 @@
   word-break: break-word;
 }
 
-/* ---- 目录选择对话框：「添加」主操作 ----
-   与面板按钮同一套语言：描边强调色 + 淡色底 + 加粗。
-   原来用 .mini-btn.is-primary（高饱真实心底 + 反白字），在暗色描边对话框里像另一套设计。 */
-.dir-picker-add {
-  border-color: var(--color-primary);
-  color: var(--color-primary);
-  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
-  font-weight: 600;
-}
-
-.dir-picker-add:hover:not(:disabled) {
-  border-color: var(--color-primary);
-  background: color-mix(in srgb, var(--color-primary) 22%, transparent);
-}
+/* 目录选择对话框的「添加」按钮不再单独定义样式 —— 已收敛到
+   components.css 的 .mini-btn.is-accent（与左栏「选择目录」共用同一个类）。 */
 
 /* 底部输入框与两个按钮等高对齐（原来输入框比按钮高一截，视觉参差） */
 .dir-picker-foot input,

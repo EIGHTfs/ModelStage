@@ -155,6 +155,22 @@
   background: var(--color-accent-action-hover);
 }
 
+/* 强调按钮（**描边式**）：表示"这一屏的主操作"，但不做高饱和实心。
+   为什么不用 .is-primary：它是实心高饱和 + 反白字，在暗色描边面板/对话框里像另一套设计。
+   应用处：左栏「选择目录」、目录对话框「添加」、对话框内「此目录已选中」——
+   三处必须看起来是同一套按钮，所以只允许这一个类，不许各自加样式。 */
+.mini-btn.is-accent {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+  font-weight: 600;
+}
+
+.mini-btn.is-accent:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 22%, transparent);
+}
+
 /* ------------------------------------------------------------ 提示文案 */
 
 .muted-hint {
