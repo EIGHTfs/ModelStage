@@ -43,7 +43,8 @@ export function charKeyOf(name) {
  * @returns {string[]}
  */
 export function assetCandidates(name) {
-  const raw = String(name || '').toLowerCase();
+  // 键 = 真实资源文件名，**保留原始大小写**（设计：名表键原样，不做归一）
+  const raw = String(name || '');
   const out = [raw];
   for (const re of ASSET_SUFFIX_PATTERNS) {
     const prev = out[out.length - 1];
@@ -80,16 +81,16 @@ export function mergeNameTable(index, table) {
  * @returns {{name: string, costume: string}|null}
  */
 export function lookupName(index, assetName) {
-  const raw = String(assetName || '').toLowerCase();
+  // 精确匹配：资产名与名表键都按**原样**比对，不做小写归一（名表键 = 真实文件名）。
+  //   归一化会让「只差大小写的两个资产」被错误合并，也会掩盖名表里写错的键。
+  const raw = String(assetName || '');
   if (index.cache.has(raw)) return index.cache.get(raw);
   let hit = null;
   if (index.byAsset && index.characters) {
     for (const key of assetCandidates(raw)) {
-      const v = index.byAsset[key];
-      // 名表由服务端原样透传：byAsset[key] 是角色 id 字符串（仍兼容对象形态的旧来源）
-      const id = typeof v === 'string' ? v : (v && v.char) || null;
+      // byAsset 的值就只是角色 id 字符串，没有别的形态
+      const id = index.byAsset[key];
       const c = id ? index.characters[id] : null;
-      // name / costume 是多语言数组 ⇒ 统一经 pickName 取（当前恒取中文）
       const name = c ? pickName(c.name) : '';
       if (name) {
         hit = { name, costume: c ? pickName(c.costume) : '' };
