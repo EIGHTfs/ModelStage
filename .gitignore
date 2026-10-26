@@ -61,10 +61,9 @@ src/spine-runtimes/
 dist/
 
 # ---- 刻意排除：自动生成的资源清单 ----
-# config/spine.<rootId>.json / config/live2d.<rootId>.json 是服务端扫描资源目录后落盘的索引（可随时重建，
+# config/models/<spine|live2d>.<rootId>.json 是服务端扫描资源目录后落盘的索引（可随时重建，
 # 类似构建产物），不入库。
-config/spine.*.json
-config/live2d.*.json
+config/models/
 config/*.tmp
 
 # ---- 刻意排除：用户配置（本机相关，换机器即失效）----

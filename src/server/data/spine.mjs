@@ -1,6 +1,6 @@
-// models.mjs —— Spine 模型扫描与清单缓存（config/spine.<rootId>.json）
-//   文件名用 spine 而不是 models：本模块只认 Spine（.skel/.json + 同名 .atlas 配对），
-//   与 Live2D 扫描器（live2d.<rootId>.json）并列时才对等。
+// spine.mjs —— Spine 模型扫描与清单缓存（config/models/spine.<rootId>.json）
+//   本模块只认 Spine（.skel/.json + 同名 .atlas 配对）；Live2D 走 live2d.mjs。
+//   清单路径、目录创建、失效逻辑在 manifest-cache.mjs —— 那是两个扫描器共用的，不属于这里。
 
 const log = createLogger('models');
 //
@@ -11,13 +11,13 @@ const log = createLogger('models');
 import fs from 'node:fs';
 import { createLogger } from '../core/log.mjs';
 import { dirSignature, signatureMatches } from './manifest-stamp.mjs';
+import {
+  spineManifestFile, ensureManifestDir, invalidateManifests,
+} from './manifest-cache.mjs';
 import path from 'node:path';
 import { MIME, encodePath, parseAtlasPages } from '../assets/probe.mjs';
 
-/** Live2D 清单路径（与 Spine 清单并列，互不干扰） */
-function live2dModelsFile(configFile, rootId) {
-  return path.join(path.dirname(configFile), `live2d.${rootId}.json`);
-}
+
 
 /**
  * 头像解析（三条候选路，按优先级）：
@@ -263,43 +263,19 @@ export function scanRootServer(root, deps) {
   return models;
 }
 
-/** 清单文件路径。 */
-export function modelsFile(configFile, rootId) {
-  return path.join(path.dirname(configFile), `spine.${rootId}.json`);
+/** Spine 清单文件路径（实现在 manifest-cache 里，与 Live2D 清单同一目录）。 */
+export function spineFile(configFile, rootId) {
+  return spineManifestFile(configFile, rootId);
 }
 
-/** 失效某个资源根的清单（不传则失效全部）。Spine 与 Live2D 两套清单一并处理。 */
-export function invalidateModelsCache(configFile, rootId) {
-  if (rootId) {
-    for (const f of [modelsFile(configFile, rootId), live2dModelsFile(configFile, rootId)]) {
-      try {
-        if (fs.existsSync(f)) fs.unlinkSync(f);
-      } catch {
-        /* 忽略 */
-      }
-    }
-    return;
-  }
-  // 全部失效：删除所有 models.<id>.json 与 live2d.<id>.json。
-  //   ⚠️ 必须**要求中间有根 id**，不能只判前缀：`config/live2d.json` 是入库的手工配置
-  //   （Live2D 渲染开关，带注释、留着备查），它同样以 "live2d." 开头 ——
-  //   早期实现按前缀匹配会把它一起删掉（实测发生过一次，等于顺手删用户配置）。
-  try {
-    const dir = path.dirname(configFile);
-    for (const n of fs.readdirSync(dir)) {
-      const m = /^(?:models|live2d)\.(.+)\.json$/.exec(n);
-      if (m && m[1] && !m[1].includes('/') && !m[1].includes('\\')) {
-        fs.unlinkSync(path.join(dir, n));
-      }
-    }
-  } catch {
-    /* 忽略 */
-  }
+/** 失效清单（不传 rootId 则全部）。两套清单一并处理，实现在 manifest-cache。 */
+export function invalidateCaches(configFile, rootId) {
+  invalidateManifests(configFile, rootId);
 }
 
 /** 取模型列表（优先读落盘清单，缺失或 force 时才扫描）。同步实现。 */
-export function getModels(configFile, root, force, deps) {
-  const f = modelsFile(configFile, root.id);
+export function getSpineModels(configFile, root, force, deps) {
+  const f = spineFile(configFile, root.id);
 
   if (!force && fs.existsSync(f)) {
     try {
@@ -329,7 +305,7 @@ export function getModels(configFile, root, force, deps) {
     models,
   };
   // 原子写入，避免写到一半被读到损坏内容
-  fs.mkdirSync(path.dirname(`${f}.tmp`), { recursive: true });
+  ensureManifestDir(configFile);   // 清单目录（config/models/）可能还不存在：首次运行或目录被清空
   fs.writeFileSync(`${f}.tmp`, JSON.stringify(payload), 'utf8');
   fs.renameSync(`${f}.tmp`, f);
   log.info('已生成清单', { file: path.basename(f), count: models.length });
@@ -341,11 +317,11 @@ export function getModels(configFile, root, force, deps) {
  * @param {{configFile: string}} p
  * @param {object} deps 探测与名表函数
  */
-export function createModels(p, deps) {
+export function createSpineModels(p, deps) {
   return {
-    getModels: (root, force) => getModels(p.configFile, root, force, deps),
-    modelsFile: (rootId) => modelsFile(p.configFile, rootId),
-    invalidateModelsCache: (rootId) => invalidateModelsCache(p.configFile, rootId),
+    getSpineModels: (root, force) => getSpineModels(p.configFile, root, force, deps),
+    spineFile: (rootId) => spineFile(p.configFile, rootId),
+    invalidateCaches: (rootId) => invalidateCaches(p.configFile, rootId),
     buildModelServer,
     scanRootServer: (root) => scanRootServer(root, deps),
     resolveIconUrl,

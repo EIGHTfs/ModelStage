@@ -244,14 +244,14 @@ function selfCheckImportedFiles(configDir, written, files) {
  * 为什么两件事分开 try：它们互相独立，一个失败不该连累另一个；
  *   失败信息汇总到 `error` 回给调用方（缓存没清只是"下次更慢"，不该让导入失败）。
  *
- * @param {object} models data/models.mjs 实例
+ * @param {object} spine data/spine.mjs 实例
  * @param {object} names data/names.mjs 实例
  * @returns {{models:boolean, names:boolean, error:string|null}}
  */
 function invalidateImportCaches(models, names) {
   const out = { models: false, names: false, error: null };
   try {
-    models.invalidateModelsCache();
+    spine.invalidateCaches();
     out.models = true;
   } catch (e) {
     out.error = String((e && e.message) || e);
@@ -272,7 +272,7 @@ function invalidateImportCaches(models, names) {
  * @param {{paths: object, config: object, models: object, names: object}} deps
  *   paths  = core/paths.mjs 的路径表（configDir / configFile / root）
  *   config = core/config.mjs（readConfigRaw / writeConfig / readConfig / buildGroups）
- *   models = data/models.mjs（invalidateModelsCache：不传参 = 失效全部）
+ *   spine = data/spine.mjs（invalidateCaches：不传参 = 失效全部）
  *   names  = data/names.mjs（clearNameCache：导入替换名表后必须清缓存）
  * @returns {{writeRoots: Function, writeConfigImport: Function}}
  */
@@ -527,7 +527,7 @@ export function createWriteApi({ paths, config, models, names }) {
       }
 
       // ---------- ⑥ 失效缓存（只失效受影响的那个根）----------
-      // 为什么不能"全部失效"：data/models.mjs 的 invalidateModelsCache() 不带参数时会删除
+      // 为什么不能"全部失效"：data/spine.mjs 的 invalidateCaches() 不带参数时会删除
       //   config/ 下所有 models.* 与 live2d.* 文件 —— 其中 live2d.json 是**入库的手工配置**
       //   （Live2D 渲染开关，带注释、留着备查），删掉等于顺手丢配置。
       //   资源根写操作只影响自己那份清单，按 id 精确失效即可，其它根的缓存继续可用。
@@ -536,7 +536,7 @@ export function createWriteApi({ paths, config, models, names }) {
           : plan.changed.id;
       const invalidated = { models: false, rootId: affectedId, error: null };
       try {
-        models.invalidateModelsCache(affectedId);
+        spine.invalidateCaches(affectedId);
         invalidated.models = true;
       } catch (e) {
         // 清理失败不影响本次写入结果：配置已生效，下次请求会重新生成清单

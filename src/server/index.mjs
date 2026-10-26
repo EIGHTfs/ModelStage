@@ -13,7 +13,7 @@ import { createPaths } from './core/paths.mjs';
 import { createEnv } from './core/env.mjs';
 import { createConfig } from './core/config.mjs';
 import { createPlugins } from './plugins/registry.mjs';
-import { createModels } from './data/models.mjs';
+import { createSpineModels } from './data/spine.mjs';
 import { createLive2d } from './data/live2d.mjs';
 import { createNames } from './data/names.mjs';
 import { createTree } from './data/tree.mjs';
@@ -46,11 +46,11 @@ export function createServerData({ root, avatarRoot }) {
     detectAtlasKey: probe.detectAtlasKey,
     detectAtlasPma: probe.detectAtlasPma,
   };
-  const models = createModels(paths, modelDeps);
+  const spine = createSpineModels(paths, modelDeps);
   const live2d = createLive2d(paths);
   const tree = createTree({ config, plugins, probe });
   const modelMeta = createModelMeta({ config, probe, motionRulesFile: paths.motionRulesFile });
   const bundleProbe = createBundleProbe({ config, probe });
-  const catalog = createCatalog({ config, models, live2d, tree, plugins });
-  return { paths, env, config, plugins, probe, models, live2d, names, tree, modelMeta, bundleProbe, catalog };
+  const catalog = createCatalog({ config, spine, live2d, tree, plugins });
+  return { paths, env, config, plugins, probe, spine, live2d, names, tree, modelMeta, bundleProbe, catalog };
 }

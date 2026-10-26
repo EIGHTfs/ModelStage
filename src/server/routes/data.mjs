@@ -65,7 +65,7 @@ function apiData(ctx, res, p, url) {
     if (!cfg) return sendJson(res, 400, { error: `未找到资源根: ${rootId}` });
     try {
       const isSpine = p === '/api/spine/models';
-      const r = isSpine ? data.models.getModels(cfg, force) : data.live2d.getLive2DModels(cfg, force);
+      const r = isSpine ? data.spine.getSpineModels(cfg, force) : data.live2d.getLive2DModels(cfg, force);
       return sendJson(res, 200, {
         root: { id: cfg.id, name: cfg.name },
         count: r.models.length,

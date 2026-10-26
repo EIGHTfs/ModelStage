@@ -10,6 +10,7 @@
 import fs from 'node:fs';
 import { createLogger } from '../core/log.mjs';
 import { dirSignature, signatureMatches } from './manifest-stamp.mjs';
+import { live2dManifestFile, ensureManifestDir } from './manifest-cache.mjs';
 import path from 'node:path';
 import { encodePath } from '../assets/probe.mjs';
 import { resolveLive2DRuntimes } from '../../../tool/resolve-live2d-runtimes.mjs';
@@ -26,7 +27,7 @@ let live2dRuntimeFilesCache = null;
 
 /** Live2D 清单文件路径（与 Spine 的 models.<id>.json 并列，互不干扰）。 */
 export function live2dModelsFile(configFile, rootId) {
-  return path.join(path.dirname(configFile), `live2d.${rootId}.json`);
+  return live2dManifestFile(configFile, rootId);
 }
 
 /** 构造两个引用工具：对外 URL 与「磁盘上存在才返回」的文件对象。 */
@@ -218,6 +219,7 @@ export function getLive2DModels(configFile, cfg, force) {
   const ts = Date.now();
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
+    ensureManifestDir(configFile);
     fs.writeFileSync(file, JSON.stringify({
       version: LIVE2D_MANIFEST_VERSION,
       rootId: cfg.id,

@@ -84,9 +84,9 @@ const unpackRoutes = createUnpackRoutes({
 });
 // 就绪信号通道（契约 就绪信号契约.md）：与 diag 完全分离的状态机，不进调试面板
 const ready = createReady();
-// 写接口（资源根增删改名启停 / 导入配置）：读路径与写路径共用同一份 config/models/names 实例
+// 写接口（资源根增删改名启停 / 导入配置）：读路径与写路径共用同一份 config/spine/names 实例
 const writeApi = createWriteApi({
-  paths: data.paths, config: data.config, models: data.models, names: data.names,
+  paths: data.paths, config: data.config, spine: data.spine, names: data.names,
 });
 
 /** 统一的 JSON 响应（与 server.mjs 的 sendJson 同形：无缩进、no-store） */

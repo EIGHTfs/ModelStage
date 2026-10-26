@@ -13,7 +13,7 @@
 //   2. 私有字段一律进 meta.extras，不进公共层；
 //   3. 缺陷显式化：动作取不到时进 warnings，不用"空数组"隐式表达。
 //
-// 扫描不在此重复实现：直接复用 models.getModels() 与 live2d.getLive2DModels()。
+// 扫描不在此重复实现：直接复用 spine.getSpineModels() 与 live2d.getLive2DModels()。
 import fs from 'node:fs';
 import path from 'node:path';
 import { encodePath } from '../assets/probe.mjs';
@@ -417,9 +417,9 @@ function countSkippedFiles(rootPath, listed) {
 
 /**
  * 装配模型目录（合并该资源根下的 Spine 与 Live2D 两路扫描）。
- * @param {{config: object, models: object, live2d: object}} deps
+ * @param {{config: object, spine: object, live2d: object}} deps
  */
-export function createCatalog({ config, models, live2d, tree, plugins }) {
+export function createCatalog({ config, spine, live2d, tree, plugins }) {
   /**
    * @param {string} rootId
    * @returns {{status: number, body: object}}
@@ -434,7 +434,7 @@ export function createCatalog({ config, models, live2d, tree, plugins }) {
     const warnings = [];
 
     try {
-      for (const m of models.getModels(cfg, false).models) entries.push(toSpineEntry(cfg, m));
+      for (const m of spine.getSpineModels(cfg, false).models) entries.push(toSpineEntry(cfg, m));
     } catch (e) {
       warnings.push(`spine 扫描失败：${e.message}`);
     }
