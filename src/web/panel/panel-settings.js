@@ -13,6 +13,7 @@ import { rendererSupports, setRendererSetting } from '../app/renderer-setting.js
 import * as uiState from '../app/ui-state.js';
 import { stageLog, stageStatus } from '../app/status.js';
 import { PANEL_GROUPS, applyCapabilities, mergePluginControls, selfCheck, settingKeyOf } from './schema.js';
+import { activeChain } from '../engine/effect-chain.js';
 import { mountPanel } from './view.js';
 import { applyDebugLog, applyHangGuard, applyMemoryGuard, applyShowStatus, connectShellControls, runSettingsAction } from './shell-controls.js';
 import { applyBackground, applyTheme, readViewSettings, saveViewSettings } from '../app/view-settings.js';
@@ -158,6 +159,16 @@ function applyCore(id, value) {
   // 插件声明了但效果没注册成功 ⇒ 明确拒绝并告知原因（契约 §9.3：绝不静默存值）
   if (PLUGIN_DISABLED_IDS.has(String(id))) {
     stageStatus(`「${id}」暂不可用：对应插件效果未注册成功`, 'warn', { show: true });
+    return;
+  }
+  // 插件效果：①让渲染器记住档位（它是 getSetting 的唯一回读口）②重算整条链下发
+  // 顺序/激活/参数换算都在 effect-chain.js，两条链路共用同一套语义。
+  if (PLUGIN_EFFECTS.has(String(id))) {
+    const r = state.currentRenderer;
+    if (r && typeof r.setSetting === 'function') {
+      try { r.setSetting(String(id), value); } catch { /* 记档位失败不影响链下发 */ }
+    }
+    applyPluginEffectChain();
     return;
   }
   const shell = SHELL_APPLIERS[id];
@@ -323,6 +334,33 @@ const PLUGIN_DISABLED_IDS = new Set();
  * 插件交完声明后重建一次面板 —— 插件是异步注入的，晚于首次建面板。
  * 幂等：只绑一次。
  */
+/**
+ * 插件效果的运行期元数据：id → { fragment, params, options }。
+ * 顺序即 Map 插入顺序 = 控件节提交顺序 = 清单 effects[] 声明顺序（效果链的叠加顺序）。
+ */
+const PLUGIN_EFFECTS = new Map();
+
+/**
+ * 按当前设置算出生效链并下发给当前渲染器（**Spine / Live2D 同一入口**）。
+ *
+ * 这里只做"算 + 下发"：顺序/激活/参数换算在 effect-chain.js，挂载方式在各自渲染器。
+ * 渲染器内部按结构签名决定"只改 uniform"还是"重建着色器"，所以切档位不会重挂/重新解析。
+ * @returns {boolean} 是否成功下发
+ */
+function applyPluginEffectChain() {
+  const renderer = state.currentRenderer;
+  if (!renderer || typeof renderer.setEffectChain !== 'function') return false;
+  const declared = [...PLUGIN_EFFECTS.entries()].map(([id, meta]) => ({ id, fragment: meta.fragment, params: meta.params }));
+  const chain = activeChain(declared, (effectId) => {
+    const meta = PLUGIN_EFFECTS.get(effectId);
+    const options = meta && Array.isArray(meta.options) ? meta.options : [];
+    const chosen = String(uiState.getValue(effectId) === undefined ? '' : uiState.getValue(effectId));
+    const idx = options.length ? Math.max(0, options.indexOf(chosen)) : 0;
+    return { optionIndex: idx, optionCount: options.length || 1 };
+  });
+  return renderer.setEffectChain(chain);
+}
+
 let pluginRebuildBound = false;
 export function bindPluginPanelRebuild() {
   if (pluginRebuildBound) return false;
@@ -357,6 +395,19 @@ function rebuildPanelFor(renderer) {
   });
   // 插件控件登记进 SPEC：这样它们是走既有的 loadAll/set/flush 通道，不新开存储路径
   const pluginControls = merged.groups.flatMap((g) => (g.controls || []).filter((c) => c && c.pluginId));
+  // 填充效果元数据（按声明顺序）并把链下发一次：插件晚于首帧加载，不补这一次画面就不对
+  PLUGIN_EFFECTS.clear();
+  if (host && typeof host.effectDeclarations === 'function') {
+    for (const decl of host.effectDeclarations()) {
+      const ctl = pluginControls.find((c) => String(c.id) === decl.id);
+      PLUGIN_EFFECTS.set(decl.id, {
+        fragment: decl.fragment,
+        params: decl.params,
+        options: ctl && Array.isArray(ctl.options) ? ctl.options.map(String) : [],
+      });
+    }
+    if (PLUGIN_EFFECTS.size) applyPluginEffectChain();
+  }
   if (pluginControls.length) {
     const reg = uiState.registerSpecItems(pluginControls);
     // 拒绝登记的要当场说清楚：否则表现为"控件在面板上、却不被工厂接管（恢复默认跳过它）"
@@ -410,8 +461,19 @@ function rebuildPanelFor(renderer) {
   state.panel = info;
   // 暴露"实际构建出来的已接线控件"：能力不支持的项根本不构建（契约 §3.1），
   //   所以 panelWired 不能直接给全量 WIRED_IDS，否则断言会拿面板里不存在的 id 去比。
+  //   但也不能直接给 builtIds —— 有些控件建出来了却处于 pending/disabled（如 ctl-anim-list），
+  //   它们不算"已接线"，给进去会让 panel-actions 的严格集合相等断言反向失败（实测踩过）。
+  //   正确口径 = 静态白名单里真正建出来的 + **插件控件**（插件控件 id 是裸 effect id，
+  //   不带 ctl- 前缀、不在 WIRED_IDS 里，按契约 §9.2 由宿主负责接线）。
   const builtIds = [...document.querySelectorAll('#right-panel [data-ctl]')].map((n) => n.dataset.ctl);
-  state.panelWired = WIRED_IDS.filter((id) => builtIds.includes(id));
+  const pluginHost = state.pluginHost;
+  const pluginCtlIds = (pluginHost && typeof pluginHost.controlSections === 'function' ? pluginHost.controlSections() : [])
+    .flatMap((section) => (section.controls || []).map((ctl) => ctl && ctl.id))
+    .filter((id) => id && builtIds.includes(id));
+  state.panelWired = [...new Set([
+    ...WIRED_IDS.filter((id) => builtIds.includes(id)),
+    ...pluginCtlIds,
+  ])];
   exposePanelWired();
   startFpsReadout(info);
   // 契约 §三/§3.1（**唯一汇聚点**）：面板 DOM 刚被重建 ⇒ 当前 DOM 的显示态全是 schema 默认值，

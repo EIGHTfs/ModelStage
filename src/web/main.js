@@ -252,6 +252,20 @@ function initRenderer() {
       if (!isEffect) return got;
       try { return uiState.getValue(key); } catch { return got; }
     },
+    /**
+     * 插件效果链：门面必须转发，否则效果永远到不了真实渲染器
+     * （与 setSetting 同一种静默失效 —— 方法存在但打不到实现上）。
+     */
+    setEffectChain: (chain) => {
+      const r = surface.activeRenderer ? surface.activeRenderer() : null;
+      if (!r || typeof r.setEffectChain !== 'function') return false;
+      try { return r.setEffectChain(chain) === true; } catch { return false; }
+    },
+    /** 当前生效链的结构签名：空串 = 没有链（用于"切档位不该改签名"的断言） */
+    effectChainSignature: () => {
+      const r = surface.activeRenderer ? surface.activeRenderer() : null;
+      try { return r && typeof r.effectChainSignature === 'function' ? r.effectChainSignature() : ''; } catch { return ''; }
+    },
     get camera() { return surface.activeCamera() || stage.camera; },
     mount(document) { return surface.activate(document); },
     unmount() { return surface.disposeActive(); },

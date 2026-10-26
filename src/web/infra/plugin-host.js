@@ -99,6 +99,8 @@ export function createPluginHost(opts = {}) {
   const controlSections = [];
   /** 当前正在注入脚本的插件 id（register* 靠它认领"这是谁的注册"） */
   let loadingPluginId = '';
+  /** 效果表达式长度上限：见 registerEffect 里"超长直接拒"的理由 */
+  const MAX_FRAGMENT_CHARS = 2000;
   /** id → { loaded, error, files, ms } 装载状态（排障用） */
   const loadState = new Map();
   /** /api/plugins 返回的清单快照 */
@@ -182,11 +184,20 @@ export function createPluginHost(opts = {}) {
         say.warn(`registerEffect(${id}) 的 fragment 为空，已拒绝`);
         return false;
       }
+      // 超长直接拒：fragment 会被拼进着色器并在挂载时编译，没有长度闸门就等于
+      //   允许插件往渲染链路里塞任意大段代码（编译失败还会连带拖慢首帧）
+      if (spec.fragment.length > MAX_FRAGMENT_CHARS) {
+        say.warn(`registerEffect(${id}) 的 fragment 过长（${spec.fragment.length} > ${MAX_FRAGMENT_CHARS} 字符），已拒绝`);
+        return false;
+      }
       if (registeredEffects.has(id)) {
         say.warn(`registerEffect(${id}) 重复注册（已被 ${registeredEffects.get(id).pluginId} 占用），已忽略`);
         return false;
       }
-      registeredEffects.set(id, { pluginId, fragment: spec.fragment });
+      // uniforms 是插件侧的"参数默认值兜底"（清单 params[].default 的补充口）。
+      //   实际每档用哪个值由 effect-chain.uniformsForOption 按档位算，这里只做缺省兜底。
+      const uniforms = (spec && spec.uniforms && typeof spec.uniforms === 'object') ? { ...spec.uniforms } : {};
+      registeredEffects.set(id, { pluginId, fragment: spec.fragment, uniforms });
       say.info(`已注册效果 ${id}（插件 ${pluginId}）`);
       return true;
     },
@@ -813,6 +824,28 @@ const MIME_BY_EXT = {
      * 只声明但没注册成功的不在列表里 ⇒ 对应控件会置灰。
      */
     registeredEffectIds: () => [...registeredEffects.keys()],
+    /**
+     * 面板层用：已注册效果的完整声明（按**清单 effects[] 声明顺序** = 效果链的叠加顺序）。
+     * fragment 给渲染层拼着色器，params 给"档位 → uniform"换算。
+     * @returns {Array<{id:string, pluginId:string, fragment:string, label:string, params:Array}>}
+     */
+    effectDeclarations: () => {
+      const out = [];
+      for (const [pluginId, list] of manifestEffects.entries()) {
+        for (const eff of list || []) {
+          const reg = registeredEffects.get(String(eff.id));
+          if (!reg || reg.pluginId !== pluginId) continue;   // 只报注册成功的
+          out.push({
+            id: String(eff.id),
+            pluginId,
+            fragment: reg.fragment,
+            label: String(eff.label || eff.id),
+            params: Array.isArray(eff.params) ? eff.params.map((p) => ({ ...p })) : [],
+          });
+        }
+      }
+      return out;
+    },
     /** 面板层用：某个 effect id 属于哪个插件（置灰时写原因） */
     effectOwner: (effectId) => {
       const hit = registeredEffects.get(String(effectId));

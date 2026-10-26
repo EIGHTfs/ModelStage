@@ -7,6 +7,7 @@
 import { createCamera } from './camera/index.js';
 import { trackModelStage, markModelFailed } from '../infra/ready.js';
 import { buildDocument } from '../infra/document.js';
+import { applyFilter } from '../engine/appearance.js';
 
 /** Spine 渲染器支持的设置项 */
 // 前 7 项是"引擎参数"，后 4 项是"内容操作"（皮肤/部件筛除/动作混合/动作切换）：
@@ -107,6 +108,27 @@ export function createSpineRenderer({ stage, onMsaa } = {}) {
 
   return {
     id: 'spine',
+    /**
+     * 下发插件效果链（**与 Live2D 同一套语义**：顺序/激活/销毁都在 effect-chain.js，
+     * 这里只管"怎么把它挂到 Spine 的 batcherShader 上"）。
+     * 参数值变化只更新 uniform；只有链**结构**变化才重编译着色器（热更新判据）。
+     * @param {Array<{id:string, fragment:string, uniforms:object}>} chain
+     * @returns {boolean} 是否成功应用
+     */
+    setEffectChain(chain) {
+      const eng = engineOf();
+      if (!eng) return false;
+      eng.effectChain = Array.isArray(chain) ? chain : [];
+      applyFilter(eng);
+      // 暂停态也要立刻看到变化：效果是"实时预览"用的，不能等下一次自然出帧
+      try { if (pausedRef && stage && typeof stage.renderOnce === 'function') stage.renderOnce(); } catch { /* 忽略 */ }
+      return true;
+    },
+    /** 当前生效链的结构签名（断言用：切档位时它不应变化） */
+    effectChainSignature() {
+      const eng = engineOf();
+      return eng && eng.filterState ? String(eng.filterState.signature || '') : '';
+    },
     /**
      * 暂停：停掉引擎时间推进（动作与渲染循环都不再走）。
      * 走 stage.pause()：舞台层的暂停是唯一实现（引擎 stopp），渲染器不重复实现一套。

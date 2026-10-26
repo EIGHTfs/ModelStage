@@ -34,10 +34,13 @@ export function applyFilter(engine) {
     gl: engine.gl,
     ShaderCtor,
     filterId: engine.filterId,
+    // 插件效果链：由面板设置变化时算好挂在 engine 上（顺序/激活/销毁的语义在 effect-chain.js）
+    effects: engine.effectChain || [],
     state: engine.filterState || { saved: null, active: null },
     log: (l, m, s) => engine.log(l, m, s),
   });
-  engine.filterState = { saved: result.saved, active: result.active };
+  // 签名要一起存：下次调用来比"结构有没有变"（变了才重建，参数变只改 uniform）
+  engine.filterState = { saved: result.saved, active: result.active, signature: result.signature || '' };
   return result.changed;
 }
 
