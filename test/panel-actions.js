@@ -13,7 +13,7 @@
 // 形态：整段是自求值 async IIFE（工具原样求值并 await），因此也能通过 node --check。
 // 返回：{ total, failed, results:[...], summary:{...} }
 
-(async () => {
+// [wait-ready] 生成块移到 IIFE 之外（140 行，留在编排函数里会让 IIFE 永远超长）；内容一字未改。
 // [wait-ready] begin —— 由 test/lib/wait-ready.mjs 生成，勿手改（改源头后跑 apply-wait-ready）
   // 就绪信号等待：等级用 rank 比较（pending 0 < mounted 1 < painted/settled 2 < interactive 3）
   const READY_RANK = { pending: 0, mounted: 1, painted: 2, settled: 2, interactive: 3 };
@@ -156,6 +156,8 @@
   };
   // [wait-ready] end
 
+(async () => {   // ← 编排函数：只准备上下文 + 依次 await 各组用例 + 汇总
+
 // 面板稳定签名：控件 aria 状态 + 左栏位移（判断点完控件后 UI 是否已重排/过渡完）
 const panelSig = () => ({
   on: qa('#right-panel [data-ctl][aria-pressed="true"]').map((e) => e.dataset.ctl).join(','),
@@ -172,8 +174,47 @@ const rectOf = (el) => {
   return [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)];
 };
 
-// -------------------------------------------------- 0. 控件清单与计数
-{
+
+  // 共享上下文（本文件没有跨段 helper 需要工厂：全部是 const 箭头函数，直接进 C）
+  const C = { panelSig, sleep, q, qa, click, results, rec, rectOf };
+
+  // 0 段一次枚举的产出 I：后续子步骤只读消费（不是可变累加器）
+  const I = await runControlInventory(C);
+  await runWiredLists(C, I);
+  const J = await runDefaultValues(C, I);   // J = { titles, expectTitles }
+  await runViewSettings(C, I);
+  await runDisabledStyle(C, I);
+  await runGroupTitles(C, J);
+
+  await runAccordion(C);   // 1. 手风琴 9 组
+  const U = await runUnwiredRight(C);   // 2a. 右栏未接线控件（产出 nonTrigger 供 2b 复用）
+  await runWiredEffectiveness(C, U);    // 2b. 可点控件必须有效
+  await runUnwiredFooter(C);            // 2c. 底栏未接线控件
+  await runWired(C);       // 3. 已接线控件
+  await runRects(C);       // 4. 区域 rect
+
+const summary = {
+  rightPanel: {
+    total: qa('#right-panel button, #right-panel select, #right-panel input').length,
+    triggers: qa('#right-panel .acc-trigger').length,
+    disabled: qa('#right-panel button:not(.acc-trigger), #right-panel select, #right-panel input').filter((e) => e.disabled).length,
+  },
+  footer: {
+    total: qa('#app-footer button, #app-footer select').length,
+    disabled: qa('#app-footer button, #app-footer select').filter((e) => e.disabled).length,
+  },
+  dataset: {
+    panelControls: document.documentElement.dataset.panelControls,
+    transportControls: document.documentElement.dataset.transportControls,
+  },
+};
+return JSON.stringify({ total: results.length, failed: results.filter((r) => !r.ok).length, summary, results }, null, 1);
+})();
+
+
+/** 枚举 + 控件分类门禁（静态检查） */
+async function runControlInventory(C) {
+  const { qa, rec } = C;
   const rightItems = qa('#right-panel button, #right-panel select, #right-panel input');
   const triggers = qa('#right-panel .acc-trigger');
   const footItems = qa('#app-footer button, #app-footer select');
@@ -192,11 +233,13 @@ const rectOf = (el) => {
   // ---- 门禁：每个控件必须显式归到三层优先级之一，否则"永远显示"会静默发生
   //   ① hidden:true（手动隐藏） ② capabilityKey / debugKey（自动按声明） ③ RENDERER_INDEPENDENT（与渲染器无关）
   //   漏标 ⇒ 本断言失败（这正是"靠人肉维护"最容易漏的地方，用测试钉死它）
-  {
     let gateMiss = [];
     let hiddenIds = [];
+    // mod 要在 try 之外声明：I 需要把它交给后续子步骤（B 段用 mod 校验能力键），
+    //   而 try 块内 const 出了块就不可见。
+    let mod = null;
     try {
-      const mod = await import('/panel/schema.js');
+      mod = await import('/panel/schema.js');
       const indep = new Set(mod.RENDERER_INDEPENDENT || []);
       const allControls = (mod.PANEL_GROUPS || []).flatMap((g) => (g.controls || []).filter((c) => c && c.id));
       for (const c of allControls) {
@@ -215,8 +258,17 @@ const rectOf = (el) => {
       //   混合过渡改由「播放 → 混合时长」一个滑块控制后，该控件已按需求**移除**，
       //   钉住它存在的断言随之删除；此处不是为让测试变绿而放宽判据，其余门禁原样保留。
       gateMiss.length === 0);
-  }
 
+
+  // I 是「一次枚举的结果」，交给后续子步骤只读消费
+  return { rightItems, triggers, footItems, nonTrigger, enabledEls, disabledEls, enabledIds, declaredWired, mod };
+}
+
+
+/** 接线态清单：右栏 / 底栏 */
+async function runWiredLists(C, I) {
+  const { q, rec } = C;
+  const { rightItems, triggers, footItems, nonTrigger, disabledEls, enabledIds, declaredWired } = I;
   // 口径（契约 §53）：能力不支持的项**根本不构建**（DOM 里不该有），
   //   所以"不可点"只该剩一种合法原因 —— 未接线（data-pending）；
   //   任何 disabled 却不是 pending 的项，说明有未声明能力被建了出来。
@@ -268,11 +320,17 @@ const rectOf = (el) => {
     && !q('#transport-loop')                        // 循环已移到右栏「循环播放」开关
     && footAllPending);
 
+}
+
+
+/** 已接线控件的声明默认值是否真的落到引擎 */
+async function runDefaultValues(C, I) {
+  const { rec } = C;
+  const { triggers } = I;
   // 分组标题与旧前端逐字对照
   const titles = triggers.map((t) => t.textContent.trim());
   const expectTitles = ['动作', '皮肤', '播放', '滤镜', 'PMA 预乘', '运行时', '主题背景', '调试绘制', '设置'];
   // 视图与引擎必须一致：每个已接线控件声明的默认值，启动后必须已经落到舞台设置里
-  {
     const defaults = (window.__WEB__ && window.__WEB__.panelDefaults) || null;
     const st = window.__WEB__ && window.__WEB__.stage;
     const settings = st && st.stats ? st.stats().settings : null;
@@ -291,9 +349,15 @@ const rectOf = (el) => {
       '每个已接线控件的实际生效值 === 面板声明的 defaultValue',
       `共 ${rows.length} 项，不一致 ${bad.length} 项${bad.length ? '：' + bad.map((b) => `${b.id} 声明=${b.want} 实际=${b.got}`).join('；') : ''}`,
       rows.length > 0 && bad.length === 0);
-  }
-  // 视图类设置（主题 / 背景模式）：面板显示、DOM 属性、存储必须一致（防『显示 A 实际 B』漂移）
-  {
+
+  // 分组标题在 C 段枚举、由 F 段（runGroupTitles）消费 ⇒ 一并交出去
+  return { titles, expectTitles };
+}
+
+
+/** 视图类设置（主题 / 背景）四处一致 */
+async function runViewSettings(C, I) {
+  const { q, rec } = C;
     // 主题已从原生 <select> 改为自绘 chips（与滤镜预设组统一视觉）：
     //   自绘 chips 的选中项只能从 aria-pressed 找，且按钮上没有 value 属性 ——
     //   所以用 schema 的 options 把"选中项文案"映射回 value，判据仍是"UI 选择 === 真实状态 === 存储值"。
@@ -334,9 +398,12 @@ const rectOf = (el) => {
       + `背景按下=${pressedBg ? pressedBg.textContent.trim() : '(无)'} #stage[data-bg]=${bgAttr} `
       + `存储theme=${stored.uiTheme || '(未写)'} 存储bg=${storedBg || '(未写)'}`,
       ok);
-  }
-  // 不可点控件的标签要有删除线，可点控件必须没有（跟随状态，不是一次性 class）
-  {
+}
+
+
+/** 不可点控件的删除线只表达「未接线」 */
+async function runDisabledStyle(C, I) {
+  const { q, rec } = C;
     const right = q('#right-panel');
     const controls = right
       ? [...right.querySelectorAll('button, select')].filter((e) => !e.classList.contains('acc-trigger'))
@@ -362,13 +429,22 @@ const rectOf = (el) => {
         + `能力不支持 ${unsupportedOnes.length} 个；可点 ${enabledOnes.length} 个；`
         + `误加划线 ${falseStrike.length}${falseStrike.length ? '：' + falseStrike.join(',') : ''}`,
       missStrike.length === 0 && falseStrike.length === 0);
-  }
+}
+
+
+/** 分组标题与旧前端逐字对照 */
+async function runGroupTitles(C, J) {
+  const { titles, expectTitles } = J;
+  const { rec } = C;
   rec('分组标题对照', '#right-panel .acc-trigger', '枚举', '与旧前端 9 组逐字一致',
     titles.join(' / '), JSON.stringify(titles) === JSON.stringify(expectTitles));
 }
 
+
+/** 1. 手风琴 9 组逐个展开/折叠 */
+async function runAccordion(C) {
+  const { panelSig, sleep, qa, click, rec } = C;
 // --------------------------------------- 1. 手风琴 9 组逐个展开/折叠
-{
   const count = qa('#right-panel .acc-trigger').length;
   for (let i = 0; i < count; i += 1) {
     const get = () => qa('#right-panel .acc-trigger')[i];
@@ -391,10 +467,15 @@ const rectOf = (el) => {
       afterFirst !== before && afterSecond === before
         && consistent(afterFirst, hiddenFirst) && consistent(afterSecond, hiddenSecond));
   }
+
 }
 
-// ------------------------- 2. 未接线控件逐个断言"点了没反应"（disabled 生效）
-{
+
+/** 2. 未接线控件逐个断言「点了没反应」 */
+
+/** ① 右栏未接线控件：逐个点击必须无反应（disabled 生效） */
+async function runUnwiredRight(C) {
+  const { panelSig, sleep, qa, click, rec } = C;
   const nonTrigger = qa('#right-panel button:not(.acc-trigger), #right-panel select, #right-panel input');
   const unwired = nonTrigger.filter((el) => el.disabled);
   // 只点未接线的：disabled 元素不会触发处理器，界面不应出现任何状态变化
@@ -410,6 +491,15 @@ const rectOf = (el) => {
     clicked === unwired.length && before === after && stillDisabled);
 
   // 反向防线：凡 disabled=false 的控件，点一次必须产生可观测变化（panelSetting / canvas / 引擎统计）
+
+  // nonTrigger 交给 ② 复用（同一批控件，避免重复枚举）
+  return { nonTrigger };
+}
+
+/** ② 可点控件必须真的有效（防「接了线但点了没效果」） */
+async function runWiredEffectiveness(C, U) {
+  const { panelSig, sleep, q, qa, click, rec } = C;
+  const { nonTrigger } = U;
   const stageRef = window.__WEB__ && window.__WEB__.stage;
   // 可观测口径要覆盖"设置类控件"的全部真实副作用：
   //   panelSetting（落到设置的项）、canvas/frames（影响渲染的项）、
@@ -484,7 +574,11 @@ const rectOf = (el) => {
   const footAfter = JSON.stringify(footItems.map((e) => e.value || e.textContent));
 
   // 底栏：只对未接线项断言点了没反应（已接线的重置视图应当有反应）
-  {
+}
+
+/** ③ 底栏未接线控件：逐个点击必须无反应 */
+async function runUnwiredFooter(C) {
+  const { panelSig, sleep, click, rec } = C;
     const foot = [...document.querySelectorAll('#app-footer button, #app-footer select')];
     const unwiredFoot = foot.filter((e) => e.disabled);
     const snap = () => JSON.stringify(foot.map((e) => `${e.id}|${e.value || ''}|${e.getAttribute('aria-checked') || ''}`));
@@ -496,10 +590,13 @@ const rectOf = (el) => {
       '未接线项全部 disabled，点击不改变任何状态',
       `未接线 ${unwiredFoot.length} 个；状态快照一致=${b0 === b1}`,
       b0 === b1); // 未接线项为 0 时同样成立：底栏已全部接线，不存在"点了没反应"
-  }}
+}
 
+
+/** 3. 已接线控件各操作一次 */
+async function runWired(C) {
+  const { sleep, q, qa, click, rec } = C;
 // ----------------------------------------- 3. 已接线控件各操作一次
-{
   // 3a 顶栏「模型库」：左栏显隐
   // 左栏容器：优先 id，退到 class（两者都存在，取实际渲染的那个）
   const panel = q('#left-panel') || q('.panel-left');
@@ -550,10 +647,14 @@ const rectOf = (el) => {
   rec('已接线：顶栏全屏', '#btn-fullscreen', 'click ×2', '有响应且不报错',
     `进入后 fullscreenElement=${fsOn}，退出后=${!!document.fullscreenElement}`,
     document.fullscreenElement === null);
+
 }
 
+
+/** 4. 区域 rect 与计数 */
+async function runRects(C) {
+  const { q, rec, rectOf } = C;
 // ------------------------------------------------- 4. 区域 rect 与计数
-{
   const rightRect = rectOf(q('#right-panel'));
   const footRect = rectOf(q('#app-footer'));
   const stageRect = rectOf(q('#stage'));
@@ -585,21 +686,3 @@ const rectOf = (el) => {
     `舞台=${JSON.stringify(stageRect)} 右栏右边界=${rightRect[0] + rightRect[2]} 播放条底边界=${footRect[1] + footRect[3]}`,
     stageRect[2] === 1920 && rightRect[0] + rightRect[2] === 1920 && footRect[1] > 0);
 }
-
-const summary = {
-  rightPanel: {
-    total: qa('#right-panel button, #right-panel select, #right-panel input').length,
-    triggers: qa('#right-panel .acc-trigger').length,
-    disabled: qa('#right-panel button:not(.acc-trigger), #right-panel select, #right-panel input').filter((e) => e.disabled).length,
-  },
-  footer: {
-    total: qa('#app-footer button, #app-footer select').length,
-    disabled: qa('#app-footer button, #app-footer select').filter((e) => e.disabled).length,
-  },
-  dataset: {
-    panelControls: document.documentElement.dataset.panelControls,
-    transportControls: document.documentElement.dataset.transportControls,
-  },
-};
-return JSON.stringify({ total: results.length, failed: results.filter((r) => !r.ok).length, summary, results }, null, 1);
-})();

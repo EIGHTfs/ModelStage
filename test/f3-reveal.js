@@ -8,7 +8,8 @@
 //
 // 用法：node tool/check-console.mjs http://127.0.0.1:8804/ --json --script test/f3-reveal.js
 
-(async () => {
+// [wait-ready] 生成块移到 IIFE 之外：它本身就是 140+ 行，留在编排函数里会让 IIFE 永远超长；
+//   内容与位置语义不变（同一脚本顺序执行，helper 仍是同一作用域的顶层 const）。
 // [wait-ready] begin —— 由 test/lib/wait-ready.mjs 生成，勿手改（改源头后跑 apply-wait-ready）
   // 就绪信号等待：等级用 rank 比较（pending 0 < mounted 1 < painted/settled 2 < interactive 3）
   const READY_RANK = { pending: 0, mounted: 1, painted: 2, settled: 2, interactive: 3 };
@@ -150,10 +151,16 @@
     }
   };
   // [wait-ready] end
+
+(async () => {   // ← 编排函数：只准备上下文 + 依次 await 各组用例 + 汇总
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const results = [];
   const rec = (name, sel, action, expect, actual, ok) => results.push({ name, sel, action, expect, actual, ok: !!ok });
-  const w = window.__WEB__;
+  // window.__WEB__ 由前端启动时挂到 window；页面未就绪时它是 undefined。
+  //   直接快照会让 w 永久 undefined ⇒ 后面任何 w.state / w.xxx 一取就抛 TypeError，
+  //   而"等就绪"的守卫条件若也走 w 就永远不会生效。所以先等它出现再快照，|| {} 兜底。
+  for (let i = 0; i < 80 && !window.__WEB__; i += 1) await sleep(150);
+  const w = window.__WEB__ || {};
   const rv = w.state.roster;
   const listEl = document.getElementById('roster-list');
   const rows = () => [...listEl.querySelectorAll('[data-model-id]')];
@@ -182,7 +189,28 @@ const layoutSig = () => ({ pos: rows().map((el) => Math.round(rectOf(el).top)).j
   const all = rows();
   const overflow = listEl.scrollHeight - listEl.clientHeight;
 
-  // ---------------------------------------------------------------- ① 选中 → 滚进视口
+  // 共享上下文：拆分前这些名字都在 IIFE 作用域里；现在打包传给各 runXxx，作用域语义不变
+  const C = { READY_RANK, afterTransition, all, box, entry, game, inView, layoutSig, listEl, overflow, readySnap, rec, rectOf, results, rows, rv, sleep, snap0, snapshotOf, target, w, waitAny, waitFor, waitFrames, waitStable, waitStage };
+
+  await runSelectReveal(C);   // ① 选中 → 滚进视口
+  await runUserScrollGuard(C);   // ② 用户正在滚动 → 不抢
+  await runCollapsedReveal(C);   // ③ 折叠状态选中 → 先展开再滚
+  await runRestoreOnBoot(C);   // ④ 首次自动恢复同样定位
+
+  return JSON.stringify({
+    total: results.length,
+    failed: results.filter((x) => !x.ok).length,
+    summary: { game: target.name, renderedVariants: rows().length, overflow },
+    results,
+  }, null, 1);
+})()
+
+/**
+ * ① 选中 → 滚进视口
+ * 从原巨型 IIFE 整体提出（用例代码逐字搬运，只加 ctx 解构）；失败时按条款定位。
+ */
+async function runSelectReveal(C) {
+  const { all, box, inView, listEl, overflow, rec, rectOf, rows, rv, sleep, waitFor, waitStable } = C;
   {
     // 选一个"在视口下方之外"的行（列表底部那一行最稳）
     const offscreen = all.filter((el) => rectOf(el).top > box.bottom).pop() || all[all.length - 1];
@@ -210,7 +238,15 @@ const layoutSig = () => ({ pos: rows().map((el) => Math.round(rectOf(el).top)).j
       overflow > 200 && !preVisible && postVisible && reveal === 'scrolled');
   }
 
-  // ---------------------------------------------------------------- ② 用户正在滚动 → 不抢
+}
+
+
+/**
+ * ② 用户正在滚动 → 不抢
+ * 从原巨型 IIFE 整体提出（用例代码逐字搬运，只加 ctx 解构）；失败时按条款定位。
+ */
+async function runUserScrollGuard(C) {
+  const { inView, listEl, rec, rows, rv, sleep } = C;
   {
     // ⚠ 合成"用户滚动"**之前**必须先等过产品自己的回声抑制窗口
     //   （reveal.js: `autoScrollUntil = Date.now() + 300`）：
@@ -265,7 +301,15 @@ const layoutSig = () => ({ pos: rows().map((el) => Math.round(rectOf(el).top)).j
       Math.abs(delta) <= 1 && revealSane);
   }
 
-  // ---------------------------------------------------------------- ③ 折叠状态选中 → 先展开再滚
+}
+
+
+/**
+ * ③ 折叠状态选中 → 先展开再滚
+ * 从原巨型 IIFE 整体提出（用例代码逐字搬运，只加 ctx 解构）；失败时按条款定位。
+ */
+async function runCollapsedReveal(C) {
+  const { entry, game, inView, rec, results, rows, rv, sleep, waitStable } = C;
   {
     // 守卫的 800ms 冷静窗口没有对外信号，但"窗口是否已过"**可以用产品自己的结论探测**：
     //   反复调 revealActive() 直到它不再返回 skipped-user-scrolling（上限 3s），并记录真实耗时。
@@ -314,7 +358,15 @@ const layoutSig = () => ({ pos: rows().map((el) => Math.round(rectOf(el).top)).j
         && rows().length > hiddenRows && visibleNow && (reveal === 'scrolled' || reveal === 'visible'));
   }
 
-  // ---------------------------------------------------------------- ④ 首次自动恢复同样定位
+}
+
+
+/**
+ * ④ 首次自动恢复同样定位
+ * 从原巨型 IIFE 整体提出（用例代码逐字搬运，只加 ctx 解构）；失败时按条款定位。
+ */
+async function runRestoreOnBoot(C) {
+  const { entry, game, inView, layoutSig, listEl, rec, rows, rv, sleep, waitStable } = C;
   {
     // 造一份存档：只记"上次选中的变体"，展开态留空（等价于首次进入）
     const withVariants = entry.chars.filter((c) => c.variants.length > 0);
@@ -344,10 +396,4 @@ const layoutSig = () => ({ pos: rows().map((el) => Math.round(rectOf(el).top)).j
       !!(restored && restored.restored) && snap.lastReveal === 'scrolled' && visibleNow && scrolledDown);
   }
 
-  return JSON.stringify({
-    total: results.length,
-    failed: results.filter((x) => !x.ok).length,
-    summary: { game: target.name, renderedVariants: rows().length, overflow },
-    results,
-  }, null, 1);
-})()
+}

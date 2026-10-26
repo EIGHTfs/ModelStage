@@ -17,7 +17,7 @@
 //   · 树每次操作后整棵重渲染 → **每次点击前重新查询元素**，不持有旧引用；
 //   · 分段执行，某段抛错只记失败项，不中断后续段（保证"穷举"能跑完）。
 
-(async () => {
+// [wait-ready] 生成块移到 IIFE 之外（140 行，留在编排函数里会让 IIFE 永远超长）；内容一字未改。
 // [wait-ready] begin —— 由 test/lib/wait-ready.mjs 生成，勿手改（改源头后跑 apply-wait-ready）
   // 就绪信号等待：等级用 rank 比较（pending 0 < mounted 1 < painted/settled 2 < interactive 3）
   const READY_RANK = { pending: 0, mounted: 1, painted: 2, settled: 2, interactive: 3 };
@@ -159,6 +159,8 @@
     }
   };
   // [wait-ready] end
+
+(async () => {   // ← 编排函数：只准备上下文 + 依次 await 各组用例（每段仍用 section() 包住）+ 汇总
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const q = (s) => document.querySelector(s);
 const qa = (s) => [...document.querySelectorAll(s)];
@@ -176,6 +178,51 @@ const skip = (name, sel, expect, reason) => results.push({ name, sel, action: 's
  * /api/roots 按 name 分组的期望根数（roster 的"一级节点按 name 合并"要拿它做**相对断言**）。
  * ⚠️ 本机会有三个根都叫「碧蓝航线」⇒ 任何"该游戏有几个根"的断言都必须现算，不能写死数字。
  */
+
+  // 基础上下文（其余 helper 由两个工厂提供；工厂内同名解构 ⇒ helper 体内一字不改）
+  const C = { sleep, q, qa, snap, click, results, rec, skip };
+  // 顺序有依赖：makeListHelpers 里的 charKeysOf 用到 makeBasicHelpers 提供的 gameOf ⇒ basic 必须先 assign
+  Object.assign(C, makeBasicHelpers(C));   // rootsByName / until / domRows / gameOf / rosterSig / clickGame
+  Object.assign(C, makeListHelpers(C));    // rootModelCounts / charKeysOf / clickChar / section
+
+  // 编排里也要用 section（分段执行器）—— 它由工厂提供，取到本地更直观
+  const { section } = C;
+
+  await section('初始态', () => runInitialState(C));
+
+  // 挑出「能展开出角色行」的游戏名（数据不同，不写死名字）
+  //   ⚠️ 必须在「初始态」段**之后**：那一段会点击/展开游戏来核对一级节点合并，
+  //   挑选逻辑依赖那之后的可控状态（原文件就是这个顺序，拆函数时容易把声明提到前面而改变时序）。
+  const GAME_NAMES = await pickGameNames(C);
+  C.GAME_NAMES = GAME_NAMES;   // 同时进 C：runXxx 内部要用全量列表
+  if (GAME_NAMES.length < 2) {
+    skip('多游戏切换', '.tree-game', '至少 2 个游戏含角色行可切换',
+      `配置里只有 ${GAME_NAMES.length} 个游戏能展开出角色行；产品要求支持多游戏，此环境不满足`);
+  }
+  for (const name of GAME_NAMES) await section(`游戏 ${name}`, () => runGameSwitch(C, name));
+  await section('跨根归并', () => runCrossRootMerge(C));
+  for (const name of GAME_NAMES) await section(`游戏 ${name} 角色层`, () => runCharLayer(C, name));
+  await section('搜索', () => runSearch(C));
+  await section('选中态', () => runSelection(C));
+  await section('收起按钮', () => runCollapseButton(C));
+  await section('顶栏模型库按钮', () => runTopbarLibrary(C));
+  await section('未接线控件', () => runUnwiredControls(C));
+  await section('持久化键', () => runPersistKeys(C));
+  await section('全屏按钮', () => runFullscreen(C));
+  await section('键盘激活', () => runKeyboardEnter(C));
+
+// 防再犯：失败项单列 failures（期望 vs 实测并排），这样"failed:1"一眼就能看出差在哪个数值，
+// 不用从 32 条 results 里翻；每条用例的 actual 也必须写实测值而不是布尔结论。
+const failures = results.filter((r) => !r.ok).map((r) => ({ name: r.name, sel: r.sel, expect: r.expect, actual: r.actual }));
+return JSON.stringify({ total: results.length, failed: failures.length, skipped: results.filter((r) => r.skipped === true).length, failures, results }, null, 1);
+})();
+
+/**
+ * 读取类 helper：资源根名映射（带缓存）/ 轮询 / DOM 行枚举 / 游戏与角色行的取自与点击。
+ *  rootsByNameCache 是 let 且只被 rootsByName 读写（同一个缓存）⇒ 同工厂闭包共享，不需要 P。
+ */
+function makeBasicHelpers(C) {
+  const { sleep, q, qa, snap, click, skip } = C;
 let rootsByNameCache = null;
 async function rootsByName() {
   if (rootsByNameCache) return rootsByNameCache;
@@ -213,6 +260,16 @@ const clickGame = (name) => {
  *   用来区分"根路径失效/未解包（模型数 0）"和"各根角色名不重叠（都有模型但名字不同）"。
  * @param {string[]} rootIds
  */
+  return { rootsByName, until, domRows, gameOf, rosterSig, clickGame };
+}
+
+/**
+ * 计数/点击/分段执行 helper：根下模型数、角色 key 枚举、角色行点击、
+ * section（段内抛错记成失败项、不中断后续段 —— 既有行为，拆分后仍保留）。
+ * ⚠️ 依赖 makeBasicHelpers 的 gameOf（charKeysOf 里按 gameKey 过滤）⇒ basic 必须先 assign。
+ */
+function makeListHelpers(C) {
+  const { q, qa, click, rec, gameOf } = C;
 async function rootModelCounts(rootIds) {
   const out = {};
   for (const id of rootIds) {
@@ -237,9 +294,39 @@ const clickChar = (key) => {
 async function section(title, fn) {
   try { await fn(); } catch (e) { rec(`【段】${title}`, '-', '执行', '正常完成', `异常: ${e.message}`, false); }
 }
+  return { rootModelCounts, charKeysOf, clickChar, section };
+}
 
-// ------------------------------------------------- 0. 初始态：游戏节点按 name 合并
-await section('初始态', async () => {
+/**
+ * 挑出「能展开出角色行」的游戏名（最多 2 个）。为什么不能直接取前两个：
+ *   配置里可能有"没有角色行"的游戏根（例如只放 .moc 的 Live2D 根），拿它去跑
+ *   "展开后角色行出现"必然失败 —— 那是数据差异，不是功能缺陷。
+ *   另外：必须先在折叠状态下数角色行、再折叠回去，让后续段从"未展开"的可控状态开始。
+ */
+async function pickGameNames(C) {
+  // waitStable 属 wait-ready 生成块（文件顶层）⇒ 直接可见，不要从 C 解构
+  const { snap, clickGame, until, gameOf, charKeysOf, rosterSig } = C;
+  const picked = [];
+  for (const g of snap().games) {
+    if (picked.length >= 2) break;
+    try {
+      clickGame(g.name);
+      await until(() => ['ready', 'error'].includes(gameOf(g.name).status));
+      const hasChars = charKeysOf(g.name).length > 0;      // 必须在折叠**之前**数
+      // 折叠回去，让后续段从"未展开"的可控状态开始
+      if (snap().expandedGames.includes(gameOf(g.name).key)) clickGame(g.name);
+      await waitStable(rosterSig, { timeoutMs: 3000, label: '挑选游戏后界面稳定' });
+      if (hasChars) picked.push(g.name);
+    } catch { /* 该游戏展开失败就跳过它 */ }
+  }
+  return picked;
+  return picked;
+}
+
+
+/** runInitialState 的用例体 */
+async function runInitialState(C) {
+  const { snap, rec, skip, rootsByName } = C;
   const s = snap();
   const names = s.games.map((g) => g.name);
   // 不写死游戏数量（用户会增删资源根）：校验"按 name 合并"这条语义本身。
@@ -260,34 +347,12 @@ await section('初始态', async () => {
     skip('跨根归并', '.tree-game', '至少一个游戏由 ≥2 个根合并',
       '配置里没有多根游戏；产品要求支持同游戏多根，此环境不满足');
   }
-});
-
-// ------------------------------- 1. 两个游戏逐个展开/折叠 + 规模数字
-// 具体是哪两个游戏是**数据**（现挑），不是写死的名字；但"至少 2 个含角色行的游戏"是产品结构要求。
-//   为什么不能直接取前两个游戏名：配置里可能有"没有角色行"的游戏根（例如只放 .moc 的 Live2D 根），
-//   拿它去跑"展开后角色行出现"必然失败 —— 那是数据差异，不是功能缺陷。
-const GAME_NAMES = await (async () => {
-  const picked = [];
-  for (const g of snap().games) {
-    if (picked.length >= 2) break;
-    try {
-      clickGame(g.name);
-      await until(() => ['ready', 'error'].includes(gameOf(g.name).status));
-      const hasChars = charKeysOf(g.name).length > 0;      // 必须在折叠**之前**数
-      // 折叠回去，让后续段从"未展开"的可控状态开始
-      if (snap().expandedGames.includes(gameOf(g.name).key)) clickGame(g.name);
-      await waitStable(rosterSig, { timeoutMs: 3000, label: '挑选游戏后界面稳定' });
-      if (hasChars) picked.push(g.name);
-    } catch { /* 该游戏展开失败就跳过它 */ }
-  }
-  return picked;
-})();
-if (GAME_NAMES.length < 2) {
-  skip('多游戏切换', '.tree-game', '至少 2 个游戏含角色行可切换',
-    `配置里只有 ${GAME_NAMES.length} 个游戏能展开出角色行；产品要求支持多游戏，此环境不满足`);
 }
-for (const name of GAME_NAMES) {
-  await section(`游戏 ${name}`, async () => {
+
+
+/** runGameSwitch 的用例体 */
+async function runGameSwitch(C, name) {
+  const { sleep, snap, click, rec, until, domRows, gameOf, rosterSig, clickGame } = C;
     const before = domRows();
     clickGame(name);
     await until(() => ['ready', 'error'].includes(gameOf(name).status));
@@ -302,11 +367,12 @@ for (const name of GAME_NAMES) {
     rec(`游戏 ${name} 折叠`, `[data-game-key="${g.key}"].tree-game`, 'click', '该游戏不在 expandedGames',
       `expandedGames=${JSON.stringify(snap().expandedGames)} 角色行=${domRows().chars}`,
       !snap().expandedGames.includes(g.key));
-  });
 }
 
-// ------------------------ 2. 跨根归并：一个角色节点下含不同资源根的变体
-await section('跨根归并', async () => {
+
+/** runCrossRootMerge 的用例体 */
+async function runCrossRootMerge(C) {
+  const { sleep, q, qa, snap, click, rec, skip, until, gameOf, rosterSig, clickGame, rootModelCounts, charKeysOf, clickChar } = C;
   // 不依赖具体角色名：在**多根游戏**里逐个尝试，找第一个"变体来自 ≥2 个根"的角色。
   //   这测的是归并能力本身；找不到说明配置里没有跨根角色（skip，不算失败）。
   const multi = snap().games.find((g) => (g.roots || []).length >= 2) || null;
@@ -347,11 +413,12 @@ await section('跨根归并', async () => {
   clickChar(found.key);
   clickGame(multi.name);
   await waitStable(rosterSig, { timeoutMs: 3000, label: '界面稳定' });   // 原 sleep(150)
-});
+}
 
-// ------------------------- 3. 两个游戏 × 各 3 个角色：展开 → 折叠
-for (const name of GAME_NAMES) {
-  await section(`游戏 ${name} 角色层`, async () => {
+
+/** runCharLayer 的用例体 */
+async function runCharLayer(C, name) {
+  const { sleep, q, snap, click, rec, until, domRows, gameOf, rosterSig, clickGame, charKeysOf, clickChar } = C;
     // 只在"确实未展开"时点击，并等角色行真的渲染出来（status=ready ≠ 行已渲染）
     if (!snap().expandedGames.includes(gameOf(name).key)) clickGame(name);
     await until(() => gameOf(name).status === 'ready');
@@ -382,11 +449,12 @@ for (const name of GAME_NAMES) {
     }
     clickGame(name);
     await waitStable(rosterSig, { timeoutMs: 3000, label: '界面稳定' });   // 原 sleep(150)
-  });
 }
 
-// -------------------------------------------------------- 4. 搜索（N → M）
-await section('搜索', async () => {
+
+/** runSearch 的用例体 */
+async function runSearch(C) {
+  const { sleep, q, qa, snap, rec, skip, until, gameOf, rosterSig, clickGame, GAME_NAMES } = C;
   const input = q('#roster-search');
   const setKw = async (kw) => {
     input.value = kw;
@@ -432,10 +500,12 @@ await section('搜索', async () => {
   rec('搜索框清空', '#roster-search', 'input ""', '恢复搜索前条数',
     `角色=${qa('[data-char-key].tree-char').length}（搜索前 ${baseChars}）`,
     qa('[data-char-key].tree-char').length === baseChars);
-});
+}
 
-// ------------------------------------------------------------- 5. 选中态
-await section('选中态', async () => {
+
+/** runSelection 的用例体 */
+async function runSelection(C) {
+  const { sleep, q, qa, snap, click, rec, skip, rosterSig, clickChar } = C;
   const firstChar = q('[data-char-key].tree-char');
   if (!firstChar) {
     skip('变体选中 A/B', '[data-model-id]', '同一角色下至少 2 个变体，可切换选中',
@@ -469,10 +539,12 @@ await section('选中态', async () => {
   rec('变体改选 B', `[data-model-id="${idB}"]`, 'click', 'A 取消高亮、只剩 B 高亮',
     `高亮行=${selRows.length}（${selRows.map((n) => n.dataset.modelId).join(',')}）A 仍高亮=${q(`[data-model-id="${idA}"]`).classList.contains('is-selected')}`,
     selRows.length === 1 && selRows[0].dataset.modelId === idB);
-});
+}
 
-// --------------------------------------------------------- 6. 收起按钮
-await section('收起按钮', async () => {
+
+/** runCollapseButton 的用例体 */
+async function runCollapseButton(C) {
+  const { sleep, q, snap, click, rec, skip, until, domRows, gameOf, rosterSig, clickGame, charKeysOf, clickChar, GAME_NAMES } = C;
   if (!GAME_NAMES.length) {
     skip('收起按钮', '#btn-collapse', '两级展开数 N→0，变体行归零，面板保留',
       '配置里没有能展开出角色行的游戏，无从验证收起行为');
@@ -499,18 +571,12 @@ await section('收起按钮', async () => {
     //   多少个游戏/角色属于环境结构，已由「多游戏切换」那条单独判定，这里不重复设门槛
     before.games >= 1 && before.chars >= 1 && after.games === 0 && after.chars === 0
       && domRows().variants === 0 && !q('#left-panel').classList.contains('is-hidden'));
-});
+}
 
-// -------------------------------------- 7. 顶栏「模型库」= 面板显隐
-//
-// 判据取**几何量**（computed transform 的 tx、rect.x），不取 classList：
-//   类名加上只代表"意图已发出"，位移由 CSS transition 驱动，真的滑出屏幕才算隐藏。
-// 为什么不能"点击 → 固定 sleep → 读一次"：
-//   transition 的推进依赖样式解析时机，点击后若什么都不读、睡满再读，
-//   动画起点会被推迟到那次读取的时刻，于是读到 tx=0（实测：睡 350ms 读到 0，
-//   而同一次点击后每 40ms 读一次，170ms 就已 -303、350ms 到 -304）。
-//   这类"时序读法"造成的假失败必须靠**轮询到位**消除，而不是靠加大 sleep。
-await section('顶栏模型库按钮', async () => {
+
+/** runTopbarLibrary 的用例体 */
+async function runTopbarLibrary(C) {
+  const { q, click, rec } = C;
   const panel = () => q('#left-panel');
   /** 读 computed transform 的平移分量（tx）；none 视作 0，解析不出给 NaN */
   const txOf = () => {
@@ -585,10 +651,12 @@ await section('顶栏模型库按钮', async () => {
       + `TRACE=${JSON.stringify(trace)}`,
     entryTx === 0 && hide.ok && hide.aria === 'false'
       && show.ok && show.aria === 'true' && w > 0);
-});
+}
 
-// ---------------------------------- 8. 未接线控件必须是 disabled
-await section('未接线控件', async () => {
+
+/** runUnwiredControls 的用例体 */
+async function runUnwiredControls(C) {
+  const { q, qa, rec } = C;
   // 顶栏（F2 之后）：只剩四个真按钮且全部可点；导入（本项目按资源根目录扫描加载，没有"导入单个模型"路径）
   // 与菜单（没有可放的内容）已删除，删除理由记在 src/web/README.md
   const topbarIds = ['btn-shot', 'btn-library', 'btn-menu', 'btn-cinema', 'btn-fullscreen'];
@@ -632,20 +700,25 @@ await section('未接线控件', async () => {
     rec('底栏接线态标注', '#app-footer', '枚举', '已接线可点、其余 disabled 且带 data-pending',
       `可点=${enabled.join(',') || '(无)'}；未接线 ${foot.length - enabled.length} 个全 pending=${disabledAllPending}`,
       enabled.length === foot.length && disabledAllPending); // 8 个控件全部接线后不再有未接线项
-  }});
+  }
+}
 
-// ------------------------------------------------------------ 9. 状态落盘
-await section('持久化键', async () => {
+
+/** runPersistKeys 的用例体 */
+async function runPersistKeys(C) {
+  const { rec } = C;
   const raw = localStorage.getItem('modelstage.tree-state.v1');
   const parsed = raw ? JSON.parse(raw) : null;
   rec('localStorage 键名', 'localStorage["modelstage.tree-state.v1"]', '读取',
     '沿用旧前端键名，结构含 games/chars/activeGame/lastByGame（activeGame 存游戏名）',
     parsed ? `keys=${Object.keys(parsed).join(',')} activeGame=${parsed.activeGame} lastByGame=${JSON.stringify(parsed.lastByGame)}` : '未写入',
     !!parsed && ['games', 'chars', 'activeGame', 'lastByGame'].every((k) => k in parsed));
-});
+}
 
-// ------------------------------------------------- 10. 全屏按钮（原生 API）
-await section('全屏按钮', async () => {
+
+/** runFullscreen 的用例体 */
+async function runFullscreen(C) {
+  const { sleep, q, click, rec } = C;
   click(q('#btn-fullscreen'));
   await waitStable(() => document.fullscreenElement, { timeoutMs: 3000, quietMs: 200, label: '全屏态落定' });   // 原 sleep(400)
   const on = !!document.fullscreenElement;
@@ -655,10 +728,12 @@ await section('全屏按钮', async () => {
   // 无头浏览器可能拒绝全屏（非用户手势）；判定标准是"有响应且不报错"，错误由 check-console 兜
   rec('全屏按钮', '#btn-fullscreen', 'click ×2', '进入全屏→退出（无头下被拒绝也不报错）',
     `进入后 fullscreenElement=${on}，退出后为空=${off}`, off);
-});
+}
 
-// ------------------------------------ 11. 键盘可达（tabindex + Enter）
-await section('键盘激活', async () => {
+
+/** runKeyboardEnter 的用例体 */
+async function runKeyboardEnter(C) {
+  const { sleep, q, snap, click, rec, until, domRows, gameOf, rosterSig, GAME_NAMES } = C;
   click(q('#btn-collapse'));
   await waitStable(rosterSig, { timeoutMs: 3000, label: '界面稳定' });   // 原 sleep(150)
   const kbGame = GAME_NAMES[0] || snap().games[0].name;
@@ -674,10 +749,4 @@ await section('键盘激活', async () => {
     focused && expanded && domRows().chars > 0);
   click(q('#btn-collapse'));
   await waitStable(rosterSig, { timeoutMs: 3000, label: '界面稳定' });   // 原 sleep(150)
-});
-
-// 防再犯：失败项单列 failures（期望 vs 实测并排），这样"failed:1"一眼就能看出差在哪个数值，
-// 不用从 32 条 results 里翻；每条用例的 actual 也必须写实测值而不是布尔结论。
-const failures = results.filter((r) => !r.ok).map((r) => ({ name: r.name, sel: r.sel, expect: r.expect, actual: r.actual }));
-return JSON.stringify({ total: results.length, failed: failures.length, skipped: results.filter((r) => r.skipped === true).length, failures, results }, null, 1);
-})();
+}

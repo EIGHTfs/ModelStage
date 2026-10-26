@@ -5,7 +5,7 @@
 //
 // 用法：node tool/check-console.mjs http://127.0.0.1:<port>/ --json --script test/f1-controls.js
 
-(async () => {
+// [wait-ready] 生成块移到 IIFE 之外：它本身 140 行，留在编排函数里会让 IIFE 永远超长；内容一字未改。
 // [wait-ready] begin —— 由 test/lib/wait-ready.mjs 生成，勿手改（改源头后跑 apply-wait-ready）
   // 就绪信号等待：等级用 rank 比较（pending 0 < mounted 1 < painted/settled 2 < interactive 3）
   const READY_RANK = { pending: 0, mounted: 1, painted: 2, settled: 2, interactive: 3 };
@@ -148,6 +148,8 @@
   };
   // [wait-ready] end
 
+(async () => {   // ← 编排函数：只准备上下文 + 依次 await 各组用例 + 汇总
+
 // 面板稳定签名：控件数量 + 处于按下态控件。
 //   特意不含 #stage-status 文本：它会持续刷新（时间戳/计数），放进去会让签名永不稳定（踩过）。
 const f1Sig = () => ({
@@ -160,8 +162,6 @@ const f1Sig = () => ({
   const results = [];
   const rec = (name, sel, action, expect, actual, ok) => results.push({ name, sel, action, expect, actual, ok: !!ok });
 
-// ------------------------------------------------- 5. F1 四个外壳控件的实测行为
-{
   const clickId = (id) => {
     const el = document.getElementById(id);
     if (el) el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -170,6 +170,35 @@ const f1Sig = () => ({
   const hint = q('#stage-hint');
   const log = window.__WEB__ && window.__WEB__.stageLog;
 
+  // 共享上下文：拆分前这些名字都在 IIFE（及其裸块）作用域里；打包传给各 runXxx，作用域语义不变
+  const C = { READY_RANK, afterTransition, clickId, f1Sig, hint, log, q, qa, readySnap, rec, results, sleep, snapshotOf, waitAny, waitFor, waitFrames, waitStable, waitStage };
+
+  await runStatusInfo(C);            // ① 显示状态信息
+  await runDebugLog(C);              // ② 调试日志
+  const G = await runHangGuardPrepare(C);   // ③-1 前置：真加载模型 + 活性判据（含单条 skip）
+  await runHangGuardFreeze(C, G);    // ③-2 冻结帧 → 阈值调大再冻结 → 关闭保护
+  const S = await runSettingsIoExport(C);   // ④-1 导出（偏好 + 服务端配置原文）
+  await runSettingsIoImport(C, S);   // ④-2 导入两条分支
+  await runSettingsIoRestore(C, S);  // ④-3 恢复默认 + 唯一那条 F1④ 断言
+
+  return JSON.stringify({
+    total: results.length,
+    skipped: results.filter((r) => r.skipped === true).length,
+    failed: results.filter((r) => !r.ok).length,
+    dataset: {
+      showStatus: document.documentElement.dataset.showStatus,
+      debugLog: document.documentElement.dataset.debugLog,
+      hangGuard: document.documentElement.dataset.hangGuard,
+      settingsExport: document.documentElement.dataset.settingsExport,
+      settingsRestored: document.documentElement.dataset.settingsRestored,
+    },
+    results,
+  }, null, 1);
+})()
+
+/** F1① 显示状态信息：关掉后状态行不再显示（日志照旧有），打开能恢复文字 */
+async function runStatusInfo(C) {
+  const { clickId, f1Sig, hint, log, rec, sleep, waitStable } = C;
   // ① 显示状态信息：关掉后状态行不再显示（日志照旧有），打开能恢复文字
   clickId('ctl-show-status');
   await waitStable(f1Sig, { timeoutMs: 3000, label: '控件操作后界面稳定' });   // 原 sleep(120)：等状态显示切换落到 UI
@@ -202,6 +231,11 @@ const f1Sig = () => ({
     `开/关=${onFlag}/${offFlag}；关后 hidden=${hintHidden}；触发后仍 hidden=${hiddenAfterStatus}；日志增长=${logGrew}；开回 visible=${hintVisibleBack}`,
     offFlag === 'off' && hintHidden === true && hiddenAfterStatus === true && logGrew && onFlag === 'on' && hintVisibleBack);
 
+}
+
+/** F2② 调试日志：控制浮层显隐，且采集仍在 */
+async function runDebugLog(C) {
+  const { clickId, f1Sig, log, q, rec, sleep, waitStable } = C;
   // ② 调试日志：控制浮层显隐，且采集仍在
   clickId('ctl-debug-log');
   await waitStable(f1Sig, { timeoutMs: 3000, label: '控件操作后界面稳定' });   // 原 sleep(150)：等调试日志开关落到 UI
@@ -219,6 +253,11 @@ const f1Sig = () => ({
     `开/关=${onLogFlag}/${offLogFlag}；关后 hidden=${hostHidden}；开回 hidden=${!hostShown}；采到条目=${entries}`,
     offLogFlag === 'off' && hostHidden === true && onLogFlag === 'on' && hostShown && entries > 0);
 
+}
+
+/** F1③-1 前置：真加载一个模型并确认渲染循环在跑（否则注入冻结帧只会被跳过）；无模型时按单条 skip 落账 */
+async function runHangGuardPrepare(C) {
+  const { results, sleep, waitStage } = C;
   // ③ 防卡死保护
   // 前置（这是本次修正的关键）：看门狗按设计只在"有模型在渲染"时判停滞，
   //   所以必须先真加载一个模型并确认帧在增长，否则注入冻结帧也只会被跳过（recoveries 恒 0）。
@@ -272,6 +311,13 @@ function loopAlive(s) {
       actual: 'skipped：当前配置里没有任何可加载模型（/api/roots 下所有根都扫不出模型）', ok: true, skipped: true,
     });
   }
+  return { hasModel, loadErr, loopAlive, probeModel, probeRootId, stageRef2 };
+}
+
+/** F1③-2 冻结帧 → 阈值调大再冻结 → 关闭保护（F1③ 唯一那条断言在这里） */
+async function runHangGuardFreeze(C, G) {
+  const { clickId, f1Sig, log, rec, sleep, waitStable } = C;
+  const { hasModel, loadErr, loopAlive, probeModel, probeRootId, stageRef2 } = G;
   // 活性判据：引擎渲染循环在跑（frames 计数不可信，见 loopAlive 注释）
   // 不能换：活性判据的时间窗口（观察 700ms 内渲染循环是否在推进），窗口本身是判据
   await sleep(700);
@@ -343,7 +389,11 @@ function loopAlive(s) {
     !!probeModel && hasModel && alive && ticks1 > ticks0 && freezeTickedEnough && recov >= 1 && stallLogged
       && reverseOk && hgOff === 'off' && ticksStill === ticksAtOff);
   }
+}
 
+/** F1④-1 导出：应带 project.files（服务端配置原文）+ panel/view（前端偏好） */
+async function runSettingsIoExport(C) {
+  const { sleep } = C;
   // ④ 设置导入导出：导出（前端偏好 + 服务端配置原文）→ 导入两条分支 → 恢复默认
   const btns = [...document.querySelectorAll('[data-ctl="ctl-settings-io"] button')];
   const importBtn = btns.find((b) => b.dataset.action === '导入设置');
@@ -365,7 +415,12 @@ function loopAlive(s) {
   try { parsed = JSON.parse((exported || {}).text || 'null'); } catch { parsed = null; }
   const exportOk = !!(parsed && parsed.schema && parsed.panel);
   const hasProject = !!(parsed && parsed.project && parsed.project.files);
+  return { btns, importBtn, exportBtn, restoreBtn, importEnabled, importTitle, importStaleNote, exported, parsed, exportOk, hasProject };
+}
 
+/** F1④-2 导入两条分支：仅偏好（只写本地存储）/ 非法 project.files（后端 400 且文案要显示） */
+async function runSettingsIoImport(C, S) {
+  const { f1Sig, sleep, waitFor, waitStable } = C;
   // 分支 A：旧的"仅偏好"文件（顶层直接是偏好）→ 只写本地存储、不发 POST
   const io = window.__WEB__ && window.__WEB__.settingsIo;
   let prefsRes = null;
@@ -390,7 +445,14 @@ function loopAlive(s) {
   const badMsg = (document.getElementById('root-msg') || {}).textContent || '';
   // 文案口径：统一「导入失败：<环节>（后端原因）」——断言只认前缀与环节，不锁具体句
   const importErrShown = !badRes.ok && /导入失败/.test(String(badRes.error || '')) && /项目配置/.test(String(badRes.error || ''));
+  Object.assign(S, { prefsRes, bgAfterImport, badRes, badMsg, importErrShown });
+}
 
+/** F1④-3 恢复默认：清存储 + 复位主题；F1④ 那条综合断言在这里落账 */
+async function runSettingsIoRestore(C, S) {
+  const { f1Sig, rec, sleep, waitStable } = C;
+  const { importEnabled, importTitle, importStaleNote, exported, parsed, exportOk, hasProject,
+          prefsRes, bgAfterImport, badRes, importErrShown, restoreBtn } = S;
   // 恢复默认：清存储 + 复位主题
   try { localStorage.setItem('modelstage-settings-v2', JSON.stringify({ uiTheme: '__probe__' })); } catch { /* 跳过 */ }
   if (restoreBtn) restoreBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -411,19 +473,3 @@ function loopAlive(s) {
       && !!(prefsRes && prefsRes.ok && prefsRes.mode === 'prefs') && importErrShown
       && !String(storedAfter || '').includes('__probe__') && !!restoredFlag && themeBack === 'dark-cyan');
 }
-
-
-  return JSON.stringify({
-    total: results.length,
-    skipped: results.filter((r) => r.skipped === true).length,
-    failed: results.filter((r) => !r.ok).length,
-    dataset: {
-      showStatus: document.documentElement.dataset.showStatus,
-      debugLog: document.documentElement.dataset.debugLog,
-      hangGuard: document.documentElement.dataset.hangGuard,
-      settingsExport: document.documentElement.dataset.settingsExport,
-      settingsRestored: document.documentElement.dataset.settingsRestored,
-    },
-    results,
-  }, null, 1);
-})()

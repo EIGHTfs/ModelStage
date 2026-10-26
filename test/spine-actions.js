@@ -13,7 +13,7 @@
 // 形态：整段是自求值 async IIFE（工具原样求值并 await），因此也能通过 node --check。
 // 返回：{ total, failed, results:[...], summary:{...} }
 
-(async () => {
+// [wait-ready] 生成块移到 IIFE 之外（140 行，留在编排函数里会让 IIFE 永远超长）；内容一字未改。
 // [wait-ready] begin —— 由 test/lib/wait-ready.mjs 生成，勿手改（改源头后跑 apply-wait-ready）
   // 就绪信号等待：等级用 rank 比较（pending 0 < mounted 1 < painted/settled 2 < interactive 3）
   const READY_RANK = { pending: 0, mounted: 1, painted: 2, settled: 2, interactive: 3 };
@@ -155,6 +155,8 @@
     }
   };
   // [wait-ready] end
+
+(async () => {   // ← 编排函数：只准备上下文 + 依次 await 各组用例 + 汇总
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const q = (s) => document.querySelector(s);
 const qa = (s) => [...document.querySelectorAll(s)];
@@ -179,10 +181,52 @@ function loopAlive(s) {
 
 const MIN_RATIO = 0.05; // 验收线：非背景像素 > 5%
 
-// ---------------------------------------------------------------- 前置自证
-// 本机配置里至少要有一个"能扫出模型"的资源根，否则整份脚本 skipped（不 fail、不崩）。
-// 这一步替代了原来"写死某个资源根一定有某个模型"的隐含前提。
-{
+
+  // 共享上下文：wait-ready 的 9 个 helper + P1 的 8 个 helper/常量（17 个名字逐个列出，不靠隐式可见）
+  const C = { READY_RANK, readySnap, waitStage, waitAny, snapshotOf, waitFrames, afterTransition, waitStable, waitFor, sleep, q, qa, results, rec, stage, loopAlive, MIN_RATIO };
+  // 两个工厂各返回一组 helper；assign 后各 runXxx 照常从 C 解构
+  Object.assign(C, makeScanHelpers(C), makeModelHelpers(C));
+
+  // 跨用例共享的**可变**中间态：r38/r41 在用例段里赋值、在汇总里读。
+  //   原来它们是 IIFE 作用域的 let；拆成独立函数后必须用对象承载，否则赋值不回传、
+  //   汇总永远读到 null（表现是 summary.ratio38/41 恒为 0，而 total/failed 都正常——极难发现）。
+  const P = { r38: null, r41: null };
+
+  const pre = await runPreflight(C);   // 前置自证：至少一个根能扫出模型，否则整套 skip 一条
+  if (pre.wholeSkip) return pre.payload;   // 整套未验证：只报 1 条 skipped（runner 会标「实际未验证」）
+  await runStageReady(C);       // 0. 舞台/WebGL 上下文
+  await runRealRender(C, P);       // 1. 真渲染 + 2. 动作在动
+  await runVersionMatch(C, P);     // 3. 版本匹配
+  await runNoLeak(C);           // 4. 连切 3 个模型不泄漏
+  await runUiPath(C);           // 5. UI 路径
+  await runLastError(C);        // 2b. lastError 清除
+  await runDprMsaa(C);          // 2c. DPR + MSAA
+  await runDebugDraw(C);        // 2d. 调试绘制 / 部件过滤 / 皮肤
+  await runLive2dDpr(C);        // 2e. Live2D dpr 接线
+
+// ------------------------------------------------------------ 汇总
+const st = stage().stats();
+return JSON.stringify({
+  total: results.length,
+  failed: results.filter((r) => !r.ok).length,
+  // skip 与 fail 分开计数：skip = 环境缺数据（不计入 failed），但必须在汇总里可见
+  skipped: results.filter((r) => r.skipped === true).length,
+  summary: {
+    ratio38: +((P.r38 && P.r38.ratio) || 0).toFixed(4),
+    ratio41: +((P.r41 && P.r41.ratio) || 0).toFixed(4),
+    runtimeKeys: st.runtimeKeys,
+    loads: st.loads,
+    disposes: st.disposes,
+    contexts: st.contexts,
+    canvases: qa('canvas').length,
+  },
+  results,
+}, null, 1);
+})();
+
+/** 前置自证：探测是否至少有一个能扫出模型的根；零候选时整套 skip 一条（runner 标「实际未验证」） */
+async function runPreflight(C) {
+  const { results } = C;
   let hasAnyModel = false;
   try {
     const roots = ((await (await fetch('/api/roots')).json()).roots) || [];
@@ -198,28 +242,17 @@ const MIN_RATIO = 0.05; // 验收线：非背景像素 > 5%
       actual: 'skipped：当前配置里没有任何可加载的 Spine 模型（整套未验证）', ok: true, skipped: true,
     });
     // skipped === total ⇒ 整套未验证，runner 会把它标成「实际未验证」警告（不当作通过）
-    return JSON.stringify({ total: results.length, skipped: results.length, failed: 0, results }, null, 1);
+    // 原来是 IIFE 顶层的 return（直接终止整个套件）；搬进函数后必须显式把结果交回编排，
+    //   否则 return 只是结束本函数、后面 13 条会继续跑，total 变成 14（基准被破坏）。
+    return { wholeSkip: true, payload: JSON.stringify({ total: results.length, skipped: results.length, failed: 0, results }, null, 1) };
   }
+  return { wholeSkip: false, payload: null };
 }
 
-/**
- * 记一条"环境缺数据"的跳过。**与 fail 严格区分**：
- *   ok=true（不影响 failed 计数）+ skipped=true（单独计数）+ 必须写清缺的是哪类数据。
- * 只有"枚举完整候选集后确认零候选"才走这里；装载/断言失败一律仍是 fail。
- */
-function skip(name, sel, expect, reason) {
-  results.push({ name, sel, action: 'skip', expect, actual: `skipped：${reason}`, ok: true, skipped: true });
-}
-
-/**
- * 全库扫描（/api/roots → 每根 /api/spine/models），结果缓存。
- *
- * ⚠️ 两个环境事实（踩过）：
- *   ① `/api/roots` 里 5 个根的 `kind` **全是 'spine'**（连 Live2D 根也是）⇒ 不能靠 r.kind 判断渲染器；
- *   ② 多个根可能同名（三个根都叫「碧蓝航线」）⇒ 任何"按名字数根"的断言都要按 name 分组算。
- *
- * @returns {Promise<{roots:object[], items:object[], errors:string[]}>} items 每项带 rootId/rootName
- */
+/** 扫描类 helper：/api/roots → 每根 /api/spine/models 的缓存扫描 + 版本分布/发现/池化。
+ *  工厂 + 解构同名局部变量 ⇒ helper 体内一字不改（仍写 results.push(...) 等）。 */
+function makeScanHelpers(C) {
+  const { results, sleep, stage, waitFrames, waitStage, loopAlive } = C;
 let scanCache = null;
 async function scanAll() {
   if (scanCache) return scanCache;
@@ -270,8 +303,21 @@ async function spinePool() {
   }
   return out;
 }
+  return { scanAll, scanDigest, discover, spinePool };
+}
 
-/** 加载 + 采样两帧（间隔 500ms），返回渲染指标（**只收 model**：根名与测量无关，删掉形参以杜绝写死根名） */
+/** 模型装载/度量 helper：skip（逐条记录环境缺数据）+ measure（装载并采样一个模型）。 */
+function makeModelHelpers(C) {
+  const { results, sleep, stage, waitFrames, waitStage, loopAlive } = C;
+/**
+ * 记一条"环境缺数据"的跳过。**与 fail 严格区分**：
+ *   ok=true（不影响 failed 计数）+ skipped=true（单独计数）+ 必须写清缺的是哪类数据。
+ * 只有"枚举完整候选集后确认零候选"才走这里；装载/断言失败一律仍是 fail。
+ */
+function skip(name, sel, expect, reason) {
+  results.push({ name, sel, action: 'skip', expect, actual: `skipped：${reason}`, ok: true, skipped: true });
+}
+
 async function measure(model) {
   // 显式两步：组装（Assets 层）→ 装载；组装失败会在这里就变成 state='error'
   const doc = await stage().buildDocument(model);
@@ -307,20 +353,28 @@ async function measure(model) {
     lastError: d.lastError,
   };
 }
+  return { skip, measure };
+}
 
+
+/** 0. 舞台就绪（WebGL 上下文） */
+async function runStageReady(C) {
+  const { rec, stage } = C;
 // -------------------------------------------------- 0. 舞台就绪（WebGL 上下文）
-{
   const s = stage();
   const ok = !!s && document.documentElement.dataset.stageContext === 'webgl';
   rec('舞台/WebGL 上下文', '#stage-canvas', '读取',
     'stage 已创建且 context=webgl',
     `stage=${!!s} context=${document.documentElement.dataset.stageContext}`,
     ok);
+
 }
 
+
+/** 1. 真渲染（3.8）+ 2. 动作在动 */
+async function runRealRender(C, P) {
+  const { rec, stage, loopAlive, MIN_RATIO, skip, scanAll, scanDigest, discover, measure } = C;
 // -------------------------------------------- 1. 真渲染（3.8）+ 2. 动作在动
-let r38 = null;
-{
   const hit = await discover((m) => m.version === '3.8' && m.format === 'skel');
   if (!hit) {
     const why = `环境里没有 3.8 的 skel 模型（${scanDigest(await scanAll())}）`;
@@ -328,42 +382,49 @@ let r38 = null;
     skip('动作在动（间隔 500ms 两帧）', '#stage-canvas', '两帧像素签名不同', why);
   } else {
     const model = hit.model;
-    r38 = await measure(model);
+    P.r38 = await measure(model);
     rec('真渲染（3.8 模型）', '#stage-canvas', 'load → readPixels',
       `非背景像素 > ${MIN_RATIO * 100}%`,
-      `${model.name} v${model.version}：nonBg=${r38.nonBg}/${r38.total} = ${(r38.ratio * 100).toFixed(2)}%，lastError=${r38.lastError}`,
-      r38.ratio > MIN_RATIO && !r38.lastError);
+      `${model.name} v${model.version}：nonBg=${P.r38.nonBg}/${P.r38.total} = ${(P.r38.ratio * 100).toFixed(2)}%，lastError=${P.r38.lastError}`,
+      P.r38.ratio > MIN_RATIO && !P.r38.lastError);
 
     rec('动作在动（间隔 500ms 两帧）', '#stage-canvas', 'load → 500ms → 再采样',
       '两帧像素签名不同（且在推进帧）',
-      `moving=${r38.moving} loopAlive=${r38.alive}（frames=${r38.framesHint} 仅供参考，不作判据）`,
-      r38.moving === true && r38.alive === true);
+      `moving=${P.r38.moving} loopAlive=${P.r38.alive}（frames=${P.r38.framesHint} 仅供参考，不作判据）`,
+      P.r38.moving === true && P.r38.alive === true);
   }
+
 }
 
+
+/** 3. 版本匹配（4.1 模型） */
+async function runVersionMatch(C, P) {
+  const { rec, stage, MIN_RATIO, skip, scanAll, scanDigest, discover, measure } = C;
 // ------------------------------------------------ 3. 版本匹配（4.1 模型）
-let r41 = null;
-{
   const hit = await discover((m) => m.version === '4.1' && m.format === 'skel');
   if (!hit) {
     skip('版本匹配（4.1 模型）', '#stage-canvas', '4.1 模型能出画且加载了 spine-webgl-4.1.js',
       `环境里没有 4.1 的 skel 模型（${scanDigest(await scanAll())}）`);
   } else {
   const model = hit.model;
-  r41 = await measure(model);
+  P.r41 = await measure(model);
   const loaded = performance.getEntriesByType('resource')
     .map((e) => e.name)
     .filter((u) => u.includes('/spine-runtimes/spine-webgl-'));
   const has41 = loaded.some((u) => u.includes('spine-webgl-4.1.js'));
   rec('版本匹配（4.1 模型）', '#stage-canvas', 'load → readPixels',
     '4.1 模型能出画且加载了 spine-webgl-4.1.js',
-    `${model.name} v${model.version}：ratio=${(r41.ratio * 100).toFixed(2)}% 已加载运行时=${loaded.map((u) => u.split('/').pop()).join(',')}`,
-    r41.ratio > MIN_RATIO && has41);
+    `${model.name} v${model.version}：ratio=${(P.r41.ratio * 100).toFixed(2)}% 已加载运行时=${loaded.map((u) => u.split('/').pop()).join(',')}`,
+    P.r41.ratio > MIN_RATIO && has41);
   }
+
 }
 
+
+/** 4. 连切 3 个模型：上下文/贴图不泄漏 */
+async function runNoLeak(C) {
+  const { qa, rec, stage, skip, spinePool, measure } = C;
 // ------------------------------------- 4. 连切 3 个模型：上下文/贴图不泄漏
-{
   // 按 id 数 Spine 画布：Live2D 覆盖层画布（#live2d-overlay-canvas）启动即存在，
   //   统计全部 canvas 会把「设计上的第二块画布」误判成泄漏。
   const beforeCanvas = qa('#stage-canvas').length;
@@ -385,10 +446,14 @@ let r41 = null;
     `${degraded ? `降级：环境只有 ${pool.length} 个模型，改为同一模型连切 3 次；` : ''}#stage-canvas ${beforeCanvas}→${afterCanvas}；contexts=${st.contexts}；loads=${st.loads}；disposes=${st.disposes}；runtimeKeys=${st.runtimeKeys.join('+')}；各次 ratio=${ratios.join(' ')}；lastError=${st.lastError}`,
     pool.length > 0 && beforeCanvas === 1 && afterCanvas === 1 && st.contexts === 1
       && st.disposes >= st.loads - 1 && !st.lastError);
+
 }
 
+
+/** 5. UI 路径：名册点选 → 出画 */
+async function runUiPath(C) {
+  const { readySnap, waitStage, waitFor, q, qa, rec, stage, MIN_RATIO, skip } = C;
 // ------------------------------------------- 5. UI 路径：名册点选 → 出画
-{
   // 不按名字搜索（角色名/模型名都是本机数据）：点当前名册里的**第一个角色行**，
   //   再点它展开出的第一个**非 Live2D 变体**——"点角色 → 出现变体 → 点变体 → 出画"才是要验的链路。
   let target = qa('[data-char-key].tree-char')[0] || null;
@@ -433,10 +498,14 @@ let r41 = null;
         s.ratio > MIN_RATIO && !d.lastError);
     }
   }
+
 }
 
+
+/** 2b. 成功装载必须清掉上一次的 lastError */
+async function runLastError(C) {
+  const { waitFor, sleep, rec, stage, MIN_RATIO, skip, scanAll, scanDigest, discover, measure } = C;
 // -------------------------------- 2b. 成功装载必须清掉上一次的 lastError（防"一次失败永久染红"）
-{
   // 失败方式选"参数校验失败"：不联网、不动 loads/disposes 计数，但仍会写入 lastError，
   //   正好单测"下一次成功装载是否把旧错误清掉"（不清会让后续所有采样格都带旧错误）
   let failed = false;
@@ -477,10 +546,14 @@ let r41 = null;
     `${sub}；失败后=${String(afterFail).slice(0, 30) || 'null'}；成功后=${String(afterOk).slice(0, 30) || 'null'}`,
     failed && !!afterFail && cleared && !afterOk && ok2.ratio > MIN_RATIO);
   }
+
 }
 
+
+/** 2c. DPR 四档 + MSAA 开→关→开 */
+async function runDprMsaa(C) {
+  const { waitFrames, rec, stage, MIN_RATIO, skip, scanAll, scanDigest, discover } = C;
 // -------------------------------- 2c. DPR 四档 + MSAA 开→关→开（B4b 长期门禁）
-{
   const hitDpr = await discover((m) => m.version === '3.8' && m.format === 'skel');
   if (!hitDpr) {
     const why = `环境里没有 3.8 skel 模型（${scanDigest(await scanAll())}）`;
@@ -531,10 +604,14 @@ let r41 = null;
     seq.map((s) => `aa=${s.aa} ratio=${(s.ratio * 100).toFixed(2)}% ctx=${s.ctx} 画布=${s.canvases} err=${s.err || 'null'}`).join(' | '),
     seq.every((s) => s.ratio > MIN_RATIO && !s.err) && restored && seq[0].ctx === 1);
   }
-}
 
 // ------------- 2d. 调试绘制八类 + 部件过滤 + 皮肤（B5 长期门禁，逐项要有实测证据）
-{
+}
+
+
+/** 2d. 调试绘制八类 + 部件过滤 + 皮肤 */
+async function runDebugDraw(C) {
+  const { waitFrames, sleep, rec, stage, skip, scanAll, scanDigest, discover } = C;
   // 需要"有 slot/attachment 的 3.8 模型"——按结构条件发现，不按角色名
   const hitDbg = await discover((m) => m.version === '3.8' && m.format === 'skel');
   if (!hitDbg) {
@@ -552,7 +629,20 @@ let r41 = null;
   await sleep(220);
   const ratioOf = () => +stage().samplePixels().ratio.toFixed(4);
   const base = ratioOf();
+    // 三条判据各自独立 → 各一个函数（失败时能直接定位到是哪条判据挂了）
+    await runDebugDrawItems(C, { ratioOf, base });
+    await runDebugUnsupported(C);
+    await runSkinSwitch(C);
+  }
+}
 
+/**
+ * ① 七类调试绘制逐项生效：八类里"该模型有数据"的七类必须真的改变画面，关闭后必须回基线。
+ *   points 不在此列：3.8/4.1 的 SkeletonDebugRenderer 都没有 drawPoints 属性（由 ② 单独断言如实上报）。
+ */
+async function runDebugDrawItems(C, D) {
+  const { sleep, rec, stage } = C;
+  const { ratioOf, base } = D;
   // 八类里"该模型有数据"的七类必须真的改变画面；关闭后必须回基线。
   //   points 不在此列：3.8/4.1 的 SkeletonDebugRenderer 都没有 drawPoints 属性（下面单独断言如实上报）
   const KEYS = ['bones', 'meshes', 'regions', 'clipping', 'hulls', 'paths', 'boundingBoxes'];
@@ -573,6 +663,11 @@ let r41 = null;
     `${rows2.map((r) => `${r.key}:${r.deltaPt > 0 ? '+' : ''}${r.deltaPt}pt${r.back ? '' : '(未复原)'}`).join(' ')} → 生效 ${effective}/7`,
     effective >= 5 && rows2.every((r) => r.back));
 
+}
+
+/** ② 运行时画不出来的调试项必须如实上报（不许静默） */
+async function runDebugUnsupported(C) {
+  const { sleep, rec, stage } = C;
   // 运行时画不出来的调试项必须如实上报（不许静默）
   stage().setDebug({ points: true });
   // 不能换：本段 stage 已 pause()（固定姿态才能比像素），帧计数不再推进，没有帧信号可等
@@ -586,10 +681,15 @@ let r41 = null;
     `debugUnsupported=${JSON.stringify(unsupported)}`,
     unsupported.includes('drawPoints'));
 
-  // 部件过滤（setPartFilter）用例已移除：该功能按需求整项下线，舞台 API 一并删除，
-  //   用例的主体不存在了，继续保留只会变成"测一个已不存在的接口"。
-  //   引擎侧 setSlotFilter（更底层的能力）未删，仍可被子类能力复用。
+}
 
+/**
+ * ③ 皮肤：列表与骨架声明一致；default 可切；未知皮肤返回 false 且不污染设置；换皮肤不动 fit 基准。
+ *  一条用例本身就是一个"四步连做 + 四个判据同时成立"的长断言（列表一致 / default 成功 /
+ *  未知皮肤 false 且不写脏 settings / zoom 不变），拆开会让中间态跨函数传递、反而更难读，故不再细分。
+ */
+async function runSkinSwitch(C) {
+  const { sleep, rec, stage } = C;
   // 皮肤：列表与骨架声明一致；切 default 成功；不存在的皮肤必须返回 false 且不污染设置；fit 基准不被污染
   const e = stage().debug().engine;
   const declared = ((e.skeletonData && e.skeletonData.skins) || []).map((s) => s.name);
@@ -609,11 +709,23 @@ let r41 = null;
       && okDefault === true && okBogus === false
       && stage().stats().settings.skin === 'default'
       && zoomBefore === zoomAfter);
-  }
 }
 
+
+
+/**
+ * 2e. Live2D dpr 接线（切 overlayCanvas 尺寸 + PIXI resolution）。
+ *
+ * **为什么不再细分（约 60 行代码，但只有 1 条 rec）**：
+ *   它本身就是「一条长断言」——先装 Live2D 模型、再四档切 dpr、每档同时核对
+ *   overlayCanvas 尺寸、PIXI resolution、drawingBuffer 三者一致，最后一条 rec 汇总四档。
+ *   若按"装模型 / 切档 / 核对"拆开，中间态（app、view、canvas 引用与四档采样数组）
+ *   必须跨函数传递，读的人要在三个函数之间拼状态才能看懂一条判据 —— 比现在更难定位。
+ *   按 §3.5 两档口径：50~100 行属 warning，先看是否能按用例边界分组；此处只有一条用例，不拆。
+ */
+async function runLive2dDpr(C) {
+  const { waitFor, rec, stage, skip, scanAll, scanDigest } = C;
 // ------------------------------- 2e. Live2D dpr 接线（切 overlayCanvas 尺寸 + PIXI resolution）
-{
   // 不写死模型名/根名：遍历所有根问 /api/live2d/models，取第一个 Live2D 模型（名字只用于填搜索框）
   let l2dHit = null;
   const scanL = await scanAll();
@@ -678,24 +790,5 @@ let r41 = null;
     rows3.length === 3 && rows3.every((r) => r.okSet === true && r.got && Math.abs(r.canvasW - r.want) <= 1));
   }
   }
-}
 
-// ------------------------------------------------------------ 汇总
-const st = stage().stats();
-return JSON.stringify({
-  total: results.length,
-  failed: results.filter((r) => !r.ok).length,
-  // skip 与 fail 分开计数：skip = 环境缺数据（不计入 failed），但必须在汇总里可见
-  skipped: results.filter((r) => r.skipped === true).length,
-  summary: {
-    ratio38: +((r38 && r38.ratio) || 0).toFixed(4),
-    ratio41: +((r41 && r41.ratio) || 0).toFixed(4),
-    runtimeKeys: st.runtimeKeys,
-    loads: st.loads,
-    disposes: st.disposes,
-    contexts: st.contexts,
-    canvases: qa('canvas').length,
-  },
-  results,
-}, null, 1);
-})();
+}

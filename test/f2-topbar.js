@@ -5,7 +5,7 @@
 //
 // 用法：node tool/check-console.mjs http://127.0.0.1:8804/ --json --script test/f2-topbar.js
 
-(async () => {
+// [wait-ready] 生成块移到 IIFE 之外（它本身 140+ 行，留在编排函数里会让 IIFE 永远超长）；内容不动。
 // [wait-ready] begin —— 由 test/lib/wait-ready.mjs 生成，勿手改（改源头后跑 apply-wait-ready）
   // 就绪信号等待：等级用 rank 比较（pending 0 < mounted 1 < painted/settled 2 < interactive 3）
   const READY_RANK = { pending: 0, mounted: 1, painted: 2, settled: 2, interactive: 3 };
@@ -147,6 +147,8 @@
     }
   };
   // [wait-ready] end
+
+(async () => {   // ← 编排函数：只准备上下文 + 依次 await 各组用例 + 汇总
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const q = (sel) => document.querySelector(sel);
   const qa = (sel) => [...document.querySelectorAll(sel)];
@@ -169,7 +171,11 @@
    *   "布局正确、只是舍入"误判成失败；而同一处断言里若一处带容差、一处不带，判据本身就不可信。
    */
   const POS_TOL = 1;
-  const w = window.__WEB__;
+  // window.__WEB__ 由前端启动时挂到 window；页面未就绪时它是 undefined。
+  //   直接快照会让 w 永久 undefined ⇒ 后面任何 w.state / w.xxx 一取就抛 TypeError，
+  //   而"等就绪"的守卫条件若也走 w 就永远不会生效。所以先等它出现再快照，|| {} 兜底。
+  for (let i = 0; i < 80 && !window.__WEB__; i += 1) await sleep(150);
+  const w = window.__WEB__ || {};
 
   // 不能换：轮询间隔（等 #btn-cinema 出现的循环体）
   for (let i = 0; i < 60 && !q('#btn-cinema'); i += 1) await sleep(150);
@@ -218,7 +224,34 @@ function loopAlive(s) {
   const preMoving = !!(s1 && s2 && s1.signature !== s2.signature);
   const preCanvas = canvasEl ? `${canvasEl.width}×${canvasEl.height}` : 'n/a';
 
-  // ---------------------------------------------------------------- ① 顶栏按钮集合
+  // 共享上下文：拆分前这些名字都在 IIFE 作用域里；现在打包传给各 runXxx，作用域语义不变
+  const C = { POS_TOL, READY_RANK, afterTransition, canvasEl, click, loadErr, loadRootId, loaded, loopAlive, preAlive, preCanvas, preMoving, q, qa, readySnap, rec, rect, results, s1, s2, sleep, snapshotOf, w, waitAny, waitFor, waitFrames, waitStable, waitStage, waitUntil };
+
+  await runTopbarButtons(C);   // ① 顶栏按钮集合
+  await runScreenshotExport(C);   // ② 截图导出
+  await runCinemaMode(C);   // ③ 影院模式
+  await runMenuToggle(C);   // ⑤ 菜单 / 收起菜单（右栏显隐一对）
+  await runEscExitCinema(C);   // ⑥ Esc 退出影院
+  await runScreenshotSurface(C);   // ⑦ 截图取面 / 尺寸恒定（自证判据）
+
+  return JSON.stringify({
+    total: results.length,
+    skipped: results.filter((r) => r.skipped === true).length,
+    failed: results.filter((x) => !x.ok).length,
+    dataset: {
+      cinema: document.documentElement.dataset.cinema,
+      screenshot: document.documentElement.dataset.screenshot,
+    },
+    results,
+  }, null, 1);
+})()
+
+/**
+ * ① 顶栏按钮集合
+ * 从原巨型 IIFE 整体提出（用例代码逐字搬运，只加 ctx 解构）；失败时按条款定位。
+ */
+async function runTopbarButtons(C) {
+  const { q, qa, rec } = C;
   {
     const ids = qa('#app-header button').map((b) => b.id);
     const want = ['btn-shot', 'btn-library', 'btn-menu', 'btn-cinema', 'btn-fullscreen'];
@@ -232,7 +265,15 @@ function loopAlive(s) {
       missingWanted.length === 0 && stillThere.length === 0 && allEnabled);
   }
 
-  // ---------------------------------------------------------------- ② 截图导出
+}
+
+
+/**
+ * ② 截图导出
+ * 从原巨型 IIFE 整体提出（用例代码逐字搬运，只加 ctx 解构）；失败时按条款定位。
+ */
+async function runScreenshotExport(C) {
+  const { click, loadErr, loadRootId, loaded, preAlive, preCanvas, preMoving, q, rec, sleep, w } = C;
   {
     const before = w.screenshotExport || null;
     click(q('#btn-shot'));
@@ -253,7 +294,15 @@ function loopAlive(s) {
       !!loaded && preAlive && nameOk && sizeOk && dimOk && pixelsOk && datasetOk);
   }
 
-  // ---------------------------------------------------------------- ③ 影院模式
+}
+
+
+/**
+ * ③ 影院模式
+ * 从原巨型 IIFE 整体提出（用例代码逐字搬运，只加 ctx 解构）；失败时按条款定位。
+ */
+async function runCinemaMode(C) {
+  const { POS_TOL, click, q, rec, rect, waitUntil } = C;
   {
     const header = q('#app-header');
     const left = q('#left-panel');
@@ -284,7 +333,15 @@ function loopAlive(s) {
         && off === 'off' && backOk);
   }
 
-  // ---------------------------------------------------------------- ⑤ 菜单 / 收起菜单（右栏显隐一对）
+}
+
+
+/**
+ * ⑤ 菜单 / 收起菜单（右栏显隐一对）
+ * 从原巨型 IIFE 整体提出（用例代码逐字搬运，只加 ctx 解构）；失败时按条款定位。
+ */
+async function runMenuToggle(C) {
+  const { POS_TOL, afterTransition, click, q, rec, rect, sleep, w, waitStable, waitUntil } = C;
   {
     const panel = q('#right-panel');
     // 前置归位：影院用例可能把右栏留在收起态，先把「显示」状态恢复，否则基准就错了
@@ -339,7 +396,15 @@ function loopAlive(s) {
         && Math.abs(restored - expectOnX) <= POS_TOL);
   }
 
-  // ---------------------------------------------------------------- ⑥ Esc 退出影院
+}
+
+
+/**
+ * ⑥ Esc 退出影院
+ * 从原巨型 IIFE 整体提出（用例代码逐字搬运，只加 ctx 解构）；失败时按条款定位。
+ */
+async function runEscExitCinema(C) {
+  const { afterTransition, click, q, rec, rect, sleep } = C;
   {
     await afterTransition(() => click(q('#btn-cinema')), ['topbar', 'sidebarLeft', 'sidebarRight']);   // 原 sleep(300)：影院三段过渡（toggleCinema 已接 retrackStages）
     const wasOn = document.documentElement.dataset.cinema === 'on';
@@ -352,11 +417,24 @@ function loopAlive(s) {
       wasOn && nowOff === 'off' && headerBack);
   }
 
-  // ---------------------------------------------------------------- ⑦ 截图取面 / 尺寸恒定（自证判据）
-  // 手法：测试内部同时跑「正常取法」与「退化取法」（后者模拟旧实现），
-  //   两者结论必须**相反**——正常一致、退化不一致，才说明判据真的在管这件事。
-  //   这样不需要临时改产品代码，也就没有 A/B 残留风险。
-  {
+}
+
+
+/**
+ * ⑦ 截图取面 / 尺寸恒定（自证判据）
+ * 从原巨型 IIFE 整体提出（用例代码逐字搬运，只加 ctx 解构）；失败时按条款定位。
+ */
+/**
+ * 截图相关用例的**共同环境**：确保有 Live2D 面，并给出两种取法与画布尺寸读法。
+ *
+ * 为什么提成对象：⑦⑧ 两条用例都依赖这堆中间态。原来它们挤在一个函数里，
+ *   判据分支叠在一起把圈复杂度推到 54（阈值 10）——长度达标了但复杂度没降，
+ *   等于把巨函数里的分支原封不动搬了个位置。提成对象后：
+ *   · 每条用例只关心自己的判据（复杂度各自落到阈值内）
+ *   · 中间态有明确载体，比"参数串传"清楚
+ */
+async function captureSurfaceEnv(C) {
+  const { q, w, waitFrames } = C;
     // ⑦⑧ 需要一个 Live2D 面才有意义：自己按 API 结果装载一个（不写死模型名）
     const ensureLive2DFace = async () => {
       try { if (w.state.surface.stageMode() === 'live2d') return true; } catch { /* 继续加载 */ }
@@ -418,6 +496,13 @@ function loopAlive(s) {
       return c ? [c.width, c.height] : [0, 0];
     };
 
+  return { faceReady, captureNormal, captureDegraded, canvasSize };
+}
+
+/** F2⑦ 截图取的是**当前激活面**（不是 Spine 残留）：正常取法与退化取法 digest 必须不同 */
+async function checkScreenshotDigest(C, env) {
+  const { rec, results, w } = C;
+  const { captureNormal, captureDegraded, canvasSize } = env;
     // ⑦-1 取当前面：Live2D 面时，正常取法与退化取法的 digest 必须不同
     const loadedFace = w.state.surface.stageMode();
     if (!loadedFace) {
@@ -437,6 +522,13 @@ function loopAlive(s) {
     // 没有 Live2D 面 ⇒ 这条无从验证：标成 skip（环境缺数据），不计失败但必须可见
     if (!loadedFace) { results[results.length - 1].skipped = true; }
 
+}
+
+/** F2⑧ 截图尺寸恒定：暂停态正常取法仍等于画布尺寸，而旧兜底（extract 包围盒）必须不等于 */
+async function checkScreenshotFixedSize(C, env) {
+  const { q, rec, results, sleep, w } = C;
+  const { captureNormal, canvasSize } = env;
+  const loadedFace = w.state.surface.stageMode();
     // ⑦-2 尺寸恒定：暂停态正常取法仍等于画布尺寸；退化（extract 包围盒）必须不等于
     const playBtn = q('#transport-play');
     // 不能换：行内短等待：点播放/暂停后立即读 aria，无对应信号
@@ -462,17 +554,11 @@ function loopAlive(s) {
       pausedOk);
     if (!loadedFace) { results[results.length - 1].skipped = true; }
     // 不能换：点播放/暂停后的短余量（没有任何就绪信号可等，只是在让状态落定）
-    if (playBtn && playBtn.getAttribute('aria-pressed') === 'false') { playBtn.click(); await sleep(250); }
-  }
+    if (playBtn && playBtn.getAttribute('aria-pressed') === 'false') { playBtn.click(); await sleep(250); }}
 
-  return JSON.stringify({
-    total: results.length,
-    skipped: results.filter((r) => r.skipped === true).length,
-    failed: results.filter((x) => !x.ok).length,
-    dataset: {
-      cinema: document.documentElement.dataset.cinema,
-      screenshot: document.documentElement.dataset.screenshot,
-    },
-    results,
-  }, null, 1);
-})()
+/** 编排：取环境 → ⑦ → ⑧（每条用例一个函数，失败时能直接定位到条款） */
+async function runScreenshotSurface(C) {
+  const env = await captureSurfaceEnv(C);
+  await checkScreenshotDigest(C, env);
+  await checkScreenshotFixedSize(C, env);
+}

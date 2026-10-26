@@ -13,7 +13,7 @@
 // 安全约束：探针根 id 一律取后端响应的 changed.root.id；只操作 f4_probe* 开头的 id；
 //   try/finally 必定清理；拿不到 id 就跳过删除（保护用户真实配置）。
 
-(async () => {
+// [wait-ready] 生成块移到 IIFE 之外（140 行，留在编排函数里会让 IIFE 永远超长）；内容一字未改。
 // [wait-ready] begin —— 由 test/lib/wait-ready.mjs 生成，勿手改（改源头后跑 apply-wait-ready）
   // 就绪信号等待：等级用 rank 比较（pending 0 < mounted 1 < painted/settled 2 < interactive 3）
   const READY_RANK = { pending: 0, mounted: 1, painted: 2, settled: 2, interactive: 3 };
@@ -155,13 +155,20 @@
     }
   };
   // [wait-ready] end
+
+(async () => {   // ← 编排函数：只准备上下文 + 依次 await 各组用例 + 汇总
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const q = (sel) => document.querySelector(sel);
   const results = [];
   const rec = (name, sel, action, expect, actual, ok) => results.push({ name, sel, action, expect, actual, ok: !!ok });
   const skip = (name, why) => rec(name, '#root-manager', '前置缺失，未执行',
     '需要调用方传入 ?f4probe=<服务端已存在的目录>', `skipped: ${why}`, true);
-  const w = window.__WEB__;
+  // window.__WEB__ 由前端启动时挂到 window；页面还没就绪时它是 undefined。
+  //   若在这里直接快照，w 就永久是 undefined ⇒ mgr() 一求值就抛 TypeError，
+  //   而下面「等 rootManager 就绪」的循环条件正是 !mgr() ⇒ 第一次求值就炸、循环等于不存在。
+  //   所以先等它出现再快照；|| {} 兜底让 mgr() 不抛（真没就绪时由后续 waitFor 如实报红）。
+  for (let i = 0; i < 80 && !window.__WEB__; i += 1) await sleep(150);
+  const w = window.__WEB__ || {};
   const mgr = () => w.rootManager;
   const rows = () => [...document.querySelectorAll('#root-list [data-root-id]')];
 // 界面稳定签名：管理区可见性 + 条目 id 序列 + 目录浏览器可见性 + 最近一条操作日志。
@@ -193,12 +200,53 @@ const f4Sig = () => ({
   const beforeRoots = await rootsAll();
   const beforeIds = beforeRoots.map((r) => r.id);
   const probeBase = new URLSearchParams(location.search).get('f4probe');
-  let probeId = null;
-  let probePath = null;
-  let groupsAfterAdd = null;
-  /** 「选择目录」点开表单是否真的显示出来（F4 交互证据） */
-  let addFormOpened = false;
+  // 跨用例共享的**可变**状态：原来是 4 个 let 在 IIFE 作用域里被多段读写。
+  //   拆成独立函数后必须用对象承载——否则函数内的赋值不回传，后续用例读到旧值，
+  //   表现为「语法通过、total 也对，但某条用例行为悄悄变了」（最难发现的一类错）。
+  const P = {
+    probeId: null,          // 探针根 id：F4① 写入；②③④⑤ 与清理读；清理末尾置回 null
+    probePath: null,        // 探针根路径：F4① 写入
+    groupsAfterAdd: null,   // 添加后的分组数：F4① 写入，F4③ 读
+    addFormOpened: false,   // 「选择目录」表单是否真的显示出来（F4① 的交互证据）
+    skipReason: '',         // 前置自证结论：非空时 5 条用例逐条 skip（保持单条粒度）
+  };
 
+  // 共享只读上下文（helper 与常量；可变状态见上面的 P）
+  const C = { READY_RANK, afterTransition, beforeIds, beforeRoots, f4Sig, isProbe, last, mgr, msg, probeBase, q, readySnap, rec, results, rootsAll, rows, skip, sleep, snapshotOf, sum, w, waitAny, waitFor, waitFrames, waitStable, waitStage };
+
+  const R = await runPreflight(C, P);
+  P.skipReason = R.skipReason;
+  if (P.skipReason) {
+    // 环境缺数据时**逐条** skip，不合并成一条（历史病：整段包成 skipped 会让 5 条退化成 1 条）
+    skip('F4 管理区展开', P.skipReason);
+    skip('F4① 添加资源根', P.skipReason);
+    skip('F4② 改名', P.skipReason);
+    skip('F4③ 改名命中同名 → merged', P.skipReason);
+    skip('F4④ 启停', P.skipReason);
+  } else {
+    await runManageExpand(C, P);
+    await runAddRoot(C, P);
+    await runRename(C, P);
+    await runRenameMerge(C, P);
+    await runToggleEnabled(C, P);
+  }
+  // ⑤ 与清理在原代码里就在 else 之外（无探针根也要走：清理分支会如实记「未执行」）
+  await runErrorSurfacing(C, P);
+  await runCleanup(C, P);
+
+  return JSON.stringify({
+    total: results.length,
+    failed: results.filter((x) => !x.ok).length,
+    skipped: results.filter((x) => /^skipped:/.test(String(x.actual))).length,
+    summary: { f4probe: probeBase || null, beforeRoots: beforeIds, afterRoots: (await rootsAll()).map((r) => r.id), probeId: P.probeId },
+    results,
+  }, null, 1);
+})()
+
+
+/** F4 Preflight —— 从原巨型 IIFE 整体提出（用例代码逐字搬运，仅把跨段可变状态改为 P.xxx） */
+async function runPreflight(C, P) {
+  const { probeBase, rec } = C;
   // ---------------------------------------------------------------- 前置自证
   // ① 没传参：直接 skipped（这是跨平台的正解：路径只能由调用方给）
   // ② 传了但要先确认它在服务端真的存在：**只读预检**（browse 父目录），不写配置
@@ -231,17 +279,14 @@ const f4Sig = () => ({
     `${skipReason ? `skipped: ${skipReason}` : `f4probe=${probeBase} 可用`}；${
       probeBase ? '' : '跑法：?f4probe=<服务端已存在的目录>'}`,
     true);
+  return { skipReason };
+}
 
-  try {
-    if (skipReason) {
-      skip('F4 管理区展开', skipReason);
-      skip('F4① 添加资源根', skipReason);
-      skip('F4② 改名', skipReason);
-      skip('F4③ 改名命中同名 → merged', skipReason);
-      skip('F4④ 启停', skipReason);
-    } else {
+
+/** F4 ManageExpand —— 从原巨型 IIFE 整体提出（用例代码逐字搬运，仅把跨段可变状态改为 P.xxx） */
+async function runManageExpand(C, P) {
+  const { beforeIds, q, rec, rootsAll, rows, sleep, waitFor } = C;
       // ------------------------------------------------------------ 准备：展开管理区
-      {
         const body = q('#root-manager-body');
         const wasHidden = body.hidden;
         q('#btn-root-toggle').dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -253,17 +298,20 @@ const f4Sig = () => ({
           `展开前 hidden=${wasHidden}；展开后 hidden=${!open}；条目数=${rows().length}；`
             + `GET /api/roots 启用数=${beforeIds.length}；条目 id=${rows().map((r) => r.dataset.rootId).join(',')}`,
           wasHidden && open && rows().length >= beforeIds.length);
-      }
+}
 
+
+/** F4 AddRoot —— 从原巨型 IIFE 整体提出（用例代码逐字搬运，仅把跨段可变状态改为 P.xxx） */
+async function runAddRoot(C, P) {
+  const { beforeIds, isProbe, last, msg, probeBase, q, rec, rootsAll, rows, sleep, sum, w, waitFor } = C;
       // ------------------------------------------------------------ ① add
-      {
         // 「选择目录」→ 弹服务端目录浏览器 → 跳到探针目录 → 选择此目录 → 填显示名 → 添加
         q('#btn-add-root').dispatchEvent(new MouseEvent('click', { bubbles: true }));
         // 等目录浏览器弹窗就绪（原 sleep(300)）
         await waitFor(() => { const d = q('#dir-picker'); const pk = w.rootManager && w.rootManager.picker; return !!d && !!pk && pk.state.open === true; }, { timeoutMs: 4000, label: '目录浏览器打开' });
         const dlg = q('#dir-picker');
         const picker = w.rootManager && w.rootManager.picker;
-        addFormOpened = !!dlg && !!picker && picker.state.open === true;
+        P.addFormOpened = !!dlg && !!picker && picker.state.open === true;
         if (picker) {
           await picker.goto(probeBase);
           // 等目标目录渲染出选择按钮（原 sleep(400)）
@@ -280,91 +328,102 @@ const f4Sig = () => ({
         // 等添加结果落到 UI（原 sleep(1500)）：操作日志出现 root 变更即算落地
         await waitFor(() => { const x = last(); return !!(x && x.data && x.data.changed && x.data.changed.root); }, { timeoutMs: 8000, label: '添加结果落 UI' });
         const l = last();
-        probeId = (l.data && l.data.changed && l.data.changed.root && l.data.changed.root.id) || null;
-        probePath = (l.data && l.data.changed && l.data.changed.root && l.data.changed.root.path) || null;
-        groupsAfterAdd = Array.isArray(l.data && l.data.groups) ? l.data.groups.length : null;
+        P.probeId = (l.data && l.data.changed && l.data.changed.root && l.data.changed.root.id) || null;
+        P.probePath = (l.data && l.data.changed && l.data.changed.root && l.data.changed.root.path) || null;
+        P.groupsAfterAdd = Array.isArray(l.data && l.data.groups) ? l.data.groups.length : null;
         const afterIds = (await rootsAll()).map((r) => r.id);
-        const inList = rows().some((r) => r.dataset.rootId === probeId);
+        const inList = rows().some((r) => r.dataset.rootId === P.probeId);
         rec('F4① 添加资源根', '#root-add-form', `填 ${probeBase} + 名字 → 提交`,
           '后端 200，启用根数量 +1，管理列表出现新条目，提示「已添加」',
           `请求体={"action":"add","path":"<f4probe>","name":"F4探针A"}；${sum(l)}；`
-            + `roots ${beforeIds.length}→${afterIds.length}；新 id=${probeId}；列表有条目=${inList}；`
-          + `目录浏览器已打开=${addFormOpened}；提示="${msg()}"`,
-          l.status === 200 && isProbe(probeId) && afterIds.length === beforeIds.length + 1
-            && inList && addFormOpened && /已添加/.test(msg()));
-      }
+            + `roots ${beforeIds.length}→${afterIds.length}；新 id=${P.probeId}；列表有条目=${inList}；`
+          + `目录浏览器已打开=${P.addFormOpened}；提示="${msg()}"`,
+          l.status === 200 && isProbe(P.probeId) && afterIds.length === beforeIds.length + 1
+            && inList && P.addFormOpened && /已添加/.test(msg()));
+}
 
+
+/** F4 Rename —— 从原巨型 IIFE 整体提出（用例代码逐字搬运，仅把跨段可变状态改为 P.xxx） */
+async function runRename(C, P) {
+  const { f4Sig, last, msg, rec, rows, sum, waitFor, waitStable } = C;
       // ------------------------------------------------------------ ② rename
-      {
-        rows().find((r) => r.dataset.rootId === probeId)
+        rows().find((r) => r.dataset.rootId === P.probeId)
           .querySelector('[data-role="rename"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
         await waitStable(f4Sig, { timeoutMs: 3000, label: '改名输入框展开' });
-        const input = rows().find((r) => r.dataset.rootId === probeId).querySelector('[data-role="rename-input"]');
+        const input = rows().find((r) => r.dataset.rootId === P.probeId).querySelector('[data-role="rename-input"]');
         input.value = 'F4探针A改名';
-        rows().find((r) => r.dataset.rootId === probeId)
+        rows().find((r) => r.dataset.rootId === P.probeId)
           .querySelector('[data-role="rename-save"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
         // 等 rename 的**专属终态**，而不是"签名稳定"：
         //   后端返回 → UI 记一条提示「已改名为…」并刷新行内名字。任一到即算落地。
         await waitFor(() => {
           const l = last();
-          const row = rows().find((r) => r.dataset.rootId === probeId);
+          const row = rows().find((r) => r.dataset.rootId === P.probeId);
           const nm = row && row.querySelector('[data-role="name"]');
           const shown = nm ? String(nm.textContent).trim() : '';
           return (l && l.status === 200 && /已改名/.test(msg())) || /F4探针A改名/.test(shown);
         }, { timeoutMs: 6000, label: '改名结果落到 UI' });
-        const title = rows().find((r) => r.dataset.rootId === probeId)
+        const title = rows().find((r) => r.dataset.rootId === P.probeId)
           .querySelector('[data-role="name"]').textContent;
         const changed = (last().data && last().data.changed) || {};
-        rec('F4② 改名', `[data-root-id="${probeId}"] [data-role="rename"]`, '内联输入新名字 → 保存',
+        rec('F4② 改名', `[data-root-id="${P.probeId}"] [data-role="rename"]`, '内联输入新名字 → 保存',
           '后端 200 且 merged=false，条目显示新名字，提示「已改名为」',
-          `请求体={"action":"rename",id:"${probeId}",name:"F4探针A改名"}；${sum(last())}；`
+          `请求体={"action":"rename",id:"${P.probeId}",name:"F4探针A改名"}；${sum(last())}；`
             + `行内显示="${title}"；提示="${msg()}"`,
           last().status === 200 && /F4探针A改名/.test(title) && /已改名/.test(msg()) && !changed.merged);
-      }
+}
 
+
+/** F4 RenameMerge —— 从原巨型 IIFE 整体提出（用例代码逐字搬运，仅把跨段可变状态改为 P.xxx） */
+async function runRenameMerge(C, P) {
+  const { beforeRoots, f4Sig, last, mgr, msg, rec, rootsAll, skip, sum, waitStable } = C;
       // ------------------------------------------------------------ ③ merged（改成已有名字）
-      {
         // 目标名字取自真实根列表（不写死名字，配置里没有别的根就跳过）
         const other = beforeRoots[0];
         if (!other || !other.name) {
           skip('F4③ 改名命中同名 → merged', '当前配置只有一条根，没有"另一个已存在的名字"可命中');
         } else {
           const rootsBefore = (await rootsAll()).length;
-          await mgr().submitRename(probeId, other.name);
+          await mgr().submitRename(P.probeId, other.name);
           await waitStable(f4Sig, { timeoutMs: 6000, label: '提交后 UI 落定' });
           const l = last();
           const changed = (l.data && l.data.changed) || {};
           const groupsNow = Array.isArray(l.data && l.data.groups) ? l.data.groups.length : null;
           const rootsNow = (await rootsAll()).length;
-          rec('F4③ 改名命中同名 → merged', `[data-root-id="${probeId}"]`, `改成已存在的「${other.name}」`,
+          rec('F4③ 改名命中同名 → merged', `[data-root-id="${P.probeId}"]`, `改成已存在的「${other.name}」`,
             '后端 changed.merged=true；界面提示「已合并到同名根」；归并后分组数 -1（启用根条数不变）',
-            `请求体={"action":"rename",id:"${probeId}",name:"<已有根名>"}；${sum(l)}；`
-              + `groups ${groupsAfterAdd}→${groupsNow}；启用 roots ${rootsBefore}→${rootsNow}；提示="${msg()}"`,
+            `请求体={"action":"rename",id:"${P.probeId}",name:"<已有根名>"}；${sum(l)}；`
+              + `groups ${P.groupsAfterAdd}→${groupsNow}；启用 roots ${rootsBefore}→${rootsNow}；提示="${msg()}"`,
             changed.merged === true && /已合并到同名根/.test(msg())
-              && groupsAfterAdd !== null && groupsNow === groupsAfterAdd - 1);
+              && P.groupsAfterAdd !== null && groupsNow === P.groupsAfterAdd - 1);
         }
-      }
+}
 
+
+/** F4 ToggleEnabled —— 从原巨型 IIFE 整体提出（用例代码逐字搬运，仅把跨段可变状态改为 P.xxx） */
+async function runToggleEnabled(C, P) {
+  const { f4Sig, last, msg, rec, rootsAll, rows, sum, waitStable } = C;
       // ------------------------------------------------------------ ④ toggle
-      {
-        const row = rows().find((r) => r.dataset.rootId === probeId);
+        const row = rows().find((r) => r.dataset.rootId === P.probeId);
         const labelBefore = row.querySelector('[data-role="toggle"]').textContent;
         row.querySelector('[data-role="toggle"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
         await waitStable(f4Sig, { timeoutMs: 6000, label: '提交后 UI 落定' });
-        const after = rows().find((r) => r.dataset.rootId === probeId);
+        const after = rows().find((r) => r.dataset.rootId === P.probeId);
         const enabledAttr = after ? after.dataset.enabled : 'gone';
         const labelAfter = after ? after.querySelector('[data-role="toggle"]').textContent : '';
-        rec('F4④ 启停', `[data-root-id="${probeId}"] [data-role="toggle"]`, `click（${labelBefore}→${labelAfter}）`,
+        rec('F4④ 启停', `[data-root-id="${P.probeId}"] [data-role="toggle"]`, `click（${labelBefore}→${labelAfter}）`,
           '后端 200；条目仍留在列表（用 rootsAll 渲染）并标为已停用，按钮文案翻转',
-          `请求体={"action":"toggle",id:"${probeId}",enabled:false}；${sum(last())}；`
+          `请求体={"action":"toggle",id:"${P.probeId}",enabled:false}；${sum(last())}；`
             + `按钮 ${labelBefore}→${labelAfter}；行 enabled=${enabledAttr}；提示="${msg()}"`,
           last().status === 200 && labelBefore === '停用' && labelAfter === '启用'
             && enabledAttr === 'false' && /已停用/.test(msg()));
-      }
-    }
+}
 
+
+/** F4 ErrorSurfacing —— 从原巨型 IIFE 整体提出（用例代码逐字搬运，仅把跨段可变状态改为 P.xxx） */
+async function runErrorSurfacing(C, P) {
+  const { beforeRoots, f4Sig, last, mgr, msg, rec, waitStable } = C;
     // ------------------------------------------------------------ ⑤ 三条错误路径（不依赖探针目录，始终执行）
-    {
       const rel = await mgr().submitAdd('relative/dir');
       await waitStable(f4Sig, { timeoutMs: 6000, label: '提交后 UI 落定' });
       const relStatus = last().status; const relMsg = msg();
@@ -385,31 +444,26 @@ const f4Sig = () => ({
         rel === false && relStatus === 400 && /绝对路径/.test(relMsg)
           && (!dupPath || (dup === false && dupStatus === 409 && /已登记/.test(dupMsg)))
           && miss === false && missStatus === 404 && /未找到/.test(missMsg));
-    }
-  } finally {
-    const ours = !!probeId && (isProbe(probeId) || (!!probeBase && probePath === probeBase));
+}
+
+
+/** F4 Cleanup —— 从原巨型 IIFE 整体提出（用例代码逐字搬运，仅把跨段可变状态改为 P.xxx） */
+async function runCleanup(C, P) {
+  const { beforeIds, f4Sig, isProbe, last, mgr, msg, probeBase, rec, rootsAll, rows, sum, waitStable } = C;
+    const ours = !!P.probeId && (isProbe(P.probeId) || (!!probeBase && P.probePath === probeBase));
     if (ours) {
-      await mgr().submitRemove(probeId);
+      await mgr().submitRemove(P.probeId);
       await waitStable(f4Sig, { timeoutMs: 6000, label: '提交后 UI 落定' });
       const afterIds = (await rootsAll()).map((r) => r.id);
-      const gone = !rows().some((r) => r.dataset.rootId === probeId);
-      rec('F4 清理（删除探针根）', `[data-root-id="${probeId}"]`, '二次确认后删除',
+      const gone = !rows().some((r) => r.dataset.rootId === P.probeId);
+      rec('F4 清理（删除探针根）', `[data-root-id="${P.probeId}"]`, '二次确认后删除',
         '后端 200，条目消失，资源根数量回到测试前（不污染用户配置）',
-        `请求体={"action":"remove",id:"${probeId}"}；${sum(last())}；`
+        `请求体={"action":"remove",id:"${P.probeId}"}；${sum(last())}；`
           + `roots 回到 ${afterIds.length}（测试前 ${beforeIds.length}）；条目已消失=${gone}；提示="${msg()}"`,
         afterIds.length === beforeIds.length && gone);
     } else {
       rec('F4 清理（删除探针根）', '#root-list', '未执行',
         '没有探针根就不删除任何东西（保护用户真实配置）',
-        `probeId=${String(probeId)} 既不是 f4?probe* 前缀、path 也不等于传入目录 → 跳过删除`, true);
+        `P.probeId=${String(P.probeId)} 既不是 f4?probe* 前缀、path 也不等于传入目录 → 跳过删除`, true);
     }
-  }
-
-  return JSON.stringify({
-    total: results.length,
-    failed: results.filter((x) => !x.ok).length,
-    skipped: results.filter((x) => /^skipped:/.test(String(x.actual))).length,
-    summary: { f4probe: probeBase || null, beforeRoots: beforeIds, afterRoots: (await rootsAll()).map((r) => r.id), probeId },
-    results,
-  }, null, 1);
-})()
+}

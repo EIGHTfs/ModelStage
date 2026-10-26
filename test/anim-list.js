@@ -11,7 +11,7 @@
 //
 // 脚本自带前置：自己找模型（不写死名字/路径），找不到就记 skipped 并 ok（不判失败）。
 
-(async () => {
+// [wait-ready] 生成块移到 IIFE 之外（140 行，留在编排函数里会让 IIFE 永远超长）；内容一字未改。
 // [wait-ready] begin —— 由 test/lib/wait-ready.mjs 生成，勿手改（改源头后跑 apply-wait-ready）
   // 就绪信号等待：等级用 rank 比较（pending 0 < mounted 1 < painted/settled 2 < interactive 3）
   const READY_RANK = { pending: 0, mounted: 1, painted: 2, settled: 2, interactive: 3 };
@@ -153,13 +153,51 @@
     }
   };
   // [wait-ready] end
+
+(async () => {   // ← 编排函数：只准备上下文 + 依次 await 各组用例 + 汇总
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const q = (s) => document.querySelector(s);
   const qa = (s) => [...document.querySelectorAll(s)];
-  const w = window.__WB__ || window.__WEB__;
+  // window.__WB__ / window.__WEB__ 都由前端启动时挂到 window；页面未就绪时两者都 undefined。
+  //   直接快照会让 w 永久 undefined ⇒ 后面任何 w.xxx 一取就抛 TypeError。
+  //   先等其中一个出现再快照；|| {} 兜底让后续断言如实报红而不是崩成 TypeError。
+  //   条件用 &&（两个都没有才等）：只要有一个在就别等了。
+  for (let i = 0; i < 80 && !window.__WB__ && !window.__WEB__; i += 1) await sleep(150);
+  const w = window.__WB__ || window.__WEB__ || {};
   const results = [];
   const rec = (name, expect, actual, ok) => results.push({ name, expect, actual, ok: !!ok });
 
+  // 基础上下文（其余 helper 由两个工厂提供；工厂内同名解构 ⇒ helper 体内一字不改）
+  const C = { sleep, q, qa, w, results, rec };
+  Object.assign(C, makeBasicHelpers(C));   // 9 个 DOM/面板读取类 helper
+  Object.assign(C, makePickHelpers(C));      // pickSpine / pickLive2d
+  Object.assign(C, makeCheckListHelper(C));  // checkList（依赖上面 9 个 basic helper，故排后）
+
+  // 跨用例共享的可变中间态：spine / l2d 在各自段里赋值、在汇总里读 name。
+  //   原来是 IIFE 作用域的局部；拆成独立函数后必须用对象承载，否则赋值不回传、
+  //   汇总永远读到 null（表现是 summary.spineModel/live2dModel 恒为 null，而 total 正常）。
+  const P = { spine: null, l2d: null };
+
+  await runNoSingleLoop(C);    // ① 底栏无「单动循环」
+  await runAnimSwitches(C);    // ② 动作组两个开关 + 命名
+  await runSpineList(C, P);       // Spine 动作列表
+  await runLive2dList(C, P);      // Live2D 动作列表
+  await runNoDurationCase(C);  // ② 特例：无时长不得显示 0s
+
+  return JSON.stringify({
+    total: results.length,
+    skipped: results.filter((r) => r.skipped === true).length,
+    failed: results.filter((r) => !r.ok).length,
+    spineModel: P.spine ? P.spine.model.name : null,
+    live2dModel: P.l2d ? P.l2d.model.name : null,
+    results,
+  });
+})()
+
+/** DOM/面板读取类 helper：面板项枚举 / UI 签名 / 动作选择器 / 底栏取值 / 行文本 / 时长文本。
+ *  工厂 + 解构同名局部变量 ⇒ helper 体内一字不改（仍写 qa(...)、panelItems() 等）。 */
+function makeBasicHelpers(C) {
+  const { sleep, q, qa, w, results, rec } = C;
   const panelItems = () => qa('#right-panel [data-ctl="ctl-anim-list"] [data-anim]');
   // 界面稳定签名：当前动作 + 面板条目数 + 底栏选项数（这三样变了就说明 UI 还在重排）
   const uiSig = () => ({ v: footVal(), items: panelItems().length, opts: footOpts().length });
@@ -196,42 +234,20 @@
   };
   const durText = (t) => (String(t).match(/(\d+\.\d)s\s*$/) || [])[1] || '';
 
-  // 不能换：这是**轮询间隔**（等 w.stage 就绪的循环体），不是"等固定时间"
-  for (let i = 0; i < 100 && !(w && w.stage); i += 1) await sleep(150);
+  return { panelItems, uiSig, motionPicker, footOpts, footVal, pickMotion, highlighted, rowText, durText };
+}
 
-  // ---------------------------------------------------------------- ① 底栏不再有「单动循环」
-  const footerText = (q('#app-footer') || {}).textContent || '';
-  const footerBtnIds = qa('#app-footer button').map((b) => b.id);
-  rec('① 底栏无「单动循环」', 'DOM 里查不到循环按钮，其余传输类控件仍在且可点',
-    `#transport-loop=${!!q('#transport-loop')} 文案含"单动循环"=${/单动循环/.test(footerText)} `
-    + `按钮=${footerBtnIds.join(',')} 可点=${
-      qa('#app-footer button').every((b) => !b.disabled)}`,
-    !q('#transport-loop') && !/单动循环/.test(footerText)
-    // 背景控件已从 <button id="transport-bg"> 改为自绘 picker（schema.js 的 custom:'picker'），
-    //   所以判据放宽为"按钮 id 里有它 **或** 底栏存在同名 picker 容器"——意图不变：传输类控件都还在。
-      && ['transport-prev', 'transport-play', 'transport-next', 'transport-reset-view']
-        .every((id) => footerBtnIds.includes(id))
-      && (footerBtnIds.includes('transport-bg') || !!q('#app-footer [data-ctl="transport-bg"]'))
-      && qa('#app-footer button').every((b) => !b.disabled));
-
-  // ---------------------------------------------------------------- ② 动作组：两个开关，命名正确
-  const motionTrigger = qa('#right-panel .acc-trigger').find((x) => x.textContent.trim() === '动作');
-  if (motionTrigger && motionTrigger.getAttribute('aria-expanded') !== 'true') motionTrigger.click();
-  await waitStable(() => qa('#app-footer .transport-picker-item').length, { timeoutMs: 2000, label: '动作下拉展开' });   // 原 sleep(300)：等下拉展开
-  const motionSwitches = qa('#right-panel [data-group="motion"] [role="switch"]');
-  const switchLabels = motionSwitches.map((s) => ((s.closest('.ctl-row') || {}).querySelector?.('.ctl-label') || {}).textContent || '');
-  // 判据跟随产品变更：混合模式开关已按设计手动隐藏（panel/schema.js hidden:true，DOM 不构建），
-  //   所以"动作组两个开关"退化为"有且仅有循环播放一个"，且混合模式不得以任何形式残留成 DOM。
-  const mixResidue = qa('#right-panel [data-ctl="ctl-mix-mode"]').length;
-  rec('② 动作组开关（混合模式已按设计隐藏）', '只剩循环播放一个；混合模式不构建 DOM；命名不用「单动循环」',
-    `开关=${motionSwitches.map((s) => s.id).join(',')} 标签=${switchLabels.join(' / ')}；ctl-mix-mode DOM=${mixResidue}`,
-    motionSwitches.length === 1
-      && motionSwitches[0].id === 'ctl-anim-loop'
-      && switchLabels.includes('循环播放')
-      && mixResidue === 0
-      && !switchLabels.some((t) => /单动/.test(t)));
-
-  /** 找一个动作数 >= 6 的 Spine 模型（遍历资源根，取前几个候选试装） */
+/**
+ * 列表类 helper：pickSpine / pickLive2d（按结构条件发现模型）+ checkList（两侧共用的一套核对）。
+ *  为什么必须提共享：这三个原来分散在「② 动作组」段内部，却被 Spine 段与 Live2D 段调用；
+ *  拆成独立函数后若留在原段，那两段会 ReferenceError。
+ */
+/**
+ * 发现类 helper：pickSpine / pickLive2d —— 按结构条件找一个可用模型（不写死根名/模型名）。
+ *  为什么必须提共享：原来它们定义在「② 动作组」段内部，却被 Spine 段与 Live2D 段调用。
+ */
+function makePickHelpers(C) {
+  const { sleep, q, qa, w, results, rec } = C;
   async function pickSpine() {
     const roots = ((await (await fetch('/api/roots')).json()).roots) || [];
     for (const r of roots) {
@@ -253,6 +269,7 @@
   }
 
   /** 找一个 Live2D 模型（接口优先；无则返回 null） */
+
   async function pickLive2d() {
     const roots = ((await (await fetch('/api/roots')).json()).roots) || [];
     for (const r of roots) {
@@ -273,7 +290,15 @@
     return null;
   }
 
-  /** 跑 ①②③④ 这一组（两种渲染器共用） */
+  return { pickSpine, pickLive2d };
+}
+
+/**
+ * checkList：对一侧（Spine / Live2D）的动作列表做同一套核对（条数 / 命名 / 时长）。
+ *  被 Spine 段与 Live2D 段共用 ⇒ 必须提共享作用域，否则两段都 ReferenceError。
+ */
+function makeCheckListHelper(C) {
+  const { sleep, qa, w, results, rec, panelItems, uiSig, footOpts, footVal, pickMotion, highlighted, rowText, durText } = C;
   async function checkList(label, expectCount, expectWithDuration) {
     if (w.state.panel && typeof w.state.panel.refreshAnimations === 'function') w.state.panel.refreshAnimations();
     await waitFor(() => qa('#right-panel [data-ctl="ctl-anim-list"] .ctl-list-time').some((n) => /\d+\.\d+s/.test(n.textContent || '')), { timeoutMs: 6000, label: '动作时长已填充' });   // 原 sleep(1400)：等时长预热落地
@@ -320,9 +345,72 @@
     }
   }
 
+  return { checkList };
+}
+
+
+/** ① 底栏不再有「单动循环」 */
+async function runNoSingleLoop(C) {
+  const { q, qa, rec } = C;
+  // ---------------------------------------------------------------- ① 底栏不再有「单动循环」
+  const footerText = (q('#app-footer') || {}).textContent || '';
+  const footerBtnIds = qa('#app-footer button').map((b) => b.id);
+  rec('① 底栏无「单动循环」', 'DOM 里查不到循环按钮，其余传输类控件仍在且可点',
+    `#transport-loop=${!!q('#transport-loop')} 文案含"单动循环"=${/单动循环/.test(footerText)} `
+    + `按钮=${footerBtnIds.join(',')} 可点=${
+      qa('#app-footer button').every((b) => !b.disabled)}`,
+    !q('#transport-loop') && !/单动循环/.test(footerText)
+    // 背景控件已从 <button id="transport-bg"> 改为自绘 picker（schema.js 的 custom:'picker'），
+    //   所以判据放宽为"按钮 id 里有它 **或** 底栏存在同名 picker 容器"——意图不变：传输类控件都还在。
+      && ['transport-prev', 'transport-play', 'transport-next', 'transport-reset-view']
+        .every((id) => footerBtnIds.includes(id))
+      && (footerBtnIds.includes('transport-bg') || !!q('#app-footer [data-ctl="transport-bg"]'))
+      && qa('#app-footer button').every((b) => !b.disabled));
+
+}
+
+
+/** ② 动作组：两个开关、命名正确 */
+async function runAnimSwitches(C) {
+  const { sleep, qa, rec } = C;
+  // ---------------------------------------------------------------- ② 动作组：两个开关，命名正确
+  const motionTrigger = qa('#right-panel .acc-trigger').find((x) => x.textContent.trim() === '动作');
+  if (motionTrigger && motionTrigger.getAttribute('aria-expanded') !== 'true') motionTrigger.click();
+  await waitStable(() => qa('#app-footer .transport-picker-item').length, { timeoutMs: 2000, label: '动作下拉展开' });   // 原 sleep(300)：等下拉展开
+  const motionSwitches = qa('#right-panel [data-group="motion"] [role="switch"]');
+  const switchLabels = motionSwitches.map((s) => ((s.closest('.ctl-row') || {}).querySelector?.('.ctl-label') || {}).textContent || '');
+  // 判据跟随产品变更：混合模式开关已按设计手动隐藏（panel/schema.js hidden:true，DOM 不构建），
+  //   所以"动作组两个开关"退化为"有且仅有循环播放一个"，且混合模式不得以任何形式残留成 DOM。
+  const mixResidue = qa('#right-panel [data-ctl="ctl-mix-mode"]').length;
+  rec('② 动作组开关（混合模式已按设计隐藏）', '只剩循环播放一个；混合模式不构建 DOM；命名不用「单动循环」',
+    `开关=${motionSwitches.map((s) => s.id).join(',')} 标签=${switchLabels.join(' / ')}；ctl-mix-mode DOM=${mixResidue}`,
+    motionSwitches.length === 1
+      && motionSwitches[0].id === 'ctl-anim-loop'
+      && switchLabels.includes('循环播放')
+      && mixResidue === 0
+      && !switchLabels.some((t) => /单动/.test(t)));
+
+  /** 找一个动作数 >= 6 的 Spine 模型（遍历资源根，取前几个候选试装） */
+}
+
+
+/**
+ * Spine 侧动作列表：前置发现 → 条数/命名/时长核对（checkList）→ ⑤循环推进 / ⑥停留 /
+ * ⑤正交（混合模式×循环）/ ⑥持久化，四组判据共用同一个模型与同一套开关操作。
+ *
+ * **为什么约 100 行仍不再细分（按 §3.5 两档口径）**：
+ *   这四组判据不是独立用例，而是**同一条"循环行为"判据链**——`ensureLoop(want)` 这个
+ *   局部辅助函数被其中三组共用，`seen` / `before` / `after` / `loopSwitch` 等中间态也
+ *   在组间传递（前一组把循环打开，后一组才谈"关闭后是否停留"）。
+ *   按组硬拆成 4 个函数，要么把这 5~6 个中间态逐层串参，要么在拆出的函数里重复一遍
+ *   开关前置操作 —— 两种都比现在更难读，也更容易在改一处时漏改另一处。
+ *   若将来其中某组演变成独立场景（例如循环持久化单独抽成启动恢复用例），再单独提出。
+ */
+async function runSpineList(C, P) {
+  const { sleep, q, w, results, rec, panelItems, uiSig, footVal, pickMotion, checkList, pickSpine } = C;
   // ---------------------------------------------------------------- Spine
-  const spine = await pickSpine();
-  if (!spine) {
+  P.spine = await pickSpine();
+  if (!P.spine) {
     rec('Spine 前置', '存在动作数 ≥6 的 Spine 模型', 'skipped：目录里没找到（整套 Spine 侧未验证）', true);
     results[results.length - 1].skipped = true;
   } else {
@@ -332,7 +420,7 @@
       const details = typeof w.stage.animationDetails === 'function' ? w.stage.animationDetails() : [];
       spineExpected = details.filter((d) => Number(d.duration) > 0).length;
     } catch { spineExpected = 0; }
-    await checkList(`Spine(${spine.model.name})`, spine.count, spineExpected);
+    await checkList(`Spine(${P.spine.model.name})`, P.spine.count, spineExpected);
 
     // ⑤ 循环开启：顺序推进并回到第一条
     const first = panelItems()[0];
@@ -442,9 +530,15 @@
     }
   }
 
+}
+
+
+/** Live2D 侧动作列表（走 checkList） */
+async function runLive2dList(C, P) {
+  const { w, rec, checkList, pickLive2d } = C;
   // ---------------------------------------------------------------- Live2D
-  const l2d = await pickLive2d();
-  if (!l2d) {
+  P.l2d = await pickLive2d();
+  if (!P.l2d) {
     rec('Live2D 前置', '存在可装载的 Live2D 模型', 'skipped：接口没返回 Live2D 模型', true);
   } else {
     const bridge = w.live2d && w.live2d.bridge;
@@ -454,9 +548,15 @@
     }
     const items = bridge && typeof bridge.motionItems === 'function' ? bridge.motionItems() : [];
     const l2dExpected = items.filter((x) => Number(x.duration) > 0).length;
-    await checkList(`Live2D(${l2d.model.name})`, items.length, l2dExpected);
+    await checkList(`Live2D(${P.l2d.model.name})`, items.length, l2dExpected);
   }
 
+}
+
+
+/** ② 特例：无时长不得显示 0s */
+async function runNoDurationCase(C) {
+  const { rec } = C;
   // ---------------------------------------------------------------- ② 特例：无时长不得显示 0s
   try {
     const mod = await import('/app/anim-list.js');
@@ -468,12 +568,4 @@
     rec('② 无时长特例', '模块可导入', `失败：${String(err && err.message || err)}`, false);
   }
 
-  return JSON.stringify({
-    total: results.length,
-    skipped: results.filter((r) => r.skipped === true).length,
-    failed: results.filter((r) => !r.ok).length,
-    spineModel: spine ? spine.model.name : null,
-    live2dModel: l2d ? l2d.model.name : null,
-    results,
-  });
-})()
+}
