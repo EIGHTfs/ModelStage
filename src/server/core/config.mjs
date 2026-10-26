@@ -89,6 +89,7 @@ function writeConfig(roots) {
   }
 
   const body = JSON.stringify({ roots }, null, 2);
+  fs.mkdirSync(path.dirname(CONFIG_FILE + '.tmp'), { recursive: true });
   fs.writeFileSync(CONFIG_FILE + '.tmp', header + body + '\n', 'utf8');
   fs.renameSync(CONFIG_FILE + '.tmp', CONFIG_FILE);
 }

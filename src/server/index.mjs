@@ -39,6 +39,8 @@ export function createServerData({ root, avatarRoot }) {
   // 探测/名表函数显式注入给扫描层：避免各模块反向依赖彼此
   const modelDeps = {
     getNameTable: names.getNameTable,
+    // 头像根：扫描层要拿它拼头像 URL（buildModelServer 是模块级函数，拿不到 paths 闭包）
+    avatarRoot: paths.avatarRoot,
     detectSkelVersion: probe.detectSkelVersion,
     detectJsonVersion: probe.detectJsonVersion,
     detectAtlasKey: probe.detectAtlasKey,

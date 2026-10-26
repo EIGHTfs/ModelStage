@@ -125,7 +125,7 @@ export function buildModelServer(root, relPath, baseName, skel, atlas, dirFiles,
     // atlasPma：true/false/null(未声明=未知)。不可硬编码 false —— 那等于断言"非预乘"
     atlasPma: atlas.atlasPma ?? null,
     // avatarRoot 来自 paths（可配置：--avatar-root > MODELSTAGE_AVATAR_ROOT > <root>/avatars）
-    iconUrl: resolveIconUrl(root, relPath, assetKey, new Set(dirFiles.map((f) => f.name)), deps.getNameTable, { avatarRoot: p.avatarRoot }),
+    iconUrl: resolveIconUrl(root, relPath, assetKey, new Set(dirFiles.map((f) => f.name)), deps.getNameTable, { avatarRoot: deps.avatarRoot }),
     animations: [],
     skins: [],
     boneCount: 0,
@@ -327,6 +327,7 @@ export function getModels(configFile, root, force, deps) {
     models,
   };
   // 原子写入，避免写到一半被读到损坏内容
+  fs.mkdirSync(path.dirname(`${f}.tmp`), { recursive: true });
   fs.writeFileSync(`${f}.tmp`, JSON.stringify(payload), 'utf8');
   fs.renameSync(`${f}.tmp`, f);
   log.info('已生成清单', { file: path.basename(f), count: models.length });

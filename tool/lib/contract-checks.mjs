@@ -483,6 +483,7 @@ export async function runContractChecks({ rep, abs, manifest, options }) {
     // 临时开关放系统临时目录：不往仓库里写临时文件，也避免"父目录不存在"这类噪音
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pl8-switch-'));
     const tmpSwitch = path.join(tmpDir, 'plugins.json');
+    fs.mkdirSync(path.dirname(tmpSwitch), { recursive: true });
     fs.writeFileSync(tmpSwitch, JSON.stringify({ disabled: [id] }), 'utf8');
     let off = [];
     try { off = readPlugins(pluginsDir, tmpSwitch).map((p) => p.id); } finally {

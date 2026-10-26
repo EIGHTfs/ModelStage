@@ -217,6 +217,7 @@ export function getLive2DModels(configFile, cfg, force) {
   const models = scanLive2DRootServer(cfg);
   const ts = Date.now();
   try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify({
       version: LIVE2D_MANIFEST_VERSION,
       rootId: cfg.id,

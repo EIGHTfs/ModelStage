@@ -61,7 +61,12 @@ function injectInto(file) {
     next = `${src.slice(0, at)}\n${IN_PAGE}${src.slice(at)}`;
   }
   const changed = next !== src;
-  if (changed && write) fs.writeFileSync(abs, next, 'utf8');
+  // 建目录必须在 write 分支内：本工具的 --dry-run（write=false）承诺不写盘，
+  //   放到 if 外面会让 dry-run 也创建目录（真实副作用）。
+  if (changed && write) {
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, next, 'utf8');
+  }
   return { file, changed };
 }
 
