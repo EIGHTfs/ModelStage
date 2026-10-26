@@ -89,7 +89,7 @@ function apiData(ctx, res, p, url) {
 /**
  * 名表（v2 index 优先、v1 兜底）：返回**归一化**后的表。
  *
- * 为什么不再每次现读 JSON：归一化逻辑（v1 字符串值 → {char,how}、name+nameZh → 多语言数组）
+ * 为什么不再每次现读 JSON：名表是纯数据文件（见 docs/设计/名表.md），读取只做「读 + 缓存 + 原样返回」
  *   只在 names.mjs 里存在一份；这里再读一遍就等于复制第二份解析规则。
  *   缓存失效由 names.clearNameCache()（导入配置时）负责，对外行为仍是"导入后立刻生效"。
  *
@@ -110,15 +110,9 @@ function apiNames(ctx, res, url) {
     const status = error === 'BROKEN' ? 500 : 404;
     return sendJson(res, status, { root: rootId, tableId: cfg.names, error: detail, code: error });
   }
-  return sendJson(res, 200, {
-    root: rootId,
-    tableId: cfg.names,
-    source: table.source,          // 'index' | 'v1'：让前端/排查脚本一眼看出读的是哪一代
-    specVersion: table.specVersion,
-    game: table.game,
-    characters: table.characters,
-    byAsset: table.byAsset,
-  });
+  // 原样透传（规范 §二 的唯一出口形状）：多挑一个字段就是"服务端理解结构"，
+  //   名表一改形状就得改这里 —— 结构解释全在 src/shared/names.mjs 与前端。
+  return sendJson(res, 200, { root: rootId, tableId: cfg.names, ...table });
 }
 
 /** 需要按需 import 的三条（catalog / bundle probe / model meta） */

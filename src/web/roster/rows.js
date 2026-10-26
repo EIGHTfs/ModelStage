@@ -80,7 +80,7 @@ export function renderGameRow(game, view) {
 /**
  * 二级：角色行（头像 + 显示名 + 原名标签 + 变体数）。
  * @param {object} game
- * @param {object} c 角色（title/baseName/iconUrl/variants/npc）
+ * @param {object} c 角色（title/baseName/iconUrl/variants）
  * @param {boolean} open
  */
 export function renderCharRow(game, c, open) {

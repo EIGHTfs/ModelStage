@@ -8,7 +8,7 @@
 //      · assetCandidates：查表逐级放宽 原样 → 剥 _hx → 再剥 _N
 //      · 命中名表用英文名做分组键、标题显示「中文名 英文名」；未命中用 charKeyOf 结果兜底
 //      · 变体排序：立绘在前、技能（cutscene_）在后，再按资源名数字序
-//      · 角色排序：普通角色在前、NPC 在后，同组按显示名
+//      · 角色排序：按显示名
 //   4. 本模块只做数据，不碰 DOM（DOM 在 roster-view.js），便于单独验证归并结果。
 //
 // 数据源选择（实测依据）：
@@ -17,6 +17,7 @@
 //   · 容器单文件（资源包）由列举层用魔数标记 `container`，kind 取插件声明的产出类型；
 //     改取 /api/live2d/models。
 
+import { pickName } from '/shared/names.mjs';
 import { getJson } from '../infra/api.js';
 import { diagEvent } from '../app/status.js';
 
@@ -73,10 +74,10 @@ export function mergeNameTable(index, table) {
 }
 
 /**
- * 查角色名（带缓存）。命中返回 {name, nameZh, costume, npc}，未命中返回 null。
+ * 查角色名（带缓存）。命中返回 {name, costume}，未命中返回 null。
  * @param {{byAsset: object, characters: object, cache: Map}} index
  * @param {string} assetName
- * @returns {{name: string, nameZh: string, costume: string, npc: boolean}|null}
+ * @returns {{name: string, costume: string}|null}
  */
 export function lookupName(index, assetName) {
   const raw = String(assetName || '').toLowerCase();
@@ -84,15 +85,14 @@ export function lookupName(index, assetName) {
   let hit = null;
   if (index.byAsset && index.characters) {
     for (const key of assetCandidates(raw)) {
-      const id = index.byAsset[key];
+      const v = index.byAsset[key];
+      // 名表由服务端原样透传：byAsset[key] 是角色 id 字符串（仍兼容对象形态的旧来源）
+      const id = typeof v === 'string' ? v : (v && v.char) || null;
       const c = id ? index.characters[id] : null;
-      if (c && c.name) {
-        hit = {
-          name: c.name,
-          nameZh: c.nameZh || '',
-          costume: c.costume || '',
-          npc: !!c.npc,
-        };
+      // name / costume 是多语言数组 ⇒ 统一经 pickName 取（当前恒取中文）
+      const name = c ? pickName(c.name) : '';
+      if (name) {
+        hit = { name, costume: c ? pickName(c.costume) : '' };
         break;
       }
     }
@@ -185,8 +185,8 @@ export function buildChars(models, nameIndex, gameName = '') {
       charMap.set(key, {
         key,
         groupName,
-        title: nm && nm.nameZh ? `${nm.nameZh} ${nm.name}` : groupName,
-        npc: nm ? nm.npc : false,
+        // 标题就是显示名（旧表时代 nameZh 几乎全空，等价于直接取 groupName）
+        title: groupName,
         variants: [],
       });
     }
@@ -201,8 +201,8 @@ export function buildChars(models, nameIndex, gameName = '') {
     c.baseName = c.variants.length ? charKeyOf(String(c.variants[0].model.name || '')) : '';
     c.iconUrl = c.variants.map((v) => v.model.iconUrl).find(Boolean) || null;
   }
-  // 角色排序：普通角色在前、NPC 在后；同组按显示名
-  chars.sort((a, b) => (a.npc - b.npc) || a.title.localeCompare(b.title, undefined, { numeric: true }));
+  // 角色排序：按显示名
+  chars.sort((a, b) => a.title.localeCompare(b.title, undefined, { numeric: true }));
 
   return { chars, stats };
 }

@@ -31,14 +31,14 @@ function live2dModelsFile(configFile, rootId) {
  * @param {{avatarRoot?: string}} [opts] avatarRoot = 头像仓根（可配置）
  */
 export function resolveIconUrl(root, relPath, modelName, dirFiles, getNameTable, opts = {}) {
-  // 名表已归一化（names.mjs）：byAsset 的值统一是 { char, costume, how }，characters[id].avatar 是文件名。
-  //   仍兼容字符串值：双轨期若有旧的未归一化来源（测试直接塞对象）也不会炸。
+  // 名表服务端不认识结构（names.mjs 原样透传）：byAsset[key] 是角色 id（字符串），
+  //   条目里的头像文件名在 `icon` 字段。只取这两样，不碰 name/costume 等业务字段。
   const t = getNameTable(root);
   const key = String(modelName).toLowerCase();
   const map = (t && t.byAsset) ? t.byAsset[key] : null;
-  const id = map ? (typeof map === 'string' ? map : map.char) : null;
+  const id = typeof map === 'string' ? map : (map && map.char) || null;
   const entry = (id && t.characters) ? t.characters[id] : null;
-  const avatar = entry ? String(entry.avatar || '') : '';
+  const avatar = entry ? String(entry.icon || '') : '';
   // ① 头像仓优先
   if (avatar && opts.avatarRoot && root.names) {
     const abs = path.join(opts.avatarRoot, String(root.names), avatar);

@@ -9,7 +9,7 @@
 export function variantSearchText(v) {
   const m = v.model;
   const nm = v.nm;
-  return `${m.name} ${m.srcDir || ''} ${nm ? `${nm.nameZh} ${nm.name} ${nm.costume}` : ''}`.toLowerCase();
+  return `${m.name} ${m.srcDir || ''} ${nm ? `${nm.name} ${nm.costume}` : ''}`.toLowerCase();
 }
 
 /** 角色是否命中（按角色整组判定：搜角色名时显示该角色全部变体） */
