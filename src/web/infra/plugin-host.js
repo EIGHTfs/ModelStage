@@ -90,6 +90,15 @@ export function createPluginHost(opts = {}) {
   const providers = new Map();
   /** id → 清单里声明的角色（provides）——插件自己 register 时不一定带，以清单为准 */
   const manifestProvides = new Map();
+  // 清单里声明的 effects（pluginId → [{id,label,params}]）：能力键白名单与控件校验的唯一依据。
+  //   与 manifestProvides 同一模式 —— 角色/效果都以**清单**为准，注册时不能自说自话。
+  const manifestEffects = new Map();
+  // 注册成功的效果（effectId → { pluginId, fragment }）：只有进这里的 id 才进能力键白名单
+  const registeredEffects = new Map();
+  // 插件提交的控件节（按提交顺序）：面板侧合并时统一校验，不在这里放行
+  const controlSections = [];
+  /** 当前正在注入脚本的插件 id（register* 靠它认领"这是谁的注册"） */
+  let loadingPluginId = '';
   /** id → { loaded, error, files, ms } 装载状态（排障用） */
   const loadState = new Map();
   /** /api/plugins 返回的清单快照 */
@@ -148,6 +157,60 @@ export function createPluginHost(opts = {}) {
       return true;
     },
     fetchFile,
+    /**
+     * 注册一个渲染效果（契约 §9.2）：只收"作用于当前像素的表达式"，不是完整着色器。
+     *
+     * 校验三条（任一不满足即注册失败，**不是静默忽略**）：
+     *   · id 必须在本插件清单的 effects[].id 里声明过 —— 否则能力键白名单不会认它，
+     *     面板能选、渲染层不认，就是"选了没反应"的静默失败；
+     *   · fragment 必须是非空字符串；
+     *   · id 全局唯一（跨插件也唯一，防两个插件抢同一个 uniform 命名空间）。
+     * @param {{id:string, fragment:string}} spec
+     * @returns {boolean} 是否注册成功
+     */
+    registerEffect(spec) {
+      const pluginId = loadingPluginId;
+      const id = String((spec && spec.id) || '').trim();
+      if (!pluginId) { say.warn('registerEffect 不在插件装载期内调用，已忽略'); return false; }
+      if (!id) { say.warn(`registerEffect 缺少 id（插件 ${pluginId}），已忽略`); return false; }
+      const declared = (manifestEffects.get(pluginId) || []).some((e) => String(e.id) === id);
+      if (!declared) {
+        say.warn(`registerEffect(${id}) 未在插件 ${pluginId} 的 effects[] 里声明，已拒绝`);
+        return false;
+      }
+      if (typeof (spec && spec.fragment) !== 'string' || !spec.fragment.trim()) {
+        say.warn(`registerEffect(${id}) 的 fragment 为空，已拒绝`);
+        return false;
+      }
+      if (registeredEffects.has(id)) {
+        say.warn(`registerEffect(${id}) 重复注册（已被 ${registeredEffects.get(id).pluginId} 占用），已忽略`);
+        return false;
+      }
+      registeredEffects.set(id, { pluginId, fragment: spec.fragment });
+      say.info(`已注册效果 ${id}（插件 ${pluginId}）`);
+      return true;
+    },
+    /**
+     * 提交一节面板控件（契约 §9.2）：**只收声明式数据**，宿主负责渲染与存取。
+     *
+     * 这里只做"收下"，不合并不校验分组/kind —— 那两件事在面板侧合并时统一做
+     *   （那里才知道当前有哪些分组、哪些 kind 被允许），拒绝时能记进 diag。
+     * @param {{group:string, controls:Array}} section
+     * @returns {boolean}
+     */
+    registerControls(section) {
+      const pluginId = loadingPluginId;
+      if (!pluginId) { say.warn('registerControls 不在插件装载期内调用，已忽略'); return false; }
+      const group = String((section && section.group) || '').trim();
+      const controls = Array.isArray(section && section.controls) ? section.controls : null;
+      if (!group || !controls || !controls.length) {
+        say.warn(`registerControls（插件 ${pluginId}）缺少 group 或 controls，已忽略`);
+        return false;
+      }
+      controlSections.push({ pluginId, group, controls: controls.map((c) => ({ ...c })) });
+      say.info(`插件 ${pluginId} 提交控件节：分组「${group}」${controls.length} 个`);
+      return true;
+    },
     /** 提示通道：插件不直接操作 DOM，走这里（同时派发事件给页面其它部分） */
     notify(kind, msg) {
       const level = kind === 'error' ? 'error' : kind === 'warn' ? 'warn' : 'info';
@@ -162,6 +225,7 @@ export function createPluginHost(opts = {}) {
     if (!id) return;
     const t0 = Date.now();
     loadState.set(id, { loaded: false, error: null, files: 0, ms: 0 });
+    loadingPluginId = id;   // 让 register* 知道这次注册属于哪个插件
     const files = Array.isArray(pl.files) ? pl.files : [];
     let okCount = 0;
     for (const f of files) {
@@ -172,9 +236,17 @@ export function createPluginHost(opts = {}) {
         if (st && !st.error) st.error = `脚本加载失败: ${f}`;
       }
     }
+    loadingPluginId = '';
     const st = loadState.get(id) || {};
-    const error = st.error || (providers.has(id) ? null : '脚本已加载但没有调用 register()');
-    loadState.set(id, { ...st, loaded: providers.has(id), error, files: okCount, ms: Date.now() - t0 });
+    // 生效判定要分角色（契约 §一 五类角色）：
+    //   asset-provider 必须 register() 交出 canHandle/resolve；
+    //   只提供 panel 的插件没有 register() 可言，它交的是 effects/controls ——
+    //   拿 register() 当唯一成功标志会把它误判成"加载失败"，进而把它的控件也置灰。
+    const didPanelWork = controlSections.some((sec) => sec.pluginId === id)
+      || [...registeredEffects.values()].some((e) => e.pluginId === id);
+    const providerOk = providers.has(id);
+    const error = st.error || (providerOk || didPanelWork ? null : '脚本已加载但没有调用 register()');
+    loadState.set(id, { ...st, loaded: providerOk || didPanelWork, error, files: okCount, ms: Date.now() - t0 });
     if (error) say.warn(`插件 ${id} 未生效：${error}（其余插件与页面不受影响）`);
   }
 
@@ -636,13 +708,24 @@ const MIME_BY_EXT = {
     }
     say.info(`发现 ${discovered.length} 个启用插件：${discovered.map((p) => p.id).join(', ')}`);
     for (const pl of discovered) {
-      if (pl && pl.id) manifestProvides.set(pl.id, Array.isArray(pl.provides) ? pl.provides.map(String) : []);
+      if (pl && pl.id) {
+        manifestProvides.set(pl.id, Array.isArray(pl.provides) ? pl.provides.map(String) : []);
+        // effects 可选；形状不合法在这里就归一成空数组（服务端已校验过，这里只防脏数据）
+        manifestEffects.set(pl.id, Array.isArray(pl.effects) ? pl.effects.filter((e) => e && e.id) : []);
+      }
       try { await loadPlugin(pl); } catch (e) { say.warn(`插件 ${pl && pl.id} 装载异常：${(e && e.message) || e}`); }
     }
     loaded = true;
     const ok = countRegistered();
     say.info(`插件装载完成：加载 ${discovered.length} 个、注册 ${ok} 个提供者`
       + (ok < discovered.length ? `（${discovered.length - ok} 个未生效，见上方警告）` : ''));
+    // 面板侧要知道"插件已经交完声明了" —— 它启动时先建面板，插件是之后异步注入的，
+    //   不通知就永远看不到插件控件（实测：控件节收到了，但面板不会自己重建）。
+    try {
+      window.dispatchEvent(new CustomEvent('spineviewer:plugins-loaded', {
+        detail: { discovered: discovered.length, registered: ok, controls: controlSections.length },
+      }));
+    } catch { /* 忽略 */ }
     return { discovered: discovered.length, registered: ok };
   }
 
@@ -720,5 +803,24 @@ const MIME_BY_EXT = {
     report,
     isLoaded: () => loaded,
     host: hostApi,
+    /**
+     * 面板层用：插件提交的控件节（含来源插件 id）。
+     * 返回副本，避免面板侧改动污染宿主记录。
+     */
+    controlSections: () => controlSections.map((s) => ({ ...s, controls: s.controls.map((c) => ({ ...c })) })),
+    /**
+     * 面板层用：**注册成功**的效果 id 列表 —— 能力键白名单的唯一来源（契约 §9.3）。
+     * 只声明但没注册成功的不在列表里 ⇒ 对应控件会置灰。
+     */
+    registeredEffectIds: () => [...registeredEffects.keys()],
+    /** 面板层用：某个 effect id 属于哪个插件（置灰时写原因） */
+    effectOwner: (effectId) => {
+      const hit = registeredEffects.get(String(effectId));
+      return hit ? hit.pluginId : '';
+    },
+    /** 面板层用：插件装载失败清单（id → error），控件置灰时给出"为什么" */
+    pluginFailures: () => [...loadState.entries()]
+      .filter(([, st]) => st && st.error)
+      .map(([id, st]) => ({ id, error: String(st.error) })),
   };
 }

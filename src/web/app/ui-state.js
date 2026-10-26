@@ -65,6 +65,47 @@ export const SPEC = (() => {
   return out;
 })();
 
+/**
+ * 动态补登记面板控件（插件在运行期提交的控件走这里）。
+ *
+ * 为什么必须登记进 SPEC 而不是另开一条存取路径：
+ *   `set()` 对**未登记**的 id 会走 `defaultOf()` ⇒ 拿到 undefined ⇒ 值根本存不住，
+ *   而且不报错（表现为"选了刷新就回默认"）。所以插件控件必须进同一份 SPEC，
+ *   才能复用 loadAll / applyAll / set / commit / flush 全套通道，不产生第二份真相。
+ *
+ * 幂等：已存在的 id 不覆盖（内置控件优先，插件不能顶掉内置项）。
+ * @param {Array<object>} ctls schema 形态的控件声明（与 PANEL_GROUPS 里的一致）
+ * @returns {number} 实际新增条数
+ */
+export function registerSpecItems(ctls) {
+  let added = 0;
+  for (const ctl of ctls || []) {
+    const id = String((ctl && ctl.id) || '');
+    if (!id || byId.has(id)) continue;
+    const isSwitch = ctl.kind === 'toggle' || ctl.kind === 'switch';
+    const hasValue = ctl.defaultValue !== undefined;
+    const firstOption = Array.isArray(ctl.options) && ctl.options.length ? ctl.options[0] : undefined;
+    const item = {
+      id,
+      kind: ctl.kind,
+      label: ctl.label || id,
+      capabilityKey: ctl.capabilityKey || null,
+      values: Array.isArray(ctl.values)
+        ? ctl.values.map(String)
+        : (Array.isArray(ctl.options)
+          ? ctl.options.map((o) => (o && typeof o === 'object' ? String(o.value) : String(o)))
+          : null),
+      // 分段控件没写 defaultValue 时默认取第一项（与"第一个就是关/默认档"的既有惯例一致）
+      defaultValue: hasValue ? ctl.defaultValue : (isSwitch ? (ctl.defaultOn === true) : firstOption),
+      store: 'panel',
+    };
+    SPEC.push(item);
+    byId.set(id, item);
+    added += 1;
+  }
+  return added;
+}
+
 /** id → SPEC 声明 */
 const byId = new Map(SPEC.map((it) => [it.id, it]));
 
@@ -309,6 +350,13 @@ export function loadAll() {
     values.set(it.id, it.defaultValue);
     rejected.push(it.id);
   }
+  // 插件控件是**运行期**才登记进 SPEC 的（插件脚本异步注入），而本函数在启动早期就读盘了 ——
+  //   那时它们的声明还不在 SPEC 里。若不把 panel 段里这些"暂时无主的键"也读进内存，
+  //   插件登记完成后 getValue 只能拿到默认值，表现为"设过的档位刷新后回到默认"。
+  //   这里原样保留（不合并不校验），等 registerSpecItems 登记后用同一套 getValue 取到。
+  for (const [key, val] of Object.entries(saved || {})) {
+    if (!byId.has(key)) values.set(key, val);
+  }
   loadedOnce = true;
   return { loaded: values.size, rejected: [...rejected] };
 }
@@ -371,6 +419,13 @@ export function flush() {
     if (v === undefined) continue;
     snapshot[it.id] = v;
     if (it.store === 'panel') panel[it.id] = v;
+  }
+  // 未登记的键（插件控件：尚未登记，或插件已被卸载）不能在这里被抹掉 ——
+  //   `saveViewSettings({panel})` 是整体替换语义，漏掉就等于"改别的设置把插件的值删了"。
+  for (const [key, val] of values.entries()) {
+    if (byId.has(key) || val === undefined) continue;
+    panel[key] = val;
+    snapshot[key] = val;
   }
   state.panelSettings = { ...panel };
   try { document.documentElement.dataset.panelSetting = JSON.stringify(snapshot); } catch { /* 忽略 */ }

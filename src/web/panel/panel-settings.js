@@ -12,7 +12,7 @@ import { resetStage, trackElementStage } from '../infra/ready.js';
 import { rendererSupports, setRendererSetting } from '../app/renderer-setting.js';
 import * as uiState from '../app/ui-state.js';
 import { stageLog, stageStatus } from '../app/status.js';
-import { PANEL_GROUPS, applyCapabilities, selfCheck, settingKeyOf } from './schema.js';
+import { PANEL_GROUPS, applyCapabilities, mergePluginControls, selfCheck, settingKeyOf } from './schema.js';
 import { mountPanel } from './view.js';
 import { applyDebugLog, applyHangGuard, applyMemoryGuard, applyShowStatus, connectShellControls, runSettingsAction } from './shell-controls.js';
 import { applyBackground, applyTheme, readViewSettings, saveViewSettings } from '../app/view-settings.js';
@@ -155,6 +155,11 @@ function applyPanelSetting(id, value) {
  * @param {unknown} value
  */
 function applyCore(id, value) {
+  // 插件声明了但效果没注册成功 ⇒ 明确拒绝并告知原因（契约 §9.3：绝不静默存值）
+  if (PLUGIN_DISABLED_IDS.has(String(id))) {
+    stageStatus(`「${id}」暂不可用：对应插件效果未注册成功`, 'warn', { show: true });
+    return;
+  }
   const shell = SHELL_APPLIERS[id];
   if (shell) {
     // 外壳项里也有"依赖渲染面能力"的（皮肤/混合模式/部件筛除）：
@@ -293,10 +298,70 @@ function trackPanelStage() {
   });
 }
 
-function rebuildPanelFor(renderer) {
-  const groups = applyCapabilities(PANEL_GROUPS, renderer && renderer.capabilities, {
-    onWarn: (message) => stageLog('warn', message, { source: 'panel-selfcheck' }),
+/**
+ * 把插件**注册成功**的效果 id 追加进渲染器的能力键白名单（契约 §9.3）。
+ *
+ * 为什么要拷贝：capabilities 是渲染器自己的对象，直接 push 会把插件效果永久写进它的声明里，
+ *   插件被拔掉后白名单还留着 ⇒ 面板能选、渲染层不认（正是"选了没反应"）。
+ * @param {object} capabilities 渲染器声明的能力
+ * @param {string[]} effectIds 注册成功的插件效果 id
+ * @returns {object} 追加后的能力（新对象）
+ */
+function withPluginCapabilities(capabilities, effectIds) {
+  if (!capabilities || !Array.isArray(capabilities.settings) || !effectIds.length) return capabilities;
+  return { ...capabilities, settings: [...capabilities.settings, ...effectIds] };
+}
+
+/**
+ * 已声明但没注册成功的插件控件 id（每次重建时刷新）。
+ * 用途：这类控件在面板上是置灰的，正常点不到；但若被程序化调用 setSetting，
+ *   契约 §9.3 要求"明确返回不支持"而不是静默存一个永远不会生效的值。
+ */
+const PLUGIN_DISABLED_IDS = new Set();
+
+/**
+ * 插件交完声明后重建一次面板 —— 插件是异步注入的，晚于首次建面板。
+ * 幂等：只绑一次。
+ */
+let pluginRebuildBound = false;
+export function bindPluginPanelRebuild() {
+  if (pluginRebuildBound) return false;
+  pluginRebuildBound = true;
+  window.addEventListener('spineviewer:plugins-loaded', () => {
+    try { rebuildPanelFor(state.currentRenderer); } catch (e) {
+      stageLog('warn', `插件控件合并失败：${(e && e.message) || e}`, { source: 'plugin-controls' });
+    }
   });
+  return true;
+}
+
+function rebuildPanelFor(renderer) {
+  bindPluginPanelRebuild();   // 幂等：确保"插件交完声明后重建面板"这条链只绑一次
+  const host = state.pluginHost;
+  // 插件控件节与已注册效果：**唯一来源是宿主**（插件自己交的声明式数据），面板侧不另存一份
+  const sections = host && typeof host.controlSections === 'function' ? host.controlSections() : [];
+  const registeredEffects = host && typeof host.registeredEffectIds === 'function' ? host.registeredEffectIds() : [];
+  // 合并进内置表（返回新数组，不动 PANEL_GROUPS 静态表），拒绝与部分丢弃都写 diag
+  const merged = mergePluginControls(PANEL_GROUPS, sections, {
+    registeredEffects,
+    onReject: (rej) => {
+      const detail = (rej.rejects || []).map((r) => `${r.id || '?'}:${r.reason}`).join('；');
+      stageLog('warn', `插件控件被拒（${rej.pluginId || '未知插件'} · ${rej.group || '未知分组'}）：${rej.reason}${detail ? `（${detail}）` : ''}`, { source: 'plugin-controls' });
+    },
+  });
+  // 插件控件登记进 SPEC：这样它们是走既有的 loadAll/set/flush 通道，不新开存储路径
+  const pluginControls = merged.groups.flatMap((g) => (g.controls || []).filter((c) => c && c.pluginId));
+  if (pluginControls.length) uiState.registerSpecItems(pluginControls);
+  // 已声明但注册失败的那些：置灰而不是消失（契约 §9.3）
+  const keepDisabled = new Set(pluginControls.filter((c) => c.disabled === true && c.id).map((c) => String(c.id)));
+  PLUGIN_DISABLED_IDS.clear();
+  for (const ctlId of keepDisabled) PLUGIN_DISABLED_IDS.add(ctlId);
+  const groups = applyCapabilities(merged.groups, withPluginCapabilities(renderer && renderer.capabilities, registeredEffects), {
+    onWarn: (message) => stageLog('warn', message, { source: 'panel-selfcheck' }),
+    keepDisabled,
+  });
+  document.documentElement.dataset.pluginControls = String(merged.added);
+  document.documentElement.dataset.pluginControlsRejected = String(merged.rejected + merged.rejectedControls);
   document.documentElement.dataset.panelGroups = String(groups.length);
   const info = mountPanel({
     groups,
@@ -308,7 +373,9 @@ function rebuildPanelFor(renderer) {
       applyPanelSetting(id, value);
       if (state.playing === false) { try { repaintActive(state.surface); } catch { /* 忽略 */ } }
     },
-    wiredIds: WIRED_IDS,
+    // 插件控件的"接线"由宿主负责（插件只交声明式数据）⇒ 已注册成功的要进接线清单，
+    //   否则渲染层会当成"未接线"：按钮不绑 click，点了没反应（实测踩过）。
+    wiredIds: [...WIRED_IDS, ...pluginControls.filter((c) => c.disabled !== true && c.id).map((c) => String(c.id))],
     // 首次渲染就显示用户值（契约 R2）：工厂里已经有 loadAll 读回的值
     initialValue: (id) => uiState.getValue(id),
   });

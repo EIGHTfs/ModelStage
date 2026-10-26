@@ -195,7 +195,12 @@ const rectOf = (el) => {
 
 const summary = {
   rightPanel: {
+    // 控件计数按「内置 + 插件」分组（插件往面板加控件后总数会变，混在一起就无法当基线对照）：
+  //   插件控件数由宿主在合并时写进 dataset.pluginControls，内置 = 总数 − 插件数。
     total: qa('#right-panel button, #right-panel select, #right-panel input').length,
+    pluginControls: Number(document.documentElement.dataset.pluginControls || 0),
+    builtinControls: qa('#right-panel button, #right-panel select, #right-panel input').length
+      - Number(document.documentElement.dataset.pluginControls || 0),
     triggers: qa('#right-panel .acc-trigger').length,
     disabled: qa('#right-panel button:not(.acc-trigger), #right-panel select, #right-panel input').filter((e) => e.disabled).length,
   },

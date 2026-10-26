@@ -352,7 +352,20 @@ function renderGroup(group, ctx) {
   body.id = `acc-body-${group.id}`;
   body.setAttribute('role', 'region');
   body.setAttribute('aria-label', group.title);
-  for (const ctl of group.controls) body.append(renderControl(ctl, ctx));
+  for (const ctl of group.controls) {
+    // 单个控件渲染失败**不许**拖掉整组：以前是直接抛，异常会让这组 body 挂在半路、
+    //   最终整组从界面上消失（实测：一个插件控件的字段不全，导致整个「设置」组不见了）。
+    //   现在失败项就地渲染成一行说明，既不静默也不扩大影响面。
+    try {
+      body.append(renderControl(ctl, ctx));
+    } catch (err) {
+      const row = el('div', 'ctl-row ctl-row-broken');
+      row.dataset.ctl = (ctl && ctl.id) || '';
+      row.append(el('span', 'ctl-label', (ctl && ctl.label) || '控件'));
+      row.append(el('span', 'ctl-value', `渲染失败：${(err && err.message) || err}`));
+      body.append(row);
+    }
+  }
   body.hidden = !group.defaultOpen;
 
   // 开合是真实行为：切换 aria-expanded 与 hidden，箭头方向由 CSS 跟着 aria 走

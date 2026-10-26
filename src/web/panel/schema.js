@@ -306,6 +306,146 @@ export const TRANSPORT_CONTROLS = [
  * @param {string} id 控件 id
  * @returns {{kind: string, key: string}|null}
  */
+/**
+ * 插件控件的 **kind 白名单**（契约 §9.2）。未列出的一律拒绝：
+ * 插件只能提交声明式数据，不能借控件形态塞任意 DOM / 内联样式 / 事件处理器字符串。
+ */
+export const PLUGIN_CONTROL_KINDS = ['segmented', 'toggle', 'button'];
+
+/**
+ * 校验并归一"插件提交的一节控件"。
+ *
+ * 分三级处置（契约 §9.2 / §9.3 的差别就在这儿）：
+ *   · **整节拒绝**（返回 ok:false）：group 名不存在、controls 不是数组或为空 —— 绝不静默新建分组，
+ *     否则插件一多就长出一堆没人认识的分组；
+ *   · **单控件拒绝**（进 rejects）：kind 不在白名单、缺 id、id 与已占用重名、segmented 缺 options；
+ *   · **单控件置灰**（进 disabled）：id 在清单 effects[] 里声明过，但 registerEffect 没成功 ——
+ *     这类要出现在界面上并给出原因，而不是消失（消失后用户会以为自己记错了）。
+ *
+ * @param {{pluginId:string, group:string, controls:Array}} section 宿主收到的原始节
+ * @param {object} ctx
+ * @param {Set<string>} ctx.groupTitles 既有分组名集合（用 title 匹配，与契约示例一致）
+ * @param {Set<string>} ctx.registeredEffects 注册成功的效果 id
+ * @param {Set<string>} ctx.takenIds 已被占用的控件 id（内置 + 先前插件）
+ * @returns {{ok:boolean, reason?:string, title?:string, controls?:Array, rejects?:Array}}
+ */
+export function normalizePluginSection(section, ctx) {
+  const group = String((section && section.group) || '').trim();
+  const controls = Array.isArray(section && section.controls) ? section.controls : null;
+  if (!group || !controls || !controls.length) {
+    return { ok: false, reason: '节缺少 group 或 controls' };
+  }
+  if (!ctx.groupTitles.has(group)) {
+    return { ok: false, reason: `分组「${group}」不存在（插件不许新建分组）` };
+  }
+  const out = [];
+  const rejects = [];
+  for (const raw of controls) {
+    const id = String((raw && raw.id) || '').trim();
+    const kind = String((raw && raw.kind) || '').trim();
+    if (!id) { rejects.push({ id: '', reason: '控件缺 id' }); continue; }
+    if (!PLUGIN_CONTROL_KINDS.includes(kind)) {
+      rejects.push({ id, reason: `kind「${kind}」不在白名单（${PLUGIN_CONTROL_KINDS.join(' / ')}）` });
+      continue;
+    }
+    if (ctx.takenIds.has(id)) { rejects.push({ id, reason: '控件 id 与已存在控件重名' }); continue; }
+    if (kind === 'segmented' && !(Array.isArray(raw.options) && raw.options.length)) {
+      rejects.push({ id, reason: 'segmented 必须给 options' });
+      continue;
+    }
+    if (kind === 'button' && !String(raw.label || '').trim()) {
+      rejects.push({ id, reason: 'button 必须给 label' });
+      continue;
+    }
+    const registered = ctx.registeredEffects.has(id);
+    const optionTexts = kind === 'segmented' ? raw.options.map(String) : null;
+    out.push({
+      // 归一成与内置控件同形的声明：渲染层完全按既有 kind 分派，不认"插件控件"这个概念
+      id,
+      kind,
+      label: String(raw.label || id),
+      // segmented 必须同时给 options 与 values：渲染层用 `ctl.values[i]` 当按钮的取值
+      //   （契约 §9.2 的插件声明里只有 options，所以"选项文本即取值"这层翻译由宿主补 ——
+      //    缺了它 String(undefined[i]) 会抛错，而一个控件抛错会拖掉**整组**，实测踩过）
+      ...(optionTexts ? { options: optionTexts, values: optionTexts.slice() } : {}),
+      // 能力键**一律**显式声明为 effect id：
+      //   已注册 ⇒ 宿主把它追加进 capabilities.settings ⇒ 正常可用；
+      //   未注册 ⇒ 不在白名单 ⇒ 走 keepDisabled 分支置灰（并显示下面的原因）。
+      //   若不声明，裸 effect id（没有 ctl- 前缀）推导不出能力键，会被判成"unsupported"
+      //   并显示成"无法确定能力键"—— 用户看不懂，也丢了"哪个效果没注册成功"这个关键信息。
+      capabilityKey: id,
+      // disabled 必须在数据层就标上：panel-settings 用它收集 keepDisabled 白名单，
+      //   漏了这一步控件会被 applyCapabilities 直接丢掉（消失而不是置灰）。
+      ...(registered ? {} : { disabled: true, disabledReason: `效果「${id}」未注册成功（插件脚本可能加载失败或被禁用）` }),
+      pluginId: String(section.pluginId || ''),
+    });
+    ctx.takenIds.add(id);   // 同一份 ctx 在多个节之间复用 ⇒ 插件之间也不能抢同一个 id
+  }
+  if (!out.length) {
+    return { ok: false, reason: `节内 ${controls.length} 个控件全部不合规`, rejects };
+  }
+  return { ok: true, title: group, controls: out, rejects };
+}
+
+/**
+ * 把插件控件节合并进内置分组表（**返回新数组，不改 PANEL_GROUPS 静态表**）。
+ *
+ * 为什么必须返回新数组：`PANEL_GROUPS` 同时是
+ *   ① uiState 派生 SPEC 的依据 ② `test/browser/panel-actions.js` 的"控件分类门禁"遍历对象。
+ *   原地改它会把插件控件塞进门禁的检查范围（门禁要求每个控件显式归到三层优先级之一），
+ *   等于要求插件也去维护那张表 —— 违反"插件只交声明式数据"的边界。
+ *
+ * @param {Array} baseGroups 内置分组
+ * @param {Array<{pluginId:string, group:string, controls:Array}>} sections 插件提交的节
+ * @param {object} [opts]
+ * @param {(rej:{pluginId:string, group:string, reason:string, rejects?:Array}) => void} [opts.onReject] 拒绝/丢弃的回报口（写 diag）
+ * @returns {{groups:Array, added:number, rejected:number, rejectedControls:number}}
+ */
+export function mergePluginControls(baseGroups, sections, opts = {}) {
+  const base = Array.isArray(baseGroups) ? baseGroups : [];
+  const report = typeof (opts && opts.onReject) === 'function' ? opts.onReject : () => {};
+  const list = Array.isArray(sections) ? sections : [];
+  if (!list.length) return { groups: base, added: 0, rejected: 0, rejectedControls: 0 };
+
+  const groupTitles = new Set(base.map((g) => String(g.title || '')));
+  const registeredEffects = new Set((opts && opts.registeredEffects) || []);
+  const takenIds = new Set();
+  for (const g of base) {
+    for (const c of (g && g.controls) || []) if (c && c.id) takenIds.add(String(c.id));
+  }
+  const ctx = { groupTitles, registeredEffects, takenIds };
+
+  // 深拷贝分组与控件数组：只拷一层结构，控件对象本身按需替换，避免动到内置对象
+  const groups = base.map((g) => ({ ...g, controls: (g.controls || []).slice() }));
+  const byTitle = new Map(groups.map((g) => [String(g.title || ''), g]));
+  let added = 0;
+  let rejected = 0;
+  let rejectedControls = 0;
+
+  for (const section of list) {
+    const res = normalizePluginSection(section, ctx);
+    if (!res.ok) {
+      rejected += 1;
+      rejectedControls += (res.rejects || []).length;
+      report({ pluginId: section.pluginId || '', group: section.group || '', reason: res.reason, rejects: res.rejects });
+      continue;
+    }
+    const target = byTitle.get(res.title);
+    if (!target) {   // 双保险：normalize 已检查过标题存在
+      rejected += 1;
+      report({ pluginId: section.pluginId || '', group: res.title, reason: '目标分组在合并时消失' });
+      continue;
+    }
+    target.controls = target.controls.concat(res.controls);
+    added += res.controls.length;
+    if (res.rejects && res.rejects.length) {
+      rejectedControls += res.rejects.length;
+      report({ pluginId: section.pluginId || '', group: res.title, reason: '部分控件不合规', rejects: res.rejects });
+    }
+  }
+  return { groups, added, rejected, rejectedControls };
+}
+
 export function inferCapabilityKey(id) {
   if (typeof id !== 'string') return null;
   const debugMatch = /^ctl-debug-(.+)$/.exec(id);
@@ -357,6 +497,11 @@ export function applyCapabilities(groups, capabilities, options = {}) {
   const settings = new Set((capabilities && capabilities.settings) || []);
   const debugDraw = new Set((capabilities && capabilities.debugDraw) || []);
   const onWarn = options && typeof options.onWarn === 'function' ? options.onWarn : null;
+  // keepDisabled：即使能力不匹配也要**保留**的控件 id（插件已声明、但 registerEffect 没成功的那些）。
+  //   为什么单独开这个口：面板能力契约 §3.1 规定"不支持的能力项根本不构建"，
+  //   但插件契约 §9.3 要求相反 —— 已声明未生效的控件必须**置灰并给出原因**，
+  //   消失会让用户以为自己记错了。两种诉求都成立，所以用显式白名单区分，而不是放宽统一规则。
+  const keepDisabled = options && options.keepDisabled instanceof Set ? options.keepDisabled : null;
   const reason = '当前渲染器不支持';
   const list = Array.isArray(groups) ? groups : [];
   const independent = new Set(RENDERER_INDEPENDENT);
@@ -392,7 +537,13 @@ export function applyCapabilities(groups, capabilities, options = {}) {
         //   注意别和"隐藏"混淆：隐藏=先构建再 display:none（契约明令禁止）；
         //   这里是不进 controls，等于面板里从来没有这一项——Live2D 没有 PMA 口径、没有 MSAA
         //   上下文级开关、没有骨架 fit 三模式，就不该在 Live2D 面画出这几项。
-        if (!settings.has(resolved.key)) continue;
+        if (!settings.has(resolved.key)) {
+          // 能力不匹配：默认不构建；插件已声明项例外 —— 保留并置灰，让"为什么没有生效"可见
+          if (keepDisabled && ctl.id && keepDisabled.has(String(ctl.id))) {
+            controls.push({ ...ctl, disabled: true, reason: ctl.disabledReason || reason });
+          }
+          continue;
+        }
         controls.push({ ...ctl });
       }
       return { ...group, controls };
