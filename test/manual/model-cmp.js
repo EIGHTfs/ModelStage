@@ -1,16 +1,28 @@
-// model-cmp.js（测试脚本）—— 三模型 × 四状态的 MODELCMP 对比
+// model-cmp.js —— **手动采数脚本，不是测试套件**
 //
-// 用途：按 docs/设计/相机.md 第 4 节，对「异常模型 + 2 个正常模型」
-//   在同一流程下采集同一组指标（默认 / 0.6×+拖 200 / 0.3× / 1.5×），一次性输出全部记录。
-// 用法：node tool/check-console.mjs http://127.0.0.1:8804/ --json --script test/model-cmp.js
+// 为什么不属于套件：它返回 { errors, records }，**没有任何断言**（没有 total/failed）。
+//   塞进 test/browser/ 会被 test-all 当成套件跑，得到 total=null/failed=null，
+//   让下一个人误以为"这个套件在跑、还通过了"——虚假的覆盖感比没有覆盖更糟。
+//   所以单独放 test/manual/：这个目录的语义是「手动跑、人工看输出」，不进自动门禁。
 //
+// 用途：对「异常模型 + 2 个正常模型」在同一流程下采集同一组指标
+//   （默认 / 0.6×+拖 200 / 0.3× / 1.5×），一次性输出全部记录供人工对比。
 // 为什么要在缩放/拖动后再采：默认 fit 恰好把画面挡住，异常在这些状态下才暴露。
+//
+// 用法（手动跑，结果人工看）：
+//   node tool/check-console.mjs http://127.0.0.1:8804/ --wait 6000 --json --script test/manual/model-cmp.js
+//   输出里看 scriptResult.records / scriptResult.errors；先手工把要对比的模型准备好。
 
 (async () => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const q = (s) => document.querySelector(s);
   const qa = (s) => [...document.querySelectorAll(s)];
-  const w = window.__WEB__;
+  // window.__WEB__ 由前端启动时挂到 window；页面未就绪时它是 undefined。
+  //   直接快照会让 w 永久 undefined ⇒ 后面任何 w.xxx 一取就抛 TypeError。
+  //   先等它出现再快照；|| {} 兜底让后续读取如实报 null 而不是崩成 TypeError。
+  //   条件用 &&（两个都没有才等）。
+  for (let i = 0; i < 80 && !window.__WB__ && !window.__WEB__; i += 1) await sleep(150);
+  const w = window.__WB__ || window.__WEB__ || {};
   const stage = q('#stage');
   const mode = () => (stage ? stage.getAttribute('data-stage-mode') : null);
 

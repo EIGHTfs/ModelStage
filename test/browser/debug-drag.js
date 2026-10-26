@@ -152,6 +152,10 @@ async function caseThrottleAndPersist(env, rec, helpers, drag) {
 /** ④⑤⑥⑦ 展开态：左上/右下极限、持久化、stats 句柄 */
 async function caseBoundsAndStats(env, rec, helpers, drag) {
   const { root, vw, vh } = env;
+  // uiMod 必须在本函数内取：它原先是另一个函数里的局部变量，
+  //   ⑥ 读 getPanelPos() 时抛 ReferenceError，被 catch 吞成「(无)」——
+  //   看起来像"位置被抹掉了"，实际是测试自身作用域错（存储里一直有 1804/1048）。
+  const uiMod = await import('/app/ui-state.js');
   // ④ 边界：左上极限不越 0
   await drag(env, { moves: 40, batches: 4, dx: -4000, dy: -4000 });
   const rTL = root.getBoundingClientRect();

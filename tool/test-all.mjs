@@ -25,6 +25,7 @@ import process from 'node:process';
 import { acquireTestLock, releaseOnExit, describeHolder, EXIT_SKIPPED, HELD_ENV } from './lib/test-lock.mjs';
 import { findBadPerms, summarizeBadPerms } from './lib/check-perms.mjs';
 import { checkSingleSource, formatViolations } from './check-single-source.mjs';
+import { checkWiring, formatWiringProblems } from './check-wiring.mjs';
 import { memAvailableMB, tailLines, classifyOutcome, openRun, writeSuiteResult, updateSummary, finishRun } from './lib/test-report.mjs';
 
 // 必须用 fileURLToPath：项目路径含中文/空格，URL.pathname 是百分号编码，直接当路径会找不到文件
@@ -61,6 +62,23 @@ if (BAD_PERMS.files.length || BAD_PERMS.dirs.length) {
   if (!ok) {
     console.error('[test-all] ❌ 单一数据源门禁失败 —— 不跑测试（改法是确定性的，先修再跑）：');
     console.error(formatViolations(violations));
+    process.exit(1);
+  }
+}
+
+// **门禁：控件声明 ↔ 接线**（静态检查，与上面同层：fail 即中止，warn 只提示）
+//   为什么也当门禁而不是第 15 套：它验的是"声明与接线是否对得上"这类静态事实，
+//   和"某套用例跑过没过"不是一回事；挂在前面红得早，也不占回归套件名额。
+//   规则与自证见 docs/设计/测试脚本结构.md §7.2（W1~W5）。
+//   warn（W3/W4）只打印条数、不拦 —— 它们可能是有意为之（如统一 handler + 早退）。
+{
+  const w = await checkWiring();
+  if (w.warns.length) {
+    console.log(`[test-all] ⚠ 控件声明↔接线：${w.warns.length} 条警告（不拦，明细见 node tool/check-wiring.mjs）`);
+  }
+  if (!w.ok) {
+    console.error('[test-all] ❌ 控件声明 ↔ 接线 门禁失败 —— 不跑测试（改法是确定性的，先修再跑）：');
+    console.error(formatWiringProblems(w.fails));
     process.exit(1);
   }
 }
@@ -137,6 +155,7 @@ const SUITES = [
   { name: 'f2-topbar', wait: 4500 },
   { name: 'f3-reveal', wait: 4500 },
   { name: 'f4-roots', wait: 4500, needProbe: true },
+  { name: 'debug-drag', wait: 5000 },
   { name: 'spine-actions', wait: 4500 },
   { name: 'panel-actions', wait: 4500 },
   { name: 'roster-actions', wait: 4500 },
@@ -147,7 +166,7 @@ const SUITES = [
  *  默认**不进自动门禁** —— 自动门禁只跑 node-test（快、稳定、可在任何环境跑）。
  *  要跑它们：单套 `--only <name>`（开发时最常见的用法），或全部 `--browser`。 */
 const BROWSER_SUITES = new Set([
-  'engine-b1', 'f1-controls', 'f2-topbar', 'f3-reveal', 'f4-roots',
+  'engine-b1', 'f1-controls', 'f2-topbar', 'f3-reveal', 'f4-roots', 'debug-drag',
   'spine-actions', 'panel-actions', 'roster-actions', 'anim-list',
 ]);
 
@@ -207,6 +226,9 @@ const RULES = [
   { re: /^test\/helpers\//, suites: ['renderer-contract', 'live2d-lifecycle'] },
   // test/<名>.js 或 test/<名>.test.mjs：改了哪个套件就只跑哪个（静态套件同样适用）
   { re: /^test\/([^/]+?)(?:\.test)?\.m?js$/, suiteFromName: true },
+  // test/manual/：手动采数/诊断脚本，**不是套件**（无断言、无 total/failed）。
+  //   改它不影响回归；不忽略的话会判成"无法映射"→ 保守追加全量，白白跑 13 套。
+  { re: /^test\/manual\//, suites: [] },
   // test/browser/<名>.js：浏览器注入套件已归档到此（默认不跑，见 BROWSER_SUITES）
   { re: /^test\/browser\/([^/]+?)\.js$/, suiteFromName: true },
 ];
@@ -354,7 +376,14 @@ function parseOnly(text) {
 /** 决定本次跑哪些套：返回 {suites, why} */
 function selectSuites() {
   if (onlyArg !== null) return { suites: parseOnly(onlyArg), why: 'only' };
-  if (wantAll) return { suites: SUITES.map((s) => s.name), why: 'all' };
+  // --all = 「全部**自动门禁**套件」（即 node-test）。要连浏览器套件一起跑，再给 --browser。
+  //   不加这层过滤的话 --all 会绕过 BROWSER_SUITES ⇒ 无意中跑 22 套（慢且依赖真 chrome）。
+  if (wantAll) {
+    return {
+      suites: SUITES.map((s) => s.name).filter((n) => WANT_BROWSER || !BROWSER_SUITES.has(n)),
+      why: 'all',
+    };
+  }
   const files = changedFiles();
   if (!files.length) return { suites: [], why: 'no-change', files };
   const plan = planFromFiles(files);

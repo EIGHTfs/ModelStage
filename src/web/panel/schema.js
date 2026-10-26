@@ -27,7 +27,9 @@ import { MIX_DEFAULT, MIX_MAX, MIX_MIN, MIX_STEP, SPEED_DEFAULT, SPEED_MAX, SPEE
 
 export const RENDERER_INDEPENDENT = [
   // 背景类全部与渲染器无关（外壳行为）：纯色预设列表也是外壳数据，不依赖任何渲染能力
-  'ctl-theme', 'ctl-bg-mode', 'ctl-bg-color', 'ctl-bg-image', 'ctl-bg-sources',
+  // 纯色/图片不再是独立控件：背景统一走 ctl-bg-mode（模式）+ ctl-bg-sources（公共列表容器），
+  //   白名单里原先的 ctl-bg-color / ctl-bg-image 已随改造废弃，故不再列（无声明即无意义）。
+  'ctl-theme', 'ctl-bg-mode', 'ctl-bg-sources',
   'ctl-hang-guard', 'ctl-memory-guard', 'ctl-memory-bar', 'ctl-show-status', 'ctl-debug-log', 'ctl-settings-io',
   // 动作组的循环开关由应用层定时器推进、动作列表内容由应用层填，
   //   与"渲染器是否声明某项能力"无关（两面都要有）。

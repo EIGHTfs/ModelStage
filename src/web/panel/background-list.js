@@ -119,7 +119,10 @@ async function startUpload(box) {
 // 职责划分：颜色挑选交给 panel/color-picker.js（纯 UI），这里只管"命名 + 增删改 + 应用"。
 
 /** 纯色列表容器（现查，不闭包持有——面板会重建） */
-const SOLID_BOX_SEL = '#right-panel [data-ctl="ctl-bg-solids"]';
+// 纯色预设与自定义图片**共用**同一个列表容器（schema 里那一个 kind:'dynamic-list' 的 ctl-bg-sources），
+//   按当前背景模式决定往容器里渲染哪一种；所以这里必须与 BG_BOX_SEL 指向同一个容器。
+//   写成一个不存在的 ctl-bg-solids 会让查询永远返回 null、纯色列表整块静默失效（本门禁 W2 抓到的）。
+const SOLID_BOX_SEL = '#right-panel [data-ctl="ctl-bg-sources"]';
 
 /** 当前纯色列表数据 */
 let solidItems = [];
