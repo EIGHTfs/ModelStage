@@ -43,6 +43,15 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.
 const WEB_ROOT = path.join(ROOT, 'src', 'web');
 const RUNTIME_DIR = path.join(ROOT, 'src', 'spine-runtimes');
 const PLUGINS_DIR = path.join(ROOT, 'plugins');
+/**
+ * 数据根：`MODELSTAGE_DATA_ROOT` 环境变量（缺省空 = 项目根 ⇒ **行为完全不变**）。
+ *
+ * 只影响 config/ data/ runtime/ 三处；代码目录（plugins/ src/ tool/）始终跟随 ROOT。
+ * 为什么需要它：测试与生产共用同一实例时，验证过程中的重启会打断正在加载的页面
+ *   （实测把 /live2d-lib 的加载掐断过），且两边同时写 config 会互相覆盖。
+ *   有了它，测试可以起第二实例（不同端口 + 不同数据根），互不干扰。
+ */
+const DATA_ROOT = (process.env.MODELSTAGE_DATA_ROOT || '').trim();
 const PORT = Number(process.env.PORT) || Number(process.argv[2]) || 8804;
 
 /**
@@ -59,7 +68,7 @@ function resolveAvatarRoot() {
 /** 服务端日志（统一形状 {at,level,tag,msg,detail}；error→stderr，其余→stdout） */
 const log = createLogger('serve');
 
-const data = createServerData({ root: ROOT, avatarRoot: resolveAvatarRoot() || undefined });
+const data = createServerData({ root: ROOT, dataRoot: DATA_ROOT || undefined, avatarRoot: resolveAvatarRoot() || undefined });
 // 静态/资源类路由（/plugins、/spine-runtimes、src/web 静态）单独成模块
 const staticRoutes = createStaticRoutes({ root: ROOT, webRoot: WEB_ROOT, runtimeDir: RUNTIME_DIR, pluginsDir: PLUGINS_DIR });
 const diag = createDiag(data.paths);
@@ -68,7 +77,7 @@ const backgrounds = createBackgrounds(data.paths);
 // 纯色背景预设：落盘 data/backgrounds/solids.json（运行时数据，与背景图同目录）
 const solids = createBackgroundSolids(data.paths);
 // 调试日志上传：落盘在 data/logs/（页面把内存里的日志一次性交上来，供 AI 事后读现场）
-const diagUpload = createDiagUpload({ dataDir: data.paths.dataDir, configDir: path.join(ROOT, 'config') });
+const diagUpload = createDiagUpload({ dataDir: data.paths.dataDir, configDir: data.paths.configDir });
 
 // 服务端解包 + 落盘缓存（17b）：产物在 data/unpacked/<fingerprint>/，前端命中后只 fetch 文件
 const unpackStore = createUnpackStore({
@@ -219,5 +228,6 @@ server.requestTimeout = 0; // 0 = 不主动超时（长请求如大模型文件�
 server.listen(PORT, '0.0.0.0', () => {
   log.info(`内置服务 on http://0.0.0.0:${PORT}`);
   log.info(`静态根 ${WEB_ROOT}`);
+  log.info(`数据根 ${data.paths.dataRoot}${DATA_ROOT ? '（MODELSTAGE_DATA_ROOT 覆盖）' : '（默认=项目根）'}`);
   log.info('资源根已登记', { roots: data.config.readConfig().map((r) => `${r.id}=${r.name}`) });
 });

@@ -9,8 +9,9 @@
 # 因此不存在"另起一个静态服务再反代"的分层。
 #
 # PID 与日志：model-stage-web.*（日志目录 runtime/）
-# 端口可用环境变量覆盖：
+# 端口与数据根都可用环境变量覆盖：
 #   PORT=8804 bash web.sh restart
+#   PORT=8899 MODELSTAGE_DATA_ROOT=runtime/test-instance bash web.sh restart   # 独立实例（测试用）
 
 set -u
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,7 +27,11 @@ if command -v node >/dev/null 2>&1; then
 fi
 
 PORT="${PORT:-8804}"
-RUNTIME_DIR="$PROJECT_ROOT/runtime"
+# 数据根：MODELSTAGE_DATA_ROOT 覆盖（缺省 = 项目根 ⇒ 行为完全不变）。
+#   它决定 config/ data/ runtime/ 三处；PID 与日志必须跟着走，
+#   否则两个实例会抢同一个 pid 文件、日志也会混在一起（排障时看不出是谁写的）。
+DATA_ROOT="${MODELSTAGE_DATA_ROOT:-$PROJECT_ROOT}"
+RUNTIME_DIR="$DATA_ROOT/runtime"
 mkdir -p "$RUNTIME_DIR"
 PID_FILE="$RUNTIME_DIR/model-stage-web.pid"
 LOG_FILE="$RUNTIME_DIR/model-stage-web.log"
@@ -53,6 +58,8 @@ case "${1:-restart}" in
   start)
     if pid="$(running_pid)"; then echo "已在运行 (PID $pid, 端口 $PORT)"; exit 0; fi
     [ -f "$ENTRY" ] || { echo "错误: 缺少 $ENTRY"; exit 1; }
+    # 只有调用方显式设了 MODELSTAGE_DATA_ROOT 才透传：不设时与历史行为完全一致
+    if [ -n "${MODELSTAGE_DATA_ROOT:-}" ]; then export MODELSTAGE_DATA_ROOT="$DATA_ROOT"; fi
     PORT="$PORT" nohup "$NODE" "$ENTRY" >"$LOG_FILE" 2>&1 &
     echo $! > "$PID_FILE"
     sleep 1.5

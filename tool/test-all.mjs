@@ -24,6 +24,8 @@ import path from 'node:path';
 import process from 'node:process';
 import { acquireTestLock, releaseOnExit, describeHolder, EXIT_SKIPPED, HELD_ENV } from './lib/test-lock.mjs';
 import { findBadPerms, summarizeBadPerms } from './lib/check-perms.mjs';
+// 跨文件系统复制：CIFS/SMB 上 fs.copyFileSync 会因 libuv 改权限位而 EPERM（实测踩过两次）
+import { copyFilePortable } from '../src/server/core/fs-portable.mjs';
 import { checkSingleSource, formatViolations } from './check-single-source.mjs';
 import { checkWiring, formatWiringProblems } from './check-wiring.mjs';
 import { memAvailableMB, tailLines, classifyOutcome, openRun, writeSuiteResult, updateSummary, finishRun } from './lib/test-report.mjs';
@@ -356,7 +358,21 @@ const wantList = argv.includes('--list');
 const onlyIndex = argv.indexOf('--only');
 const onlyArg = onlyIndex >= 0 ? String(argv[onlyIndex + 1] || '') : null;
 const urlArgIndex = argv.indexOf('--url');
-const BASE = urlArgIndex >= 0 && argv[urlArgIndex + 1] ? argv[urlArgIndex + 1] : 'http://127.0.0.1:8804/';
+// --port <n>：独立测试实例的端口（默认 8899）。
+//   **测试默认不走 8804**：那里跑的是用户正在看的实例，验证过程一重启就打断页面加载
+//   （实测掐断过 /live2d-lib 的加载，导致渲染失败）。可选的东西没人会用，所以默认就是独立实例。
+const portArgIndex = argv.indexOf('--port');
+const TEST_PORT = portArgIndex >= 0 && argv[portArgIndex + 1] ? Number(argv[portArgIndex + 1]) : 8899;
+/**
+ * 独立测试实例的数据根（config/ data/ runtime 三处都在它下面）。
+ *
+ * 为什么连 config 也要分离：f4-roots 会增删资源根并写 config/resources.json，
+ *   与主实例共用同一份配置就会互相覆盖（测试跑完用户的资源根就变了）。
+ * 放 runtime/ 下是既有约定（测试产物一律进 runtime/，已在 .gitignore）。
+ */
+const TEST_DATA_ROOT = path.join(PROJECT, 'runtime', 'test-instance');
+// --url 显式给了就完全按它（可指向任意实例）；否则指向独立测试实例
+const BASE = urlArgIndex >= 0 && argv[urlArgIndex + 1] ? argv[urlArgIndex + 1] : `http://127.0.0.1:${TEST_PORT}/`;
 
 // --all 与 --only 互斥（同时给等于"既想全量又想只跑几套"，语义冲突，直接拒绝）
 if (wantAll && onlyArg !== null) {
@@ -439,6 +455,21 @@ function cleanProfiles() {
 }
 
 /** 首页可达性（服务没起就调用项目自带脚本启动） */
+/**
+ * 首次启动独立实例前，把主项目的 config/resources.json 复制成它的初始配置。
+ * 只在目标**不存在**时复制 —— 之后测试随便改自己的 config，不回流主项目。
+ * @returns {'exists'|'seeded'|'no-source'} 结果（打进日志，避免"配置哪来的"说不清）
+ */
+function seedTestConfig() {
+  const dst = path.join(TEST_DATA_ROOT, 'config', 'resources.json');
+  if (fs.existsSync(dst)) return 'exists';
+  const src = path.join(PROJECT, 'config', 'resources.json');
+  if (!fs.existsSync(src)) return 'no-source';
+  fs.mkdirSync(path.dirname(dst), { recursive: true });
+  copyFilePortable(src, dst);
+  return 'seeded';
+}
+
 async function ensureServer() {
   const probe = async () => {
     try {
@@ -447,13 +478,52 @@ async function ensureServer() {
     } catch { return false; }
   };
   if (await probe()) return 'already-up';
-  say(`[test-all] 服务未就绪，调用 web.sh start：${BASE}`);
-  try { spawnSync('bash', [path.join(PROJECT, 'web.sh'), 'start'], { cwd: PROJECT, stdio: 'inherit' }); } catch { /* 交给下面的探测 */ }
+  if (urlArgIndex >= 0) {
+    // 显式 --url：目标由调用方负责，我们只探测，不启动（更不管它）
+    say(`[test-all] 服务不可达（--url 指定，不会自动启动）：${BASE}`);
+    return 'unreachable';
+  }
+  const seeded = seedTestConfig();
+  say(`[test-all] 服务未就绪，启动独立测试实例：PORT=${TEST_PORT} 数据根=${path.relative(PROJECT, TEST_DATA_ROOT)}（配置 ${seeded}）`);
+  try {
+    spawnSync('bash', [path.join(PROJECT, 'web.sh'), 'start'], {
+      cwd: PROJECT,
+      stdio: 'inherit',
+      // 端口与数据根一起给：两个实例共用同一份代码，但配置/数据/运行杂物各归各
+      env: { ...process.env, PORT: String(TEST_PORT), MODELSTAGE_DATA_ROOT: TEST_DATA_ROOT },
+    });
+  } catch { /* 交给下面的探测 */ }
   for (let i = 0; i < 20; i += 1) {
     if (await probe()) return 'started';
     await new Promise((r) => setTimeout(r, 500));
   }
   return 'unreachable';
+}
+
+/**
+ * 收尾：停掉**本测试实例**（8804 上的主实例绝不触碰）。
+ *
+ * 只认自己的 pid 文件（在测试数据根的 runtime/ 下）：
+ *   · 文件不存在 ⇒ 说明 8899 上是别人的进程（或没起过），不动
+ *   · 文件存在   ⇒ 是本套起的（含上一轮残留），停掉，保证"跑完不残留"
+ * @param {string} serverKind ensureServer() 的返回值
+ * @returns {'stopped'|'skipped'|'failed'}
+ */
+function stopTestServer(serverKind) {
+  if (urlArgIndex >= 0) return 'skipped';          // --url 指向外部实例，不归我们管
+  if (serverKind === 'unreachable') return 'skipped';
+  const pidFile = path.join(TEST_DATA_ROOT, 'runtime', 'model-stage-web.pid');
+  if (!fs.existsSync(pidFile)) return 'skipped';   // 不是我们起的
+  try {
+    const r = spawnSync('bash', [path.join(PROJECT, 'web.sh'), 'stop'], {
+      cwd: PROJECT,
+      stdio: 'inherit',
+      env: { ...process.env, PORT: String(TEST_PORT), MODELSTAGE_DATA_ROOT: TEST_DATA_ROOT },
+    });
+    return r.status === 0 ? 'stopped' : 'failed';
+  } catch {
+    return 'failed';
+  }
 }
 
 /**
@@ -679,4 +749,6 @@ say(`\n[test-all] ${report.ok ? '✅ 全部通过' : '❌ 存在失败'}（${rep
   + (allSkippedSuites.length ? ` ｜ ⚠ 有 ${allSkippedSuites.length} 套实际未验证` : ''));
 finishRun({ outRoot: OUT_DIR, dir: RUN.dir, summaryPath: RUN.summaryPath, exitCode: report.ok ? 0 : 1 });
 say(`[test-all] 结果：${path.join(OUT_DIR, 'latest.json')}`);
+// 收尾：停掉本次起的测试实例（8804 主实例不在管理范围内）
+say(`[test-all] 测试实例收尾：${stopTestServer(report.server)}`);
 process.exit(report.ok ? 0 : 1);

@@ -29,9 +29,10 @@ import * as probe from './assets/probe.mjs';
  *   avatarRoot = 头像根（可选，缺省 <root>/avatars）。由调用方解析 CLI/env 后传入 ——
  *     本层保持"不读 process.argv"的约束（见文件头设计约束）。
  */
-export function createServerData({ root, avatarRoot }) {
+export function createServerData({ root, dataRoot, avatarRoot }) {
   if (!root) throw new Error('createServerData: 需要 root');
-  const paths = createPaths({ root, avatarRoot });
+  // dataRoot 缺省 = root（历史行为）；测试实例传自己的数据根，代码目录仍跟随 root
+  const paths = createPaths({ root, dataRoot, avatarRoot });
   const env = createEnv(paths);
   const config = createConfig(paths);
   const plugins = createPlugins(paths);
