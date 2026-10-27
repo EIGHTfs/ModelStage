@@ -387,7 +387,12 @@ export function toBundleEntry(cfg, file, provider) {
       : '提供者未声明产出类型');
   }
   return {
-    id: `bundle-${cfg.id}-${file.name}`,
+    // id 必须含**根内相对路径**，不能只用文件名：
+    //   资源包里不同子目录常有同名文件（如各角色目录下都叫 `c200_01_...`），只用 file.name
+    //   会让它们得到同一个 id ⇒ 名册按 id 匹配选中态 ⇒ 点一个、多个一起高亮，
+    //   而且"上次选择记忆"也会指到错的那一个。
+    //   与同族实现保持一致：live2d 用 relPath.replace(/\//g,'_')、spine 用 idPath.replace(/\//g,'_')。
+    id: `bundle-${cfg.id}-${String(rel).replace(/\//g, '_')}`,
     kind: provider.kind, // 可能为 null：宁可显式空，也不按插件 id 猜
     container: file.container || 'unityfs',   // 装载层据此决定先解包（不是内容类型）
     provider: provider.id,
