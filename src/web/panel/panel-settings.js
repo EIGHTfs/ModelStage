@@ -80,9 +80,6 @@ const ONE_SHOT_IDS = (() => {
 /** 可点控件全集 = 外壳项 + 声明了能力键的项（能力过滤决定其中哪些真的可点） */
 const WIRED_IDS = (() => {
   const ids = new Set(Object.keys(SHELL_APPLIERS));
-  // 面板头「收起菜单」：事件由 main.js 在 #panel-head 上委托绑定（不是 schema 控件），
-  //   但它是真接线的（收起右栏），所以要计入"已接线集合"，否则断言会把可点项当成漏网。
-  ids.add('btn-collapse-menu');
   for (const group of PANEL_GROUPS) {
     for (const ctl of group.controls || []) {
       if (ctl && ctl.id && settingKeyOf(ctl.id)) ids.add(ctl.id);

@@ -267,11 +267,15 @@
   margin-bottom: 4px;
 }
 
+/* 「资源根 N 个」靠左，right 两侧按钮（收起 / 管理）挨着排在右端。
+   用 margin-left:auto 把第一个按钮顶到右边，后续按钮自然紧随 —— 比 grid 三段式更简单，
+   也不会因为两侧文字宽度变化而让按钮漂到中间。 */
 .root-bar {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 6px;
 }
+.root-bar > #btn-collapse { margin-left: auto; }
 .root-add > #btn-add-root {
   align-self: flex-start;
 }
@@ -329,8 +333,7 @@
 .seg-btn:disabled,
 .switch-btn:disabled,
 .transport-select:disabled,
-#app-footer .mini-btn:disabled,
-#btn-collapse-menu:disabled {
+#app-footer .mini-btn:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }

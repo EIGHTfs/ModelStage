@@ -78,10 +78,6 @@
 <aside id="left-panel" class="panel panel-left" aria-label="角色库">
   <div class="panel-head">
     <span class="panel-title">角色库</span>
-    <span class="panel-actions">
-      <button type="button" class="mini-btn" id="btn-collapse"
-        title="只收起展开的树节点（面板保留；隐藏面板用顶栏「模型库」按钮）">收起</button>
-    </span>
   </div>
   <div class="panel-count" id="roster-count">正在读取资源根…</div>
   <!-- 资源根管理（F4）：新增 / 改名 / 启停 / 删除。列表默认收起，点「管理」展开。
@@ -94,6 +90,8 @@
     </div>
     <div class="root-bar">
       <span class="muted-hint">资源根 <span id="root-count">0</span> 个</span>
+      <button type="button" class="mini-btn" id="btn-collapse"
+        title="只收起展开的树节点（面板保留；隐藏面板用顶栏「模型库」按钮）">收起</button>
       <button type="button" class="mini-btn" id="btn-root-toggle" aria-expanded="false" title="展开资源根管理">管理</button>
     </div>
     <div id="root-manager-body" hidden>

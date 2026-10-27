@@ -456,13 +456,6 @@ function bindEvents() {
   if (dom.btnShot) dom.btnShot.addEventListener('click', () => exportScreenshot());
   if (dom.btnCinema) dom.btnCinema.addEventListener('click', () => toggleCinema());
   if (dom.btnMenu) dom.btnMenu.addEventListener('click', () => toggleRightPanel());
-  // 面板头的「收起菜单」：委托绑定（面板会按渲染器能力重建，直接绑按钮会随重建丢失）
-  if (dom.panelHead) {
-    dom.panelHead.addEventListener('click', (e) => {
-      const btn = e.target.closest('[data-ctl="btn-collapse-menu"]');
-      if (btn) toggleRightPanel(false);
-    });
-  }
   bindCinemaKeys();
 }
 

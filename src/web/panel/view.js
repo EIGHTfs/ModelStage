@@ -13,7 +13,7 @@
 //   dynamic-list 动态内容容器（由接线方按模型填充）
 //   note      纯说明文字
 
-import { ACTION_ICONS, COLLAPSE_ICON, GROUP_ICONS, svgIcon } from './icons.js';
+import { ACTION_ICONS, GROUP_ICONS, svgIcon } from './icons.js';
 import { el, markDisabled, markPending } from './dom.js';
 import { renderChips, renderListRow, renderSelect } from './render-choice.js';
 import { PANEL_GROUPS } from './schema.js';
@@ -437,15 +437,9 @@ export function mountPanel({ headEl, bodyEl, onSetting, wiredIds, groups, initia
     disabledReason: (id) => disabledMap.get(id) || null,
   };
 
-  // 面板头：标题 + 「收起菜单」（面板右缘有该按钮，未接线故 disabled）
+  // 面板头只有标题：右栏的收起入口统一由顶栏「菜单」按钮负责，面板内不再重复一个收起按钮
   const title = el('span', 'panel-title', '控制面板');
-  // 「收起菜单」：点击由 main.js 在 #panel-head 委托绑定（面板重建不丢监听）
-  const collapse = el('button', 'mini-btn has-icon', '收起菜单');
-  collapse.prepend(svgIcon(COLLAPSE_ICON));
-  collapse.dataset.ctl = 'btn-collapse-menu'; // 与组内控件同口径，便于统一用 [data-ctl] 定位
-  collapse.type = 'button';
-  collapse.title = '收起右侧控制面板（顶栏「菜单」可再打开）';
-  headEl.append(title, collapse);
+  headEl.append(title);
 
   for (const group of schema) bodyEl.append(renderGroup(group, ctx));
 

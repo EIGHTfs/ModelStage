@@ -48,9 +48,6 @@ export const GROUP_ICONS = {
   settings: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h10M18 18h2"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="16" cy="18" r="2"/>',
 };
 
-/** 收起菜单（面板头）图标 */
-export const COLLAPSE_ICON = '<path d="m9 18 6-6-6-6"/>';
-
 /** 生成包住 svg 的 span（aria-hidden，装饰性） */
 export function svgIcon(body) {
   const span = document.createElement('span');

@@ -368,31 +368,18 @@ async function runMenuToggle(C) {
     await waitUntil(() => Math.abs(Math.round(rect(panel).x) - expectOnX) <= POS_TOL, 3000);
     const onAttr = document.documentElement.dataset.right;
     const x2 = Math.round(rect(panel).x);
-    // 面板头「收起菜单」也要能收起；收起后靠顶栏「菜单」重新展开
-    click(q('[data-ctl="btn-collapse-menu"]'));
-    await waitUntil(() => Math.round(rect(panel).x) >= window.innerWidth - POS_TOL, 3000);
-    const off2 = document.documentElement.dataset.right;
-    const x3 = Math.round(rect(panel).x);
-    click(q('#btn-menu'));
-    // 等位移动画走完（过渡中取坐标会得到中间值，曾读到 1779）
-    let restored = Math.round(rect(panel).x);
-    for (let i = 0; i < 20 && Math.abs(restored - expectOnX) > POS_TOL; i += 1) {
-      // 不能换：轮询间隔（读回位后逐帧比对）
-      await sleep(100);
-      restored = Math.round(rect(panel).x);
-    }
-    rec('F2⑤ 菜单 / 收起菜单', '#btn-menu + [data-ctl="btn-collapse-menu"]', 'click 菜单 → 菜单 → 收起菜单 → 菜单',
+    // 右栏面板头内的「收起菜单」按钮已移除：右栏开关唯一入口是顶栏「菜单」按钮。
+    //   所以这里只验「菜单」能来回切换，不再点面板内按钮。
+    const restored = x2;
+    rec('F2⑤ 菜单开关右栏', '#btn-menu', 'click 菜单 → 菜单（面板内不再有收起按钮）',
       'data-right 在 on/off 间切换；收起时右栏移出视口（x≥视口宽）；'
         + 'on 状态左边界 = 视口宽 − --right-w（±1px 容差）',
       `初始 x=${x0}；菜单后 ${offAttr} x=${x1}；再菜单后 ${onAttr} x=${x2}；`
-        + `收起菜单后 ${off2} x=${x3}；最后复位 x=${restored}；`
         + `期望 on 状态 x=${expectOnX}（视口 ${window.innerWidth} − 右栏 ${rightW}）`,
       // 位置判据统一用 POS_TOL 容差：亚像素舍入会让"复位后"落在期望值 ±1（实测 1680 → 1681），
       //   旧写法在这里用严格相等、在上面两处却已带 1px 容差 —— 同一断言两种标准，本身就是 bug。
-      //   on 状态的两处（x2 / restored）现在都对齐 expectOnX，而不是只比"没超出视口"。
       offAttr === 'off' && x1 >= window.innerWidth - POS_TOL
         && onAttr === 'on' && Math.abs(x2 - expectOnX) <= POS_TOL
-        && off2 === 'off' && x3 >= window.innerWidth - POS_TOL
         && Math.abs(restored - expectOnX) <= POS_TOL);
   }
 
