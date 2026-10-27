@@ -55,64 +55,97 @@ export function createSwitcher(ctx) {
   }
 
   /**
-   * 单次切换时序：loading 遮罩 → 统一卸载 → 装载 → 切面 → 请求帧。
-   * 失败回滚到上一个面；若期间已有新请求，则把失败"吞掉"改切新的那份（不留下中间态）。
+   * ① 切换前收尾：算出卸载方式并执行卸载。
+   *
+   * 分流规则（契约 D1，**最容易在重构里被顺手改错的地方**）：
+   *   · 同一渲染器换内容（spine→spine / live2d→live2d）→ unmount：释放内容与自建 GL 资源，
+   *     但保留引擎/PIXI 覆盖层，再装载更快
+   *   · 换渲染器（spine↔live2d）→ dispose：彻底拆，**不留旧 GL 上下文**
+   *     （留着就是契约 §五-7 说的"遗留自建 GL 资源"，且连续切换会累积上下文）
+   * @param {object} document 目标文档（用来推断 nextId）
+   * @param {string|null} previous 切换前的渲染器 id
+   */
+  async function unloadPrevious(document, previous) {
+    const nextId = (document && (document.rendererId || (document.kind === 'live2d' ? 'live2d' : 'spine'))) || null;
+    const unloadMode = previous && previous === nextId ? 'unmount' : 'dispose';
+    note(`卸载模式=${unloadMode}（previous=${previous || 'none'} next=${nextId || 'none'}）`);
+    await disposeActive(unloadMode);
+  }
+
+  /**
+   * ② 装配新渲染器 + 切换后通知。成功返回 {skipped:false, info}；失败**原样抛出**交给 ③ 回滚。
+   *
+   * 顺序即契约：measure → mount → 写 activeId/document → setMode(kind) → requestRender → noteSwitch。
+   *   尤其 activeId 必须**在 mount 成功之后**才写（失败时由 ③ 回滚到 previous）。
    * @param {object} document
-   * @returns {Promise<object>}
+   * @param {string|null} previous 切换前的渲染器 id（Document 不可用时用它回显旧面）
+   */
+  async function assembleAndActivate(document, previous) {
+    // 门禁（契约 D1）：activate 只接受 Document。
+    //   传旧形状（catalog entry，没有 state 字段）→ **直接抛错**，不做兜底组装：
+    //   兜底一旦留着，忘了组装的调用点就会静默走它，契约形同虚设。
+    if (!document || typeof document.state !== 'string') {
+      const got = document && typeof document === 'object' ? `普通对象（kind=${document.kind || '?'}）` : String(document);
+      // 就绪信号：失败必须是显式 failed + 原因（测试当场能报，而不是等超时）
+      markModelFailed(`不是 Document：收到 ${got}`);
+      throw new Error(`surface.activate 只接受 Document（请先 buildDocument 组装），收到：${got}`);
+    }
+    // ready 之外（如 error）不进入渲染层，但属可预期的用户侧失败：给提示、不抛
+    if (document.state !== 'ready') {
+      const why = (document.warnings || []).join('；') || '缺少 Document';
+      note(`跳过装载：Document 不可用（${document.state || 'none'}）：${why}`);
+      markModelFailed(`Document 不可用（${document.state || 'none'}）：${why}`);
+      setMode(previous === 'live2d' ? 'live2d' : 'spine');
+      return { skipped: true, info: null };
+    }
+    const kind = document.kind === 'live2d' ? 'live2d' : 'spine';
+    const rendererId = document.rendererId || kind;
+    const entry = renderers.get(rendererId);
+    if (!entry) throw new Error(`没有注册渲染器：${rendererId}`);
+    measure();
+    const info = await entry.mount(document, handle(rendererId)); // ③ 装载
+    state.activeId = rendererId; state.document = document || null;
+    setMode(kind);              // ④ 切面（全项目唯一写入点）
+    requestRender();
+    noteSwitch(`activated:${rendererId}`);
+    return { skipped: false, info };
+  }
+
+  /**
+   * ③ 失败回滚：回到上一个面（没有就回到 spine），并如实记日志。
+   *
+   * 注意顺序：先 setMode 回显旧面，再把 activeId 改回 previous —— 与原实现一致；
+   *   顺序颠倒会让"切面"读到已经回滚的 activeId。
+   * 若期间已有新请求（state.pending），把失败**吞掉**：以最新那份为准，
+   *   旧失败不再外抛（否则用户看到无意义的中间态错误）。
+   * @returns {{swallowed:boolean}}
+   */
+  function rollbackOnFailure(document, previous, err) {
+    setMode(previous === 'live2d' ? 'live2d' : 'spine');
+    state.activeId = previous;
+    noteSwitch(`activate-failed:${(document && document.kind) || '?'}`);
+    if (state.pending) {
+      note(`切换已被新的选择取代：${(err && err.message) || err}`);
+      return { swallowed: true };
+    }
+    return { swallowed: false };
+  }
+
+  /**
+   * 单次切换时序：loading 遮罩 → 收尾 → 装配 → 请求帧。本体只做编排，细节在三段里。
+   * @param {object} document
+   * @returns {Promise<object|null>} 装载结果；Document 不可用或有新请求取代时返回 null
    */
   async function runSwitch(document) {
     const previous = state.activeId;
     setMode('loading');           // ① 先遮住：任何方向都不可能叠加
     try {
-      // ② 统一卸载：**按"换不换渲染器"分流**
-      //   · 同一渲染器换内容（spine→spine / live2d→live2d）→ unmount：释放内容与自建 GL 资源，
-      //     但保留引擎/PIXI 覆盖层，再装载更快
-      //   · 换渲染器（spine↔live2d）→ dispose：彻底拆，**不留旧 GL 上下文**
-      //     （留着就是契约 §五-7 说的"遗留自建 GL 资源"，且连续切换会累积上下文）
-      const nextId = (document && (document.rendererId || (document.kind === 'live2d' ? 'live2d' : 'spine'))) || null;
-      const unloadMode = previous && previous === nextId ? 'unmount' : 'dispose';
-      note(`卸载模式=${unloadMode}（previous=${previous || 'none'} next=${nextId || 'none'}）`);
-      await disposeActive(unloadMode);
-      // 门禁（契约 D1）：activate 只接受 Document。
-      //   传旧形状（catalog entry，没有 state 字段）→ **直接抛错**，不做兜底组装：
-      //   兜底一旦留着，忘了组装的调用点就会静默走它，契约形同虚设。
-      const doc = document;
-      if (!doc || typeof doc.state !== 'string') {
-        const got = doc && typeof doc === 'object' ? `普通对象（kind=${doc.kind || '?'}）` : String(doc);
-        // 就绪信号：失败必须是显式 failed + 原因（测试当场能报，而不是等超时）
-        markModelFailed(`不是 Document：收到 ${got}`);
-        throw new Error(`surface.activate 只接受 Document（请先 buildDocument 组装），收到：${got}`);
-      }
-      // ready 之外（如 error）不进入渲染层，但属可预期的用户侧失败：给提示、不抛
-      if (doc.state !== 'ready') {
-        const why = (doc && (doc.warnings || []).join('；')) || '缺少 Document';
-        note(`跳过装载：Document 不可用（${(doc && doc.state) || 'none'}）：${why}`);
-        markModelFailed(`Document 不可用（${(doc && doc.state) || 'none'}）：${why}`);
-        setMode(previous === 'live2d' ? 'live2d' : 'spine');
-        return null;
-      }
-      const kind = doc.kind === 'live2d' ? 'live2d' : 'spine';
-      const rendererId = doc.rendererId || kind;
-      const entry = renderers.get(rendererId);
-      if (!entry) throw new Error(`没有注册渲染器：${rendererId}`);
-      measure();
-      const info = await entry.mount(doc, handle(rendererId)); // ③ 装载
-      state.activeId = rendererId;
-      state.document = doc || null;
-      setMode(kind);              // ④ 切面（全项目唯一写入点）
-      requestRender();
-      noteSwitch(`activated:${rendererId}`);
-      return info;
+      await unloadPrevious(document, previous);
+      const r = await assembleAndActivate(document, previous);
+      return r.skipped ? null : r.info;
     } catch (err) {
-      // ⑤ 失败回滚：回到上一个面（没有就回到 spine），并如实记日志
-      setMode(previous === 'live2d' ? 'live2d' : 'spine');
-      state.activeId = previous;
-      noteSwitch(`activate-failed:${(document && document.kind) || '?'}`);
-      if (state.pending) {
-        // 期间又来了新的选择：以最新那份为准，旧失败不再外抛（否则用户看到无意义的中间态错误）
-        note(`切换已被新的选择取代：${(err && err.message) || err}`);
-        return null;
-      }
+      const rb = rollbackOnFailure(document, previous, err);
+      if (rb.swallowed) return null;
       throw err;
     }
   }
