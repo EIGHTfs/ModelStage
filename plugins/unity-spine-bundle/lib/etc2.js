@@ -62,135 +62,157 @@
     void out;
   }
 
-  /** ETC1/ETC2 的 RGB 块（8 字节）→ 4x4 RGBA（alpha 先填 255） */
-  function decodeRgbBlock(data, off, etc2) {
-    const out = new Uint8Array(16 * 4);
-    const b = data;
-    const o = off;
-    let j = (b[o + 6] << 8) | b[o + 7];
-    let k = (b[o + 4] << 8) | b[o + 5];
-    const c = [[0, 0, 0], [0, 0, 0]];
-    const flip = b[o + 3] & 1;
-    const code = [b[o + 3] >> 5, (b[o + 3] >> 2) & 7];
-    const subblock = Etc1SubblockTable[flip];
+  /** 写块内第 idx 个像素（按 WriteOrderTable 的扫描顺序） */
+  function putPixel(out, idx, r, g, bl) {
+    const p = WriteOrderTable[idx] * 4;
+    out[p] = clamp(r);
+    out[p + 1] = clamp(g);
+    out[p + 2] = clamp(bl);
+    out[p + 3] = 255;
+  }
 
-    const put = (idx, r, g, bl) => {
-      const p = WriteOrderTable[idx] * 4;
-      out[p] = clamp(r);
-      out[p + 1] = clamp(g);
-      out[p + 2] = clamp(bl);
-      out[p + 3] = 255;
-    };
+  /** 差分位（低 3 位）的符号扩展，范围 -8..+7。三个通道共用同一个表达式 */
+  const deltaOf = (x) => ((x << 3) & 0x18) - ((x << 3) & 0x20);
 
-    if ((b[o + 3] & 2) === 0) {
-      // 个体模式
-      c[0][0] = ((b[o] & 0xf0) | (b[o] >> 4)) & 0xff;
-      c[1][0] = ((b[o] & 0x0f) | (b[o] << 4)) & 0xff;
-      c[0][1] = ((b[o + 1] & 0xf0) | (b[o + 1] >> 4)) & 0xff;
-      c[1][1] = ((b[o + 1] & 0x0f) | (b[o + 1] << 4)) & 0xff;
-      c[0][2] = ((b[o + 2] & 0xf0) | (b[o + 2] >> 4)) & 0xff;
-      c[1][2] = ((b[o + 2] & 0x0f) | (b[o + 2] << 4)) & 0xff;
-      for (let i = 0; i < 16; i++, j >>= 1, k >>= 1) {
-        const s = subblock[i];
-        const m = Etc1ModifierTable[code[s]][j & 1];
-        put(i, c[s][0] + (k & 1 ? -m : m), c[s][1] + (k & 1 ? -m : m), c[s][2] + (k & 1 ? -m : m));
-      }
-      return out;
-    }
-
-    // 差分模式：差分溢出即切到 ETC2 的 T / H / 平面模式
+  /**
+   * 选择 RGB 块的子模式。
+   *
+   * **判定顺序即规范，不可调整**：
+   *   individual → T(R 差分溢出) → H(G 差分溢出) → Planar(B 差分溢出) → differential。
+   *   顺序一变，同一个 block 会落进不同模式、解码结果就变了 ——
+   *   不要为了"看起来整齐"把这些 if 重排或合并。
+   * ETC1（etc2 === false）没有 T/H/Planar 三种模式：individual 之后直接进 differential。
+   * @returns {'individual'|'t'|'h'|'planar'|'differential'}
+   */
+  function selectRgbMode(b, o, etc2) {
+    if ((b[o + 3] & 2) === 0) return 'individual';
+    if (!etc2) return 'differential';
     const r0 = b[o] & 0xf8;
     const g0 = b[o + 1] & 0xf8;
     const bl0 = b[o + 2] & 0xf8;
-    const dr = ((b[o] << 3) & 0x18) - ((b[o] << 3) & 0x20);
-    const dg = ((b[o + 1] << 3) & 0x18) - ((b[o + 1] << 3) & 0x20);
-    const db = ((b[o + 2] << 3) & 0x18) - ((b[o + 2] << 3) & 0x20);
+    if (r0 + deltaOf(b[o]) < 0 || r0 + deltaOf(b[o]) > 255) return 't';
+    if (g0 + deltaOf(b[o + 1]) < 0 || g0 + deltaOf(b[o + 1]) > 255) return 'h';
+    if (bl0 + deltaOf(b[o + 2]) < 0 || bl0 + deltaOf(b[o + 2]) > 255) return 'planar';
+    return 'differential';
+  }
 
-    if (etc2 && (r0 + dr < 0 || r0 + dr > 255)) {
-      // T 模式
-      const c0 = [
-        ((b[o] << 3) & 0xc0) | ((b[o] << 4) & 0x30) | ((b[o] >> 1) & 0xc) | (b[o] & 3),
-        ((b[o + 1] & 0xf0) | (b[o + 1] >> 4)) & 0xff,
-        ((b[o + 1] & 0x0f) | (b[o + 1] << 4)) & 0xff,
-      ];
-      const c1 = [
-        ((b[o + 2] & 0xf0) | (b[o + 2] >> 4)) & 0xff,
-        ((b[o + 2] & 0x0f) | (b[o + 2] << 4)) & 0xff,
-        ((b[o + 3] & 0xf0) | (b[o + 3] >> 4)) & 0xff,
-      ];
-      const d = Etc2DistanceTable[((b[o + 3] >> 1) & 6) | (b[o + 3] & 1)];
-      const set = [
-        [c0[0], c0[1], c0[2]],
-        [c1[0] + d, c1[1] + d, c1[2] + d],
-        [c1[0], c1[1], c1[2]],
-        [c1[0] - d, c1[1] - d, c1[2] - d],
-      ];
-      k = (k << 1) >>> 0;
-      for (let i = 0; i < 16; i++, j >>= 1, k >>= 1) {
-        const sel = ((k & 2) | (j & 1));
-        put(i, set[sel][0], set[sel][1], set[sel][2]);
-      }
-      return out;
+  /** ① 个体模式：两半各自 4 位颜色（不做通道差分） */
+  function decodeIndividualBlock(b, o, j, k, out) {
+    const flip = b[o + 3] & 1;
+    const code = [b[o + 3] >> 5, (b[o + 3] >> 2) & 7];
+    const subblock = Etc1SubblockTable[flip];
+    const c = [[0, 0, 0], [0, 0, 0]];
+    c[0][0] = ((b[o] & 0xf0) | (b[o] >> 4)) & 0xff;
+    c[1][0] = ((b[o] & 0x0f) | (b[o] << 4)) & 0xff;
+    c[0][1] = ((b[o + 1] & 0xf0) | (b[o + 1] >> 4)) & 0xff;
+    c[1][1] = ((b[o + 1] & 0x0f) | (b[o + 1] << 4)) & 0xff;
+    c[0][2] = ((b[o + 2] & 0xf0) | (b[o + 2] >> 4)) & 0xff;
+    c[1][2] = ((b[o + 2] & 0x0f) | (b[o + 2] << 4)) & 0xff;
+    for (let i = 0; i < 16; i++, j >>= 1, k >>= 1) {
+      const s = subblock[i];
+      const m = Etc1ModifierTable[code[s]][j & 1];
+      putPixel(out, i, c[s][0] + (k & 1 ? -m : m), c[s][1] + (k & 1 ? -m : m), c[s][2] + (k & 1 ? -m : m));
     }
+    return out;
+  }
 
-    if (etc2 && (g0 + dg < 0 || g0 + dg > 255)) {
-      // H 模式
-      const c0 = [0, 0, 0];
-      const c1 = [0, 0, 0];
-      c0[0] = ((b[o] << 1) & 0xf0) | ((b[o] >> 3) & 0x0f);
-      c0[1] = ((b[o] << 5) & 0xe0) | (b[o + 1] & 0x10);
-      c0[1] |= c0[1] >> 4;
-      c0[2] = ((b[o + 1] & 8) | ((b[o + 1] << 1) & 6) | (b[o + 2] >> 7)) & 0xff;
-      c0[2] |= (c0[2] << 4) & 0xff;
-      c1[0] = ((b[o + 2] << 1) & 0xf0) | ((b[o + 2] >> 3) & 0x0f);
-      c1[1] = ((b[o + 2] << 5) & 0xe0) | ((b[o + 3] >> 3) & 0x10);
-      c1[1] |= c1[1] >> 4;
-      c1[2] = ((b[o + 3] << 1) & 0xf0) | ((b[o + 3] >> 3) & 0x0f);
-      let d = (b[o + 3] & 4) | ((b[o + 3] << 1) & 2);
-      if (c0[0] > c1[0]
-        || (c0[0] === c1[0] && (c0[1] > c1[1] || (c0[1] === c1[1] && c0[2] >= c1[2])))) d++;
-      d = Etc2DistanceTable[d];
-      const set = [
-        [c0[0] + d, c0[1] + d, c0[2] + d],
-        [c0[0] - d, c0[1] - d, c0[2] - d],
-        [c1[0] + d, c1[1] + d, c1[2] + d],
-        [c1[0] - d, c1[1] - d, c1[2] - d],
-      ];
-      k = (k << 1) >>> 0;
-      for (let i = 0; i < 16; i++, j >>= 1, k >>= 1) {
-        const sel = ((k & 2) | (j & 1));
-        put(i, set[sel][0], set[sel][1], set[sel][2]);
-      }
-      return out;
+  /** ② T 模式（ETC2）：两个端点色 + 一组距离偏移，索引为 3 bit */
+  function decodeTBlock(b, o, j, k, out) {
+    const c0 = [
+      ((b[o] << 3) & 0xc0) | ((b[o] << 4) & 0x30) | ((b[o] >> 1) & 0xc) | (b[o] & 3),
+      ((b[o + 1] & 0xf0) | (b[o + 1] >> 4)) & 0xff,
+      ((b[o + 1] & 0x0f) | (b[o + 1] << 4)) & 0xff,
+    ];
+    const c1 = [
+      ((b[o + 2] & 0xf0) | (b[o + 2] >> 4)) & 0xff,
+      ((b[o + 2] & 0x0f) | (b[o + 2] << 4)) & 0xff,
+      ((b[o + 3] & 0xf0) | (b[o + 3] >> 4)) & 0xff,
+    ];
+    const d = Etc2DistanceTable[((b[o + 3] >> 1) & 6) | (b[o + 3] & 1)];
+    const set = [
+      [c0[0], c0[1], c0[2]],
+      [c1[0] + d, c1[1] + d, c1[2] + d],
+      [c1[0], c1[1], c1[2]],
+      [c1[0] - d, c1[1] - d, c1[2] - d],
+    ];
+    k = (k << 1) >>> 0;
+    for (let i = 0; i < 16; i++, j >>= 1, k >>= 1) {
+      const sel = ((k & 2) | (j & 1));
+      putPixel(out, i, set[sel][0], set[sel][1], set[sel][2]);
     }
+    return out;
+  }
 
-    if (etc2 && (bl0 + db < 0 || bl0 + db > 255)) {
-      // 平面模式：三顶点色插值
-      const c = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
-      c[0][0] = ((b[o] << 1) & 0xfc) | ((b[o] >> 5) & 3);
-      c[0][1] = ((b[o] << 7) & 0x80) | (b[o + 1] & 0x7e) | (b[o] & 1);
-      c[0][2] = ((b[o + 1] << 7) & 0x80) | ((b[o + 2] << 2) & 0x60) | ((b[o + 2] << 3) & 0x18) | ((b[o + 3] >> 5) & 4);
-      c[0][2] |= c[0][2] >> 6;
-      c[1][0] = ((b[o + 3] << 1) & 0xf8) | ((b[o + 3] << 2) & 4) | ((b[o + 3] >> 5) & 3);
-      c[1][1] = (b[o + 4] & 0xfe) | (b[o + 4] >> 7);
-      c[1][2] = ((b[o + 4] << 7) & 0x80) | ((b[o + 5] >> 1) & 0x7c);
-      c[1][2] |= c[1][2] >> 6;
-      c[2][0] = ((b[o + 5] << 5) & 0xe0) | ((b[o + 6] >> 3) & 0x1c) | ((b[o + 5] >> 1) & 3);
-      c[2][1] = ((b[o + 6] << 3) & 0xf8) | ((b[o + 7] >> 5) & 0x6) | ((b[o + 6] >> 4) & 1);
-      c[2][2] = ((b[o + 7] << 2) | ((b[o + 7] >> 4) & 3)) & 0xff;
-      for (let y = 0, i = 0; y < 4; y++) {
-        for (let x = 0; x < 4; x++, i++) {
-          const rr = clamp((x * (c[1][0] - c[0][0]) + y * (c[2][0] - c[0][0]) + 4 * c[0][0] + 2) >> 2);
-          const gg = clamp((x * (c[1][1] - c[0][1]) + y * (c[2][1] - c[0][1]) + 4 * c[0][1] + 2) >> 2);
-          const bb = clamp((x * (c[1][2] - c[0][2]) + y * (c[2][2] - c[0][2]) + 4 * c[0][2] + 2) >> 2);
-          const p = i * 4;
-          out[p] = rr; out[p + 1] = gg; out[p + 2] = bb; out[p + 3] = 255;
-        }
-      }
-      return out;
+  /** ③ H 模式（ETC2）：两色 + 距离偏移；d 的档位由两色大小关系决定 */
+  function decodeHBlock(b, o, j, k, out) {
+    const c0 = [0, 0, 0];
+    const c1 = [0, 0, 0];
+    c0[0] = ((b[o] << 1) & 0xf0) | ((b[o] >> 3) & 0x0f);
+    c0[1] = ((b[o] << 5) & 0xe0) | (b[o + 1] & 0x10);
+    c0[1] |= c0[1] >> 4;
+    c0[2] = ((b[o + 1] & 8) | ((b[o + 1] << 1) & 6) | (b[o + 2] >> 7)) & 0xff;
+    c0[2] |= (c0[2] << 4) & 0xff;
+    c1[0] = ((b[o + 2] << 1) & 0xf0) | ((b[o + 2] >> 3) & 0x0f);
+    c1[1] = ((b[o + 2] << 5) & 0xe0) | ((b[o + 3] >> 3) & 0x10);
+    c1[1] |= c1[1] >> 4;
+    c1[2] = ((b[o + 3] << 1) & 0xf0) | ((b[o + 3] >> 3) & 0x0f);
+    let d = (b[o + 3] & 4) | ((b[o + 3] << 1) & 2);
+    if (c0[0] > c1[0]
+      || (c0[0] === c1[0] && (c0[1] > c1[1] || (c0[1] === c1[1] && c0[2] >= c1[2])))) d++;
+    d = Etc2DistanceTable[d];
+    const set = [
+      [c0[0] + d, c0[1] + d, c0[2] + d],
+      [c0[0] - d, c0[1] - d, c0[2] - d],
+      [c1[0] + d, c1[1] + d, c1[2] + d],
+      [c1[0] - d, c1[1] - d, c1[2] - d],
+    ];
+    k = (k << 1) >>> 0;
+    for (let i = 0; i < 16; i++, j >>= 1, k >>= 1) {
+      const sel = ((k & 2) | (j & 1));
+      putPixel(out, i, set[sel][0], set[sel][1], set[sel][2]);
     }
+    return out;
+  }
 
-    // 差分模式（ETC1 本体）
+  /** ④ 平面模式（ETC2）：三顶点色做平面插值；**不用索引位**，按 i*4 顺序直接写 */
+  function decodePlanarBlock(b, o, j, k, out) {
+    void j; void k;   // 平面模式不使用索引位（参数保留只为统一签名）
+    const c = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+    c[0][0] = ((b[o] << 1) & 0xfc) | ((b[o] >> 5) & 3);
+    c[0][1] = ((b[o] << 7) & 0x80) | (b[o + 1] & 0x7e) | (b[o] & 1);
+    c[0][2] = ((b[o + 1] << 7) & 0x80) | ((b[o + 2] << 2) & 0x60) | ((b[o + 2] << 3) & 0x18) | ((b[o + 3] >> 5) & 4);
+    c[0][2] |= c[0][2] >> 6;
+    c[1][0] = ((b[o + 3] << 1) & 0xf8) | ((b[o + 3] << 2) & 4) | ((b[o + 3] >> 5) & 3);
+    c[1][1] = (b[o + 4] & 0xfe) | (b[o + 4] >> 7);
+    c[1][2] = ((b[o + 4] << 7) & 0x80) | ((b[o + 5] >> 1) & 0x7c);
+    c[1][2] |= c[1][2] >> 6;
+    c[2][0] = ((b[o + 5] << 5) & 0xe0) | ((b[o + 6] >> 3) & 0x1c) | ((b[o + 5] >> 1) & 3);
+    c[2][1] = ((b[o + 6] << 3) & 0xf8) | ((b[o + 7] >> 5) & 0x6) | ((b[o + 6] >> 4) & 1);
+    c[2][2] = ((b[o + 7] << 2) | ((b[o + 7] >> 4) & 3)) & 0xff;
+    for (let y = 0, i = 0; y < 4; y++) {
+      for (let x = 0; x < 4; x++, i++) {
+        const rr = clamp((x * (c[1][0] - c[0][0]) + y * (c[2][0] - c[0][0]) + 4 * c[0][0] + 2) >> 2);
+        const gg = clamp((x * (c[1][1] - c[0][1]) + y * (c[2][1] - c[0][1]) + 4 * c[0][1] + 2) >> 2);
+        const bb = clamp((x * (c[1][2] - c[0][2]) + y * (c[2][2] - c[0][2]) + 4 * c[0][2] + 2) >> 2);
+        const p = i * 4;
+        out[p] = rr; out[p + 1] = gg; out[p + 2] = bb; out[p + 3] = 255;
+      }
+    }
+    return out;
+  }
+
+  /** ⑤ 差分模式（ETC1 本体；ETC2 下三通道都不溢出时也走这里） */
+  function decodeDifferentialBlock(b, o, j, k, out) {
+    const r0 = b[o] & 0xf8;
+    const g0 = b[o + 1] & 0xf8;
+    const bl0 = b[o + 2] & 0xf8;
+    const dr = deltaOf(b[o]);
+    const dg = deltaOf(b[o + 1]);
+    const db = deltaOf(b[o + 2]);
+    const flip = b[o + 3] & 1;
+    const code = [b[o + 3] >> 5, (b[o + 3] >> 2) & 7];
+    const subblock = Etc1SubblockTable[flip];
+    const c = [[0, 0, 0], [0, 0, 0]];
     c[0][0] = r0 | (r0 >> 5);
     c[0][1] = g0 | (g0 >> 5);
     c[0][2] = bl0 | (bl0 >> 5);
@@ -200,9 +222,29 @@
     for (let i = 0; i < 16; i++, j >>= 1, k >>= 1) {
       const s = subblock[i];
       const m = Etc1ModifierTable[code[s]][j & 1];
-      put(i, c[s][0] + (k & 1 ? -m : m), c[s][1] + (k & 1 ? -m : m), c[s][2] + (k & 1 ? -m : m));
+      putPixel(out, i, c[s][0] + (k & 1 ? -m : m), c[s][1] + (k & 1 ? -m : m), c[s][2] + (k & 1 ? -m : m));
     }
     return out;
+  }
+
+  /** 模式名 → 解码函数（签名统一 `(b, o, j, k, out) → out`，out 是 16 像素 × RGBA 的块缓冲） */
+  const RGB_BLOCK_MODES = {
+    individual: decodeIndividualBlock,
+    t: decodeTBlock,
+    h: decodeHBlock,
+    planar: decodePlanarBlock,
+    differential: decodeDifferentialBlock,
+  };
+
+  /** ETC1/ETC2 的 RGB 块（8 字节）→ 4x4 RGBA（alpha 先填 255） */
+  function decodeRgbBlock(data, off, etc2) {
+    const out = new Uint8Array(16 * 4);
+    // 公共头：索引低半（j）与高半（k）各 16 bit
+    const j = (data[off + 6] << 8) | data[off + 7];
+    const k = (data[off + 4] << 8) | data[off + 5];
+    // 先选子模式（顺序即规范，见 selectRgbMode 的注释），再交给对应的模式函数
+    const mode = selectRgbMode(data, off, etc2);
+    return RGB_BLOCK_MODES[mode](data, off, j, k, out);
   }
 
   /** ETC2A8 的 Alpha 块（前 8 字节）→ 写进块缓冲的第 4 通道 */

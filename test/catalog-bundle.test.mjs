@@ -57,12 +57,29 @@ test('递归：多层目录下的容器也能列出（nikke_2 的包在第二层
   }
 });
 
-test('回归：根层平铺的容器数量不变（azurlane_bundle 仍 19 条）', () => {
+test('回归：根层平铺的容器仍被全部列出（数量从磁盘现算，不写死）', () => {
   const cfg = data.config.readConfig().find((r) => r.id === 'azurlane_bundle');
   if (!cfg || !fs.existsSync(cfg.path)) return;
   const r = data.catalog.listCatalog('azurlane_bundle');
   const entries = r.body.entries || [];
-  assert.equal(entries.length, 19, `azurlane_bundle 应仍为 19 条，实际 ${entries.length}`);
+  // 断言的意图是"根层平铺的包没被递归改动漏掉"，**不是**"总数永远是某个数字"：
+  //   用户往这个根里加文件、或放进子目录后，硬编码的数量断言会变成假红（已实际发生过：19 → 94）。
+  //   所以从磁盘现算：根层每个文件读 8 字节判 UnityFS，得到的数才是应当被列出的条数。
+  const flatContainers = fs.readdirSync(cfg.path, { withFileTypes: true })
+    .filter((d) => d.isFile())
+    .filter((d) => {
+      try {
+        const fd = fs.openSync(`${cfg.path}/${d.name}`, 'r');
+        const head = Buffer.alloc(8);
+        fs.readSync(fd, head, 0, 8, 0);
+        fs.closeSync(fd);
+        return head.toString('latin1') === 'UnityFS\0';
+      } catch { return false; }
+    });
+  const flatListed = entries.filter((e) => !String(e.rel || e.name || '').includes('/'));
+  assert.equal(flatListed.length, flatContainers.length,
+    `根层平铺容器应全部列出：磁盘 ${flatContainers.length} 个，列了 ${flatListed.length} 个`);
+  assert.ok(flatContainers.length > 0, '该根层至少应有一个 UnityFS 容器才具回归意义');
 });
 
 test('多插件时 kind 一律为 null，并在 warnings 说明原因', () => {
