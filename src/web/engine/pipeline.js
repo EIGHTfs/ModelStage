@@ -74,6 +74,25 @@ async function decodePages({ descriptor, pageSizes, multiPage, wantSamples, log 
   return { entries, samples };
 }
 
+/**
+ * PMA 判定链：atlas 声明 → 文件名线索 → 像素检测 → 生效模式。
+ *
+ * 四个判定串成一条链、彼此是数据依赖（后一步吃前一步的结论），所以放一起；
+ * 但整段**不产生产物、不抛错**：全部走返回值，由调用方决定怎么记日志。
+ * 与日志分开的理由：日志是副作用、判定是纯逻辑 —— 混在一起时
+ *   "流程走到哪一步"会被十几个日志字段淹没（拆分前就是这个问题）。
+ * @returns {{atlasDeclared: boolean|null, filenameHint: boolean|null, detection: object, pmaInfo: object}}
+ */
+function detectPmaStage({ atlasText, descriptor, pmaMode, supportsStraight, samples, log }) {
+  const atlasDeclared = atlasDeclaredPma(atlasText);
+  const firstName = (descriptor.textureFiles && descriptor.textureFiles[0] && descriptor.textureFiles[0].name)
+    || descriptor.atlasFile.name;
+  const filenameHint = filenamePmaHint(firstName);
+  const detection = detectPma({ atlasDeclared, filenameHint, samples }, log);
+  const pmaInfo = resolvePmaInfo(pmaMode, detection, supportsStraight);
+  return { atlasDeclared, filenameHint, detection, pmaInfo };
+}
+
 /** 贴图文件名 ↔ atlas 页名（页名带相对路径时也能对上） */
 function findPageName(pageSizes, file) {
   const want = String(file.name || '').split(/[\\/]/).pop().toLowerCase();
@@ -84,30 +103,17 @@ function findPageName(pageSizes, file) {
 }
 
 /**
- * 走完整流水线，产出可直接交给 AtlasAttachmentLoader 的 atlas。
- * @param {{spine: object, gl: WebGLRenderingContext, descriptor: object, pmaMode: string,
- *          textureFilter: string, supportsStraight: boolean, log?: Function}} ctx
+ * PMA 的三条日志，按固定顺序发：debug（结构化诊断）→ degraded 时 warn → info（人读汇总）。
+ *
+ * 顺序不是随意的：现场排障时是拿 info 那一行去和 debug 里的 `pixelDetected/reason` 对拉，
+ *   warn 夹在中间是为了"降级"这件事在日志流里紧跟着它的原因出现。改顺序会破坏这个对拉关系。
+ *
+ * 为什么必须记这条 debug：切模式时那条 info 只覆盖"用户手动切换"，而**首次装载 / 刷新后走 auto 的那一次**
+ *   以前完全没有记录 —— 现场"刷新后自动档似乎没按预乘处理"就卡在这个盲区里。
+ *
+ * 本函数**不改变任何行为**（不写状态、不改 pmaInfo），是整条流水线里唯一可以完全跳过的一段。
  */
-export async function prepareAtlas(ctx) {
-  const { spine, gl, descriptor, pmaMode, textureFilter, supportsStraight, log = () => {} } = ctx;
-  const atlasText = new TextDecoder().decode(descriptor.atlasFile.content);
-  if (!atlasText) throw new Error('atlas 文件为空或无法读取');
-  const pageSizes = parseAtlasPageSizes(atlasText);
-  const multiPage = (descriptor.textureFiles || []).length > 1;
-  const { entries, samples } = await decodePages({
-    descriptor, pageSizes, multiPage, wantSamples: pmaMode === 'auto', log,
-  });
-  if (entries.size === 0) throw new Error('没有成功加载任何贴图文件，无法渲染模型');
-
-  const atlasDeclared = atlasDeclaredPma(atlasText);
-  const firstName = (descriptor.textureFiles && descriptor.textureFiles[0] && descriptor.textureFiles[0].name)
-    || descriptor.atlasFile.name;
-  const filenameHint = filenamePmaHint(firstName);
-  const detection = detectPma({ atlasDeclared, filenameHint, samples }, log);
-  const pmaInfo = resolvePmaInfo(pmaMode, detection, supportsStraight);
-  // 只读诊断：把"auto 到底判了什么、依据是什么"记下来（不改任何判定逻辑）。
-  //   为什么必须记：切模式时那条 info 只覆盖"用户手动切换"，而**首次装载/刷新后走 auto 的那一次**
-  //   以前完全没有记录——现场"刷新后自动档似乎没按预乘处理"就卡在这个盲区里。
+function logPmaStage({ descriptor, pmaMode, atlasDeclared, filenameHint, detection, pmaInfo, supportsStraight, log }) {
   pmaLog.debug('pma.resolve', {
     model: descriptor && (descriptor.id || descriptor.rel || descriptor.name) || null,
     mode: pmaMode,
@@ -131,18 +137,19 @@ export async function prepareAtlas(ctx) {
   log('info', `PMA: 用户=${pmaMode}, atlas声明=${atlasDeclared === null ? '未声明' : String(atlasDeclared)}, `
     + `文件名=${filenameHint === null ? '无线索' : String(filenameHint)}, 像素检测=${detection.pixelDetected === null ? '未检测' : String(detection.pixelDetected)}, `
     + `生效=${pmaInfo.effectiveMode}, 运行时直通=${pmaInfo.runtimeSupportsStraight ? '支持' : '不支持'}`, 'pma');
+}
 
-  const textures = await uploadTextures({
-    gl,
-    GLTextureCtor: pickMember(spine, 'GLTexture'),
-    entries,
-    effectiveMode: pmaInfo.effectiveMode,
-    needPremultiply: pmaInfo.needPremultiply,
-    textureFilter,
-    log,
-  });
-  if (textures.size === 0) throw new Error('没有成功上传任何贴图到 GPU，无法创建 TextureAtlas');
-
+/**
+ * 用已上传的纹理建 TextureAtlas，并把页对象上的 texture 补齐。
+ *
+ * 两个运行时形态差异就在这里（调用方不需要知道）：
+ *   · 3.x：`new TextureAtlas(atlasText, resolver)` 构造时就用 resolver 把每页填好；
+ *   · 4.x：构造函数不吃 resolver，页对象上留 `setTexture()`，需在构造后逐页补。
+ * 缺页时 resolver 落到 `makePlaceholderTexture()`（1×1 透明），**每个缺页各建一个**——
+ *   不要改成共享同一个：placeholder 是 1×1 canvas，次数变化不会报错，只会多/少一个 GPU 纹理。
+ * @returns {object} 已就绪的 atlas
+ */
+function buildAtlasFromTextures({ spine, atlasText, textures }) {
   const TextureAtlas = pickMember(spine, 'TextureAtlas');
   if (!TextureAtlas) throw new Error('当前运行时不支持 TextureAtlas');
   const resolvePage = (pageName) => matchTexture(textures, pageName) || makePlaceholderTexture();
@@ -154,13 +161,37 @@ export async function prepareAtlas(ctx) {
     if (typeof page.setTexture === 'function') page.setTexture(tex);
     else page.texture = tex;
   }
+  return atlas;
+}
+
+/**
+ * 走完整流水线，产出可直接交给 AtlasAttachmentLoader 的 atlas。
+ * @param {{spine: object, gl: WebGLRenderingContext, descriptor: object, pmaMode: string,
+ *          textureFilter: string, supportsStraight: boolean, log?: Function}} ctx
+ */
+export async function prepareAtlas(ctx) {
+  const { spine, gl, descriptor, pmaMode, textureFilter, supportsStraight, log = () => {} } = ctx;
+  const atlasText = new TextDecoder().decode(descriptor.atlasFile.content);
+  if (!atlasText) throw new Error('atlas 文件为空或无法读取');
+  const pageSizes = parseAtlasPageSizes(atlasText);
+  const multiPage = (descriptor.textureFiles || []).length > 1;
+  // ① 解码全部页（只有 auto 档才取样，供后面的像素检测用）
+  const { entries, samples } = await decodePages({ descriptor, pageSizes, multiPage, wantSamples: pmaMode === 'auto', log });
+  if (entries.size === 0) throw new Error('没有成功加载任何贴图文件，无法渲染模型');
+  // ② PMA 判定（纯逻辑）与诊断日志（副作用）分两步，后者完全不影响返回值
+  const pmaStage = detectPmaStage({ atlasText, descriptor, pmaMode, supportsStraight, samples, log });
+  logPmaStage({ descriptor, pmaMode, ...pmaStage, supportsStraight, log });
+  // ③ 上传纹理（口径固定不乘，见 pma.js uploadTextures 注释）
+  const textures = await uploadTextures({
+    gl, GLTextureCtor: pickMember(spine, 'GLTexture'), entries, textureFilter, log,
+    effectiveMode: pmaStage.pmaInfo.effectiveMode, needPremultiply: pmaStage.pmaInfo.needPremultiply,
+  });
+  if (textures.size === 0) throw new Error('没有成功上传任何贴图到 GPU，无法创建 TextureAtlas');
+  // ④ 建 atlas（3.x 构造吃 resolver / 4.x 构造后补页的差异在内部消化）
+  const atlas = buildAtlasFromTextures({ spine, atlasText, textures });
+  // 不再返回 gpuUnpack：上传口径固定不乘（见 pma.js uploadTextures 注释），保留字段名会误导
   return {
-    atlas,
-    entries,
-    textures: [...textures.values()],
-    pmaInfo,
-    pmaDetection: detection,
-    // 上传口径固定不乘（见 pma.js uploadTextures 注释）；保留字段名会误导，故不再返回 gpuUnpack
-    atlasText,
+    atlas, entries, textures: [...textures.values()],
+    pmaInfo: pmaStage.pmaInfo, pmaDetection: pmaStage.detection, atlasText,
   };
 }
