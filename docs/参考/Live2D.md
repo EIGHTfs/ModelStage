@@ -130,6 +130,39 @@ installResolver(settings, {
 3. **主体包围盒**：Live2D 无骨骼/插槽概念，`fit` 的 `subject` 语义只能用 alpha 包围盒近似，
    与 Spine 的部件名黑名单不等价
 
+## 九、PIXI Filter 的 fragment 约束（6.5.3，页面内实测）
+
+**PIXI 只注入两行前导**，其余全靠 fragment 自己声明：
+
+```js
+// 页面内实测：new PIXI.Filter(null, frag, uniforms).program.fragmentSrc
+"precision mediump float;\n#define SHADER_NAME pixi-shader-6\n<传入的 frag 原样>"
+```
+
+⇒ `varying vec2 vTextureCoord` 与 `uniform sampler2D uSampler` **必须由 fragment 自己写**
+（PIXI 自己的 `Filter.defaultFragmentSrc` 就是手写的这两行，可作参照）。
+省略它们得到 `ERROR: 0: 'uSampler' : undeclared identifier`；
+连 `precision mediump float;` 一起省掉会报 `shader couldn't be compiled` 并整屏空白。
+
+最小可用 fragment：
+
+```glsl
+precision mediump float;
+varying vec2 vTextureCoord;
+uniform sampler2D uSampler;
+void main() {
+  vec4 texColor = texture2D(uSampler, vTextureCoord);   // PIXI 纹理是预乘 alpha
+  float a = texColor.a;
+  vec3 c = texColor.rgb / max(a, 0.00001);              // 还原直通色再算
+  gl_FragColor = vec4(c * a, a);                        // 再乘回预乘
+}
+```
+
+构造签名是 `new PIXI.Filter(vertexSrc|null, fragmentSrc, uniforms)`（`PIXI.Filter.length === 3`），
+`filter.uniforms` 是**真实普通对象**，直接 `filter.uniforms.u_x = v` 即可；
+而 spine-webgl 的 Shader 没有 `uniforms` 属性，必须 `bind()` + `setUniformf/setUniform2f` ——
+两条链路的 uniform 写法**不通用**，别互抄。
+
 ---
 
 ## 修改记录

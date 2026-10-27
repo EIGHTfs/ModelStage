@@ -8,7 +8,10 @@ import { createCamera } from './camera/index.js';
 import { trackModelStage, markModelFailed } from '../infra/ready.js';
 import { createFrameGate } from '../engine/frame-gate.js';
 import { buildDocument } from '../infra/document.js';
-import { DEFAULT_FILTER, FILTER_PRESETS } from '../engine/filters.js';
+import { DEFAULT_FILTER, DEFAULT_TEXEL, FILTER_PRESETS } from '../engine/filters.js';
+// 效果链的组装与签名**与 Spine 共用同一份实现**（顺序/激活/参数换算/结构签名都在这里），
+//   Live2D 侧只负责"怎么把这个链挂到 PIXI.Filter 上"——这是两条链路唯一该有的差异。
+import { buildChainBody, chainSignature, chainUniforms, effectPrelude, uniformDeclarations } from '../engine/effect-chain.js';
 
 /**
  * 创建 Live2D 渲染器。
@@ -187,46 +190,78 @@ export function createLive2DRenderer({ live2d } = {}) {
     gateApp = app;
     return true;
   }
-  /** 已挂上的 PIXI.Filter（original 时为 null） */
+  /** 已挂上的 PIXI.Filter（original 且无插件链时为 null） */
   let activeFilter = null;
+  /** 当前滤镜的结构签名（预设 + 效果链）：只有它变了才重建 PIXI.Filter（热更新判据） */
+  let filterSignature = '';
+  /** 当前生效的插件效果链（由面板设置变化时下发；语义与 Spine 共用 effect-chain.js） */
+  let effectChain = [];
 
   /**
    * 用引擎那 12 段预设表达式拼一份 PIXI 片元着色器。
    * 为什么能复用：预设表里的 body 都是"对直通色 c 的表达式"，与渲染器无关；
    *   这里只换外壳（PIXI 的 vTextureCoord/uSampler + 预乘还原），效果与 Spine 侧同一套公式。
    */
-  function pixiFragmentOf(id) {
+  function pixiFragmentOf(id, chainIn) {
+    const chain = Array.isArray(chainIn) ? chainIn : [];
     const preset = FILTER_PRESETS.find((x) => x.id === id) || FILTER_PRESETS[0];
+    // 链的拼装走共用层：预设在前、插件效果按清单声明顺序叠加
+    const body = buildChainBody({ presetBody: preset.body, effects: chain });
+    // 前缀**保持原样**（precision + vTextureCoord + uSampler 三件套）：这套在改动前是好的，
+    //   不要为了"避免重复声明"去删它 —— 删了 precision 直接编译失败整屏空白（实测），
+    //   删另外两行也会编译失败。插件链需要的额外声明插在三件套**之后**。
+    const pre = effectPrelude({ sampler: 'uSampler', texCoords: 'vTextureCoord' });
     return [
       'precision mediump float;',
       'varying vec2 vTextureCoord;',
       'uniform sampler2D uSampler;',
+      ...(chain.length ? [pre.global, uniformDeclarations(chain)] : []),
       'const vec3 LUMA = vec3(0.299, 0.587, 0.114);',
       'vec3 toGray(vec3 c) { return vec3(dot(c, LUMA)); }',
       'vec3 withSat(vec3 c, float s) { float l = dot(c, LUMA); return mix(vec3(l), c, s); }',
       'void main() {',
-      '  vec4 texColor = texture2D(uSampler, vTextureCoord);', // PIXI 纹理是预乘的
+      '  vec4 texColor = texture2D(uSampler, vTextureCoord);',   // PIXI 纹理是预乘的
       '  float a = texColor.a;',
-      '  vec3 c = texColor.rgb / max(a, 0.00001);',            // 还原成直通再套预设
-      `  vec3 f = ${preset.body};`,
-      '  gl_FragColor = vec4(f * a, a);',
+      '  vec3 base = texColor.rgb / max(a, 0.00001);',           // 还原直通色（链的起点）
+      ...(chain.length ? [pre.local] : []),
+      `  ${body}`,
+      '  gl_FragColor = vec4(f * a, a);',                        // 再乘回预乘
       '}',
     ].join('\n');
   }
 
-  /** 把当前 presetId 落到 PIXI stage 上（original ⇒ 摘掉滤镜） */
+  /** 把当前 presetId + 插件效果链落到 PIXI stage 上（都为空 ⇒ 摘掉滤镜） */
   function applyPreset() {
     const app = (() => { try { return live2d.getApp ? live2d.getApp() : null; } catch { return null; } })();
     if (!app || !app.stage) return false;
     const PIXI = typeof window !== 'undefined' ? window.PIXI : null;
+    const chain = effectChain;
+    // 签名只看"结构"（预设 + 链上效果与表达式）：**参数值不进签名** ⇒ 切档位只改 uniform，不重建滤镜
+    const signature = `${presetId}|${chainSignature(chain)}`;
+    const uniforms = { ...chainUniforms(chain) };
+    // u_texel 必须有非零值：未赋值时 texelSample(uv-texel) 会退化成取自己，锐化恒等（Spine 侧踩过同一个坑）
+    if (chain.length) uniforms.u_texel = [DEFAULT_TEXEL, DEFAULT_TEXEL];
     try {
-      if (presetId === DEFAULT_FILTER) {
+      if (presetId === DEFAULT_FILTER && !chain.length) {
+        // 可逆：摘掉挂载即可。**这里不 destroy** —— 实例销毁后 PIXI 仍可能在当帧拿着它，
+        //   实测会引入新的卡顿/异常；原实现也是只置 null，让 GC 随实例一起回收。
         app.stage.filters = null;
         activeFilter = null;
+        filterSignature = '';
         return true;
       }
       if (!PIXI || typeof PIXI.Filter !== 'function') return false;
-      activeFilter = new PIXI.Filter(null, pixiFragmentOf(presetId));
+      if (activeFilter && filterSignature === signature) {
+        // 结构没变 ⇒ 热更新：只写 uniform，绝不重建实例（重建会黑一帧）
+        //   PIXI v6 的 filter.uniforms 是**真实对象**，直接赋值即可（与 spine-webgl Shader 的
+        //   setUniformf API 完全不同，不要照搬那边）。
+        for (const [key, value] of Object.entries(uniforms)) activeFilter.uniforms[key] = value;
+        return true;
+      }
+      activeFilter = new PIXI.Filter(null, pixiFragmentOf(presetId, chain), uniforms);
+      // 邻域采样必需：默认 filterArea 会裁到边界内，边缘缺一个 texel
+      activeFilter.padding = 1;
+      filterSignature = signature;
       // filterArea 固定成整屏：否则 PIXI 会按 stage 包围盒裁剪，滤镜边缘会缺一块
       app.stage.filterArea = app.screen;
       app.stage.filters = [activeFilter];
@@ -234,6 +269,7 @@ export function createLive2DRenderer({ live2d } = {}) {
     } catch {
       // 着色器编译失败等：保持原渲染，不抛
       activeFilter = null;
+      filterSignature = '';
       try { app.stage.filters = null; } catch { /* 忽略 */ }
       return false;
     }
@@ -514,6 +550,22 @@ if (typeof live2d.syncSize === 'function') {
         }
       } catch { return false; }
       return false;
+    },
+
+    /**
+     * 下发插件效果链（**与 Spine 同一套语义**：顺序/激活/参数换算/销毁都在 effect-chain.js，
+     * 这里只管"怎么挂到 PIXI.Filter 上"）。
+     * 参数值变化只更新 `filter.uniforms`；只有链**结构**变化才重建滤镜实例（热更新判据）。
+     * @param {Array<{id:string, fragment:string, uniforms:object}>} chain
+     * @returns {boolean} 是否成功应用
+     */
+    setEffectChain(chain) {
+      effectChain = Array.isArray(chain) ? chain : [];
+      return applyPreset();
+    },
+    /** 当前生效链的结构签名（断言用：切档位时它不应变化） */
+    effectChainSignature() {
+      return activeFilter || filterSignature ? filterSignature : '';
     },
 
     /** 回显实际生效值（不是请求值） */

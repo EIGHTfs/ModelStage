@@ -63,8 +63,11 @@ export function uniformsForOption(effect, optionIndex, optionCount) {
   const params = (effect && Array.isArray(effect.params)) ? effect.params : [];
   const idx = Number(optionIndex);
   const count = Number(optionCount);
-  if (!(idx > 0) || !(count > 1)) return { active: false, uniforms: {} };
-  const t = Math.min(1, idx / (count - 1));
+  // 「关」档（idx=0）也**留在链里**，参数取 min（通常 0）⇒ 表达式退化成恒等、画面等于原图。
+  //   这样切档位只改 uniform、链的**结构签名**不变 ⇒ 上层不重建着色器/滤镜实例。
+  //   反过来做（关档就把它从链里摘掉）会让每次"关↔开"都触发一次重建 + 着色器编译，
+  //   实测卡顿明显。
+  const t = count > 1 ? Math.min(1, Math.max(0, idx) / (count - 1)) : 0;
   const uniforms = {};
   for (const p of params) {
     if (!p || !p.key) continue;
