@@ -37,6 +37,8 @@ import {
   runPanelSelfCheck,
 } from './panel/panel-settings.js';
 import { loadRoots } from './app/model-actions.js';
+// URL 参数（?model= / ?runtime=）：只作用于"这一次装载"，不落任何持久化位置
+import { applyUrlParams } from './app/url-params.js';
 import { installCameraLogger } from './app/camera-log.js';
 import { recent as recentLogs } from './infra/log.js';
 import { resetViewViaRenderer } from './render/reset-view.js';
@@ -590,7 +592,14 @@ function boot() {
      */
     pluginHost: () => pluginHost,
   });
-  loadRoots();
+  // 资源根加载完成后应用 URL 参数（?model= / ?runtime=）。
+  //   无参数时 applyUrlParams 直接返回 null，不动任何状态 ⇒ 默认行为零变化。
+  //   放在 loadRoots 之后：要拿全量 catalog 做精确匹配。
+  loadRoots()
+    .then(() => applyUrlParams())
+    .catch((e) => {
+      try { stageLog('warn', `URL 参数处理失败：${(e && e.message) || e}`, { source: 'url-params' }); } catch { /* 忽略 */ }
+    });
 
   // 插件宿主：非阻塞启动（失败只警告，绝不影响页面其它功能）。
   //   顺序关键：createPluginHost 内部先挂 window.SpineViewerPlugins 再注入 <script>，

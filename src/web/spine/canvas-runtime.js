@@ -51,6 +51,31 @@ export async function availableVersions() {
   return list;
 }
 
+/**
+ * 本次装载的**运行时覆盖值**（来自 URL 的 ?runtime=）。
+ *
+ * 语义严格限定为"只生效一次"：
+ *   · 不落 localStorage / uiState —— 绝不记忆。自动选版本是**正确性保证**
+ *     （骨架 4.1.20 只能用 4.1 运行时），一旦记住人工覆盖，
+ *     下次打开不兼容的模型会莫名失败，且用户看不出是自己上次设的。
+ *   · 由 canvas-engine 在选版时 takeForcedRuntime() 取走并**立刻清空**，
+ *     所以"带参数装载成功后去掉参数刷新 ⇒ 回到自动"天然成立。
+ * @type {string|null}
+ */
+let forcedRuntime = null;
+
+/** 设置一次性覆盖值（传 null/'' 表示清除） */
+export function setForcedRuntime(version) {
+  forcedRuntime = version ? String(version) : null;
+}
+
+/** 取走覆盖值（取一次即清空，天然只生效一次） */
+export function takeForcedRuntime() {
+  const v = forcedRuntime;
+  forcedRuntime = null;
+  return v;
+}
+
 /** 精确命中优先，否则同 major 的最大 minor，最后退清单里最大的 */
 export function pickRuntimeVersion(version, available) {
   const want = majorMinor(version);

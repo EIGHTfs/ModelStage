@@ -1,0 +1,123 @@
+// app/url-params.js —— 用 URL 参数一次性指定「装载哪个模型 / 用哪个运行时」
+//
+// 为什么做这个（而不是面板按钮）：排查场景是"同一个模型换运行时看现象变不变"，
+//   URL 天然可复制、可脚本化、可进回归用例；面板按钮给人点，测试与复现都用不上。
+//
+// 硬边界（三条，改这里时不许破）：
+//   ① **只影响这一次装载**：覆盖值不落 uiState / localStorage，被消费后立刻清空。
+//      默认行为永远是"按骨架版本自动挑运行时"—— 那是正确性保证（骨架 4.1.20 只能用 4.1 运行时）。
+//   ② 解析到模型后走 `selectModel`（与点名册点选**同一条装载路径**），不新开装载实现。
+//   ③ 指定了非法值要**明确报错**，绝不静默忽略 —— 静默会让排查得出"换了没区别"的错误结论。
+//
+// 形如：/?model=<rootId>/<rel>&runtime=spine-4.1
+//       model   先按条目 id 全等匹配，未命中再按 `rootId/rel` 全等匹配（两种写法都认）
+//       runtime 可选；不传 = 自动（现状行为）
+
+import { getJson } from '../infra/api.js';
+import { selectModel } from './model-actions.js';
+import { setForcedRuntime } from '../spine/canvas-runtime.js';
+
+/**
+ * 取全量 catalog 条目（跨所有资源根）。
+ * 为什么不用名册里的已加载数据：名册按游戏/角色分组且可能未展开，
+ *   而这里要"精确匹配任意一条"，直接问服务端最可靠。
+ * @returns {Promise<object[]>}
+ */
+async function fetchAllEntries() {
+  const roots = await getJson('/api/roots').catch(() => null);
+  const list = (roots && (roots.roots || roots.items)) || [];
+  const out = [];
+  for (const r of list) {
+    const id = r && (r.id || r.name);
+    if (!id) continue;
+    const cat = await getJson(`/api/catalog?root=${encodeURIComponent(id)}`).catch(() => null);
+    for (const e of (cat && cat.entries) || []) out.push({ ...e, rootId: e.rootId || id });
+  }
+  return out;
+}
+
+/** 两种写法都认：先 id 全等，再 `rootId/rel` 全等 */
+function matchEntry(entries, arg) {
+  const want = String(arg || '').trim();
+  if (!want) return { hit: null, by: '' };
+  const byId = entries.filter((e) => String(e.id || '') === want);
+  if (byId.length === 1) return { hit: byId[0], by: 'id' };
+  if (byId.length > 1) return { hit: null, by: 'id', ambiguous: byId };
+  const byRel = entries.filter((e) => `${e.rootId || ''}/${e.rel || ''}` === want);
+  if (byRel.length === 1) return { hit: byRel[0], by: 'rootId/rel' };
+  if (byRel.length > 1) return { hit: null, by: 'rootId/rel', ambiguous: byRel };
+  return { hit: null, by: '' };
+}
+
+/** 解析 runtime 参数：`spine-4.1` 或裸 `4.1`；`live2d-*` 明确不支持 */
+function parseRuntime(arg) {
+  const raw = String(arg || '').trim();
+  if (!raw) return { kind: null, version: null };
+  if (/^live2d[-:]/i.test(raw)) return { kind: 'live2d', version: raw.replace(/^live2d[-:]/i, '') };
+  if (/^spine[-:]/i.test(raw)) return { kind: 'spine', version: raw.replace(/^spine[-:]/i, '') };
+  return { kind: 'spine', version: raw };   // 裸版本号默认按 spine 解释
+}
+
+function report(message, level = 'error') {
+  const el = document.getElementById('stage-msg') || document.querySelector('[data-role="stage-msg"]');
+  if (el) el.textContent = message;
+  // 与其它装载失败同口径：日志 + 状态行都要有，别只在控制台
+  import('./status.js').then((m) => {
+    if (level === 'error') m.stageLog('error', message, { source: 'url-params', reason: 'url-params' });
+    m.stageStatus(message, level === 'error' ? 'error' : 'warn', { show: true });
+  }).catch(() => { /* 状态模块不可用就算了，上面的 el 已写 */ });
+}
+
+/**
+ * 应用 URL 参数（在资源根加载完成后调用一次）。
+ * 无参数时**完全不动**任何状态（返回 null），保证默认行为零变化。
+ * @returns {Promise<{model?:string, runtime?:string}|null>}
+ */
+export async function applyUrlParams() {
+  const q = new URLSearchParams(window.location.search);
+  const modelArg = q.get('model');
+  const runtimeArg = q.get('runtime');
+  if (!modelArg && !runtimeArg) return null;
+
+  if (!modelArg) {
+    report('URL 参数 runtime= 需要同时提供 model= 才知道要装载哪个模型（形如 /?model=<rootId>/<rel>&runtime=spine-4.1）');
+    return { runtime: runtimeArg };
+  }
+
+  const entries = await fetchAllEntries();
+  const { hit, by, ambiguous } = matchEntry(entries, modelArg);
+
+  if (!hit) {
+    const sample = entries.slice(0, 5)
+      .map((e) => `  · id=${e.id || '(无)'}   或   ${e.rootId || ''}/${e.rel || ''}`)
+      .join('\n');
+    report(ambiguous && ambiguous.length
+      ? `URL 参数 model=${modelArg} 命中 ${ambiguous.length} 条（按 ${by} 匹配），无法确定用哪一条；请改用更精确的写法`
+      : `URL 参数 model=${modelArg} 没有匹配到任何条目（两种写法都支持：条目 id，或 rootId/rel）。前 5 个候选：\n${sample}`);
+    return { model: modelArg };
+  }
+
+  const rt = parseRuntime(runtimeArg);
+
+  // Live2D 的运行时由服务端探测决定（/live2d-lib/* 的映射是进程级），按请求切换会变成有状态
+  //   ⇒ 明确拒绝而不是静默忽略（忽略会让排查得出"换了没区别"的错误结论）
+  if (rt.kind === 'live2d') {
+    let actual = '未知';
+    try {
+      const ad = await import('../live2d/runtime-adapter.js');
+      const info = ad.runtimeInfo();
+      actual = `${info.pixi ? `pixi ${info.pixi}` : ''}${info.settingsCtorName ? ` / ${info.settingsCtorName}` : ''}` || '未知';
+    } catch { /* 拿不到就写未知 */ }
+    report(`Live2D 运行时由服务端探测决定，暂不支持按请求指定（当前生效：${actual}）；`
+      + `去掉 runtime= 让服务端自动选择`);
+    return { model: modelArg, runtime: runtimeArg };
+  }
+
+  // Spine：把版本作为**本次装载**的覆盖值（canvas-engine 消费一次后立即清空）
+  if (rt.kind === 'spine' && rt.version) {
+    setForcedRuntime(rt.version);
+  }
+
+  await selectModel(hit, { syncTree: true });
+  return { model: modelArg, runtime: runtimeArg, matchedBy: by };
+}

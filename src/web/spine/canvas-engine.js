@@ -6,7 +6,7 @@
 
 import { installRuntimeManager } from './runtimes.js';
 import { abortedError, buildDescriptor, businessError, resolveDocument } from './canvas-document.js';
-import { availableVersions, ensureRuntimeSource, pickEngineCtor, pickRuntimeVersion } from './canvas-runtime.js';
+import { availableVersions, ensureRuntimeSource, pickEngineCtor, pickRuntimeVersion, takeForcedRuntime } from './canvas-runtime.js';
 import { captureViewBase } from './canvas-view.js';
 
 /** 应用设置（全部走 engine 的 setter，缺哪个就跳过哪个） */
@@ -139,7 +139,19 @@ export async function loadIntoStage(st, arg) {
   const avail = await availableVersions();
   // 版本来自 Document 的 meta（Document 形状里没有顶层 version）：
   //   读错会挑到不匹配的运行时 —— 表现为骨架解析报 "Bone name must not be null" 这类怪错
-  const ver = pickRuntimeVersion((doc.meta && doc.meta.version) || doc.version, avail);
+  const skeletonVer = (doc.meta && doc.meta.version) || doc.version;
+  // 一次性覆盖（URL 的 ?runtime=，由 app/url-params.js 设置）：取走即清空，天然只生效一次。
+  //   这是**唯一**的"手动指定运行时"入口，最终都落到下面这段选版逻辑上 —— 不另写优选规则。
+  const forced = takeForcedRuntime();
+  let ver;
+  if (forced) {
+    if (!avail.includes(forced)) {
+      throw businessError(`指定的运行时 ${forced} 不可用（可用：${avail.join(' / ') || '运行时清单不可用'}）`);
+    }
+    ver = forced;   // 给了就用，**绝不**回落到其它版本 —— 自动降级会让排查得出错误结论
+  } else {
+    ver = pickRuntimeVersion(skeletonVer, avail);   // 现状行为，一行没改
+  }
   if (!ver) throw businessError('无法确定该模型的 Spine 版本：元数据缺少 version，且运行时清单不可用');
   await ensureRuntimeSource(ver);
   if (seq !== st.seq) throw abortedError();
@@ -147,7 +159,20 @@ export async function loadIntoStage(st, arg) {
   if (!ensureStageEngine(st, Engine, st.canvas)) throw businessError('当前环境没有可用的 WebGL，无法渲染 Spine');
   if (!st.runtimeKeys.includes(ver)) st.runtimeKeys.push(ver);
   st.loads++;
-  const info = await st.engine.loadModel(buildDescriptor(doc, ver));
+  let info;
+  try {
+    info = await st.engine.loadModel(buildDescriptor(doc, ver));
+  } catch (e) {
+    // 手动指定时补一行"骨架版本 vs 所选版本"的对照 —— 这是手动覆盖与自动保证唯一实质分歧点：
+    //   自动在同 major 内会退到最大可用 minor，手动**不退**。不写清用户会以为两者选的是同一个东西。
+    if (forced) {
+      const autoVer = pickRuntimeVersion(skeletonVer, avail);
+      throw businessError(`模型加载失败：骨架版本 ${skeletonVer || '未知'}，当前指定的是运行时 ${ver}`
+        + `（去掉 ?runtime= 让自动选择，当前会自动用 ${autoVer || '未知'}；可用：${avail.join(' / ') || '清单不可用'}）`
+        + `。原始错误：${(e && e.message) || e}`);
+    }
+    throw e;
+  }
   if (seq !== st.seq) throw abortedError();
   if (!info) throw businessError('模型加载失败（引擎未返回结果）');
   st.lastArg = arg; // 供 MSAA 重建上下文后恢复同一模型
