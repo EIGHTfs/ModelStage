@@ -11,6 +11,10 @@
 // 为什么归一组：它们共享同一份 data.*（config/models/names/live2d/catalog…）实例，
 //   读写口径必须一致——资源根视图走 http/write.mjs 的 toRootView，避免读写两处漂移。
 
+// 缺 Live2D 运行时时的引导文案：503（解析器不可用）与 404（单个文件不存在）**共用同一份**，
+//   否则两处各说各话（一个说去官网下、另一个只说文件名），用户被堵在门口。
+import { live2dGuide } from '../../../tool/lib/runtime-guides.mjs';
+
 /** 资源根 / 插件 / 品牌 / 前端配置 */
 function apiBasics(ctx, res, p) {
   const { data, sendJson, toRootView } = ctx;
@@ -233,7 +237,9 @@ function serveLive2DLib(ctx, req, res, p) {
   }
   const abs = files[name];
   if (!abs) {
-    sendJson(res, 404, { error: `未找到运行时文件: ${name}` });
+    // 404（某个文件缺失）与 503（整套库不可用）用户撞到的概率相当 ⇒ 都给完整引导。
+    //   文案复用 live2dGuide（与 503 同源），只补"该往哪放、从哪下、为什么不代下"。
+    sendJson(res, 404, { error: `未找到运行时文件: ${name}\n` + live2dGuide(data.paths.dataRoot) });
     return true;
   }
   sendFile(req, res, abs);
