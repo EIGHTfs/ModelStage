@@ -86,6 +86,10 @@ npx modelstage --port 8804 --data-root ~/modelstage-data # 发布到 registry �
 > **用 npx 直跑时**：包里没有运行时目录，必须自行准备，并用 `SPINE_RUNTIME_DIR` /
 > `LIVE2D_SEARCH_ROOTS` 指到你放运行时的位置（多个搜索根用路径分隔符隔开）。
 > 否则页面能起来，但装载模型时会明确报"找不到运行时"。
+>
+> **已知限制（npx）**：`npx` 在安装阶段会对 bin 做 `chmod`，而 **CIFS/SMB 挂载目录不支持 chmod**
+> （报 `EPERM`）。所以把项目放在网络挂载盘上时 `npx .` 会失败 —— 这与包内容无关，
+> 换到本地磁盘即可；在挂载盘上仍可直接 `node bin/modelstage.mjs`（跳过 npm 安装环节）。
 
 Live2D 的版本差异（`Cubism4ModelSettings` ↔ `CubismModelSettings` 之类的命名变化、PIXI 6/8 的构造差异）
 统一收在 `src/web/live2d/runtime-adapter.js` 一处，业务代码不直接触碰 PIXI/Live2D 的 API 形状 ——
