@@ -86,7 +86,10 @@ function pixiLib() {
  */
 async function readServerError(url) {
   try {
-    const r = await fetch(url, { cache: 'no-store' });
+    // 5s：这一步是在 <script> **已失败**之后补读一次响应体，结果会被 await 进 reject 之前，
+    //   所以它自己绝不能挂住 —— 否则"加载失败"永远不 reject，Live2D 激活会一直悬着。
+    //   5s 依据：服务端这条是纯本地 JSON（服务端已实测毫秒级返回），5s 只作兜底。
+    const r = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(5000) });
     const text = await r.text();
     try {
       const j = JSON.parse(text);

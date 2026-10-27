@@ -200,10 +200,17 @@ async function importProjectFiles(files) {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ files }),
+      // 30s：一次要写多个配置文件**并且**先备份现有配置（backupConfigFile 落盘到 CIFS，
+      //   每个文件是"写临时文件 + rename"两次往返，几 MB 配置在 CIFS 上可能数秒）。
+      //   导出侧实测 58ms 但那只是读；给 30s 是留足"多文件写入 + 备份"的余量，
+      //   而不是把慢但正常的情况判成失败。
+      signal: AbortSignal.timeout(30000),
     });
     data = await res.json();
   } catch (err) {
-    return importFail('network', `项目配置请求失败（${formatError(err)}）`);
+    // 说清是"超时/中断"而不是笼统的"请求失败"：30s 到点就掐断（见上面的 signal），
+    //   用户需要知道是服务端慢/卡住了，而不是自己填错了什么。
+    return importFail('network', `项目配置导入超时或中断（上限 30s）：${formatError(err)}`);
   }
   const rejected = rejectReason(res, data);
   if (rejected) return importFail('project', rejected);

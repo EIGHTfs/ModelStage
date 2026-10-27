@@ -204,6 +204,9 @@ function flush(st) {
   const batch = st.pending.splice(0, st.config.flushBatchMax);
   try {
     st.internal = true;
+    // **刻意不加超时信号**（不是漏了）：这是探针自己的上报（st.internal = true 表示"自报"），
+    //   用的是 keepalive —— 它要的正是"页面要走了也尽量送达"，与"到点就掐断"直接冲突。
+    //   失败已被 .catch 吞掉、不影响页面；加了 AbortSignal.timeout 只会在卸载时多出 AbortError 噪音。
     fetch('/api/diag', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

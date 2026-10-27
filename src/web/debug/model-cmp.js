@@ -142,6 +142,10 @@ export function analyzeExtractCanvas(cv) {
 /** 落盘通道：POST /api/diag，tag=MODELCMP（失败静默，绝不影响页面） */
 function postDiag(rec) {
   try {
+    // **刻意不加超时信号**（这不是漏了）：这是一条 fire-and-forget 的诊断落盘，
+    //   失败本来就被 .catch 吞掉、不影响页面任何功能。
+    //   加 AbortSignal.timeout 反而有害：页面卸载/切到后台时超时会抛 AbortError，
+    //   而这类"We don't care 的旁路请求"被中断属于正常现象，会污染控制台与诊断日志。
     fetch('/api/diag', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

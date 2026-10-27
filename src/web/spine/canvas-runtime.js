@@ -99,7 +99,16 @@ export async function ensureRuntimeSource(ver) {
   if (window.__SPINE_RUNTIME_SOURCES__[ver]) return;
   let text = runtimeSourceCache.get(ver);
   if (!text) {
-    const r = await fetch(`${RUNTIME_BASE}${ver}.js`, { cache: 'no-store' });
+    // 20s：运行时脚本实测 439KB（spine-webgl 4.1.0），CIFS/NAS 上读大文件可能数秒。
+    //   不给超时会让"装载模型"永久卡在"加载运行时"（用户看不出是卡住还是慢）。
+    let r;
+    try {
+      r = await fetch(`${RUNTIME_BASE}${ver}.js`, { cache: 'no-store', signal: AbortSignal.timeout(20000) });
+    } catch (e) {
+      // 超时/中断必须翻译成人话：裸的 "The operation was aborted." 分不清是
+      //   "这台机器没装这个版本"（要补文件）还是"服务端/磁盘慢"（等或换机器）—— 两者的处置完全不同。
+      throw new Error(`运行时 ${ver} 加载超时或中断（上限 20s）：${(e && e.message) || e}`);
+    }
     if (!r.ok) {
       // 404 最常见的原因是"这台机器上没放这个版本" ⇒ 附上服务端给的可复制补齐方案，
       //   否则用户只看到一句 HTTP 404，不知道要下什么、放哪里（这条日志会进调试面板）。
