@@ -575,13 +575,12 @@ const MIME_BY_EXT = {
     // 顺带把"这个包需要多少内存"取回来（面板判据行要显示真实需求，不能只显示可用量）——
     //   不 await：判据读数只是展示，不能拖慢加载。
     memoryGuard.refreshMemoryReadout({ rootId: file.rootId, rel: file.rel }).catch(() => { /* 取不到就维持上次 */ });
-    // 解包判据：包字节 → 预估峰值（翻译器在服务端，前端不算倍数），与"加载判据"分开问
-    const unpackJudged = await memoryGuard.assessUnpack(file.rel, file.size);
-    if (!unpackJudged.ok) {
-      say.warn(unpackJudged.message);
-      emit('memguard.unpack', { rel: file.rel, numbers: unpackJudged.numbers, reason: unpackJudged.reason });
-      return { ok: false, reason: 'memory-guard', message: unpackJudged.message };
-    }
+    // 解包峰值准入**不在这里判** —— 见下方 localPath 内的同名判据。
+    //   原因（实测踩过）：这条判据问的是"解包这个包要多少峰值内存"，而
+    //   ① 服务端缓存命中时根本不需要解包（只读盘取产物），却也会被这里拦下 ⇒
+    //      用户看到「明明有缓存却装不了：预估峰值 630MB 超过可用预算 479MB」
+    //   ② 前端本地解包发生在浏览器进程里，拿服务端「可用内存 × 0.5」当上限，口径也不对
+    //   所以它只在「确实要本地解包」那一刻才判，且缓存命中路径完全不经过它。
     const pre = await memoryGuard.preflightLoad(file.rel);
     if (!pre.ok) {
       say.warn(pre.message);
@@ -603,6 +602,15 @@ const MIME_BY_EXT = {
 
     // 本地通道：原逻辑一字未改（readFile → 插件 resolve）
     const localPath = async () => {
+      // 解包峰值准入：**只在这一条路径上判**（缓存命中 / 服务端给产物都不经过这里）。
+      //   判据口径来自服务端 capacity（峰值由插件声明或源包分段换算，前端不算倍数）；
+      //   它拦的是"这一次真的要解包"的情况，不是"这个包存在"。
+      const unpackJudged = await memoryGuard.assessUnpack(file.rel, file.size);
+      if (!unpackJudged.ok) {
+        say.warn(unpackJudged.message);
+        emit('memguard.unpack', { rel: file.rel, numbers: unpackJudged.numbers, reason: unpackJudged.reason });
+        throw Object.assign(new Error(unpackJudged.message), { reason: 'memory-guard' });
+      }
       // 读整包进内存是这条路径上最吃内存的一步：先查一次，越线就不读
       if (mon.checkNow()) throw Object.assign(new Error(mon.reason()), { reason: 'memory-guard' });
       const read = await bytesOf(file);
