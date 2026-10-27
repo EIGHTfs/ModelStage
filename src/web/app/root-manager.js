@@ -50,6 +50,10 @@ export function createRootManager({ els, onChanged, formatError } = {}) {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
+      // 写操作：**不加去重、不自动重试**（重复写会建两个根），只补超时信号防"永久转圈"。
+      //   8s 依据：服务端只改一份 resources.json + 落盘备份（backupConfigFile），正常 <1s，
+      //   留 8 倍余量覆盖 CIFS 落盘抖动。不用 api.js：它的默认重试会重发写请求。
+      signal: AbortSignal.timeout(8000),
     });
     let data = null;
     try { data = await res.json(); } catch { data = null; }

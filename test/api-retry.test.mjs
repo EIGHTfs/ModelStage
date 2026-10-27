@@ -142,3 +142,39 @@ test('⑨ 反向自证：把重试次数设为 0 → 「5xx 会重试」必然�
     assert.equal(s.hits.length, 1, 'retries:0 只允许 1 次请求');
   } finally { await s.close(); }
 });
+
+// ---------------- POST（非幂等）语义：默认不重试 ----------------
+// 这几条钉住一个真 bug：POST 失败曾被默认重发 2 次 ⇒ "创建成功但响应丢了"会建出两份。
+
+test('⑩ POST 失败不自动重发：默认 5xx → 只发 1 次（防重复写）', async () => {
+  __clearInflightForTest();
+  const s = await serve((req, res) => json(res, 503, { error: '暂时不可用' }));
+  try {
+    await assert.rejects(() => postJson(`${s.url}/create`, { name: '红' }), (e) => {
+      assert.equal(e.status, 503, '错误对象仍带 status（口径不变）');
+      return true;
+    });
+    assert.equal(s.hits.length, 1, 'POST 失败绝不能自动重发：重发写请求 = 重复写');
+    assert.equal(s.hits[0].method, 'POST');
+  } finally { await s.close(); }
+});
+
+test('⑪ POST 显式 retries:2 仍会重试：幂等的写请求由调用方声明意图', async () => {
+  __clearInflightForTest();
+  const s = await serve((req, res, n) => (n < 3 ? json(res, 503, { error: '暂时不可用' }) : json(res, 200, { ok: true })));
+  try {
+    const out = await postJson(`${s.url}/idempotent-op`, { rel: 'x' }, { retries: 2 });
+    assert.deepEqual(out, { ok: true });
+    assert.equal(s.hits.length, 3, '显式 retries:2 ⇒ 首发 + 2 次重试');
+  } finally { await s.close(); }
+});
+
+test('⑫ GET 能力不退化：并发去重仍然生效（修 POST 不能削弱 GET）', async () => {
+  __clearInflightForTest();
+  const s = await serve((req, res) => setTimeout(() => json(res, 200, { ok: true }), 60));
+  try {
+    const [a, b] = await Promise.all([getJson(`${s.url}/same`), getJson(`${s.url}/same`)]);
+    assert.deepEqual(a, b, '两个调用方拿到同一结果');
+    assert.equal(s.hits.length, 1, 'GET 并发仍合并成一个真实请求');
+  } finally { await s.close(); }
+});

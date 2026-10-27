@@ -13,6 +13,9 @@
 /** 打开时的默认起点：上次用过的目录优先，否则从根开始让用户自己走 */
 const LAST_DIR_KEY = 'modelstage.dirpicker.last';
 
+// 目录列举走统一 HTTP 层（api.js）：拿重试 + 去重 + 统一的 TimeoutError 归类，别裸 fetch
+import { getJson } from '../infra/api.js';
+
 /**
  * 创建目录选择器。
  * @param {{onPick: (payload: {path: string, name: string}) => Promise<boolean>|boolean, formatError?: Function}} deps
@@ -72,9 +75,11 @@ export function createDirPicker({ onPick, formatError, getLastError } = {}) {
     body.append(text('div', 'dir-picker-hint', '加载中…'));
     let data = null;
     try {
-      const res = await fetch(`/api/browse?path=${encodeURIComponent(currentPath)}`);
-      data = await res.json();
-      if (!res.ok || !data || data.error) throw new Error((data && data.error) || `HTTP ${res.status}`);
+      // 幂等 GET（连点同一目录会被 api.js 去重）⇒ 走统一层；超时 30s 的依据：
+      //   本机 CIFS（vers=3.02）实测 75 条目 5.5ms、241 条目 19ms，**未实测到慢例**，
+      //   按项目既有「catalog 冷启动最坏 31s」（同属目录扫描链路）**类推**取 30s。
+      data = await getJson(`/api/browse?path=${encodeURIComponent(currentPath)}`, { timeoutMs: 30000 });
+      if (!data || data.error) throw new Error((data && data.error) || '服务端返回空目录数据');
     } catch (err) {
       body.replaceChildren(text('div', 'dir-picker-error',
         `读取失败：${typeof formatError === 'function' ? formatError(err) : (err && err.message) || err}`));

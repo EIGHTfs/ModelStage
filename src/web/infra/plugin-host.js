@@ -433,8 +433,12 @@ const MIME_BY_EXT = {
     let j;
     try {
       // allowOverLimit：面板「内存保护」关掉时允许服务端越过内存预算（默认开 ⇒ 不带，行为不变）
+      // 显式 retries:2 —— 这个 POST 是**幂等**的（同 rootId+rel 解出来的产物相同），失败重发安全。
+      //   api.js 对非幂等方法默认不重试（防"创建成功但响应丢了 ⇒ 重发 ⇒ 建两个"），
+      //   所以幂等的 POST 必须在调用点显式声明意图，不能指望默认值。
       j = await postJson('/api/unpack/resolve',
-        { rootId: file.rootId, rel: file.rel, hitOnly, allowOverLimit: !memoryGuard.isMemoryGuardOn() });
+        { rootId: file.rootId, rel: file.rel, hitOnly, allowOverLimit: !memoryGuard.isMemoryGuardOn() },
+        { retries: 2 });
     } catch (e) {
       // 查询**失败**（超时/网络/连接复用被打断）必须可见：以前这种异常没有 reason，
       //   被 catch 静默当成"未命中"，日志里查不出任何痕迹 —— 这是排查不出来的首因。
@@ -555,8 +559,10 @@ const MIME_BY_EXT = {
       const t0 = performance.now();
       try {
         // 超时用默认值：它**不作为**"改走另一条路"的依据（超时只记日志），见 materialize
+        // retries:2 同上 —— 预热请求幂等（同 rel 同产物），重发安全
         const j = await postJson('/api/unpack/resolve',
-          { rootId: file.rootId, rel: file.rel, allowOverLimit: !memoryGuard.isMemoryGuardOn() });
+          { rootId: file.rootId, rel: file.rel, allowOverLimit: !memoryGuard.isMemoryGuardOn() },
+          { retries: 2 });
         emitWarm({ ok: !!j.ok, hit: !!(j && j.hit), peakEstMb: cap && cap.peakEstMb, ms: Math.round(performance.now() - t0) });
         say.info(`预热完成：${file.rel}（${j && j.hit ? '已有缓存' : '已落盘'}，${Math.round(performance.now() - t0)}ms）`);
       } catch (e) {

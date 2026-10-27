@@ -26,6 +26,25 @@ const BACKOFF_MS = [100, 300, 900];
 /** 默认最多重试次数（即最多尝试 3 次：首发 + 2 次重试） */
 const DEFAULT_RETRIES = 2;
 
+/**
+ * 幂等方法：失败重发是安全的（服务端不产生副作用）。
+ *
+ * 非幂等方法（POST/PUT/PATCH/DELETE）**默认 retries: 0** —— 重发写请求就是重复写：
+ *   实测过的形态：POST /api/backgrounds/solids 创建成功但响应在网络上丢了 ⇒ 自动重发 ⇒ 建出两个纯色。
+ * 需要重试的非幂等调用方必须**显式**传 retries（例如 /api/ready 的阶段上报本身幂等，
+ *   它在调用点写了 retries: 2，那是有意为之，不是这里的默认值）。
+ */
+const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * 解析本次请求的"是否幂等"（决定默认重试次数）。
+ * @param {string} method
+ * @returns {boolean}
+ */
+function isIdempotentMethod(method) {
+  return IDEMPOTENT_METHODS.has(String(method || 'GET').toUpperCase());
+}
+
 /** 抖动比例（±该比例）：避免多请求同一时刻重试打成一波 */
 const JITTER_RATIO = 0.2;
 
@@ -213,7 +232,10 @@ attachRetryStats();
  */
 export async function fetchWithRetry(url, opts = {}) {
   const timeoutMs = Number(opts.timeoutMs) || DEFAULT_TIMEOUT_MS;
-  const retries = Number.isInteger(opts.retries) ? opts.retries : DEFAULT_RETRIES;
+  // 非幂等方法默认不重试（重发写请求=重复写）；调用方显式给 retries 时以显式为准
+  const retries = Number.isInteger(opts.retries)
+    ? opts.retries
+    : (isIdempotentMethod(opts.method) ? DEFAULT_RETRIES : 0);
   const maxAttempts = Math.max(1, retries + 1);
   const label = opts.label || String(url).split('?')[0].slice(-60);
   let lastErr = null;
@@ -287,7 +309,10 @@ export async function fetchWithRetry(url, opts = {}) {
 async function requestJson(path, opts = {}) {
   const method = opts.method || 'GET';
   const timeoutMs = Number(opts.timeoutMs) || DEFAULT_TIMEOUT_MS;
-  const retries = Number.isInteger(opts.retries) ? opts.retries : DEFAULT_RETRIES;
+  // 非幂等方法默认不重试（重发写请求=重复写）；调用方显式给 retries 时以显式为准
+  const retries = Number.isInteger(opts.retries)
+    ? opts.retries
+    : (isIdempotentMethod(method) ? DEFAULT_RETRIES : 0);
   const maxAttempts = Math.max(1, retries + 1);
   let lastErr = null;
 
