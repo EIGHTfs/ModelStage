@@ -44,13 +44,9 @@ function saveLevels(levels) {
   try { uiState.setLogLevels([...levels]); } catch { /* 忽略 */ }
 }
 
-/** 元素工厂 */
-function el(tag, className, text) {
-  const node = document.createElement(tag);
-  if (className) node.className = className;
-  if (text !== undefined && text !== null) node.textContent = String(text);
-  return node;
-}
+// el 的唯一实现在 infra/dom.js（本文件 31 处调用全靠这一个 import，
+//   删掉旧的私有实现后若漏了它，运行时就是 undefined）。
+import { el } from '../infra/dom.js';
 
 /** 内联 SVG 图标（不依赖图标字体/外部库） */
 function icon(name) {

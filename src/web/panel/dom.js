@@ -3,13 +3,9 @@
 // 拆出来的原因：view.js 有行数上限，控件渲染要分模块；共用的三个小工具集中放这里，
 //   避免各模块各写一份导致行为漂移。
 
-/** 建元素：tag + class + 文本 */
-export function el(tag, className, text) {
-  const n = document.createElement(tag);
-  if (className) n.className = className;
-  if (text !== undefined && text !== null) n.textContent = String(text);
-  return n;
-}
+// el 的唯一实现在 infra/dom.js；这里 re-export，本模块的 9 个 import 方无需改动。
+//   判据是"函数体只有一份"，不是"文本只出现一次" —— 别再在这里加回一份实现。
+export { el } from '../infra/dom.js';
 
 /** 未接线标记（data-pending + 可选 id） */
 export function markPending(node, id) {

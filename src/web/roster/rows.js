@@ -8,13 +8,13 @@
 
 import { variantLabel, variantText } from './list.js';
 
-/** 元素工厂：减少重复的 createElement 样板 */
-export function el(tag, className, text) {
-  const n = document.createElement(tag);
-  if (className) n.className = className;
-  if (text !== undefined && text !== null) n.textContent = String(text);
-  return n;
-}
+// el 的唯一实现在 infra/dom.js。
+//   本文件自己要用它（rowBase 等 15 处），所以必须 import 绑定到本地作用域；
+//   同时对外转发导出，roster/view.js 的 `import { el, ... } from './rows.js'` 无需改动。
+//   注意：只写 `export { el } from '...'` 是**不绑定本地**的 —— 那些内部调用会变成 undefined。
+import { el } from '../infra/dom.js';
+
+export { el };
 
 /** 建一个树行骨架（三级别共用：data 属性 + treeitem 语义 + 键盘可达） */
 function rowBase(className, dataset) {
