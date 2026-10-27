@@ -575,12 +575,12 @@ const MIME_BY_EXT = {
     // 顺带把"这个包需要多少内存"取回来（面板判据行要显示真实需求，不能只显示可用量）——
     //   不 await：判据读数只是展示，不能拖慢加载。
     memoryGuard.refreshMemoryReadout({ rootId: file.rootId, rel: file.rel }).catch(() => { /* 取不到就维持上次 */ });
-    // 解包峰值准入**不在这里判** —— 见下方 localPath 内的同名判据。
-    //   原因（实测踩过）：这条判据问的是"解包这个包要多少峰值内存"，而
-    //   ① 服务端缓存命中时根本不需要解包（只读盘取产物），却也会被这里拦下 ⇒
-    //      用户看到「明明有缓存却装不了：预估峰值 630MB 超过可用预算 479MB」
-    //   ② 前端本地解包发生在浏览器进程里，拿服务端「可用内存 × 0.5」当上限，口径也不对
-    //   所以它只在「确实要本地解包」那一刻才判，且缓存命中路径完全不经过它。
+    // 解包峰值准入**整个去掉**（曾经在这里判，也在 localPath 里判过，都不对）。
+    //   分工口径：服务端内存不够就由浏览器负责解包，而不是拒绝装载。
+    //   服务端 capacity 只负责「服务端要不要解 / 面板显示多少」，不参与前端解包准入。
+    //   浏览器侧的保护是 preflightLoad（JS 堆预检）+ 长操作监控（越线中止、已完成部分保留）。
+    //   实测背景：42MB 包服务端解包峰值 630MB 会被服务端自身拒绝，
+    //   而同一台机器的浏览器解同一个包 4.3s 且渲染正常。
     const pre = await memoryGuard.preflightLoad(file.rel);
     if (!pre.ok) {
       say.warn(pre.message);
@@ -602,15 +602,13 @@ const MIME_BY_EXT = {
 
     // 本地通道：原逻辑一字未改（readFile → 插件 resolve）
     const localPath = async () => {
-      // 解包峰值准入：**只在这一条路径上判**（缓存命中 / 服务端给产物都不经过这里）。
-      //   判据口径来自服务端 capacity（峰值由插件声明或源包分段换算，前端不算倍数）；
-      //   它拦的是"这一次真的要解包"的情况，不是"这个包存在"。
-      const unpackJudged = await memoryGuard.assessUnpack(file.rel, file.size);
-      if (!unpackJudged.ok) {
-        say.warn(unpackJudged.message);
-        emit('memguard.unpack', { rel: file.rel, numbers: unpackJudged.numbers, reason: unpackJudged.reason });
-        throw Object.assign(new Error(unpackJudged.message), { reason: 'memory-guard' });
-      }
+      // 这里**不做服务端预算准入**。分工口径（用户定）：
+      //   服务端内存不够 ⇒ 就由浏览器负责解包，而不是拒绝装载。
+      //   服务端 capacity 只决定两件事：① 服务端要不要解（预热 / 直调接口）② 面板上显示多少
+      //   浏览器自己的保护是：preflightLoad（JS 堆预检）+ 下面这条长操作监控（越线就中止，
+      //   已完成的部分保留）。两者都在，够用。
+      // 实测背景：42MB 资源包服务端解包峰值 630MB > 可用预算时会直接拒绝；
+      //   但同一台机器的浏览器解同一个包只要 4.3s 且能正常渲染 —— 拒绝是错的。
       // 读整包进内存是这条路径上最吃内存的一步：先查一次，越线就不读
       if (mon.checkNow()) throw Object.assign(new Error(mon.reason()), { reason: 'memory-guard' });
       const read = await bytesOf(file);
