@@ -5,3 +5,13 @@
 #   credfile-common 规则按文件名（.env*）命中，会把模板误判成凭据文件；
 #   真正的凭据文件 .env 已由 .gitignore 排除，不会入库。
 /.env.example
+
+# ---- 第三方运行时（不入库，见 .gitignore 的授权说明）----
+# 这些是厂商发行的 **min 文件**：既不是我们的代码，也不该按我们的风格/复杂度标准评。
+# 不排除会导致两类假信号：
+#   ① 命中 secret-* 规则（min 文件里的随机串长得像 AWS key / 邮箱）——
+#      实测 cubismcore 中 secret-aws-access-key、pixi 中 secret-email 各一条 blocker
+#   ② 几千条 magic-number / 复杂度告警把真实代码的问题淹没（评分从 90+ 掉到 65）
+# 按目录整体排除（与 .gitignore 同口径），新增版本目录自动继承。
+/src/spine-runtimes/
+/src/live2d-runtimes/
