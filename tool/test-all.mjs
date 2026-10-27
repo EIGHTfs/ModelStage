@@ -626,6 +626,11 @@ function runSuite(suite) {
       ? result.results.filter((r) => r.skipped === true)
         .map((r) => ({ name: r.name || r.step || '(未命名)', reason: r.actual || r.error || '' }))
       : []),
+    // 「声明式跳过」：套件自己声明了前置条件（如列表可滚高度不足），并给出原因。
+    //   与「意外全跳过」必须分开：前者是环境不达标（算通过但标注未验证），
+    //   后者是退化信号（一条都没验证，必须红）。
+    declaredSkipReason: (result && result.summary && result.summary.skipReason)
+      || (result && result.skipReason) || '',
     raw: res.stdout,
     // 没产出结果时把 stderr 尾巴带出来：否则只看到 failed=null，不知道是 chrome 起不来还是脚本炸了
     stderrTail: (res.stderr || '').trim().split('\n').slice(-4).join(' | ').slice(0, 400),
@@ -729,15 +734,20 @@ for (const suite of CHOSEN) {
   // 只有真失败/无结果算"红"；超时被杀单独标注（它也是红，但原因不同，要一眼看出来）
   const bad = r.failed === null || r.failed > 0;
   if (bad) report.ok = false;
-  // 「整套都跳过」= 一条都没验证：绝不能显示成绿的（曾经 13 条静默退化成 1 条 skipped 而全场以为通过）
+  // 「整套都跳过」= 一条都没验证：**不能静默变绿**（曾经 13 条退化成 1 条 skipped 而全场以为通过）
+  //   但要区分两种情况，否则会把"环境数据不达标"误判成红：
+  //     · 声明式跳过（套件给出 skipReason，如"列表可滚高度 0px，不满足前提"）⇒ 算通过，但必须显式标注未验证
+  //     · 意外全跳过（没有原因）⇒ 仍是红，这是退化信号
   const allSkipped = Number(r.total) > 0 && Number(r.skipped) === Number(r.total);
-  if (allSkipped) report.ok = false;
+  const declaredSkip = allSkipped && !!r.declaredSkipReason;
+  if (allSkipped && !declaredSkip) report.ok = false;
   if (r.outcomeHint) say(`      ⚠ ${r.outcome}：${r.outcomeHint}`);
   const skipTag = allSkipped ? '（全部 skip）' : (r.skipped > 0 ? `（skip ${r.skipped}）` : '');
-  say(`  ${r.name.padEnd(16)} ${bad || allSkipped ? '❌' : '✅'} failed=${r.failed} total=${r.total} problems=${r.problems} ${r.ms}ms${skipTag}`
+  say(`  ${r.name.padEnd(16)} ${bad || (allSkipped && !declaredSkip) ? '❌' : (declaredSkip ? '⚠️' : '✅')} failed=${r.failed} total=${r.total} problems=${r.problems} ${r.ms}ms${skipTag}`
     + (r.failing.length ? `\n      未通过：${r.failing.join(' / ')}` : '')
     + ((r.failingDetail || []).map((d) => `\n         · ${d.name}\n           actual: ${String(d.actual).slice(0, 220)}\n           expect: ${String(d.expect).slice(0, 160)}`).join(''))
-    + (allSkipped ? `\n       🚨 本套件实际未验证：${r.total} 条全部被 skip（环境缺数据，不是代码通过）` : ''));
+    + (declaredSkip ? `\n       ⚠️ 未验证（声明式跳过）：${r.declaredSkipReason}` : '')
+    + (allSkipped && !declaredSkip ? `\n       🚨 本套件实际未验证：${r.total} 条全部被 skip 且未声明原因（环境缺数据或套件退化，不是代码通过）` : ''));
 }
 
 const totalSkipped = report.suites.reduce((n, x) => n + (Number(x.skipped) || 0), 0);

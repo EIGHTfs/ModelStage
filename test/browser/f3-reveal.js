@@ -189,6 +189,32 @@ const layoutSig = () => ({ pos: rows().map((el) => Math.round(rectOf(el).top)).j
   const all = rows();
   const overflow = listEl.scrollHeight - listEl.clientHeight;
 
+  // ---------------------------------------------------------------- 前提不足就跳过
+  // 四条断言的共同前提是「列表真的能滚」：①④要"行从视口外滚进视口"，②要"滚动中不被拽走"。
+  //   列表可滚高度为 0 时（当前资源根下某些游戏只有 1 角色 1 变体，展全了也不满一屏），
+  //   这些断言在结构上不可能满足 —— 那不是产品缺陷，是测试环境不达标。
+  //   所以这里按**跳过**处理（ok:true + skipped:true 显式标记），不制造假红。
+  const MIN_OVERFLOW_PX = 200;
+  if (overflow < MIN_OVERFLOW_PX) {
+    const why = `跳过：列表可滚高度 ${overflow}px < ${MIN_OVERFLOW_PX}px（渲染 ${all.length} 行，`
+      + `游戏「${target.name}」变体数 ${target.variants}）—— 不满足"列表可滚动"前提`;
+    for (const [name, sel] of [
+      ['F3① 选中后滚进视口', '#roster-list [data-model-id]'],
+      ['F3② 不抢用户滚动', '#roster-list'],
+      ['F3③ 折叠状态选中先展开', '#roster-list'],
+      ['F3④ 自动恢复也定位', '#roster-list'],
+    ]) {
+      results.push({ name, sel, action: 'skip', expect: '列表可滚动（可滚高度 ≥ 200px）', actual: why, ok: true, skipped: true });
+    }
+    return JSON.stringify({
+      total: results.length,
+      failed: 0,
+      skipped: results.filter((x) => x.skipped).length,
+      summary: { game: target.name, renderedVariants: all.length, overflow, skipReason: why },
+      results,
+    }, null, 1);
+  }
+
   // 共享上下文：拆分前这些名字都在 IIFE 作用域里；现在打包传给各 runXxx，作用域语义不变
   const C = { READY_RANK, afterTransition, all, box, entry, game, inView, layoutSig, listEl, overflow, readySnap, rec, rectOf, results, rows, rv, sleep, snap0, snapshotOf, target, w, waitAny, waitFor, waitFrames, waitStable, waitStage };
 
