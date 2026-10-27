@@ -26,7 +26,7 @@
 | 资源包自动判型 | 容器先解包、再按**产物**确定内容类型（`entry.json` 含 `skeletonFile` ⇒ Spine；含 `*.model3.json` ⇒ Live2D），不按扩展名猜 |
 | 背景 | 棋盘格 / 纯色 / 透明 / 自定义图；纯色预设可增删改名（服务端存储） |
 | 调试与诊断 | 浮层日志（四档多选）、就绪信号（给机器读的阶段状态机）、诊断探针落盘 |
-| 零依赖 | 无 `package.json`、无 `node_modules`，纯原生 ES 模块 + Node 内置能力 |
+| 零依赖 | 无 `node_modules`、无锁文件，全部用 Node 内置能力；`package.json` 仅提供 `bin` / `engines` 等元数据，`dependencies` 为空 |
 
 ### 资源包（UnityFS 容器）直接打开
 
@@ -39,6 +39,8 @@
 
 ## 快速开始
 
+### 方式一：本地启停脚本（推荐日常使用）
+
 ```bash
 bash web.sh start      # 启动（默认端口 8804）
 bash web.sh status     # 查看状态
@@ -48,14 +50,42 @@ bash web.sh stop       # 停止
 
 启动后打开 `http://<本机IP>:8804/`。
 
-**前置**：Node.js（内置模块即可，无需装依赖）。
+### 方式二：npx（不 clone 也能跑）
 
-运行时源码**不入库**（授权原因），需自备 —— 缺失时会显式报错并给出修复指引：
+```bash
+npx . --port 8804 --data-root ~/modelstage-data          # 在项目根直接跑
+npx github:EIGHTfs/ModelStage --port 8804 --data-root ~/modelstage-data   # 从 GitHub 直跑，不用 clone
+npx modelstage --port 8804 --data-root ~/modelstage-data # 发布到 registry 后可用（**当前未发布**）
+```
+
+参数与环境变量等价，两条路都通：
+
+| 参数 | 环境变量 | 作用 |
+|---|---|---|
+| `--port <n>` | `PORT` | 监听端口（默认 8804） |
+| `--data-root <path>` | `MODELSTAGE_DATA_ROOT` | 数据根：日志、解包缓存、配置的持久化位置；缺省 = 项目根 |
+| `-h` / `--help`、`-v` / `--version` | — | 用法与版本号 |
+
+`--data-root` 必须指向一个**可写且持久**的目录：npx 运行时"项目根"是 npm 的临时缓存目录（会被清理），
+把日志与解包缓存写在里面会丢。数据根下的 `runtime/`、`config/` 由服务自行创建与维护。
+
+> **首次运行**：数据根里还没有 `config/resources.json`（它是本地配置，不进包），
+> 服务会打一条 ERROR 并已空资源根启动 —— 页面能开，但名册是空的。
+> 照 `config/resources.example.json` 复制一份、把 `path` 指向你的模型目录即可（也可以在页面里
+> 「浏览服务端目录，登记为资源根」直接点选）。
+
+**前置**：Node.js ≥ 20（代码用到 `AbortSignal.timeout`、顶层 `await`、原生 ESM —— Node 17.3+ 才有前者）。
+
+运行时源码**不入库、也不在 npm 包内**（授权与体积原因），需自备 —— 缺失时会显式报错并给出修复指引：
 
 | 运行时 | 放哪里 | 说明 |
 |---|---|---|
 | Spine | `src/spine-runtimes/` | 或用 `SPINE_RUNTIME_DIR`，或工作区共享目录 `../spine-runtimes/` |
 | Live2D | `src/live2d-runtimes/<版本>/` | 与 `src/spine-runtimes/` 并列；**多版本共存**（如 `v6-6.5.3`、`v8-8.19.0`），由 pixi 主版本优选；或用 `LIVE2D_SEARCH_ROOTS` 指定搜索根 |
+
+> **用 npx 直跑时**：包里没有运行时目录，必须自行准备，并用 `SPINE_RUNTIME_DIR` /
+> `LIVE2D_SEARCH_ROOTS` 指到你放运行时的位置（多个搜索根用路径分隔符隔开）。
+> 否则页面能起来，但装载模型时会明确报"找不到运行时"。
 
 Live2D 的版本差异（`Cubism4ModelSettings` ↔ `CubismModelSettings` 之类的命名变化、PIXI 6/8 的构造差异）
 统一收在 `src/web/live2d/runtime-adapter.js` 一处，业务代码不直接触碰 PIXI/Live2D 的 API 形状 ——
@@ -119,6 +149,17 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 ```
 
 导出与工具细节见 **[docs/参考/接口清单.md](docs/参考/接口清单.md)** §五。
+
+---
+
+## 版本记录
+
+> **版本号唯一权威 = `package.json` 的 `version`**。`bin/modelstage.mjs --version` 直接读它，
+> 这里只是变更留痕。升版时改 `package.json` + 在本表追加一行，不需要再找第三个地方。
+
+| 版本 | 日期 | 要点 |
+|---|---|---|
+| 0.1.0 | 2026-10-28 | 首个可用版本：三级名册、Spine / Live2D 双渲染面、UnityFS 资源包解包、插件能力过滤面板 |
 
 ---
 

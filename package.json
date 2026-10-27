@@ -1,0 +1,36 @@
+{
+  "name": "modelstage",
+  "version": "0.1.0",
+  "description": "零第三方依赖的 Spine / Live2D 模型查看器：三级名册、两套渲染面共享相机与面板、UnityFS 资源包解包",
+  "type": "module",
+  "bin": {
+    "modelstage": "bin/modelstage.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "bin/",
+    "src/server/",
+    "src/shared/",
+    "src/web/",
+    "plugins/",
+    "tool/",
+    "config/plugins.json",
+    "config/models/",
+    "config/names/",
+    "config/resources.example.json",
+    "config/diag-upload.example.json",
+    "docs/",
+    "!docs/.trash/",
+    "README.md",
+    "LICENSE"
+  ],
+  "license": "MIT",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EIGHTfs/ModelStage.git"
+  },
+  "homepage": "https://github.com/EIGHTfs/ModelStage#readme"
+}
