@@ -1,0 +1,69 @@
+{
+  "id": "unity-spine-bundle",
+  "name": "Unity Spine 资源包",
+  "provides": [
+    "asset-provider"
+  ],
+  "label": "Spine包",
+  "version": 1,
+  "entry": "index.js",
+  "fileKinds": [
+    "bundle"
+  ],
+  "produces": {
+    "kind": "spine",
+    "entry": "resolve(file)",
+    "schema": "docs/契约/插件.md",
+    "fields": [
+      "prefix",
+      "files",
+      "entry"
+    ],
+    "note": "resolve(file) 按契约 插件.md §4.2 返回 { prefix, files, entry }：prefix 形如 vfs://unity-spine-bundle/<rootId>/<相对目录>/，files 为 relPath→Blob|string 映射（<base>.skel / <base>.atlas / <页名>.png / entry.json，全部平铺无子目录），entry 指向 files 里的入口清单",
+    "memory": {
+      "via": "estimateMemory(file)",
+      "fields": [
+        "decompressedBytes",
+        "rgbaBytes",
+        "peakBytes"
+      ],
+      "supported": [
+        "decompressedBytes",
+        "peakBytes"
+      ],
+      "note": "decompressedBytes 由容器块表求和得出（blocksSummary 只读头+blocksInfo，不解压数据块；不用 TextAsset 文本长度，.skel 二进制经 UTF-8 往返会膨胀 1.5 倍）；peakBytes = 103MB 固定开销 + 解压后 MB × 2.3（3 个 NIKKE 包实测标定）。rgbaBytes 需解 CAB 才能拿，准入路径不声明，由 resolve 完成后回填到 data/unpacked/<fp>/probe.json"
+    }
+  },
+  "errorCodes": [
+    "SPI_ERR_BAD_ARGS",
+    "SPI_ERR_NO_FILE",
+    "SPI_ERR_IO",
+    "SPI_ERR_NO_HOST",
+    "SPI_ERR_NOT_UNITYFS",
+    "SPI_ERR_NO_CAB",
+    "SPI_ERR_CONTAINER_PARSE",
+    "SPI_ERR_NO_SKEL",
+    "SPI_ERR_NO_ATLAS",
+    "SPI_ERR_SKEL_INVALID",
+    "SPI_ERR_EXTRACT",
+    "SPI_ERR_TEX_FORMAT_UNSUPPORTED",
+    "SPI_ERR_TEX_DATA_SHORT",
+    "SPI_ERR_TEX_DECODE",
+    "SPI_ERR_PNG_ENCODE",
+    "SPI_ERR_ENTRY_BUILD"
+  ],
+  "files": [
+    "lib/errors.js",
+    "lib/bytes.js",
+    "lib/common-strings.js",
+    "lib/unityfs.js",
+    "lib/serialized.js",
+    "lib/typetree.js",
+    "lib/extract.js",
+    "lib/etc2.js",
+    "lib/dxt.js",
+    "lib/texdecode.js",
+    "lib/png.js",
+    "index.js"
+  ]
+}

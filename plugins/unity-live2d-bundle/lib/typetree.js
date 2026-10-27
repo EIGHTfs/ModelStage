@@ -128,14 +128,50 @@
     TypelessData: (r) => { const n = r.i32(); return r.bytes(n, 'TypelessData'); },
   };
 
-  function readValue(node, r) {
+  /**
+   * string 的「原始字节」读取：返回 { text, bytes }，而不是只给 text。
+   *
+   * 为什么需要：Unity 的 `string` 在序列化层是「i32 长度 + 原始字节」，**Unity 自己不校验 UTF-8** ——
+   *   TextAsset 允许承载二进制（spine 的 `.skel` 就是二进制，实测 651994 字节）。
+   *   而 `bytes.string()` 一律 UTF-8 解码 ⇒ 非法序列被替换成 U+FFFD，**信息永久丢失且不可逆**
+   *   （实测某 .skel：641818 字符里 165995 个 U+FFFD，再编码回去长度都不对了）。
+   *   所以需要二进制字段时必须走这条，不能事后从 text 反推。
+   * 保留 text 是为了同一字段两种用途都能覆盖（`.atlas` 要文本、`.skel` 要字节）。
+   * @param {object} r Reader
+   */
+  function readRawString(r) {
+    const len = r.i32();
+    if (len === 0) { r.align(4); return { text: '', bytes: new Uint8Array(0) }; }
+    if (len < 0 || len > r.remaining) throw NS.errors.fail('ULB_ERR_CONTAINER_PARSE', `字符串长度非法（string.raw）：${len}`);
+    const raw = r.bytes(len, 'string.raw');
+    r.align(4);
+    // text 做成**惰性**：调用方常常只要 bytes（.skel 二进制，实测 651994 字节）或只要 text
+    //   （m_Name 几十字节）。不访问就不解码 —— 探测阶段逐字段全量解码会明显拖慢 canHandle。
+    // 行为不变：访问 .text 得到的字符串与立即解码完全相同。
+    let decoded = null;
+    return {
+      bytes: raw,
+      get text() {
+        if (decoded === null) decoded = new TextDecoder('utf-8').decode(raw);
+        return decoded;
+      },
+    };
+  }
+
+  /**
+   * 按类型树递归取值。
+   * @param {object} node 类型树节点
+   * @param {object} r Reader
+   * @param {boolean} rawStrings true 时 `string` 返回 `{text,bytes}` 而非 `text`（见 readRawString）
+   */
+  function readValue(node, r, rawStrings) {
     let align = isAligned(node.metaFlag);
     let value;
-    const primitive = PRIMITIVE[node.type];
+    const primitive = (rawStrings && node.type === 'string') ? readRawString : PRIMITIVE[node.type];
     if (primitive) {
       value = primitive(r);
     } else if (node.type === 'pair') {
-      value = [readValue(node.children[0], r), readValue(node.children[1], r)];
+      value = [readValue(node.children[0], r, rawStrings), readValue(node.children[1], r, rawStrings)];
     } else if (node.children.length && node.children[0].type === 'Array') {
       // 变长数组/容器：先读 i32 长度，再读元素
       const arrayNode = node.children[0];
@@ -144,13 +180,13 @@
       if (size < 0 || size > 1e7) throw NS.errors.fail('ULB_ERR_CONTAINER_PARSE', `数组长度非法：${size}（字段 ${node.name}）`);
       const subtype = arrayNode.children[1];
       value = [];
-      for (let i = 0; i < size; i++) value.push(readValue(subtype, r));
+      for (let i = 0; i < size; i++) value.push(readValue(subtype, r, rawStrings));
     } else if (node.children.length) {
       // 结构体/类：按子节点顺序取值
       value = {};
       for (const child of node.children) {
         if (child.type === 'ManagedReferencesRegistry') throw NS.errors.fail('ULB_ERR_CONTAINER_PARSE', '尚未支持 ManagedReferencesRegistry（Unity 2020.1+ 的引用注册表）');
-        value[child.name] = readValue(child, r);
+        value[child.name] = readValue(child, r, rawStrings);
       }
     } else {
       throw NS.errors.fail('ULB_ERR_CONTAINER_PARSE', `未知类型，无法取值：type=${node.type} name=${node.name}`);
@@ -163,16 +199,17 @@
    * 按类型树读取一个对象的全部字段。
    * @param {object} sf serialized.parse() 的结果
    * @param {object} obj serialized 的对象条目
+   * @param {{rawStrings?: boolean}} [opts] rawStrings=true 时 `string` 字段返回 `{text,bytes}`（需要二进制时用）
    * @returns {object} 字段名 → 值（结构体为嵌套对象，数组为数组）
    */
-  function readObject(sf, obj) {
+  function readObject(sf, obj, opts) {
     const type = sf.types[obj.typeIndex];
     if (!type || !type.typeTree) throw NS.errors.fail('ULB_ERR_CONTAINER_PARSE', `对象 ${obj.pathID} 的类型没有类型树`);
     const blob = sf.bytes.subarray(type.typeTree.offset, type.typeTree.offset + type.typeTree.size);
     const root = parseBlob(blob, sf.version);
     const r = new B.Reader(sf.bytes, { pos: obj.dataOffset, endian: sf.le === false ? '>' : '<' });
-    return readValue(root, r);
+    return readValue(root, r, !!(opts && opts.rawStrings));
   }
 
-  NS.typetree = { parseBlob, readValue, readObject, isAligned, ALIGN_BYTES };
+  NS.typetree = { parseBlob, readValue, readObject, readRawString, isAligned, ALIGN_BYTES };
 }

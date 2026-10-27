@@ -12,6 +12,9 @@
 // 结构：所有函数都在模块级、只接收 ctx/显式参数（工厂里不再嵌一堆闭包），
 //   这样每个函数都能单独审阅，工厂只做装配。
 import { createVfsSettings } from './vfs-settings.js';
+// 模型实例统一经 adapter 建；URL 回落路径的 vfs→blob 转换也在那边（与 spine 侧共用同一套 VFS.resolve）
+//   重命名：本文件自己导出一个 createModel(ctx)（对外 API），别与 adapter 的同名函数撞
+import { createModel as createModelInstance } from './runtime-adapter.js';
 
 // ---------------------------------------------------------------- 纯函数
 
@@ -142,7 +145,7 @@ async function tryVfsInstance(ctx, def, entryUrl) {
     return null;
   }
   try {
-    const inst = await PIXI.live2d.Live2DModel.from(via.settings, { autoInteract: false });
+    const inst = await createModelInstance(via.settings, { autoInteract: false });
     if (!via.stats.calls) throw new Error('resolveURL 未被调用');
     ctx.st.vfsStats = via.stats;
     ctx.note(`Live2D 内部资源经 VFS：命中 ${via.stats.hits.length} 项，回落 ${via.stats.missing.length} 项`);
@@ -153,12 +156,28 @@ async function tryVfsInstance(ctx, def, entryUrl) {
   }
 }
 
-/** 建实例：内部文件优先走 VFS，不可用时回落 URL 路径（行为与改造前一致） */
+/**
+ * 建实例：内部文件优先走 VFS，不可用时回落 URL 路径。
+ *
+ * 回落路径**也必须**把 vfs:// 换成可 fetch 的 blob：库不认识自定义协议，
+ *   直接喂 vfs:// 会 `Failed to construct 'URL': Invalid URL`。
+ *   这条是"库版本不支持时的唯一退路"，退路本身不能是坏的。
+ *   转换函数注入给 adapter，复用同一个 VFS 句柄（不在这里另建解析器）。
+ */
 async function createInstance(ctx, def, entryUrl, url) {
   const inst = await tryVfsInstance(ctx, def, entryUrl);
   if (inst) return inst;
   ctx.st.vfsStats = null;
-  return PIXI.live2d.Live2DModel.from(url, { autoInteract: false });
+  const vfs = ctx.vfs;
+  return createModelInstance(url, {
+    autoInteract: false,
+    resolveVfs: (raw) => {
+      try {
+        if (vfs && typeof vfs.resolve === 'function') return vfs.resolve(raw) || null;
+      } catch { /* 解析失败按"不可用"处理，由 adapter 抛明确错误 */ }
+      return null;
+    },
+  });
 }
 
 // ---------------------------------------------------------------- 挂载与收尾

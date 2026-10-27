@@ -151,9 +151,10 @@ function loadPlugin(pluginId) {
         return out;
       });
     }
-    const api = sandbox.__ULB_NODE__;
+    // 统一契约 __PLUGIN_API__；__ULB_NODE__ 是首版键名，保留兼容（老插件继续能装）
+    const api = sandbox.__PLUGIN_API__ || sandbox.__ULB_NODE__;
     if (!api || typeof api.resolve !== 'function' || typeof api.canHandle !== 'function') {
-      throw new Error('插件未挂载 __ULB_NODE__ 的 resolve/canHandle');
+      throw new Error('插件未挂载 __PLUGIN_API__（或兼容键 __ULB_NODE__）的 resolve/canHandle');
     }
     return { ok: true, api, loadMs: Date.now() - t0 };
   } catch (e) {

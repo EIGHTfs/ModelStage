@@ -47,22 +47,39 @@ const CANDIDATE_SUBPATHS = [
   'js/lib',
   'src/lib',
   '.',            // 库直接放在项目根
+  // 项目自带的运行时按版本分目录（src/web/live2d-runtime/<版本>/），
+  //   多版本共存、由 pixiMajor 优选；新增版本只需拷一个子目录进来。
+  'v6-6.5.3',
+  'v8-8.19.0',
 ];
 
 // 读 pixi.min.js 的主版本号。
 //
-// 为什么要看它来优选运行时组合（**实测依据**）：
-//   pixi-live2d-display 上游面向 PIXI 6；实测「PIXI 6 组合」能同时渲染 Cubism 2 与 Cubism 4，
-//   而本工作区 spive2d 打包的「PIXI 8 组合」在 **Cubism 4 上会卡住**
-//   （model3.json 与 moc3 都能取到、moc 也能解析，但贴图永不请求，加载 Promise 永不 resolve；
-//    同一模型换 PIXI 6 组合即正常）。另外该 PIXI 8 组合的库要求 Cubism Core 6.x，
-//   配旧 core 会直接报 Failed to start up Cubism framework。
-//   故按 PIXI 主版本优选，PIXI 6 优先。
+// 为什么要看它来优选运行时组合（**实测口径**）：
+//   · v6 组合（PIXI 6.5.3 + 配套 index）能渲染 Cubism 2 与 Cubism 4 —— **当前默认选它**（更稳）。
+//   · v8 组合（PIXI 8.19.0 + 该 index.min.js）实测**也能跑 Cubism 4**（用 aijier_3 与 aderbote_3
+//     双双出画、60 FPS），保留作对照版本，不默认选。
+//   （早期注释写过"PIXI 8 组合在 Cubism 4 上会卡住"，那是已被实测推翻的旧结论，勿再引用。）
+//   故仍按 PIXI 主版本优选，PIXI 6 优先。
+//
+// 版本号的三种实测写法（缺一种就会静默读成 null，优选规则再次悄悄失效）：
+//   v6: `PixiJS 6.5.3 - ✰`（调试横幅）/ `pixi.js - v6.5.3`（头注释）
+//   v8: `Ai="8.19.0"`（压缩后的变量赋值，**不是** VERSION=…）
+//   其它构建: `VERSION="x.y.z"`
 function pixiMajor(dir) {
   try {
     const s = fs.readFileSync(path.join(dir, 'pixi.min.js'), 'utf8');
-    const m = s.match(/VERSION="(\d+)\./) || s.match(/VERSION:"(\d+)\./);
-    return m ? Number(m[1]) : null;
+    const patterns = [
+      /PixiJS\s+v?(\d+)\.\d+\.\d+/i,
+      /pixi\.js\s*-\s*v?(\d+)\.\d+\.\d+/i,
+      /VERSION\s*[:=]\s*["'](\d+)\.\d+\.\d+/i,
+      /[:=]\s*["'](\d+)\.\d+\.\d+["']/,
+    ];
+    for (const re of patterns) {
+      const m = s.match(re);
+      if (m) return Number(m[1]);
+    }
+    return null;
   } catch { return null; }
 }
 
@@ -84,11 +101,14 @@ function findIn(dir) {
   return null;
 }
 
-/** 收集搜索根：环境变量优先，否则默认「工作区根」与「工作区/spine-viewers」。 */
+/** 收集搜索根：环境变量优先，否则默认「项目自带」+「工作区根」+「工作区/spine-viewers」。 */
 function searchRoots() {
   const env = process.env.LIVE2D_SEARCH_ROOTS;
   if (env) return env.split(path.delimiter).filter(Boolean);
   return [
+    // 项目自带（与 src/spine-runtimes 并列）：多版本子目录，由 pixiMajor 优选。
+    //   放第一位是硬要求 —— 外部目录随时可能被改动/删除，而"用哪套库"必须是项目自己能定的。
+    path.join(ROOT, 'src', 'live2d-runtimes'),
     path.resolve(ROOT, '..'),
     path.resolve(ROOT, '..', 'spine-viewers'),
   ];
@@ -172,6 +192,11 @@ export function resolveLive2DRuntimes(options = {}) {
       const req = REQUIRED.filter((n) => files[n]).length;
       const opt = OPTIONAL.filter((n) => files[n]).length;
       const pm = pixiMajor(c.dir);
+      // 读不出版本时必须告警：否则"PIXI 6 优先"会对这个候选**静默失效**，
+      //   结果就是"注释写着优先 6、实际选中 8"（这正是之前踩过的坑）。
+      if (pm === null) {
+        log.warn('该候选的 pixi.min.js 读不出主版本号，PIXI 6 优先规则对它不生效', { dir: c.dir });
+      }
       // pixi6 = 1 表示是 PIXI 6 组合（优先）
       return { ...c, files, req, opt, pixi: pm, pixi6: pm === 6 ? 1 : 0 };
     }).sort((a, b) => (b.pixi6 - a.pixi6) || (b.req - a.req) || (b.opt - a.opt)

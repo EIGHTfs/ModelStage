@@ -22,6 +22,15 @@ tmp/
 # 由 tool/resolve-runtimes.mjs 在构建时自动探测获取（环境变量 / 项目内 / 工作区共享 / 基线兜底）。
 src/spine-runtimes/
 
+# ---- 刻意排除：Live2D 运行时（与 src/spine-runtimes 并列、同理）----
+# 合规原因（比 Spine 更硬）：Live2D Cubism Core / Cubism 2 运行时受
+#   Live2D Proprietary Software License Agreement 约束 —— 文件头自称 "Redistributable Code"，
+#   那是"允许随你的应用分发"，不等于可以放进公开源码仓库对外再分发；
+#   pixi.js / pixi-live2d-display 虽是 MIT，但整目录排除更一致，避免"半个目录入库"。
+# 由 tool/resolve-live2d-runtimes.mjs 探测获取：项目内版本化子目录 → 工作区共享 → 外部兜底；
+#   多版本（v6-6.5.3 / v8-8.19.0）由 pixi 主版本优选。
+src/live2d-runtimes/
+
 # ---- 刻意排除：运行时诊断数据（只忽略运行产物，不整目录忽略）----
 # data/diag.jsonl 是前端诊断探针经 POST /api/diag 追加写入的运行期日志（8 MB 轮转，可随时重建），
 # 属运行产物不入库；需要取证时直接读本机文件即可。

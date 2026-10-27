@@ -12,6 +12,8 @@ import { DEFAULT_FILTER, DEFAULT_TEXEL, FILTER_PRESETS } from '../engine/filters
 // 效果链的组装与签名**与 Spine 共用同一份实现**（顺序/激活/参数换算/结构签名都在这里），
 //   Live2D 侧只负责"怎么把这个链挂到 PIXI.Filter 上"——这是两条链路唯一该有的差异。
 import { buildChainBody, chainSignature, chainUniforms, effectPrelude, uniformDeclarations } from '../engine/effect-chain.js';
+// 滤镜实例创建与挂载统一走 adapter：业务侧不再出现 PIXI.Filter / stage.filters 字样
+import { createFilter, setFilters } from '../live2d/runtime-adapter.js';
 
 /**
  * 创建 Live2D 渲染器。
@@ -234,7 +236,6 @@ export function createLive2DRenderer({ live2d } = {}) {
   function applyPreset() {
     const app = (() => { try { return live2d.getApp ? live2d.getApp() : null; } catch { return null; } })();
     if (!app || !app.stage) return false;
-    const PIXI = typeof window !== 'undefined' ? window.PIXI : null;
     const chain = effectChain;
     // 签名只看"结构"（预设 + 链上效果与表达式）：**参数值不进签名** ⇒ 切档位只改 uniform，不重建滤镜
     const signature = `${presetId}|${chainSignature(chain)}`;
@@ -245,12 +246,11 @@ export function createLive2DRenderer({ live2d } = {}) {
       if (presetId === DEFAULT_FILTER && !chain.length) {
         // 可逆：摘掉挂载即可。**这里不 destroy** —— 实例销毁后 PIXI 仍可能在当帧拿着它，
         //   实测会引入新的卡顿/异常；原实现也是只置 null，让 GC 随实例一起回收。
-        app.stage.filters = null;
+        setFilters(app, null);
         activeFilter = null;
         filterSignature = '';
         return true;
       }
-      if (!PIXI || typeof PIXI.Filter !== 'function') return false;
       if (activeFilter && filterSignature === signature) {
         // 结构没变 ⇒ 热更新：只写 uniform，绝不重建实例（重建会黑一帧）
         //   PIXI v6 的 filter.uniforms 是**真实对象**，直接赋值即可（与 spine-webgl Shader 的
@@ -258,19 +258,20 @@ export function createLive2DRenderer({ live2d } = {}) {
         for (const [key, value] of Object.entries(uniforms)) activeFilter.uniforms[key] = value;
         return true;
       }
-      activeFilter = new PIXI.Filter(null, pixiFragmentOf(presetId, chain), uniforms);
+      const next = createFilter(pixiFragmentOf(presetId, chain), uniforms);
+      if (!next) return false;
+      activeFilter = next;
       // 邻域采样必需：默认 filterArea 会裁到边界内，边缘缺一个 texel
       activeFilter.padding = 1;
       filterSignature = signature;
-      // filterArea 固定成整屏：否则 PIXI 会按 stage 包围盒裁剪，滤镜边缘会缺一块
-      app.stage.filterArea = app.screen;
-      app.stage.filters = [activeFilter];
+      // filterArea 固定整屏由 adapter 处理（否则 PIXI 会按 stage 包围盒裁剪，边缘缺一块）
+      setFilters(app, [activeFilter]);
       return true;
     } catch {
       // 着色器编译失败等：保持原渲染，不抛
       activeFilter = null;
       filterSignature = '';
-      try { app.stage.filters = null; } catch { /* 忽略 */ }
+      try { setFilters(app, null); } catch { /* 忽略 */ }
       return false;
     }
   }

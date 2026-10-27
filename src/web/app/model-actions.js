@@ -136,8 +136,88 @@ async function resolveAssetSource(model, name) {
     rootKind: 'bundle',   // 容器类型（插件能力声明用它判"能不能读"），不是内容类型
   });
   if (!mat.ok) return { ok: false, entryUrl: null, prefix: null, provider: null, message: mat.message || '解包失败' };
-  const entryUrl = `${mat.prefix}${String(mat.entry).replace(/^\.?\//, '')}`;
-  return { ok: true, entryUrl, prefix: mat.prefix, provider: mat.provider, message: '' };
+  const entryUrl = joinPrefix(mat.prefix, mat.entry);
+  // files 只带**路径清单**（不带 Blob）：产物已经由 materialize 注册进 VFS，
+  //   上层判断"有没有 entry.json"只需要名字，不需要字节。
+  return {
+    ok: true, entryUrl, prefix: mat.prefix, provider: mat.provider, message: '',
+    files: mat.files && typeof mat.files.keys === 'function' ? [...mat.files.keys()] : [],
+  };
+}
+
+/**
+ * 拼 VFS 地址：prefix + 相对路径。
+ * 只此一处实现 —— 解包产物（entry.json 里的相对名）与其它容器文件都走它，
+ *   避免"同一个拼接规则写两遍"，将来 prefix 形态变了漏改一处就会静默取不到文件。
+ * @param {string} prefix 形如 'vfs://xxx/'
+ * @param {string} rel 相对路径（允许以 ./ 或 / 开头）
+ * @returns {string}
+ */
+function joinPrefix(prefix, rel) {
+  return `${prefix}${String(rel || '').replace(/^\.?\//, '')}`;
+}
+
+/** 取路径末段（entry.json 里的文件名 → 展示用名字） */
+function baseName(p) {
+  return String(p || '').split('/').pop() || '';
+}
+
+/**
+ * 容器解包产物 → 展开成 spine 三件套（entry.json 是唯一权威）。
+ *
+ * 三种输入的处置：
+ *   1. 有 entry.json 且含 skeletonFile  ⇒ 补齐 {skeletonFile, atlasFile, textureFiles}
+ *   2. 是 live2d 容器（entry.json 是 model3.json，没有 skeletonFile）⇒ 原样返回，走原来的 live2d 路
+ *   3. 产物里有 .skel/.atlas 却没有 entry.json ⇒ **明确报错**，不按扩展名猜：
+ *      多页 atlas 时"页面名 ↔ png"只能靠 atlas 首行解析，猜错会静默显示错图，
+ *      那种"看着正常但是错的"比直接报错难查得多。
+ * @param {{prefix:string, entryUrl:string, files:string[]}} src
+ * @param {string} name 显示名（只用于日志）
+ * @returns {Promise<{entry?:object, error?:string}>}
+ */
+async function expandContainerEntry(src, name) {
+  // vfs:// 不能直接 fetch（浏览器不认这个协议，会 net::ERR_FAILED）——
+  //   必须先用 VFS 的 resolve 换成 blob: 地址。这与 document.js:33 resolveUrl 是同一套逻辑，
+  //   这里复用同一个 VFS 句柄，不另造解析器。
+  const fetchUrl = (() => {
+    try { return getSharedVirtualFS().resolve(src.entryUrl) || null; } catch { return null; }
+  })();
+  let meta = null;
+  try {
+    if (fetchUrl) {
+      const res = await fetch(fetchUrl, { cache: 'no-store' });
+      if (res && res.ok) meta = await res.json();
+    }
+  } catch { meta = null; }   // 不是 JSON / 取不到 ⇒ 当作"没有 entry.json"走下面的判定
+
+  if (meta && meta.skeletonFile) {
+    const join = (rel) => joinPrefix(src.prefix, rel);
+    const texFiles = Array.isArray(meta.textureFiles) ? meta.textureFiles : [];
+    return {
+      entry: {
+        skeletonFile: { name: baseName(meta.skeletonFile), url: join(meta.skeletonFile) },
+        atlasFile: meta.atlasFile
+          ? { name: baseName(meta.atlasFile), url: join(meta.atlasFile) }
+          : undefined,
+        textureFiles: texFiles.map((f) => ({ name: baseName(f), url: join(f) })),
+      },
+    };
+  }
+
+  // 没有 skeletonFile：区分"live2d 容器"与"spine 容器缺 entry.json"
+  const paths = (Array.isArray(src.files) ? src.files : []).map((p) => String(p).toLowerCase());
+  const hasSkel = paths.some((p) => p.endsWith('.skel'));
+  const hasAtlas = paths.some((p) => p.endsWith('.atlas'));
+  if (hasSkel && hasAtlas) {
+    stageLog('warn', `容器 ${name} 里没有 entry.json（将拒绝装载）`, {
+      files: paths.slice(0, 12).join(' / '),
+    });
+    return {
+      error: '容器内缺少 entry.json：spine 三件套需要 skeletonFile / atlasFile / textureFiles 才能确定'
+        + '骨架、atlas 与贴图页的对应关系（不按扩展名猜，多页 atlas 猜错会静默显示错图）',
+    };
+  }
+  return {};   // live2d 容器或其它容器：保持原路，不做任何改动
 }
 
 /**
@@ -159,11 +239,32 @@ async function loadModel(model, name) {
     markModelFailed(`无法装载 ${name}：${src.message}`);
     return null;
   }
+  // 容器解包产物：把 entry.json 展开成 spine 三件套。
+  //   为什么必须在这一层做：`buildSpineAssets`（infra/document.js:98）要的是
+  //   {skeletonFile, atlasFile, textureFiles} 这个形状，而容器这条路只传了"入口文件的地址"，
+  //   没人把 entry.json 读开过；同时 document.js:69 的兜底规则（有 entry.url 就当 live2d）
+  //   会把 spine 容器判成 live2d。在进 buildDocument 之前补齐 + 显式给 kind 即可，
+  //   **不动 document.js**（那条路与 live2d 分支同族，动它会弄坏已经能用的 live2d）。
+  const entry = { url: src.entryUrl };
+  let kind = model.kind;
+  if (src.prefix) {
+    const expanded = await expandContainerEntry(src, name);
+    if (expanded.error) {
+      stage.unload();
+      stageLog('error', `无法装载 ${name}：${expanded.error}`, { model: name, kind: model && model.kind, reason: expanded.error });
+      markModelFailed(`无法装载 ${name}：${expanded.error}`);
+      return null;
+    }
+    if (expanded.entry) {
+      Object.assign(entry, expanded.entry);
+      kind = 'spine';   // 显式指定，覆盖 document.js 的 entry.url ⇒ live2d 兜底
+    }
+  }
   const doc = await buildDocument({
     ...model,
-    kind: model.kind,                                   // 只表达内容类型
+    kind,                                               // 只表达内容类型
     provider: src.provider || model.provider || null,
-    entry: { url: src.entryUrl },                       // 是 vfs:// 还是 http:// 由发现阶段决定
+    entry,                                              // 是 vfs:// 还是 http:// 由发现阶段决定
   });
   if (!doc || doc.state !== 'ready') {
     const why = (doc && (doc.warnings || []).join('；')) || '原因未知';

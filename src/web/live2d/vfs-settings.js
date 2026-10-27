@@ -13,6 +13,8 @@
 //   settings.url 只用于给库做占位/校验，真实解析全由我们的 resolveURL 完成；
 //   返回的 blob URL 直接进 XHR/Image，不再经过库里的 url.resolve。
 import { isDirectUrl } from './stage-ctx.js';
+// 版本差异（settings 类名）只在 runtime-adapter 里收敛：本文件不再出现具体类名
+import { getSettingsCtor } from './runtime-adapter.js';
 
 /** 单模型解析统计（验收/排查：命中了哪些文件、哪些回落网络） */
 function createStats() {
@@ -50,12 +52,15 @@ function isCubism2(json) {
   return Number.isFinite(ver) && ver < 3;
 }
 
-/** 取实例构造器（库在 window.PIXI.live2d 上导出；缺了就当不支持） */
+/** 取实例构造器（类名兼容在 adapter 里，这里只判 Cubism 世代） */
 function pickSettingsCtor(cubism2) {
-  const lib = typeof window !== 'undefined' && window.PIXI ? window.PIXI.live2d : null;
-  if (!lib) return null;
-  const ctor = cubism2 ? lib.Cubism2ModelSettings : lib.Cubism4ModelSettings;
-  return typeof ctor === 'function' ? ctor : null;
+  try {
+    return getSettingsCtor(cubism2 ? 'cubism2' : 'cubism4');
+  } catch (e) {
+    // 把 adapter 的明确原因（version-unsupported + 库实际导出的类名）带出去，
+    //   而不是笼统的 null —— 排障时要看的就是"库到底导出了哪些 Settings 类"
+    return { error: (e && e.message) || 'version-unsupported' };
+  }
 }
 
 /** 入参校验：可用返回 null，否则返回原因（供调用方 warn） */
@@ -71,8 +76,12 @@ function inputReason(json, vfs) {
  * @returns {{settings: object|null, reason: string|null}}
  */
 function instantiateSettings(json, entryUrl) {
-  const Ctor = pickSettingsCtor(isCubism2(json));
-  if (!Ctor) return { settings: null, reason: 'no-settings-ctor' };
+  const picked = pickSettingsCtor(isCubism2(json));
+  // 取不到构造器时把 adapter 给的**具体原因**（试过哪些类名、库实际导出了什么）带出去
+  if (!picked || typeof picked !== 'function') {
+    return { settings: null, reason: (picked && picked.error) || 'version-unsupported: 没有可用的 settings 构造器' };
+  }
+  const Ctor = picked;
   try {
     const settings = new Ctor({ ...json, url: vfsPrefixOf(entryUrl) || dirOf(entryUrl) || '' });
     if (!settings || typeof settings.resolveURL !== 'function') return { settings: null, reason: 'no-resolve-url' };

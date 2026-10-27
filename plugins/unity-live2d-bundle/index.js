@@ -491,8 +491,8 @@ function createProvider({ NS, host, PLUGIN_ID, ulbLog, MIME_OCTET, MIME_JSON, MI
   //   禁止：任何 I/O、修改外部状态、把异常抛给宿主
   //   canHandle 内部 try/catch，捕获后 return false（§3.7 明许），catch 分支至少记一条 debug（§3.7）
   // 三种情形（§3.1 表格）：
-  //   ① 有 bytes 且魔数匹配（UnityFS + CAB-*）→ true
-  //   ② 有 bytes 且魔数不匹配            → false
+  //   ① 有 bytes 且「UnityFS + CAB-* + 有 moc3」→ true
+  //   ② 有 bytes 且上述不成立              → false
   //   ③ 没有 bytes                        → true（保守放行：判 false 会让无扩展名的包永远无法被选中）
   // 注意：必须同步返回 boolean（§3.1 签名 canHandle(file) → boolean）；
   //   不能用 async——async 会返回 Promise，而 Promise 恒为真值，宿主按 if (canHandle(file)) 判断时所有文件都被放行，判定失效。
@@ -501,7 +501,14 @@ function createProvider({ NS, host, PLUGIN_ID, ulbLog, MIME_OCTET, MIME_JSON, MI
     const bytes = ctx && ctx.bytes ? ctx.bytes : null;
     if (!bytes) return true;
     try {
-      return NS.bundleProbe.run(bytes).ok;
+      const probe = NS.bundleProbe.run(bytes);
+      // 收紧判定：只有「UnityFS + CAB-* + 包内有 moc3」才算本插件的包。
+      // 为什么不能只判容器头：同族容器还有 spine 资源包（实测 NIKKE = UnityFS v8 + .skel/.atlas/PNG，
+      //   包内无 moc3）。两个 asset-provider 插件若都按"容器头匹配"回答 true，宿主只取第一个
+      //   （plugin-runner 的 pickPlugin 不重试下一个），被错认领的一方会在 resolve 阶段报
+      //   「找不到 moc3」——现场看起来是"这个包坏了"，实际是判定太宽。
+      // 成本不增加：bundleProbe 本来就已经解出 moc3 存在性（bundle-probe.js:111）。
+      return probe.ok && !!probe.moc3;
     } catch (e) {
       // §3.7：catch 分支不得静默。这里**升到 warn**（不是 debug）：
       //   canHandle 抛错通常不是"文件读不了"（那属于数据问题，返回 false 即可），
@@ -735,7 +742,11 @@ function install() {
 //   globalThis.__ULB_NODE__，供服务端 require/import 后取用。
 //   为什么不写成 `export { resolve }`：那会把文件变成 ESM，浏览器以 <script> 注入时
 //   export 是语法错误 → 整个插件加载失败。保持经典脚本形态，node 侧用全局挂载暴露。
-const ulb = install();
-if (ulb && typeof window === 'undefined' && typeof globalThis !== 'undefined') {
-  globalThis.__ULB_NODE__ = ulb;
+// 顶层常量用插件前缀命名：多个插件脚本注入**同一个全局作用域**，
+//   通用名（ulb / api / ns）会与别的插件撞车 ⇒ 后加载的那个报
+//   Uncaught SyntaxError: Identifier 'x' has already been declared，插件整个不执行。
+const ulbLive2dApi = install();
+if (ulbLive2dApi && typeof window === 'undefined' && typeof globalThis !== 'undefined') {
+  globalThis.__PLUGIN_API__ = ulbLive2dApi;
+  globalThis.__ULB_NODE__ = ulbLive2dApi;
 }

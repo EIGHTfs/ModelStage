@@ -3,47 +3,28 @@
 // 库顺序不可颠倒（cubismcore 必须最先：pixi-live2d-display 初始化时会检查它）。
 // 渲染器尺寸只认 Surface 下发的几何（fitAppToOverlay 的入参或句柄），本模块不读 DOM 尺寸。
 // 注意：覆盖层**容器与画布的尺寸**不在这里写 —— 那是 overlay.setBox 的唯一职责。
-import { LIBS, OVERLAY_CANVAS_ID } from './stage-ctx.js';
+import { OVERLAY_CANVAS_ID } from './stage-ctx.js';
+// 库加载与 Application 构造统一走 adapter（版本差异只在那里判断）
+import { loadRuntime, createApplication } from './runtime-adapter.js';
 
 /**
  * 创建 PIXI 应用模块。
  * @param {object} ctx 运行时上下文
- * @returns {{loadScript:Function, ensureLibs:Function, fitAppToOverlay:Function, ensureApp:Function}}
+ * @returns {{ensureLibs:Function, fitAppToOverlay:Function, ensureApp:Function}}
  */
 export function createPixiApp(ctx) {
   const { st, note } = ctx;
 
-  function loadScript(src) {
-    return new Promise((resolve, reject) => {
-      const el = document.createElement('script');
-      el.src = src;
-      el.onload = () => resolve(src);
-      el.onerror = () => {
-        // 失败的标签必须摘掉：否则重试时页面上留着坏标签，后续排查也分不清哪次是失败的
-        el.remove();
-        reject(new Error(`Live2D 运行时加载失败：${src}`));
-      };
-      document.head.appendChild(el);
-    });
-  }
-
+  /**
+   * 确保运行时库已就绪。
+   * 加载序列与"失败不缓存"都由 runtime-adapter.loadRuntime 负责（单例 Promise），
+   *   这里只做本 ctx 的一次性提示，不再自己拼 <script>。
+   */
   function ensureLibs() {
     if (!st.libsReady) {
-      st.libsReady = (async () => {
-        note('首次使用 Live2D，按需加载运行时库…');
-        for (const src of LIBS) {
-          await loadScript(src);
-          note(`运行时已加载：${src.split('/').pop()}`);
-        }
-        if (!(typeof PIXI !== 'undefined' && PIXI.live2d)) {
-          throw new Error('PIXI.live2d 不存在：运行时库顺序或版本不匹配（live2dcubismcore 必须最先）');
-        }
-        note(`Live2D 运行时就绪（PIXI ${PIXI.VERSION || '?'}）`);
-      })().catch((err) => {
-        // **失败不缓存**：一次瞬时失败（服务重启、网络抖动、脚本被中断）如果留着这个
-        //   rejected promise，Live2D 就永久激活不了，只能刷新页面 —— 实测踩到过
-        //   （服务重启打断 cubismcore 加载 ⇒ 之后每次切 Live2D 都是 activate-failed）。
-        //   清掉缓存让下一次激活重新尝试；已成功加载的库浏览器有缓存，重试很便宜。
+      note('首次使用 Live2D，按需加载运行时库…');
+      st.libsReady = loadRuntime(note).catch((err) => {
+        // adapter 内部也会清它的单例缓存；这里清本 ctx 的，保证下一次激活真的重试
         st.libsReady = null;
         throw err;
       });
@@ -110,9 +91,9 @@ export function createPixiApp(ctx) {
       autoDensity: true,
       resolution: (ctx.handleRef && ctx.handleRef.geometry) ? (ctx.handleRef.geometry().res || 1) : 1,
     };
-    const isModern = typeof PIXI.Application.prototype.init === 'function';
-    const app = isModern ? new PIXI.Application() : new PIXI.Application(opts);
-    if (isModern) await app.init(opts);
+    // 库加载与 Application 构造都走 runtime-adapter：版本差异（8.x 异步 init / 6.x 构造给参）
+    //   只在 adapter 里判断，本文件不再出现 PIXI.Application 的具体构造形状
+    const app = await createApplication(opts);
     st.app = app;
     // 强制透明清屏：实测 PIXI 6.5.3 下 opts.backgroundAlpha 未落到 renderer，
     //   canvas 每帧被不透明黑填满（readPixels 得到 [0,0,0,255]），
@@ -126,5 +107,5 @@ export function createPixiApp(ctx) {
     return app;
   }
 
-  return { loadScript, ensureLibs, fitAppToOverlay, ensureApp };
+  return { ensureLibs, fitAppToOverlay, ensureApp };
 }

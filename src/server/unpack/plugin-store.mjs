@@ -33,12 +33,37 @@ const PROBE_FILE = 'probe.json';
 /** 清理解包的节流间隔：resolve 后最多 10 分钟扫一次目录 */
 const CLEANUP_INTERVAL_MS = 10 * 60 * 1000;
 
-/** 读 plugin.json 的版本号（指纹的一部分；读不到就用 0，不阻塞） */
-function pluginVersion(dir) {
+/** 读单个插件目录的版本号（读不到就用 0，不阻塞） */
+function versionOfPluginDir(dir) {
   try {
     const text = fs.readFileSync(path.join(dir, 'plugin.json'), 'utf8');
     const m = /"version"\s*:\s*("?)([^",\s]+)\1/.exec(text);
     return m ? m[2] : '0';
+  } catch {
+    return '0';
+  }
+}
+
+/**
+ * 指纹里的 pluginVersion。
+ *
+ * 为什么可能是"插件根"而不是单个插件目录：解包插件不止一个（live2d / spine 各一个，
+ * 都声明 provides:['asset-provider']）。若只读某一个插件的版本，另一个升级时缓存不会失效，
+ * 表现是"改了插件但产物还是旧的"——比崩溃更隐蔽。
+ * 所以传插件根时把每个子目录的版本汇总成一个串：任一个升级都会让整串变化。
+ * @param {string} dir 插件目录，或含多个插件的插件根
+ * @returns {string}
+ */
+function pluginVersion(dir) {
+  // 自身就是插件目录（有 plugin.json）⇒ 单个版本，保持既有行为
+  if (fs.existsSync(path.join(dir, 'plugin.json'))) return versionOfPluginDir(dir);
+  try {
+    return fs
+      .readdirSync(dir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => `${e.name}@${versionOfPluginDir(path.join(dir, e.name))}`)
+      .sort()
+      .join('+') || '0';
   } catch {
     return '0';
   }

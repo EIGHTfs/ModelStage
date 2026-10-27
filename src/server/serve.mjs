@@ -82,7 +82,10 @@ const diagUpload = createDiagUpload({ dataDir: data.paths.dataDir, configDir: da
 // 服务端解包 + 落盘缓存（17b）：产物在 data/unpacked/<fingerprint>/，前端命中后只 fetch 文件
 const unpackStore = createUnpackStore({
   rootDir: path.join(data.paths.dataDir, 'unpacked'),
-  pluginDir: path.join(data.paths.pluginsDir, 'unity-live2d-bundle'),
+  // 传插件根而不是某一个插件目录：解包插件不止一个（live2d / spine 各一个），
+  //   只读其中一个的版本会让另一个升级时缓存不失效（产物陈旧但一切"正常"）。
+  //   plugin-store 会把根下每个插件的版本汇总进指纹。
+  pluginDir: data.paths.pluginsDir,
 });
 const unpackRoutes = createUnpackRoutes({
   store: unpackStore,

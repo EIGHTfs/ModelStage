@@ -70,8 +70,8 @@ export function createStageContext({ vfs, getOverlayHost, log } = {}) {
   ctx.handleRef = null;
 
   const st = {
-    app: null,          // PIXI.Application
-    model: null,        // PIXI.live2d.Live2DModel
+    app: null,          // 渲染应用实例（经 runtime-adapter 创建）
+    model: null,        // 模型实例（经 runtime-adapter 创建）
     libsReady: null,    // 库加载 Promise
     active: false,      // 是否处于激活态（引擎 l2dActive 依赖它）
     zoomRatio: 1,       // 缩放倍数（唯一写入方是 bridge.setZoomRatio）

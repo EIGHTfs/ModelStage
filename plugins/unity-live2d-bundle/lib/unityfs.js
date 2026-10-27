@@ -40,25 +40,15 @@
     UsesAssetBundleEncryption: 0x1400,
   };
 
-  // ⚠️ 已知不支持：BlocksAndDirectoryInfoCombined（0x40）
+  // 关于 BlocksAndDirectoryInfoCombined（0x40）：**不参与解析判断**。
   //
-  // 根因（2026-10-22 实测定位，样本 live2d/aijier_3，19.27MB）：
-  //   该样本 dataflags = 0xC2，同时置了 0x40（blocks 与 directoryInfo 合并为一段）
-  //   与 0x80（blocksInfo 在文件尾），压缩类型 2（LZ4），Unity 2018.4.34f1 / version 6。
-  //   其余 18 个样本（live2d/*）均为 Unity 2020.3.48f1 / version 8 / dataflags 0x240
-  //   （comp=0 未压缩、无 0x40、无 0x80），走的是 parse() 已实现的「头部 blocksInfo」路径。
+  // 它名义上表示「blocks 与 directoryInfo 合并为一段」，但权威实现（AssetStudio 的
+  //   BundleFile.cs → ReadBlocksInfoAndDirectory）的判断链里**从不读这一位**，
+  //   实际只按 0x80（BlocksInfoAtTheEnd）区分两种布局。详见 doc/参考/README.md 结论一。
   //
-  // 为什么显式拒绝而不是"试着解"：
-  //   ARCHIVE 表里 0x40 这一位早已定义，但 parse() 从未实现该布局——它只判 0x80，
-  //   于是按「length - csz」从文件尾取固定长度。combined 布局下该位置取到的是错位数据；
-  //   而 LZ4 块解压只有"输出长度必须等于 expectedSize"这一道弱自洽检查，
-  //   错位数据偶尔能自洽解出（实测解出了 163 字节但 blockCount/nodeCount 是垃圾值），
-  //   于是错误一路带到 block 表读取才炸，报 CONTAINER_PARSE，现场看不出真实原因。
-  //
-  // 正确实现需要权威格式依据（Unity ArchiveStorageData/AssetBundle 的 combined 段布局，
-  //   或 UnityPy 对应解析作对照）。在没有权威参考前不猜实现——猜错的解析比明确报错危险得多：
-  //   它可能解出"看着能跑"的错数据，把 bug 推到渲染层才暴露。
-  //   需要支持时：补 combined 解析 + 用 aijier_3 与正常样本做双向对照自证。
+  // 不能拿「0x40 置位」当拒绝/不支持的依据：实测正常包 dataflags = 0x240 本身就含 0x40
+  //   （0x240 & 0x40 = 0x40），按它拒绝会把**全部正常包一起拒掉**。
+  //   名义语义与实现语义不一致时，以实现的判断链为准。
 
   const COMPRESSION = { NONE: 0, LZMA: 1, LZ4: 2, LZ4HC: 3, LZHAM: 4 };
 
@@ -151,7 +141,9 @@
     const playerVersion = r.cstring('playerVersion');
     const engineVersion = r.cstring('engineVersion');
 
-    r.i64('bundleSize');                     // 与文件长度一致，仅作完整性参考
+    // 逻辑长度：**标准包 == 文件长度**；带尾随数据的包（实测 NIKKE 在 UnityFS 内容后追加 16 字节 trailer）
+    //   则小于文件长度。定位 blocksInfo 必须用它，不能用文件长度（见下方 blocksInfoAtEnd 分支）。
+    const bundleSize = r.i64('bundleSize');
     const blocksInfoCompressedSize = r.u32();
     const blocksInfoUncompressedSize = r.u32();
     const dataflags = r.u32();
@@ -167,7 +159,14 @@
     const start = r.pos;
     let blocksInfoRaw;
     if (blocksInfoAtEnd) {
-      r.seek(r.length - blocksInfoCompressedSize);
+      // 从「逻辑末尾」往前取 blocksInfo，用 bundleSize 而不是文件长度 r.length：
+      //   标准包两者相等（行为不变）；但实测 NIKKE 包在 UnityFS 内容之后又追加了 16 字节 trailer
+      //   （三样本一致），此时 r.length 会把 trailer 算进来 ⇒ 起点后移 16 字节 ⇒ LZ4 解出垃圾，
+      //   报「LZ4 数据损坏：匹配偏移为 0」，与真实原因相距极远。
+      // 边界：bundleSize 不合理（非正数 / 超出文件长度）时回退 r.length，
+      //   避免坏包让 seek 落到非法位置（那种情况的报错会更难读）。
+      const logicalEnd = (bundleSize > 0 && bundleSize <= r.length) ? bundleSize : r.length;
+      r.seek(logicalEnd - blocksInfoCompressedSize);
       blocksInfoRaw = r.bytes(blocksInfoCompressedSize, 'blocksInfo');
       r.seek(start);
     } else {
