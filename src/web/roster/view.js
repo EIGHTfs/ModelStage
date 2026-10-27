@@ -19,6 +19,8 @@ import {
 } from './list.js';
 import { el, renderGameRow, renderCharRow, renderVariantRow } from './rows.js';
 import { formatError } from '../infra/api.js';
+// 渲染调度（rAF 合批 + 后台标签页兜底）抽到公共层，行为与原先内联实现一致
+import { createScheduler } from '../infra/schedule.js';
 // 容器条目的装载失败记忆：渲染时读出注入行渲染（保持 rows.js 的"纯 DOM 工厂"性质）
 import { ensureFingerprint, getFailureSnapshot } from './bundle-failures.js';
 
@@ -59,47 +61,12 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
   const counters = { render: 0, ensureRootLoaded: 0, renderScheduled: 0 };
 
   // ------------------------------------------------------------ 渲染调度（rAF 合并）
-  //
-  // 为什么需要：加载阶段每条路径都会触发一次全树重绘——ensureRootLoaded 里"开始加载"与
-  //   "加载完成"各一次、ensureGameLoaded 末尾再来一次。N 个资源根就是 ~2N+ 次全树替换，
-  //   首屏 1000+ 行时单次 100~250ms，叠加起来就是成片的长任务（实测冷搜 8 个长任务）。
-  //   这些中间态在视觉上没有价值（同一帧内根本看不到），合并成一次既省时间也减少闪烁。
-  //
-  // 三条硬约束：
-  //   ① 不漏最后一帧：pending 标志只在真正 render() 之后清除；另有 flushRender() 强制落地，
-  //      加载流程末尾与"rAF 不触发"（后台标签页）时都会走它。
-  //   ② 不闪烁：同一帧内多次请求只渲染一次，因此**只会更少**中间态，不会多出来。
-  //   ③ 状态不丢：render() 本身没改，展开态/滚动/选中/关键词全部照旧读取。
-  let pendingRender = false;
-  let rafId = null;
-  let fallbackTimer = null;
-
-  /** 清理已排队的调度（rAF 与兜底定时器都要清，否则会多渲一次） */
-  function clearScheduled() {
-    if (rafId !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(rafId);
-    if (fallbackTimer !== null) clearTimeout(fallbackTimer);
-    rafId = null;
-    fallbackTimer = null;
-    pendingRender = false;
-  }
-
-  /** 下一帧渲染（同帧内多次调用合并为一次） */
-  function scheduleRender() {
-    counters.renderScheduled += 1;
-    if (pendingRender) return;
-    pendingRender = true;
-    if (typeof requestAnimationFrame !== 'function') { flushRender(); return; }
-    rafId = requestAnimationFrame(() => { rafId = null; flushRender(); });
-    // 兜底：后台标签页/被节流的 rAF 可能长时间不回调，绝不能让首屏永久空白
-    fallbackTimer = setTimeout(() => { fallbackTimer = null; flushRender(); }, 120);
-  }
-
-  /** 立刻渲染（若有已排队的请求）。幂等：没有待渲染时什么都不做。 */
-  function flushRender() {
-    if (!pendingRender) return;
-    clearScheduled();
-    render();
-  }
+  // 加载阶段每条路径都会触发一次全树重绘（N 个资源根 ≈ 2N+ 次），中间态在同一帧里根本看不到；
+  //   合批后既省时间也减少闪烁。三条性质与"为什么"见 infra/schedule.js 的文件头。
+  // 这里只保留两样名册专属的东西：跑什么（render）与计量钩子（renderScheduled）。
+  const scheduler = createScheduler(() => render(), { onRequest: () => { counters.renderScheduled += 1; } });
+  const scheduleRender = scheduler.request;
+  const flushRender = scheduler.flush;
 
   const reveal = createReveal({ listEl, getState: () => state, render: () => render() });
 
