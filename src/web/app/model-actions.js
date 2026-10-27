@@ -11,6 +11,8 @@ import { getSharedVirtualFS } from '../infra/vfs.js';
 import { diagEvent, stageLog, stageStatus } from './status.js';
 import { formatError, getJson } from '../infra/api.js';
 import { createRootManager } from './root-manager.js';
+// 容器装载失败按条目记一笔，名册下次渲染直接给 ⚠ 提示（与"缺纹理"同一套展示语义）
+import { recordFailure } from '../roster/bundle-failures.js';
 import { createDirPicker } from './dir-picker.js';
 
 async function loadWebConfig() {
@@ -127,6 +129,8 @@ async function resolveAssetSource(model, name) {
     // 与"宿主未就绪"分开报：此时是真的没有能处理容器的插件（配置/目录问题）
     return {
       ok: false, entryUrl: null, prefix: null, provider: null,
+      // 与 plugin-host 的 reason 同口径：no-provider 是**真实存在**的分类，可直接进文案映射表
+      reason: 'no-provider',
       message: '没有能处理 bundle 容器的插件（检查 config/plugins.json 与 plugins/ 目录）',
     };
   }
@@ -138,7 +142,9 @@ async function resolveAssetSource(model, name) {
     size: model.size,
     rootKind: 'bundle',   // 容器类型（插件能力声明用它判"能不能读"），不是内容类型
   });
-  if (!mat.ok) return { ok: false, entryUrl: null, prefix: null, provider: null, message: mat.message || '解包失败' };
+  // mat.reason 是 plugin-host 给出的结构化原因（no-provider / resolve-failed / memory-guard …），
+  //   原样透出给上层记缓存用；没有被编造的分类，缺就是 null
+  if (!mat.ok) return { ok: false, entryUrl: null, prefix: null, provider: null, reason: mat.reason || null, message: mat.message || '解包失败' };
   const entryUrl = joinPrefix(mat.prefix, mat.entry);
   // files 只带**路径清单**（不带 Blob）：产物已经由 materialize 注册进 VFS，
   //   上层判断"有没有 entry.json"只需要名字，不需要字节。
@@ -275,12 +281,14 @@ async function expandContainerEntry(src, name) {
       files: paths.slice(0, 12).join(' / '),
     });
     return {
+      reason: 'entry-missing',
       error: '容器内缺少 entry.json：spine 三件套需要 skeletonFile / atlasFile / textureFiles 才能确定'
         + '骨架、atlas 与贴图页的对应关系（不按扩展名猜，多页 atlas 猜错会静默显示错图）',
     };
   }
   // 既没有 spine 清单、也没有 Live2D 定义 ⇒ 无法判定，明确报错（不静默走任何分支）
   return {
+    reason: 'kind-undetermined',
     error: '容器内既没有 entry.json（spine 三件套清单）也没有 *.model3.json（Live2D 定义），'
       + '无法判定内容类型；不按扩展名猜（多页 atlas 猜错会静默显示错图）',
   };
@@ -302,6 +310,7 @@ async function loadModel(model, name) {
   if (!src.ok) {
     stage.unload();
     stageLog('error', `无法装载 ${name}：${src.message}`, { model: name, kind: model && model.kind, reason: src.message });
+    recordFailure(model, src.reason || null, src.message);
     markModelFailed(`无法装载 ${name}：${src.message}`);
     return null;
   }
@@ -324,6 +333,7 @@ async function loadModel(model, name) {
     if (expanded.error) {
       stage.unload();
       stageLog('error', `无法装载 ${name}：${expanded.error}`, { model: name, kind: model && model.kind, reason: expanded.error });
+      recordFailure(model, expanded.reason || null, expanded.error);
       markModelFailed(`无法装载 ${name}：${expanded.error}`);
       return null;
     }
@@ -338,6 +348,7 @@ async function loadModel(model, name) {
       + '：非容器条目没有可判定的产物，容器条目也没有 entry.json(skeletonFile) 或 *.model3.json';
     stage.unload();
     stageLog('error', `无法装载 ${name}：${why}`, { model: name, kind, reason: 'kind-undetermined' });
+    recordFailure(model, 'kind-undetermined', why);
     markModelFailed(`无法装载 ${name}：${why}`);
     return null;
   }
@@ -354,6 +365,8 @@ async function loadModel(model, name) {
   if (!doc || doc.state !== 'ready') {
     const why = (doc && (doc.warnings || []).join('；')) || '原因未知';
     stageLog('error', `无法装载 ${name}：${why}`, { model: name, kind, reason: why });
+    // 这条失败没有结构化 reason（是 Document 组装的 warnings 汇总）⇒ reason 传 null，走 message 兜底
+    recordFailure(model, null, why);
     markModelFailed(`无法装载 ${name}：${why}`);
     return null;
   }

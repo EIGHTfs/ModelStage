@@ -19,6 +19,8 @@ import {
 } from './list.js';
 import { el, renderGameRow, renderCharRow, renderVariantRow } from './rows.js';
 import { formatError } from '../infra/api.js';
+// 容器条目的装载失败记忆：渲染时读出注入行渲染（保持 rows.js 的"纯 DOM 工厂"性质）
+import { ensureFingerprint, getFailureSnapshot } from './bundle-failures.js';
 
 /** localStorage 键名：不得改名（M7 要用它做持久化，改名会让用户既有状态失效） */
 
@@ -200,9 +202,20 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
   // ------------------------------------------------------------ 渲染
 
   /** 渲染整棵树（只渲染可见部分；展开的角色才生成变体行） */
+  /** 容器失败指纹是否已发起初始化（只发起一次；拿到后用同一次 render 重画一遍） */
+  let fpInitStarted = false;
+
   function render() {
     counters.render += 1;
     listEl.replaceChildren();
+
+    // 首次渲染时插件指纹还没取到 ⇒ 这一帧不显示"不支持"标记（避免用过期结论误导），
+    //   指纹就绪后再重画一次。之所以放在 render 里而不是 mount 里：mount 是同步函数。
+    if (!fpInitStarted) {
+      fpInitStarted = true;
+      ensureFingerprint().then(() => { render(); }).catch(() => { /* 取不到指纹就不显示标记 */ });
+    }
+    const failMap = getFailureSnapshot();
 
     const searching = state.keyword.length > 0;
     let totalChars = 0;
@@ -243,7 +256,12 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
         // 变体数按数据统计（不依赖是否展开），与「N 游戏 / M 角色 / K 变体」口径一致
         totalVariants += c.variants.length;
         if (!charOpen) continue;
-        for (const v of c.variants) listEl.append(renderVariantRow(game, c, v, selectedId));
+        for (const v of c.variants) {
+          const m = v.model;
+          // 容器条目上次装载失败的记录（目录型条目这里恒为 null，缺纹理走 catalog 那套）
+          const fail = failMap.get(String((m && (m.id || m.name)) || '')) || null;
+          listEl.append(renderVariantRow(game, c, v, selectedId, fail));
+        }
       }
       if (!chars.length) {
         listEl.append(el('p', 'muted-hint tree-hint', searching ? '无匹配' : '该游戏没有可加载模型'));

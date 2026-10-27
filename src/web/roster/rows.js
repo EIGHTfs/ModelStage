@@ -116,8 +116,10 @@ export function renderCharRow(game, c, open) {
  * @param {object} c
  * @param {{model: object, nm: object|null}} v
  * @param {string|null} selectedId 当前选中的模型 id
+ * @param {{text:string, reason:string|null}|null} [failure] 容器条目的装载失败记录（由 view.js 注入，
+ *   见 roster/bundle-failures.js）；目录型条目传 null
  */
-export function renderVariantRow(game, c, v, selectedId) {
+export function renderVariantRow(game, c, v, selectedId, failure) {
   const m = v.model;
   const { text, origName } = variantText(m, v.nm);
   const row = rowBase('tree-variant', {
@@ -144,8 +146,18 @@ export function renderVariantRow(game, c, v, selectedId) {
     badge.title = `缺少纹理文件：${missingTex.join('、')}（该条目本身无法渲染；有资源包版本的会自动改用）`;
     row.append(badge);
     row.classList.add('is-incomplete');
+  } else if (failure) {
+    // 容器条目上次装载失败（解包前判不出类型的那些）⇒ 列表里就标出来，别等用户再点一次才发现。
+    //   与上面缺纹理**共用**同一个徽标类与行级 class（不新建样式）；
+    //   两者天然互斥：missingTextures 只出现在目录型条目，failure 只对 container 条目记录。
+    const badge = el('span', 'tree-variant-warn', '⚠');
+    badge.title = `该资源包无法装载：${failure.text}`;
+    row.append(badge);
+    row.classList.add('is-incomplete');
   }
-  row.title = `${origName}${m.srcDir && m.srcDir !== origName ? `  ·  ${m.srcDir}` : ''}${
-    missingTex.length ? `\n⚠ 缺纹理：${missingTex.join('、')}` : ''}`;
+  const warnLine = missingTex.length
+    ? `\n⚠ 缺纹理：${missingTex.join('、')}`
+    : (failure ? `\n⚠ 不支持：${failure.text}` : '');
+  row.title = `${origName}${m.srcDir && m.srcDir !== origName ? `  ·  ${m.srcDir}` : ''}${warnLine}`;
   return row;
 }
