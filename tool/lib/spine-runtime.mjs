@@ -24,10 +24,23 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..');
 const WORKSPACE = path.resolve(ROOT, '..');
 
+/**
+ * 数据根：与 web.sh / serve.mjs 同一口径（MODELSTAGE_DATA_ROOT 覆盖，缺省项目根）。
+ * 下载物落在 <dataRoot>/runtimes/spine/<ver>/spine-webgl-<ver>.js。
+ * @returns {string}
+ */
+function dataRootDir() {
+  const env = (process.env.MODELSTAGE_DATA_ROOT || '').trim();
+  return env ? path.resolve(env) : ROOT;
+}
+
 /** 运行时源码候选目录（按优先级） */
 const RUNTIME_DIRS = [
   path.join(ROOT, 'src', 'spine-runtimes'),
   path.join(WORKSPACE, 'spine-runtimes'),
+  // **末尾追加**（上面两条的既有优先次序不动）：tool/fetch-runtimes.mjs 的下载落点。
+  //   必须放最后 —— "项目自带优先"不能因为引入下载功能而静默失效。
+  path.join(dataRootDir(), 'runtimes', 'spine'),
 ];
 
 
@@ -42,8 +55,14 @@ export function getRuntimeSource(version) {
   if (sourceCache.has(version)) return sourceCache.get(version);
   let hit = null;
   for (const dir of RUNTIME_DIRS) {
-    const p = path.join(dir, `spine-webgl-${version}.js`);
-    if (fs.existsSync(p)) { hit = { code: fs.readFileSync(p, 'utf8'), origin: p }; break; }
+    // 两种布局都要认：
+    //   平铺  <dir>/spine-webgl-<ver>.js            —— 项目自带 / 环境变量目录的既有布局
+    //   分版本 <dir>/<ver>/spine-webgl-<ver>.js      —— tool/fetch-runtimes.mjs 的下载布局
+    //      （分版本目录是为了让每个版本各自带 LICENSE 与 SOURCE.json）
+    for (const p of [path.join(dir, `spine-webgl-${version}.js`), path.join(dir, version, `spine-webgl-${version}.js`)]) {
+      if (fs.existsSync(p)) { hit = { code: fs.readFileSync(p, 'utf8'), origin: p }; break; }
+    }
+    if (hit) break;
   }
   if (!hit && process.env.SPINE_RUNTIME_DIR) {
     const p = path.join(process.env.SPINE_RUNTIME_DIR, `spine-webgl-${version}.js`);
@@ -53,14 +72,23 @@ export function getRuntimeSource(version) {
   return hit;
 }
 
-/** 可用版本列表（扫描候选目录） */
+/** 可用版本列表（扫描候选目录；平铺与分版本两种布局都算） */
 export function listRuntimeVersions() {
   const out = new Set();
-  for (const dir of RUNTIME_DIRS) {
-    if (!fs.existsSync(dir)) continue;
+  const addFrom = (dir) => {
     for (const f of fs.readdirSync(dir)) {
       const m = f.match(/^spine-webgl-(.+)\.js$/);
       if (m) out.add(m[1]);
+    }
+  };
+  for (const dir of RUNTIME_DIRS) {
+    if (!fs.existsSync(dir)) continue;
+    addFrom(dir);
+    // 分版本子目录（下载布局）也要列出来
+    let subs = [];
+    try { subs = fs.readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name); } catch { /* 跳过 */ }
+    for (const sub of subs) {
+      try { addFrom(path.join(dir, sub)); } catch { /* 跳过读不了的子目录 */ }
     }
   }
   return [...out].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));

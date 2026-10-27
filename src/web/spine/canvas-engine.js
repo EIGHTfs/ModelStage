@@ -7,6 +7,8 @@
 import { installRuntimeManager } from './runtimes.js';
 import { abortedError, buildDescriptor, businessError, resolveDocument } from './canvas-document.js';
 import { availableVersions, ensureRuntimeSource, pickEngineCtor, pickRuntimeVersion, takeForcedRuntime } from './canvas-runtime.js';
+// 缺运行时时的可读提示（含服务端给的落地目录绝对路径与可复制命令）
+import { loadRuntimeHint, spineMissingHint } from './runtime-hint.js';
 import { captureViewBase } from './canvas-view.js';
 
 /** 应用设置（全部走 engine 的 setter，缺哪个就跳过哪个） */
@@ -146,13 +148,22 @@ export async function loadIntoStage(st, arg) {
   let ver;
   if (forced) {
     if (!avail.includes(forced)) {
-      throw businessError(`指定的运行时 ${forced} 不可用（可用：${avail.join(' / ') || '运行时清单不可用'}）`);
+      // 这里才是"全新机器上缺运行时"最常撞到的地方：清单里根本没有这个版本，
+      //   请求压根不会发出去（也就走不到 sourceOf 的 404 分支）⇒ hint 必须在这里拼。
+      const hint = await loadRuntimeHint();
+      throw businessError(`指定的运行时 ${forced} 不可用（可用：${avail.join(' / ') || '运行时清单不可用'}）\n`
+        + spineMissingHint(forced, hint, null));
     }
     ver = forced;   // 给了就用，**绝不**回落到其它版本 —— 自动降级会让排查得出错误结论
   } else {
     ver = pickRuntimeVersion(skeletonVer, avail);   // 现状行为，一行没改
   }
-  if (!ver) throw businessError('无法确定该模型的 Spine 版本：元数据缺少 version，且运行时清单不可用');
+  if (!ver) {
+    // 同理：清单全空（一个运行时都没装）时也不会发请求 ⇒ 在这里给补齐方案
+    const hint = await loadRuntimeHint();
+    throw businessError('无法确定该模型的 Spine 版本：元数据缺少 version，且运行时清单不可用\n'
+      + spineMissingHint(skeletonVer || '4.x', hint, null));
+  }
   await ensureRuntimeSource(ver);
   if (seq !== st.seq) throw abortedError();
   if (seq !== st.seq) throw abortedError();

@@ -28,6 +28,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+// 缺库时的引导文案与下载工具同一份（含官网 URL、目标目录、"不代下"的说明），不各写一套
+import { live2dGuide } from './lib/runtime-guides.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const ROOT = path.resolve(__dirname, '..');
@@ -101,7 +103,7 @@ function findIn(dir) {
   return null;
 }
 
-/** 收集搜索根：环境变量优先，否则默认「项目自带」+「工作区根」+「工作区/spine-viewers」。 */
+/** 收集搜索根：环境变量优先，否则默认「项目自带」+「工作区根」+「工作区/spine-viewers」+「数据根/下载落点」。 */
 function searchRoots() {
   const env = process.env.LIVE2D_SEARCH_ROOTS;
   if (env) return env.split(path.delimiter).filter(Boolean);
@@ -111,7 +113,19 @@ function searchRoots() {
     path.join(ROOT, 'src', 'live2d-runtimes'),
     path.resolve(ROOT, '..'),
     path.resolve(ROOT, '..', 'spine-viewers'),
+    // **末尾追加**：用户数据根下的下载/手工落点（<dataRoot>/runtimes/live2d/<ver>/）。
+    //   放最后 —— 上面三条的既有优先次序不变。
+    path.join(dataRootDir(), 'runtimes', 'live2d'),
   ];
+}
+
+/**
+ * 数据根：与 web.sh / serve.mjs 同一口径（MODELSTAGE_DATA_ROOT 覆盖，缺省项目根）。
+ * @returns {string}
+ */
+function dataRootDir() {
+  const env = (process.env.MODELSTAGE_DATA_ROOT || '').trim();
+  return env ? path.resolve(env) : ROOT;
 }
 
 /**
@@ -218,7 +232,9 @@ export function resolveLive2DRuntimes(options = {}) {
     '未找到 Live2D 运行时库（需要 live2d.min.js / pixi.min.js / index.min.js）。\n'
     + '请设置环境变量 LIVE2D_RUNTIME_DIR 指向含这三个文件的目录，\n'
     + '或用 LIVE2D_SEARCH_ROOTS 指定搜索根（多个用路径分隔符隔开）。\n'
-    + `已尝试：${tried.join('、')}`
+    + `已尝试：${tried.join('、')}\n`
+    // 引导必须是**服务端产出**：目标目录的绝对路径只有服务端知道（数据根），前端拼不出来。
+    + live2dGuide(dataRootDir())
   );
 }
 

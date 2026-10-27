@@ -18,6 +18,8 @@ const RUNTIME_BASE = '/spine-runtimes/spine-webgl-';
 // 清单读取走统一 HTTP 层（重试 + 统一超时/错误归类）。api.js 顶层不引用 window/document，
 //   所以这个 import 在 node 侧被间接加载时也安全。
 import { getJson } from '../infra/api.js';
+// 缺运行时提示与 canvas-runtime 共用同一份（含服务端给的落地目录与可复制命令）
+import { loadRuntimeHint, spineMissingHint } from './runtime-hint.js';
 
 /** 运行时必须导出的类（缺任一即视为该版本不可用） */
 const REQUIRED_CLASSES = ['Skeleton', 'AnimationState', 'TextureAtlas', 'AtlasAttachmentLoader'];
@@ -126,7 +128,12 @@ export class SpineRuntimeManager {
     if (injected) return injected;
     if (this.sources.has(version)) return this.sources.get(version);
     const r = await fetch(`${RUNTIME_BASE}${version}.js`, { cache: 'no-store' });  // dsh-skip-quality 本地同源运行时脚本读取，既有代码
-    if (!r.ok) throw new Error(`运行时 ${version} 加载失败（HTTP ${r.status}）`);
+    if (!r.ok) {
+      // 与 canvas-runtime 同一条提示口径（共用一个模块，别各写一份）：
+      //   404 时把"下哪个版本 / 放到哪个绝对路径 / 可复制的命令"一起给出来
+      const hint = await loadRuntimeHint();
+      throw new Error(spineMissingHint(version, hint, r.status));
+    }
     const text = await r.text();
     this.sources.set(version, text);
     return text;

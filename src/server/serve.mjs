@@ -70,7 +70,18 @@ const log = createLogger('serve');
 
 const data = createServerData({ root: ROOT, dataRoot: DATA_ROOT || undefined, avatarRoot: resolveAvatarRoot() || undefined });
 // 静态/资源类路由（/plugins、/spine-runtimes、src/web 静态）单独成模块
-const staticRoutes = createStaticRoutes({ root: ROOT, webRoot: WEB_ROOT, runtimeDir: RUNTIME_DIR, pluginsDir: PLUGINS_DIR });
+// dataRuntimesDir = tool/fetch-runtimes.mjs 的下载落点（<dataRoot>/runtimes/spine）。
+//   传进去之后 /spine-runtimes/index.json 才列得出它、/spine-runtimes/* 才发得出文件
+//   —— 否则"下载成功但前端看不到"（resolver 能找到、清单里没有）。
+const staticRoutes = createStaticRoutes({
+  root: ROOT,
+  webRoot: WEB_ROOT,
+  runtimeDir: RUNTIME_DIR,
+  pluginsDir: PLUGINS_DIR,
+  dataRuntimesDir: path.join(data.paths.dataRoot, 'runtimes', 'spine'),
+  live2dRuntimesDir: path.join(data.paths.dataRoot, 'runtimes', 'live2d'),
+  dataRoot: data.paths.dataRoot,
+});
 const diag = createDiag(data.paths);
 // 自定义背景图存储：落盘在 data/backgrounds/（运行时数据，换机/备份需单独带走）
 const backgrounds = createBackgrounds(data.paths);

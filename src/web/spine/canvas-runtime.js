@@ -7,6 +7,8 @@
 import { SpineEngine as NextEngine } from '../engine/index.js';
 // 清单读取走统一 HTTP 层（重试 + 统一超时/错误归类）
 import { getJson } from '../infra/api.js';
+// 缺运行时时的可读提示（含服务端给的落地目录绝对路径与可复制命令）
+import { loadRuntimeHint, spineMissingHint } from './runtime-hint.js';
 
 const RUNTIME_BASE = '/spine-runtimes/spine-webgl-';
 
@@ -98,7 +100,12 @@ export async function ensureRuntimeSource(ver) {
   let text = runtimeSourceCache.get(ver);
   if (!text) {
     const r = await fetch(`${RUNTIME_BASE}${ver}.js`, { cache: 'no-store' });
-    if (!r.ok) throw new Error(`运行时 ${ver} 加载失败（HTTP ${r.status}）`);
+    if (!r.ok) {
+      // 404 最常见的原因是"这台机器上没放这个版本" ⇒ 附上服务端给的可复制补齐方案，
+      //   否则用户只看到一句 HTTP 404，不知道要下什么、放哪里（这条日志会进调试面板）。
+      const hint = await loadRuntimeHint();
+      throw new Error(spineMissingHint(ver, hint, r.status));
+    }
     text = await r.text();
     runtimeSourceCache.set(ver, text);
   }

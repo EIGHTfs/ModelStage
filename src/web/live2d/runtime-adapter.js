@@ -7,6 +7,9 @@
 // **允许出现旧类名字样的唯一位置**（grep 门禁）：PIXI.live2d.* / Cubism4ModelSettings 等
 //   只在本文件里出现，其它业务文件一律走这里的函数。
 
+// 缺库提示（把服务端给的完整指引拼进错误消息）；与 spine 侧共用同一个组装模块
+import { live2dMissingHint } from '../spine/runtime-hint.js';
+
 /** 运行时库（顺序不可颠倒：cubismcore 必须最先，pixi-live2d-display 初始化会检查它） */
 export const RUNTIME_LIBS = [
   '/live2d-lib/live2dcubismcore.min.js',
@@ -74,6 +77,28 @@ function pixiLib() {
   return (typeof window !== 'undefined' && window.PIXI) ? window.PIXI : null;
 }
 
+/**
+ * <script> 加载失败时浏览器只给通用 error —— **读不到响应体**。
+ * 而服务端在 404/503 时已经把完整指引（官网 URL、目标目录、"不代下"的原因）写在 JSON error 里，
+ * 不取回来那句提示就白给了。所以补一次 fetch 只为接上那段文本（不是重试，不改变加载行为）。
+ * @param {string} url
+ * @returns {Promise<string>} 服务端 error 文本；取不到返回空串
+ */
+async function readServerError(url) {
+  try {
+    const r = await fetch(url, { cache: 'no-store' });
+    const text = await r.text();
+    try {
+      const j = JSON.parse(text);
+      return (j && j.error) || '';
+    } catch {
+      return '';
+    }
+  } catch {
+    return '';
+  }
+}
+
 /** 注入一个 <script>；失败要摘掉标签，否则重试时页面上留着坏标签 */
 function injectScript(src) {
   return new Promise((resolve, reject) => {
@@ -82,7 +107,10 @@ function injectScript(src) {
     el.onload = () => resolve(src);
     el.onerror = () => {
       el.remove();
-      reject(new Error(`Live2D 运行时加载失败：${src}`));
+      // 把服务端的完整指引拼进错误消息 ⇒ 上层 stageLog 原样打进调试日志窗口
+      readServerError(src).then((detail) => {
+        reject(new Error(live2dMissingHint(src, detail)));
+      });
     };
     document.head.appendChild(el);
   });
