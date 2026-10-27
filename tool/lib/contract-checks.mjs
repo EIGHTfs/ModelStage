@@ -99,14 +99,18 @@ export function listContainerCandidates(opts = {}) {
   for (const rootDir of readRootPaths()) {
     let topEntries = [];
     try { topEntries = fs.readdirSync(rootDir, { withFileTypes: true }); } catch { continue; }
-    const found = [];
-    // ① 第一层文件（live2d 包就在这层）
+    // 分两拨收集：第一层文件 / 子目录内文件。分别排序后用**交替**合并 ——
+    //   实测教训：某根第一层有 20MB 的有效包、子目录里有一堆 1MB 的碎片，
+    //   纯按大小升序会让碎片占满候选名额，有效包永远轮不到。
+    //   交替合并保证两类来源都有代表（与"按根轮流"同一思想，避免任何单一来源吃光名额）。
+    const topFiles = [];
+    const nestedFiles = [];
     for (const entry of topEntries.slice(0, maxFilesPerDir)) {
       if (!entry.isFile() || entry.name.startsWith('.')) continue;
       const full = path.join(rootDir, entry.name);
-      if (isUnityFsFile(full)) found.push({ path: full, size: safeSize(full) });
+      if (isUnityFsFile(full)) topFiles.push({ path: full, size: safeSize(full) });
     }
-    // ② 下探一层子目录（spine 容器在这层 —— 只扫第一层会让 spine 插件永远挑不到样本）
+    // 下探一层子目录（spine 容器在这层 —— 只扫第一层会让 spine 插件永远挑不到样本）
     const subDirs = topEntries.filter((e) => e.isDirectory() && !e.name.startsWith('.')).slice(0, maxDirsPerRoot);
     for (const sub of subDirs) {
       let inner = [];
@@ -114,10 +118,18 @@ export function listContainerCandidates(opts = {}) {
       for (const entry of inner.slice(0, maxFilesPerDir)) {
         if (!entry.isFile() || entry.name.startsWith('.')) continue;
         const full = path.join(rootDir, sub.name, entry.name);
-        if (isUnityFsFile(full)) found.push({ path: full, size: safeSize(full) });
+        if (isUnityFsFile(full)) nestedFiles.push({ path: full, size: safeSize(full) });
       }
     }
-    if (found.length) queues.push(found.sort((a, b) => a.size - b.size));
+    topFiles.sort((a, b) => a.size - b.size);
+    nestedFiles.sort((a, b) => a.size - b.size);
+    const merged = [];
+    const longestSide = Math.max(topFiles.length, nestedFiles.length);
+    for (let i = 0; i < longestSide; i += 1) {
+      if (i < topFiles.length) merged.push(topFiles[i]);
+      if (i < nestedFiles.length) merged.push(nestedFiles[i]);
+    }
+    if (merged.length) queues.push(merged);
   }
   const out = [];
   const longest = queues.reduce((max, q) => Math.max(max, q.length), 0);

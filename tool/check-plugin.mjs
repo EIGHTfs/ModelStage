@@ -151,6 +151,8 @@ export async function checkPlugin(dir, options = {}) {
    * @type {{path: string, bytes?: Uint8Array}|null}
    */
   let effectiveSample = null;
+  /** 挑样本的失败原因是否已由 pickSampleByCanHandle 写进报告（避免 B7 出现两条重复说明） */
+  let samplePickExplained = false;
 
   // ---------------- A 清单层 ----------------
   let manifest = null;
@@ -356,6 +358,8 @@ export async function checkPlugin(dir, options = {}) {
       else rep.warn('B7', `该样本不是本插件的（canHandle 返回 false）：${options.samplePath}；B7/B8 未验证`, '§3.4');
     } else if (options.sampleOrigin !== 'none' && options.sampleOrigin !== 'explicit') {
       effectiveSample = await pickSampleByCanHandle(desc.canHandle, rep);
+      // 无论挑到没挑到，原因都由 pickSampleByCanHandle 写清楚了 ⇒ 下面不再重复一条 B7
+      samplePickExplained = true;
     }
     const samplePath = effectiveSample ? effectiveSample.path : null;
     if (samplePath) {
@@ -381,7 +385,11 @@ export async function checkPlugin(dir, options = {}) {
         rep.warn('B8', 'prefix 形状未验证（同上）', '§1.2');
       }
     } else {
-      rep.warn('B7', 'resolve 的 { prefix, files, entry } 形状未离线验证：需要一份合法容器样本（可用 --sample <文件> 提供）', '§3.4');
+      // 没拿到样本。若上面已按 canHandle 试过候选，失败原因已经写进 B7 了，这里不再重复；
+      //   --no-sample 或显式样本失效时才需要补这条通用说明。
+      if (!samplePickExplained) {
+        rep.warn('B7', 'resolve 的 { prefix, files, entry } 形状未离线验证：需要一份合法容器样本（可用 --sample <文件> 提供）', '§3.4');
+      }
       rep.warn('B8', `prefix 形状未离线验证：应为 ${PREFIX_RE.source}`, '§1.2');
     }
   } else if (parses) {
