@@ -4,7 +4,7 @@
 // 导入：项目配置交给 POST /api/config/import（校验→备份→写→回读自检），偏好写回 localStorage 并立即生效。
 //
 // 依赖注入的原因：面板桥（重载名册/应用偏好）与状态行都在装配层，这里不反向 import，避免环。
-import { formatError } from '../infra/api.js';
+import { formatError, getJson } from '../infra/api.js';
 import { readViewSettings, VIEW_SETTINGS_KEY } from '../app/view-settings.js';
 import { stageLog, stageStatus } from '../app/status.js';
 import { state } from '../app/context.js';
@@ -24,10 +24,12 @@ export function connectSettingsIo(bridge) {
 /** 取服务端项目配置原文（失败不抛出，返回 error 供状态行提示） */
 async function fetchProjectFiles() {
   try {
-    const res = await fetch('/api/config/export');
-    const data = await res.json();
-    if (res.ok && data && data.files) return { files: data.files, error: null };
-    return { files: null, error: (data && data.error) || `HTTP ${res.status}` };
+    // 幂等 GET 的小 JSON（实测 58ms）⇒ 走统一层拿重试与统一超时/错误归类。
+    //   非 2xx 现在会被 api.js 抛成带 status 的错误（原来在这里读 data.error），
+    //   两种来源都会落进下面的 catch 变成可读文案，状态行展示口径不变。
+    const data = await getJson('/api/config/export');
+    if (data && data.files) return { files: data.files, error: null };
+    return { files: null, error: (data && data.error) || '服务端未返回 files' };
   } catch (err) {
     return { files: null, error: (err && err.message) || String(err) };
   }

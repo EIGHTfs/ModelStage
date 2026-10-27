@@ -20,6 +20,9 @@
 
 const FAIL_KEY = 'modelstage-bundle-failures';
 
+// 插件清单走统一 HTTP 层（重试 + 与 plugin-host 的同 URL 去重 + 统一超时/错误归类）
+import { getJson } from '../infra/api.js';
+
 /**
  * 失败原因 → 一句人话。
  *
@@ -46,9 +49,9 @@ let currentFp = '';
 /** 取插件指纹：与 providerFingerprint 同口径（id@version 排序） */
 async function fetchFingerprint() {
   try {
-    const res = await fetch('/api/plugins', { cache: 'no-store' });
-    if (!res || !res.ok) return '';
-    const data = await res.json();
+    // 与 plugin-host 的 doLoadAll 同一个 URL ⇒ 走统一层后两处并发会被合并成一次真实请求
+    //   （no-store 必须保留：插件升级后指纹要立刻变，读缓存会拿到旧指纹）
+    const data = await getJson('/api/plugins', { cache: 'no-store' });
     const list = Array.isArray(data && data.plugins) ? data.plugins : [];
     return list
       .map((p) => `${String((p && p.id) || '')}@${String((p && p.version) == null ? '' : p.version)}`)

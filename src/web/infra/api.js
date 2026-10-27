@@ -90,7 +90,7 @@ async function readBody(res, path, method) {
 }
 
 /** 单次尝试：返回解析后的 body，或抛出带 status 的错误 */
-async function attemptOnce(path, { method, body, headers, timeoutMs, signal }) {
+async function attemptOnce(path, { method, body, headers, timeoutMs, signal, cache }) {
   // 每次尝试都有独立超时（AbortSignal.timeout）：卡死的请求不会无限挂住页面
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const merged = signal && typeof AbortSignal.any === 'function'
@@ -104,6 +104,9 @@ async function attemptOnce(path, { method, body, headers, timeoutMs, signal }) {
       ...(headers || {}),
     },
     ...(body !== undefined ? { body: typeof body === 'string' ? body : JSON.stringify(body) } : {}),
+    // cache 必须能透传：插件清单 / 运行时清单这类"改完要立刻看到"的请求带 no-store，
+    //   丢掉它会读到浏览器缓存（新增插件在前端看不见）。以前 api.js 不透传，调用方只能裸 fetch。
+    ...(cache ? { cache } : {}),
     signal: merged,
   });
 
@@ -318,7 +321,7 @@ async function requestJson(path, opts = {}) {
 
   for (let i = 0; i < maxAttempts; i += 1) {
     try {
-      return await attemptOnce(path, { method, body: opts.body, headers: opts.headers, timeoutMs, signal: opts.signal });
+      return await attemptOnce(path, { method, body: opts.body, headers: opts.headers, timeoutMs, signal: opts.signal, cache: opts.cache });
     } catch (e) {
       lastErr = e;
       const status = e && e.status;

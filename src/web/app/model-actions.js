@@ -185,7 +185,10 @@ async function probeSkelVersion(url) {
   try {
     const vfs = getSharedVirtualFS();
     const real = (vfs && typeof vfs.resolve === 'function' ? vfs.resolve(url) : null) || url;
-    const res = await fetch(real);
+    // 归 **B 类（只加超时，不走 api.js）**：这里要的是二进制头，不是 JSON —— getJson 会 res.json() 解坏。
+    //   注意 `.slice(0,32)` 是在**已拿到的 blob** 上切，不是 HTTP Range ⇒ 实际仍下载整个 .skel，
+    //   所以超时按"整文件下载"给：20s（CIFS 上几 MB 骨架可能数秒，实测运行时脚本读取同量级）。
+    const res = await fetch(real, { signal: AbortSignal.timeout(20000) });
     if (!res || !res.ok) return null;
     // 只读前 32 字节：版本串长度不超过 24，够用且不整文件下载
     const head = new Uint8Array(await (await res.blob()).slice(0, 32).arrayBuffer());
@@ -220,7 +223,11 @@ async function expandContainerEntry(src, name) {
   let fetchNote = '';
   try {
     if (fetchUrl) {
-      const res = await fetch(fetchUrl, { cache: 'no-store' });
+      // 归 **B 类（只加超时）**：这里必须保留 `cache: 'no-store'`（entry.json 是解包产物，
+      //   读到浏览器缓存会拿到上一版产物）；而 getJson/fetchWithRetry 都不透传 cache 选项，
+      //   走 api.js 会静默丢掉这个语义 ⇒ 宁可只补超时。
+      //   8.5s 与 api.js 默认一致（entry.json 是小 JSON，实测同量级接口 10~58ms）。
+      const res = await fetch(fetchUrl, { cache: 'no-store', signal: AbortSignal.timeout(8500) });
       if (res && res.ok) meta = await res.json();
       else fetchNote = `HTTP ${res && res.status}`;
     } else fetchNote = 'resolve 返回空';

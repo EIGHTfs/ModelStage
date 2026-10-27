@@ -15,6 +15,10 @@
 
 const RUNTIME_BASE = '/spine-runtimes/spine-webgl-';
 
+// 清单读取走统一 HTTP 层（重试 + 统一超时/错误归类）。api.js 顶层不引用 window/document，
+//   所以这个 import 在 node 侧被间接加载时也安全。
+import { getJson } from '../infra/api.js';
+
 /** 运行时必须导出的类（缺任一即视为该版本不可用） */
 const REQUIRED_CLASSES = ['Skeleton', 'AnimationState', 'TextureAtlas', 'AtlasAttachmentLoader'];
 const REQUIRED_PARSERS = ['SkeletonJson', 'SkeletonBinary'];
@@ -108,11 +112,10 @@ export class SpineRuntimeManager {
     const fromSources = Object.keys(window.__SPINE_RUNTIME_SOURCES__ || {});
     if (fromSources.length) return fromSources.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
     try {
-      const r = await fetch('/spine-runtimes/index.json', { cache: 'no-store' });  // dsh-skip-quality 本地同源静态清单读取，既有代码(本轮仅改直通支持判定)
-      if (r.ok) {
-        const j = await r.json();
-        if (Array.isArray(j.versions) && j.versions.length) return j.versions;
-      }
+      // 幂等 GET 的小 JSON 清单 ⇒ 走统一层（重试 + 统一超时 + 错误归类）。
+      //   no-store 必须保留：换了运行时版本要立刻看到新清单。
+      const j = await getJson('/spine-runtimes/index.json', { cache: 'no-store' });
+      if (j && Array.isArray(j.versions) && j.versions.length) return j.versions;
     } catch { /* 清单取不到就走空表 */ }
     return [];
   }

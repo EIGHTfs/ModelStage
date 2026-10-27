@@ -5,6 +5,8 @@
 //   混在 canvas.js 里时最长的那几个 try/catch 都在这里，出错排查面很窄。
 
 import { SpineEngine as NextEngine } from '../engine/index.js';
+// 清单读取走统一 HTTP 层（重试 + 统一超时/错误归类）
+import { getJson } from '../infra/api.js';
 
 const RUNTIME_BASE = '/spine-runtimes/spine-webgl-';
 
@@ -25,9 +27,9 @@ function majorMinor(v) {
 /** 运行时目录清单（dev-server 扫目录生成；客户端不写死版本列表） */
 function fetchManifest() {
   if (manifestPromise) return manifestPromise;
-  const p = fetch(RUNTIME_MANIFEST, { cache: 'no-store' })
-    .then((r) => (r.ok ? r.json() : { versions: [] }))
-    .then((j) => (Array.isArray(j.versions) ? j.versions : []))
+  // 幂等 GET 的小 JSON ⇒ 走统一层（重试 + 统一超时/错误归类）。no-store 保留：新版本要立刻可见。
+  const p = getJson(RUNTIME_MANIFEST, { cache: 'no-store' })
+    .then((j) => (j && Array.isArray(j.versions) ? j.versions : []))
     .catch(() => []);
   manifestPromise = p;
   p.then((list) => {

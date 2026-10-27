@@ -17,7 +17,7 @@
 
 import { getSharedVirtualFS } from './vfs.js';
 import * as memoryGuard from '../app/memory-guard.js';
-import { postJson, fetchWithRetry, mapLimit } from './api.js';
+import { postJson, getJson, fetchWithRetry, mapLimit } from './api.js';
 
 /** 宿主提示通道：优先用注入的 log（项目调试日志），否则退回 console */
 function makeLogger(log) {
@@ -716,9 +716,9 @@ const MIME_BY_EXT = {
   /** loadAll 的实际执行体（内部使用；失败只记日志不抛） */
   async function doLoadAll() {
     try {
-      const res = await fetch(`${base}/api/plugins`, { cache: 'no-store' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      // 幂等 GET ⇒ 走统一层（保留 no-store：改完插件要立刻看到，不能读缓存）。
+      //   bundle-failures.js 拉的是同一个 URL，两处并发时会被 api.js 合并成一次真实请求。
+      const data = await getJson(`${base}/api/plugins`, { cache: 'no-store' });
       discovered = Array.isArray(data && data.plugins) ? data.plugins : [];
     } catch (e) {
       say.warn(`插件清单获取失败（页面其余功能不受影响）：${(e && e.message) || e}`);
