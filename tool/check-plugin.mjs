@@ -28,7 +28,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createSandbox, loadIntoContext, badInputs, isThenable } from './check-plugin-host.mjs';
-import { runContractChecks, printCoverageTable, findDefaultSample } from './lib/contract-checks.mjs';
+import { runContractChecks, printCoverageTable, listContainerCandidates } from './lib/contract-checks.mjs';
 import { parseJsonc } from './parse-jsonc.mjs';
 // 契约 §9.6：effects 校验与运行期共用同一份实现（禁止两处各写一套）
 import { PLUGIN_ROLES, validateEffects } from '../src/server/plugins/registry.mjs';
@@ -74,6 +74,67 @@ function readManifest(dir, manifestPath) {
   return { manifest, files };
 }
 
+/** 默认最多试几个候选容器（可用 SAMPLE_TRY_MAX 覆盖，CI 想更快可设 4） */
+const SAMPLE_TRY_MAX_DEFAULT = 8;
+
+/**
+ * 取候选上限：环境变量 SAMPLE_TRY_MAX 优先，非法值回落默认。
+ * 用**数量**上限而不是时间上限：本项目规矩是"不按秒数改变行为"。
+ * @returns {number}
+ */
+function sampleTryMax() {
+  const n = Number(process.env.SAMPLE_TRY_MAX);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : SAMPLE_TRY_MAX_DEFAULT;
+}
+
+/**
+ * 用**插件自己的 canHandle** 反过来挑一个它能处理的容器当样本。
+ *
+ * 为什么这么挑：样本选择的口径必须与插件判据是同一份 —— 另写一套"按目录名/扩展名猜类型"
+ *   必然与 canHandle 不同步（本项目反复栽的坑：两处实现各说各话）。实测过的假红：
+ *   spine 插件被喂 live2d 包 ⇒ 报「包里没有 .skel」，插件本身没问题。
+ * 读到文件就**复用同一份字节**返回：readFile 是主要成本（20MB 包实测 662ms），
+ *   不能让 B7 再读一遍。
+ *
+ * @param {Function} canHandle 插件注册时给出的判定函数
+ * @param {object} rep 报告收集器（挑不到时写 warn，说明试过什么）
+ * @returns {Promise<{path: string, bytes: Uint8Array}|null>}
+ */
+async function pickSampleByCanHandle(canHandle, rep) {
+  if (typeof canHandle !== 'function') {
+    rep.warn('B7', '插件未提供 canHandle，无法按类型挑样本；B7/B8 未验证（可用 --sample <文件> 指定）', '§3.4');
+    return null;
+  }
+  const limit = sampleTryMax();
+  const candidates = listContainerCandidates().slice(0, limit);
+  if (!candidates.length) {
+    rep.warn('B7', '资源根里没有任何容器候选（UnityFS 文件），B7/B8 未验证：可用 --sample <文件> 指定', '§3.4');
+    return null;
+  }
+  const tried = [];
+  for (const candidate of candidates) {
+    let bytes;
+    try {
+      bytes = new Uint8Array(fs.readFileSync(candidate.path));
+    } catch {
+      tried.push(`${path.basename(candidate.path)}(读失败)`);
+      continue;
+    }
+    let accepted = false;
+    try {
+      const out = canHandle({ rootId: 'probe-root', rel: path.basename(candidate.path), name: path.basename(candidate.path), size: bytes.length, bytes });
+      accepted = !!(isThenable(out) ? await out : out);
+    } catch {
+      accepted = false;
+    }
+    if (accepted) return { path: candidate.path, bytes };
+    tried.push(`${path.basename(candidate.path)}(${Math.round(candidate.size / 1048576)}MB)`);
+  }
+  // 挑不到就如实说清楚：试了几个、分别是谁、怎么加大范围。绝不 fallback 到"随便拿一个"
+  rep.warn('B7', `已试 ${candidates.length} 个候选（大小升序前 ${candidates.length}），逐个 canHandle 均 false；加大 SAMPLE_TRY_MAX 或 --sample 指定。试过：${tried.join(', ')}`, '§3.4');
+  return null;
+}
+
 /**
  * 检查单个插件目录。
  * @param {string} dir 插件目录（绝对或相对）
@@ -83,6 +144,13 @@ export async function checkPlugin(dir, options = {}) {
   const abs = path.resolve(dir);
   const name = path.basename(abs);
   const rep = createReport();
+  /**
+   * 本次实际使用的样本（B7 段挑定，M 段复用同一份）。
+   * 放在函数作用域：样本来源现在要等插件装载后才定（用它的 canHandle 挑），
+   *   B7 与 M1–M5 必须看同一个样本，否则两段报告各说各的。
+   * @type {{path: string, bytes?: Uint8Array}|null}
+   */
+  let effectiveSample = null;
 
   // ---------------- A 清单层 ----------------
   let manifest = null;
@@ -268,11 +336,32 @@ export async function checkPlugin(dir, options = {}) {
     else rep.ok('B6', 'resolve 对非法入参抛带 code 的 Error', '§3.4');
 
     // B7/B8：happy path 需要一份**合法容器样本**才能验（离线垫片没有真实资源）。
-    //   传了 --sample <文件> 就真的跑一次；没有就如实 ⚠️，不假装通过。
-    const samplePath = options.samplePath;
-    if (samplePath && fs.existsSync(samplePath)) {
+    //   来源优先级：
+    //     ① --sample <文件>（显式，最高优先；先问插件认不认，不认就明确报"不是本插件的"，不静默忽略）
+    //     ② 默认：用本插件自己的 canHandle 反过来挑（判据只有一份，见 pickSampleByCanHandle）
+    //     ③ --no-sample：完全不读样本
+    //   挑不到就如实 ⚠️，绝不 fallback 到"随便拿一个"—— 那正是"spine 插件被喂 live2d 包"假红的来源。
+    if (options.samplePath && fs.existsSync(options.samplePath)) {
+      const sampleBytes = new Uint8Array(fs.readFileSync(options.samplePath));
+      let accepted = true;
+      if (typeof desc.canHandle === 'function') {
+        try {
+          const verdict = desc.canHandle({ rootId: 'probe-root', rel: path.basename(options.samplePath), name: path.basename(options.samplePath), size: sampleBytes.length, bytes: sampleBytes });
+          accepted = !!(isThenable(verdict) ? await verdict : verdict);
+        } catch {
+          accepted = false;
+        }
+      }
+      if (accepted) effectiveSample = { path: options.samplePath, bytes: sampleBytes };
+      else rep.warn('B7', `该样本不是本插件的（canHandle 返回 false）：${options.samplePath}；B7/B8 未验证`, '§3.4');
+    } else if (options.sampleOrigin !== 'none' && options.sampleOrigin !== 'explicit') {
+      effectiveSample = await pickSampleByCanHandle(desc.canHandle, rep);
+    }
+    const samplePath = effectiveSample ? effectiveSample.path : null;
+    if (samplePath) {
       try {
-        const bytes = new Uint8Array(fs.readFileSync(samplePath));
+        // 优先用挑样本时已读入的字节：同一个包不重复 readFile（20MB 包读一次 662ms）
+        const bytes = effectiveSample.bytes || new Uint8Array(fs.readFileSync(samplePath));
         // 插件契约 §3.4：file 至少要有 rootId / rel / name / size / bytes
         //   （缺 rootId/rel 时合规插件会抛 ULB_ERR_BAD_ARGS —— 那不是插件的问题，是调用方漏传）
         const out = rf({ rootId: 'probe-root', rel: path.basename(samplePath), name: path.basename(samplePath), size: bytes.length, bytes });
@@ -341,13 +430,13 @@ export async function checkPlugin(dir, options = {}) {
   const FIXED_OVERHEAD_MB = 103;
 
   /** 采样样本与插件自算入口（M2–M4 与 M5 共用一次采样，避免重复跑） */
-  const memSample = options.samplePath;
+  const memSample = effectiveSample ? effectiveSample.path : options.samplePath;
   const memHaveSample = !!(memSample && fs.existsSync(memSample));
-  /** 样本来源（契约 §2.3「门禁报告必须可追溯」）：explicit / default / none */
+  /** 样本来源（契约 §2.3「门禁报告必须可追溯」）：explicit / auto / none */
   const memSampleOrigin = options.sampleOrigin || (memHaveSample ? 'explicit' : 'none');
   /** M2–M5 消息里统一使用的来源标签（带具体路径，读者能复核） */
   const memSampleLabel = !memHaveSample ? '无可用样本'
-    : (memSampleOrigin === 'default' ? `默认样本: ${memSample}` : `--sample: ${memSample}`);
+    : (memSampleOrigin === 'auto' ? `自动挑选（插件 canHandle 命中）: ${memSample}` : `--sample: ${memSample}`);
   const memEstFn = (sandbox && sandbox.__ULB_NODE__ && typeof sandbox.__ULB_NODE__.estimateMemory === 'function')
     ? sandbox.__ULB_NODE__.estimateMemory.bind(sandbox.__ULB_NODE__)
     : (typeof desc.estimateMemory === 'function' ? desc.estimateMemory : null);
@@ -476,8 +565,11 @@ async function main(argv) {
   const noSample = args.includes('--no-sample');
   // 样本来源必须**可追溯**：报告里"查实算值"必须说清用的是哪个文件、从哪来的。
   //   ① 显式 --sample <路径>  → explicit（作者指定的，换机也一致）
-  //   ② 自动探测默认样本      → default（换机可能找到别的、或找不到 ⇒ 结论不可复现，必须标明）
+  //   ② 自动挑（默认）         → auto（**由插件自己的 canHandle 从候选里挑**，见 pickSampleByCanHandle）
   //   ③ --no-sample           → 不读任何样本（CI / 要求确定性的场景）
+  // 注意：这里**不再预先选定某个文件**。以前是"资源根里第一个 UnityFS"，与插件类型无关，
+  //   于是 spine 插件会被喂 live2d 包 ⇒ 假红（PL5 报"包里没有 .skel"）。
+  //   挑样本必须在插件装载之后（要用它的 canHandle），所以延到 checkPlugin 内部做。
   let samplePath = null;
   let sampleOrigin = 'none';
   if (noSample) {
@@ -487,8 +579,7 @@ async function main(argv) {
     samplePath = args[sampleIdx + 1];
     sampleOrigin = 'explicit';
   } else {
-    const auto = findDefaultSample();
-    if (auto) { samplePath = auto; sampleOrigin = 'default'; }
+    sampleOrigin = 'auto';
   }
   const allIdx = args.indexOf('--all');
   let targets = [];

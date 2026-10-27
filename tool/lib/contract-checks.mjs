@@ -21,6 +21,8 @@ const GUARD_LOOKBACK = 1500;
 
 /** 找样本时最多看一个根里多少个顶层文件（资源包根通常只有几个容器，够用且便宜） */
 const SAMPLE_PROBE_FILES = 40;
+/** 下探子目录时每个根最多看多少个目录（spine 容器在 `<角色>/<包>` 这层，见 listContainerCandidates） */
+const SAMPLE_PROBE_DIRS = 40;
 
 /** PL 覆盖表（打印用；改契约时同步改这里，让"覆盖了什么"自证） */
 export const PL_TABLE = [
@@ -48,33 +50,89 @@ async function loadHostForNode() {
   return mod.createPluginHost({ log: () => {}, baseUrl: '' });
 }
 
-/** 找一个 UnityFS 容器样本：先看 --sample，再在已配置资源根里找一个（8 字节魔数） */
-export function findDefaultSample() {
-  const isUnityFs = (file) => {
-    try {
-      const fd = fs.openSync(file, 'r');
-      const buf = Buffer.alloc(8);
-      const n = fs.readSync(fd, buf, 0, 8, 0);
-      fs.closeSync(fd);
-      return n === 8 && buf.toString('latin1') === 'UnityFS\0';
-    } catch {
-      return false;
-    }
-  };
+/** 读 config/resources.json 里登记的所有资源根路径（正则提取，与历史口径一致） */
+function readRootPaths() {
   try {
     const cfgText = fs.readFileSync(path.join(ROOT, 'config/resources.json'), 'utf8');
-    const roots = [...cfgText.matchAll(/"path"\s*:\s*"([^"]+)"/g)].map((m) => m[1]);
-    for (const dir of roots) {
-      let entries = [];
-      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
-      for (const e of entries.slice(0, SAMPLE_PROBE_FILES)) {
-        if (!e.isFile() || e.name.startsWith('.')) continue;
-        const full = path.join(dir, e.name);
-        if (isUnityFs(full)) return full;
+    return [...cfgText.matchAll(/"path"\s*:\s*"([^"]+)"/g)].map((m) => m[1]);
+  } catch {
+    return [];
+  }
+}
+
+/** 是不是 UnityFS 容器（只读前 8 字节魔数，不读整包） */
+function isUnityFsFile(file) {
+  try {
+    const fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(8);
+    const n = fs.readSync(fd, buf, 0, 8, 0);
+    fs.closeSync(fd);
+    return n === 8 && buf.toString('latin1') === 'UnityFS\0';
+  } catch {
+    return false;
+  }
+}
+
+/** 取文件大小；读不到就排到最后（不让坏条目抢先占候选名额） */
+function safeSize(file) {
+  try { return fs.statSync(file).size; } catch { return Number.MAX_SAFE_INTEGER; }
+}
+
+/**
+ * 列出资源根里的候选容器（UnityFS 文件），排好序供调用方**逐个试插件的 canHandle**。
+ *
+ * 为什么要**下探一层子目录**：spine 容器在 `<角色>/<包>` 这层（实测 NIKKE/<角色>/<c200_...>），
+ *   而 live2d 包直接躺在根目录第一层。只扫第一层会让 spine 插件**永远挑不到**样本，
+ *   症状是「PL5 报包里没有 .skel」这种假红。以后若把这里"优化"成只扫第一层，这个 bug 会原样回来。
+ * 为什么**按根轮流**取而不是全局按大小：一个根里可能有一二十个同类型包，纯按大小排序会让
+ *   前 N 个候选全来自同一个根，别的类型的插件（样本在别的根）永远轮不到。
+ * 为什么**只判 UnityFS 魔数、不判 spine/live2d**：类型判据只有一份 —— 插件自己的 canHandle。
+ *   这里再复制一套必然与它不同步（本项目反复栽过的坑：两处实现各说各话）。
+ *
+ * @param {{maxFilesPerDir?: number, maxDirsPerRoot?: number}} opts 探测上限（成本控制）
+ * @returns {Array<{path: string, size: number}>} 按「根轮流 + 同根内 size 升序」排好
+ */
+export function listContainerCandidates(opts = {}) {
+  const maxFilesPerDir = opts.maxFilesPerDir ?? SAMPLE_PROBE_FILES;
+  const maxDirsPerRoot = opts.maxDirsPerRoot ?? SAMPLE_PROBE_DIRS;
+  const queues = [];
+  for (const rootDir of readRootPaths()) {
+    let topEntries = [];
+    try { topEntries = fs.readdirSync(rootDir, { withFileTypes: true }); } catch { continue; }
+    const found = [];
+    // ① 第一层文件（live2d 包就在这层）
+    for (const entry of topEntries.slice(0, maxFilesPerDir)) {
+      if (!entry.isFile() || entry.name.startsWith('.')) continue;
+      const full = path.join(rootDir, entry.name);
+      if (isUnityFsFile(full)) found.push({ path: full, size: safeSize(full) });
+    }
+    // ② 下探一层子目录（spine 容器在这层 —— 只扫第一层会让 spine 插件永远挑不到样本）
+    const subDirs = topEntries.filter((e) => e.isDirectory() && !e.name.startsWith('.')).slice(0, maxDirsPerRoot);
+    for (const sub of subDirs) {
+      let inner = [];
+      try { inner = fs.readdirSync(path.join(rootDir, sub.name), { withFileTypes: true }); } catch { continue; }
+      for (const entry of inner.slice(0, maxFilesPerDir)) {
+        if (!entry.isFile() || entry.name.startsWith('.')) continue;
+        const full = path.join(rootDir, sub.name, entry.name);
+        if (isUnityFsFile(full)) found.push({ path: full, size: safeSize(full) });
       }
     }
-  } catch { /* 配置缺失就当作没有样本 */ }
-  return null;
+    if (found.length) queues.push(found.sort((a, b) => a.size - b.size));
+  }
+  const out = [];
+  const longest = queues.reduce((max, q) => Math.max(max, q.length), 0);
+  for (let i = 0; i < longest; i += 1) {
+    for (const q of queues) if (i < q.length) out.push(q[i]);
+  }
+  return out;
+}
+
+/**
+ * 兼容旧调用：返回第一个候选（没有就 null）。
+ * 新代码请用 listContainerCandidates() 逐个试插件的 canHandle —— 只拿第一个必然与插件类型不匹配。
+ */
+export function findDefaultSample() {
+  return listContainerCandidates()[0]?.path ?? null;
 }
 
 /** 收集插件源码文件（清单里声明的那些），返回 [{file, text}] */

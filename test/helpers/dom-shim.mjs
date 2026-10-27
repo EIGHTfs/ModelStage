@@ -118,5 +118,11 @@ export function installDomShim() {
     }
   };
   globalThis.document = doc;
+  // window 也要给：浏览器里 window === globalThis，但 node 没有它。
+  //   src/web/app/context.js 在**模块顶层**就写 `window.__WEB__ = window.__WEB__ || {}`
+  //   （那是刻意的：boot 早期就要有状态日志落盘口），缺 window 会让该模块 import 期直接
+  //   ReferenceError —— 表现为 renderer-contract 这条测试长期失败，而产品本身没问题。
+  //   所以按浏览器语义把 window 指向 globalThis，而不是改产品代码去迁就测试。
+  globalThis.window = globalThis;
   return { document: doc, reset };
 }
