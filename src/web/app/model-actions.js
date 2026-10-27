@@ -87,11 +87,14 @@ function releaseVfsPrefix(keep) {
  */
 function normalizeEntry(model) {
   const legacyBundle = model && model.kind === 'bundle';
-  const kind = model && (model.kind === 'spine' || model.kind === 'live2d')
-    ? model.kind
-    : (legacyBundle ? 'live2d' : 'spine');
+  // 只做"已知值归一"，**不再瞎兜底**：
+  //   以前非 spine/live2d 一律当 'spine' —— 而容器条目的 kind 可能为 null
+  //   （多个 bundle 插件并存时，解包前无法确定内容类型）⇒ live2d 容器会被当成 spine 走错分支。
+  //   现在未知就是 null，由解包产物判（见 expandContainerEntry）；判不出来就明确报错。
+  const known = model && (model.kind === 'spine' || model.kind === 'live2d') ? model.kind : null;
+  // container 是"这是容器"的事实，但**不假定它一定在**：旧条目可能只有 kind:'bundle'
   const container = (model && model.container) || (legacyBundle ? 'unityfs' : null);
-  return { ...model, kind, ...(container ? { container } : {}) };
+  return { ...model, kind: known, ...(container ? { container } : {}) };
 }
 
 /**
@@ -163,6 +166,31 @@ function baseName(p) {
 }
 
 /**
+ * 从 skel 字节里读出版本号（如 '4.1.20'）。
+ *
+ * 二进制 skel 的布局：`[8 字节 hash][1 字节长度 N][N 字节 UTF-8 版本串]`（实测 4.1.20 完全吻合）。
+ * 为什么必须读出来：引擎用 `doc.meta.version`（= entry.version）选运行时；缺它会选"最新一档"，
+ *   而 spine 运行时不校验版本兼容性 ⇒ 用新版读旧格式只会读错位，报 `String in string table must not be null`。
+ * 读不到就返回 null（交给引擎的兜底分支），不编造。
+ * @param {string} url 骨架地址（vfs:// 或 http）
+ * @returns {Promise<string|null>}
+ */
+async function probeSkelVersion(url) {
+  try {
+    const vfs = getSharedVirtualFS();
+    const real = (vfs && typeof vfs.resolve === 'function' ? vfs.resolve(url) : null) || url;
+    const res = await fetch(real);
+    if (!res || !res.ok) return null;
+    // 只读前 32 字节：版本串长度不超过 24，够用且不整文件下载
+    const head = new Uint8Array(await (await res.blob()).slice(0, 32).arrayBuffer());
+    const len = head[8];
+    if (!len || len > 24) return null;
+    const ver = new TextDecoder().decode(head.slice(9, 9 + len)).replace(/[^\x20-\x7e]/g, '').trim();
+    return ver || null;
+  } catch { return null; }
+}
+
+/**
  * 容器解包产物 → 展开成 spine 三件套（entry.json 是唯一权威）。
  *
  * 三种输入的处置：
@@ -183,31 +211,65 @@ async function expandContainerEntry(src, name) {
     try { return getSharedVirtualFS().resolve(src.entryUrl) || null; } catch { return null; }
   })();
   let meta = null;
+  let fetchNote = '';
   try {
     if (fetchUrl) {
       const res = await fetch(fetchUrl, { cache: 'no-store' });
       if (res && res.ok) meta = await res.json();
-    }
-  } catch { meta = null; }   // 不是 JSON / 取不到 ⇒ 当作"没有 entry.json"走下面的判定
+      else fetchNote = `HTTP ${res && res.status}`;
+    } else fetchNote = 'resolve 返回空';
+  } catch (e) { meta = null; fetchNote = (e && e.message) || 'fetch 抛错'; }   // 不是 JSON / 取不到 ⇒ 当作"没有 entry.json"走下面的判定
+
+  // 排障：这条把"取到没取到"一次说清（meta 为 null 时整个 skeletonFile 分支根本不会进）
+  diagEvent('container.expand', {
+    plugin: src.provider || null,
+    entryUrl: src.entryUrl,
+    resolved: fetchUrl ? String(fetchUrl).slice(0, 48) : null,
+    metaKeys: meta && typeof meta === 'object' ? Object.keys(meta).join(',') : null,
+    fetchNote: fetchNote || null,
+  }, { level: 'info', src: 'app' });
 
   if (meta && meta.skeletonFile) {
     const join = (rel) => joinPrefix(src.prefix, rel);
     const texFiles = Array.isArray(meta.textureFiles) ? meta.textureFiles : [];
-    return {
-      entry: {
-        skeletonFile: { name: baseName(meta.skeletonFile), url: join(meta.skeletonFile) },
-        atlasFile: meta.atlasFile
-          ? { name: baseName(meta.atlasFile), url: join(meta.atlasFile) }
-          : undefined,
-        textureFiles: texFiles.map((f) => ({ name: baseName(f), url: join(f) })),
-      },
+    const built = {
+      skeletonFile: { name: baseName(meta.skeletonFile), url: join(meta.skeletonFile) },
+      atlasFile: meta.atlasFile
+        ? { name: baseName(meta.atlasFile), url: join(meta.atlasFile) }
+        : undefined,
+      textureFiles: texFiles.map((f) => ({ name: baseName(f), url: join(f) })),
     };
+    // skel 版本必须一起带出去：引擎按 doc.meta.version（= entry.version）选运行时，
+    //   缺这个值会走 pickRuntimeVersion 的"没版本号 ⇒ 用清单里最新一档"分支。
+    //   用新版运行时读旧格式 skel **不会报版本错**（spine 运行时不校验兼容性），只会读错位，
+    //   最后在 `String in string table must not be null` 这种地方炸 —— 排查成本极高。
+    const version = await probeSkelVersion(built.skeletonFile.url);
+    // 排障：三件套的 url 各打一条（拼接用的是什么 prefix、结果长什么样）
+    diagEvent('container.assets', {
+      prefix: src.prefix || null,
+      skeletonUrl: built.skeletonFile.url,
+      atlasUrl: built.atlasFile ? built.atlasFile.url : null,
+      textureUrls: built.textureFiles.map((t) => t.url).join(' , '),
+      skelVersion: version,
+    }, { level: 'info', src: 'app' });
+    return { kind: 'spine', entry: built, version };
   }
 
-  // 没有 skeletonFile：区分"live2d 容器"与"spine 容器缺 entry.json"
+  // 没有 skeletonFile：按产物确定性地判内容类型（kind 可能本来是 null）
+  //
+  // Live2D 的判据用**入口文件名**，而不是扫描 files 清单：
+  //   · 实测容器的入口就叫 `model3.json`（不是 `xxx.model3.json`），endsWith('model3.json') 两种都能覆盖；
+  //   · 更关键：materialize 返回的 files 在不同路径下形状不一致（实测拿到过 Number），
+  //     拿不到清单时"靠 files 判"必然误判成"判不出"。入口文件则是**一定存在**的。
+  const entryName = baseName(src.entryUrl).toLowerCase();
+  if (entryName.endsWith('model3.json')) return { kind: 'live2d' };
+
   const paths = (Array.isArray(src.files) ? src.files : []).map((p) => String(p).toLowerCase());
   const hasSkel = paths.some((p) => p.endsWith('.skel'));
   const hasAtlas = paths.some((p) => p.endsWith('.atlas'));
+  const hasModel3 = paths.some((p) => p.endsWith('model3.json'));
+  if (hasModel3) return { kind: 'live2d' };
+
   if (hasSkel && hasAtlas) {
     stageLog('warn', `容器 ${name} 里没有 entry.json（将拒绝装载）`, {
       files: paths.slice(0, 12).join(' / '),
@@ -217,7 +279,11 @@ async function expandContainerEntry(src, name) {
         + '骨架、atlas 与贴图页的对应关系（不按扩展名猜，多页 atlas 猜错会静默显示错图）',
     };
   }
-  return {};   // live2d 容器或其它容器：保持原路，不做任何改动
+  // 既没有 spine 清单、也没有 Live2D 定义 ⇒ 无法判定，明确报错（不静默走任何分支）
+  return {
+    error: '容器内既没有 entry.json（spine 三件套清单）也没有 *.model3.json（Live2D 定义），'
+      + '无法判定内容类型；不按扩展名猜（多页 atlas 猜错会静默显示错图）',
+  };
 }
 
 /**
@@ -246,7 +312,13 @@ async function loadModel(model, name) {
   //   会把 spine 容器判成 live2d。在进 buildDocument 之前补齐 + 显式给 kind 即可，
   //   **不动 document.js**（那条路与 live2d 分支同族，动它会弄坏已经能用的 live2d）。
   const entry = { url: src.entryUrl };
-  let kind = model.kind;
+  let kind = model.kind || null;
+  // spine 三件套必须放在**传给 buildDocument 的那个对象的顶层**：
+  //   buildSpineAssets(doc, entry, vfs) 读的是 `entry.skeletonFile` / `entry.atlasFile` /
+  //   `entry.textureFiles`（document.js:98-105）。塞进嵌套的 `entry.entry.*` 它一个字都读不到，
+  //   只会报"缺少骨架地址/缺少 atlas 地址/贴图页为空"—— 而 diag 里那三个 url 明明都拼对了。
+  let spineAssets = null;
+  let spineVersion = null;
   if (src.prefix) {
     const expanded = await expandContainerEntry(src, name);
     if (expanded.error) {
@@ -255,13 +327,26 @@ async function loadModel(model, name) {
       markModelFailed(`无法装载 ${name}：${expanded.error}`);
       return null;
     }
-    if (expanded.entry) {
-      Object.assign(entry, expanded.entry);
-      kind = 'spine';   // 显式指定，覆盖 document.js 的 entry.url ⇒ live2d 兜底
-    }
+    // 产物判定优先：容器条目 kind 可能为 null（多个 bundle 插件并存时解包前无法确定内容类型）
+    if (expanded.kind) kind = expanded.kind;
+    if (expanded.entry) spineAssets = expanded.entry;
+    if (expanded.version) spineVersion = expanded.version;
+  }
+  // 到这里还没确定内容类型 ⇒ 明确报错，不猜也不静默走进某个分支
+  if (kind !== 'spine' && kind !== 'live2d') {
+    const why = `无法判定内容类型（kind=${kind === null || kind === undefined ? 'null' : kind}）`
+      + '：非容器条目没有可判定的产物，容器条目也没有 entry.json(skeletonFile) 或 *.model3.json';
+    stage.unload();
+    stageLog('error', `无法装载 ${name}：${why}`, { model: name, kind, reason: 'kind-undetermined' });
+    markModelFailed(`无法装载 ${name}：${why}`);
+    return null;
   }
   const doc = await buildDocument({
     ...model,
+    ...(spineAssets || {}),                             // 三件套放顶层（buildSpineAssets 只认这里）
+    // 骨架版本同样放顶层：document.js:87 用 entry.version 填 doc.meta.version，
+    //   引擎据此选运行时档位；缺了就选最新档 ⇒ 旧格式 skel 读错位
+    version: spineVersion || model.version || null,
     kind,                                               // 只表达内容类型
     provider: src.provider || model.provider || null,
     entry,                                              // 是 vfs:// 还是 http:// 由发现阶段决定
@@ -292,9 +377,12 @@ async function loadModel(model, name) {
  */
 function mountEntry(entry, name) {
   const kind = entry.kind;
-  if (kind !== 'spine' && kind !== 'live2d') {
+  // kind 未知时不能一刀切拒绝：
+  //   · 容器 ⇒ 放行，解包产物到手后由 expandContainerEntry 判定（kind 可能本来就是 null）
+  //   · 非容器 ⇒ 没有任何产物可判，明确拒绝（宁可报错也不走错分支）
+  if (kind !== 'spine' && kind !== 'live2d' && !entry.container) {
     stage.unload();
-    stageLog('warn', `已选中 ${name}（未知内容类型：${kind}）`, { model: name, kind });
+    stageLog('warn', `已选中 ${name}（未知内容类型，且不是容器 ⇒ 没有可判定的产物：kind=${kind === null || kind === undefined ? 'null' : kind}）`, { model: name, kind });
     return;
   }
 

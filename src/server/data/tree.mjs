@@ -9,8 +9,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { SPINE_EXT } from '../assets/probe.mjs';
 
-/** 已知的“普通文件”扩展名：命中这些就不必探容器魔数（省掉打开文件的代价） */
-const KNOWN_FILE_EXT = new Set([
+/**
+ * 已知的「普通文件」扩展名：命中这些就不必探容器魔数（省掉打开文件的代价）。
+ *
+ * 导出给 catalog 的容器列举复用 —— 这份集合若在两处各写一份必然漂移：
+ *   一处加了新扩展名、另一处没加，表现是「某个根能列出容器、另一个根列不出」，
+ *   两边都不报错，最难查。这里是唯一真相。
+ */
+export const KNOWN_FILE_EXT = new Set([
   '.json', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.txt', '.md', '.bin', '.skel', '.atlas', '.ogg', '.mp3', '.wav',
 ]);
 

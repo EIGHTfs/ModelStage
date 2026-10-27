@@ -17,6 +17,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { encodePath } from '../assets/probe.mjs';
+// 扩展名集合复用 tree.mjs 那一份：容器列举与目录浏览必须用同一套「哪些扩展名要探魔数」，
+//   两处各写一份会漂移（一处加了新扩展名、另一处没加 ⇒ 某个根莫名列不出容器，且不报错）。
+import { KNOWN_FILE_EXT } from './tree.mjs';
 
 /**
  * 路径式文件 URL（Live2D 定义文件内部用相对路径引用，必须用 /files/ 前缀）。
@@ -335,18 +338,36 @@ function buildLive2DWarnings(fromDef, textureCheck) {
  * 解析资源包提供者：取「已启用的、声明了 fileKinds 含 bundle」的插件。
  * kind 一律取插件 produces.kind —— 不在 catalog 里写死内容类型，
  *   将来出现 Spine 资源包只要插件改声明即可，无需改本文件。
+ *
+ * 多于一个 bundle 插件时，**kind 与 id 都必须留空**：
+ *   解包前无法知道某个容器属于哪个插件（要看包内到底有 moc3 还是 .skel），
+ *   取第一个是错的 —— 实测会返回 unity-live2d-bundle/live2d，于是 spine 包被标成 live2d，
+ *   前端据 kind 选渲染分支 ⇒ 点开必然失败，而现场表现是"这个包坏了"，极难定位。
+ *   内容类型由**解包产物**确定（有 entry.json 且含 skeletonFile ⇒ spine；有 model3.json ⇒ live2d），
+ *   那是确定性的、且解包本来就要做，不需要在列举阶段额外 probe 一遍（每包 116ms × N）。
  * @returns {{id: string|null, kind: string|null, warning: string|null}}
  */
 export function resolveBundleProvider(plugins) {
-  const list = plugins.readPlugins();
-  const provider = list.find((p) => Array.isArray(p.fileKinds) && p.fileKinds.includes('bundle'));
-  if (!provider) {
-    return { id: null, kind: null, warning: '未找到能解包资源包的插件：条目 kind 无法确定' };
+  const list = plugins.readPlugins()
+    .filter((p) => Array.isArray(p.fileKinds) && p.fileKinds.includes('bundle'));
+  if (!list.length) {
+    return { id: null, kind: null, reason: 'no-provider', warning: '未找到能解包资源包的插件：条目 kind 无法确定' };
   }
+  if (list.length > 1) {
+    return {
+      id: null,
+      kind: null,
+      reason: 'multi-provider',
+      warning: `有 ${list.length} 个能解包资源包的插件（${list.map((p) => p.id).join('、')}）：`
+        + '解包前无法确定内容类型，条目 kind 置空，由解包产物（entry.json 的 skeletonFile / model3.json）判定',
+    };
+  }
+  const provider = list[0];
   const declared = provider.produces && provider.produces.kind ? String(provider.produces.kind) : null;
   return {
     id: provider.id,
     kind: declared,
+    reason: declared ? null : 'undeclared-kind',
     warning: declared ? null : `提供者 ${provider.id} 未声明产出类型（produces.kind）：kind 置空，由渲染层拒绝装载`,
   };
 }
@@ -358,7 +379,13 @@ export function resolveBundleProvider(plugins) {
 export function toBundleEntry(cfg, file, provider) {
   const rel = file.rel || file.name;
   const warnings = ['motions 需解包后枚举：资源包内部资产在打开时才可读'];
-  if (!provider.kind) warnings.unshift('提供者未声明产出类型');
+  // kind 为空有两种成因，文案必须区分：否则排障时会去改插件的 produces.kind，
+  //   而真正原因是"多个资源包插件并存、解包前判不出类型"。
+  if (!provider.kind) {
+    warnings.unshift(provider.reason === 'multi-provider'
+      ? '内容类型待解包后确定（多个资源包插件并存，列举阶段无法判定）'
+      : '提供者未声明产出类型');
+  }
   return {
     id: `bundle-${cfg.id}-${file.name}`,
     kind: provider.kind, // 可能为 null：宁可显式空，也不按插件 id 猜
@@ -388,20 +415,121 @@ export function toBundleEntry(cfg, file, provider) {
 }
 
 /**
- * 列资源包根下的条目：容器判定复用 tree 的结果（不在这里重读文件头）。
+ * 容器列举的规模上限 —— 值来自**实测**，不是拍脑袋。
+ *
+ * 实测 6 个 enabled 资源根（2026-10 现场）：
+ *   文件最大深度 3（bd2）｜目录数 max 535（azurlane）｜容器命中最多 19（azurlane_bundle，全在根层）
+ *   nikke_2 的 3 个容器在**第二层**（`<角色名>/<包>`）—— 这正是"只扫根层"会漏掉的那类。
+ * 深度取「实测 max + 1」，给未来更深的 Mod 类根留一层余量。
+ *
+ * 超限**绝不静默截断**：stopped 带回原因，由调用方写进 warnings
+ *   （静默截断的表现是"某些根莫名其妙列不出包"，是最难查的一类故障）。
+ */
+const BUNDLE_SCAN_MAX_DEPTH = 4;
+const BUNDLE_SCAN_MAX_DIRS = 3000;
+const BUNDLE_SCAN_MAX_HITS = 500;
+
+/**
+ * 递归找容器单文件（纯 readdir，**不读已知扩展名的文件头**）。
+ *
+ * 为什么不复用 `tree.listTree`（实测驱动的决定，别改回去）：
+ *   listTree 除 readdir 外还会对每个 `.skel` 调 `detectSkelVersion`、对 `.atlas` 调 `detectAtlasKey`,
+ *   那是"给前端浏览展示元信息"才需要的。拿它做容器列举实测 12.5s（热）/ 31s（冷）；
+ *   换成纯 readdir 后 1.36s（冷 1.46s），快 9 倍。
+ *   两者**职责不同**（一个要完整元信息、一个只想快速找到容器），不是重复实现。
+ *   "顺手统一成 listTree"会把冷启动拖回 31 秒 —— 这条注释就是防这个的。
+ *
+ * 只对**未知扩展名**的文件读 8 字节魔数，扩展名集合复用 tree 的 `KNOWN_FILE_EXT`（同一份真相）：
+ *   实测 bd2 / azurlane / azurlane_spine 三个大根的未知扩展名文件数都是 **0**，
+ *   即这三个根一次文件打开都不需要，成本全在 readdir 本身。
+ *
+ * 返回 `byDir`（按目录聚合）是为将来「按 dirSignature 缓存」留的钩子：
+ *   要缓存时可按目录粒度判断哪一层失效，不必整根重扫。当前不缓存（实测冷启动 1.46s 可接受）。
+ *
+ * @param {string} rootPath 资源根绝对路径
+ * @param {(abs: string) => (string|null)} detectContainer 魔数判定（返回 'unityfs' 或 null）
+ * @param {{maxDepth?: number, maxDirs?: number, maxHits?: number}} [opts] 上限覆盖（测试用）
+ * @returns {{files: Array<{name: string, rel: string, container: string, size: number}>,
+ *            byDir: Record<string, Array<object>>, stopped: string|null,
+ *            stats: {dirs: number, unknownFiles: number, hits: number}}}
+ */
+export function findContainerFiles(rootPath, detectContainer, opts = {}) {
+  const maxDepth = opts.maxDepth ?? BUNDLE_SCAN_MAX_DEPTH;
+  const maxDirs = opts.maxDirs ?? BUNDLE_SCAN_MAX_DIRS;
+  const maxHits = opts.maxHits ?? BUNDLE_SCAN_MAX_HITS;
+  const files = [];
+  const byDir = {};
+  const stats = { dirs: 0, unknownFiles: 0, depthSkipped: 0, hits: 0 };
+  // stopped 只表示「列举被资源上限硬中断」（目录数 / 命中数）——那两种必须整体停手。
+  //   深度超限**不算硬中断**：它只意味着"不再往这一支深入"，同层与其它兄弟目录必须继续扫。
+  //   曾经把深度超限也写进 stopped，结果 DFS 一碰到深支就整体 return，
+  //   同层还没处理的容器全被跳过（实测「上限 2 层」时命中数变成 0），属于过度截断。
+  let stopped = null;
+
+  function walk(abs, rel, depth) {
+    if (stopped) return;
+    if (depth > maxDepth) { stats.depthSkipped += 1; return; }
+    if (stats.dirs >= maxDirs) { stopped = `目录数上限 ${maxDirs} 个`; return; }
+    stats.dirs += 1;
+    let entries;
+    try {
+      entries = fs.readdirSync(abs, { withFileTypes: true });
+    } catch {
+      return;   // 读不了的目录跳过（权限不足 / 并发删除），不阻断整根
+    }
+    for (const entry of entries) {
+      if (stopped) return;
+      const full = path.join(abs, entry.name);
+      const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) { walk(full, childRel, depth + 1); continue; }
+      if (!entry.isFile()) continue;
+      const ext = path.extname(entry.name).toLowerCase();
+      if (ext && KNOWN_FILE_EXT.has(ext)) continue;   // 已知普通文件：不打开、不探魔数
+      stats.unknownFiles += 1;
+      const container = detectContainer(full);
+      if (!container) continue;
+      let size = 0;
+      try { size = fs.statSync(full).size; } catch { /* 并发删除：按 0 记，不阻断 */ }
+      const containerFile = { name: entry.name, rel: childRel, container, size };
+      files.push(containerFile);
+      if (!byDir[rel]) byDir[rel] = [];
+      byDir[rel].push(containerFile);
+      stats.hits += 1;
+      if (stats.hits >= maxHits) { stopped = `容器命中上限 ${maxHits} 个`; return; }
+    }
+  }
+
+  walk(rootPath, '', 0);
+  return { files, byDir, stopped, stats };
+}
+
+/**
+ * 列资源包根下的条目（递归，不再只看根层）。
+ *
+ * 为什么必须递归：资源包的实际摆法不统一 —— 有的根把包平铺在根层
+ *   （azurlane_bundle：19 个包全在 L0），有的按 `<角色名>/<包>` 分目录
+ *   （nikke_2：3 个包都在 L1）。只看根层时后者 catalog 条目为 0，
+ *   表现是"资源包明明在盘上，模型列表里却没有"。
+ *
  * @returns {{entries: Array, warnings: string[], skipped: number}}
  */
-export function listBundleEntries(cfg, { tree, plugins }) {
-  const listed = tree.listTree(cfg.id, '');
-  if (listed.status !== 200) {
-    return { entries: [], warnings: [`目录列举失败：${listed.body.error || listed.status}`], skipped: 0 };
-  }
+export function listBundleEntries(cfg, { plugins }) {
   const provider = resolveBundleProvider(plugins);
-  // 容器单文件由列举层用魔数标记（`container`），与根类型无关
-  const containers = (listed.body.files || []).filter((f) => f.container);
-  const entries = containers.map((f) => toBundleEntry(cfg, f, provider));
   const warnings = provider.warning ? [provider.warning] : [];
-  return { entries, warnings, skipped: countSkippedFiles(cfg.path, containers.length) };
+
+  const found = findContainerFiles(cfg.path, plugins.detectBundleContainer);
+  if (found.stopped) {
+    warnings.push(`容器列举在「${found.stopped}」处停止，可能有未列出的资源包（已列出 ${found.files.length} 个）`);
+  }
+  if (found.stats.depthSkipped) {
+    warnings.push(`有 ${found.stats.depthSkipped} 个目录超过深度上限 ${BUNDLE_SCAN_MAX_DEPTH} 层未扫描，`
+      + '更深的资源包不会被列出');
+  }
+
+  const entries = found.files.map((f) => toBundleEntry(cfg, f, provider));
+  // skipped 保持旧语义：**根层**「有文件但没探到容器魔数」的数量，不因递归而改变含义
+  const rootLevelContainers = found.files.filter((f) => !f.rel.includes('/')).length;
+  return { entries, warnings, skipped: countSkippedFiles(cfg.path, rootLevelContainers) };
 }
 
 /** 目录里「没有容器魔数、因此未列出」的文件数（只做计数，不解析文件头） */

@@ -138,6 +138,9 @@ const SUITES = [
   // Spine 资源包插件（UnityFS 容器 → .skel/.atlas/贴图 + entry.json）：
   //   与 live2d 插件共用 fileKinds:['bundle']，判型互斥错了会互相抢单，必须有回归
   { name: 'spine-bundle-plugin', runner: 'node-test', file: 'test/spine-bundle-plugin.test.mjs' },
+  // 容器条目列举（递归 / 深度与命中上限 / 多插件时 kind 置 null）：
+  //   它决定"资源包能不能出现在列表里"，且 kind 一旦标错，前端会走错渲染分支
+  { name: 'catalog-bundle', runner: 'node-test', file: 'test/catalog-bundle.test.mjs' },
   // 统一日志工厂（infra/log.js）的记录形状契约：纯 node、秒级，
   //   它是后续"适配层 → 分 3 批迁 stageStatus"的地基，形状一旦漂了后面全歪
   { name: 'log', runner: 'node-test', file: 'test/log.test.mjs' },
