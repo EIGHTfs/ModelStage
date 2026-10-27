@@ -39,53 +39,76 @@ function simulatedMissing() {
 }
 
 /**
- * 探测一个运行时命名空间的能力。
+ * 一次性取出运行时成员（顺序与原实现逐条一致，**不要重排**）。
+ * 为什么集中在一处调用而不是各段自己取：成员读取是"读事实"，
+ *   集中取能保证四段只做"判断"、不各自重取同一成员 —— 顺序一变，
+ *   `pickMember` 的调用序列就变了，等价验证会当场失败。
  * @param {object} spine 运行时命名空间
- * @param {string} version 版本号（仅记录）
- * @returns {object} 能力矩阵
  */
-export function detectCapabilities(spine, version) {
-  const missing = simulatedMissing();
-  const warns = [];
-  const say = (ok, key, reason) => {
-    if (!ok) warns.push(`${key}：${reason}`);
-    return ok;
+function collectMembers(spine) {
+  return {
+    Texture: pickMember(spine, 'Texture'),
+    GLTexture: pickMember(spine, 'GLTexture'),
+    TextureAtlas: pickMember(spine, 'TextureAtlas'),
+    SceneRenderer: pickMember(spine, 'SceneRenderer'),
+    SkeletonRenderer: pickMember(spine, 'SkeletonRenderer'),
+    OrthoCamera: pickMember(spine, 'OrthoCamera'),
+    PolygonBatcher: pickMember(spine, 'PolygonBatcher'),
+    SkeletonJson: pickMember(spine, 'SkeletonJson'),
+    SkeletonBinary: pickMember(spine, 'SkeletonBinary'),
+    AtlasAttachmentLoader: pickMember(spine, 'AtlasAttachmentLoader'),
+    Vector2: pickMember(spine, 'Vector2'),
+    Skin: pickMember(spine, 'Skin'),
+    // 调试绘制渲染器：3.x/4.x 都叫 SkeletonDebugRenderer（个别版本叫 DebugRenderer），没有就只能不画
+    SkeletonDebugRenderer: pickMember(spine, 'SkeletonDebugRenderer') || pickMember(spine, 'DebugRenderer'),
   };
+}
 
-  const Texture = pickMember(spine, 'Texture');
-  const GLTexture = pickMember(spine, 'GLTexture');
-  const TextureAtlas = pickMember(spine, 'TextureAtlas');
-  const SceneRenderer = pickMember(spine, 'SceneRenderer');
-  const SkeletonRenderer = pickMember(spine, 'SkeletonRenderer');
-  const OrthoCamera = pickMember(spine, 'OrthoCamera');
-  const PolygonBatcher = pickMember(spine, 'PolygonBatcher');
-  const SkeletonJson = pickMember(spine, 'SkeletonJson');
-  const SkeletonBinary = pickMember(spine, 'SkeletonBinary');
-  const AtlasAttachmentLoader = pickMember(spine, 'AtlasAttachmentLoader');
-  const Vector2 = pickMember(spine, 'Vector2');
-  const Skin = pickMember(spine, 'Skin');
-  // 调试绘制渲染器：3.x/4.x 都叫 SkeletonDebugRenderer（个别版本叫 DebugRenderer），没有就只能不画
-  const SkeletonDebugRenderer = pickMember(spine, 'SkeletonDebugRenderer') || pickMember(spine, 'DebugRenderer');
-
-  // 纹理：3.x 的 GLTexture 有 bind()/setFilters()；4.x 也有，但若换成 Texture 基类则没有
-  const textureHasBind = say(!missing.has('textureBind') && (hasProtoMethod(GLTexture, 'bind') || hasProtoMethod(Texture, 'bind')),
+/** 纹理组：3.x 的 GLTexture 有 bind()/setFilters()；4.x 也有，但若换成 Texture 基类则没有 */
+function probeTexture(m, missing, say) {
+  const hasBind = say(!missing.has('textureBind') && (hasProtoMethod(m.GLTexture, 'bind') || hasProtoMethod(m.Texture, 'bind')),
     'texture.bind', '纹理对象没有 bind()（批处理器需要它）');
-  const textureHasSetFilters = hasProtoMethod(GLTexture, 'setFilters') || hasProtoMethod(Texture, 'setFilters');
-  const textureHasDispose = hasProtoMethod(GLTexture, 'dispose') || hasProtoMethod(Texture, 'dispose');
+  const hasSetFilters = hasProtoMethod(m.GLTexture, 'setFilters') || hasProtoMethod(m.Texture, 'setFilters');
+  const hasDispose = hasProtoMethod(m.GLTexture, 'dispose') || hasProtoMethod(m.Texture, 'dispose');
+  return { hasBind, hasSetFilters, hasDispose, glTextureCtor: m.GLTexture, textureCtor: m.Texture };
+}
 
-  // 图集：4.x 的 TextureAtlas 只吃 (data)；3.x 吃 (data, resolver)
-  const atlasArity = arityOf(TextureAtlas);
-  const atlasAcceptsResolver = say(!missing.has('atlasResolver') && atlasArity >= 2,
-    'atlas.resolver', `TextureAtlas 构造只接受 ${atlasArity} 个参数，纹理需要构造后补挂`);
+/** 图集组：4.x 的 TextureAtlas 只吃 (data)；3.x 吃 (data, resolver) */
+function probeAtlas(m, missing, say) {
+  const arity = arityOf(m.TextureAtlas);
+  const acceptsResolver = say(!missing.has('atlasResolver') && arity >= 2,
+    'atlas.resolver', `TextureAtlas 构造只接受 ${arity} 个参数，纹理需要构造后补挂`);
+  return { ctor: m.TextureAtlas, acceptsResolver, arity };
+}
 
-  // 渲染器：3.x SceneRenderer(canvas, gl) 自带相机；4.x 可能只有 SkeletonRenderer(gl)
-  const sceneArity = arityOf(SceneRenderer);
-  const rendererKind = SceneRenderer ? 'scene' : (SkeletonRenderer ? 'skeleton' : 'none');
-  if (rendererKind === 'none') warns.push('renderer：没有 SceneRenderer / SkeletonRenderer，无法渲染');
-  const hasCameraOnScene = !!(SceneRenderer && SceneRenderer.prototype && 'camera' in SceneRenderer.prototype);
-  const orthoArity = arityOf(OrthoCamera);
+/** 渲染器组：3.x SceneRenderer(canvas, gl) 自带相机；4.x 可能只有 SkeletonRenderer(gl) */
+function probeRenderer(m, warns) {
+  const sceneArity = arityOf(m.SceneRenderer);
+  const kind = m.SceneRenderer ? 'scene' : (m.SkeletonRenderer ? 'skeleton' : 'none');
+  if (kind === 'none') warns.push('renderer：没有 SceneRenderer / SkeletonRenderer，无法渲染');
+  const hasCameraOnScene = !!(m.SceneRenderer && m.SceneRenderer.prototype && 'camera' in m.SceneRenderer.prototype);
+  return {
+    kind,
+    sceneCtor: m.SceneRenderer,
+    skeletonCtor: m.SkeletonRenderer,
+    sceneArity,
+    hasCameraOnScene,
+    orthoCtor: m.OrthoCamera,
+    orthoArity: arityOf(m.OrthoCamera),
+    batcherCtor: m.PolygonBatcher,
+    // 调试绘制（bones/meshes/... 八类）：没有构造器时该能力整体不可用，由调用方降级
+    debugCtor: m.SkeletonDebugRenderer,
+  };
+}
 
-  // 骨架能力
+/**
+ * 骨架组：四个构造器 + skeletonOps 的四项方法探测。
+ *
+ * 这里仍然**每次调用 pickMember(spine,'Skeleton')**（共 5 次），没有合并成一次：
+ *   合并能少读几次属性、行为也等价，但会改变"成员读取次数"这个可观测事实 ——
+ *   本轮是纯结构重构，不改调用次数（将来若要优化，得连等价脚本一起更新）。
+ */
+function probeSkeleton(spine, m, warns) {
   const skeletonOps = {
     setToSetupPose: !!(pickMember(spine, 'Skeleton') && hasProtoMethod(pickMember(spine, 'Skeleton'), 'setToSetupPose')),
     updateWorldTransform: hasProtoMethod(pickMember(spine, 'Skeleton'), 'updateWorldTransform'),
@@ -95,43 +118,67 @@ export function detectCapabilities(spine, version) {
   for (const [k, ok] of Object.entries(skeletonOps)) {
     if (!ok) warns.push(`skeletonOps.${k}：缺失（相关功能会降级）`);
   }
+  return {
+    skeleton: { jsonCtor: m.SkeletonJson, binaryCtor: m.SkeletonBinary, attachmentLoaderCtor: m.AtlasAttachmentLoader, vector2: m.Vector2 },
+    ops: skeletonOps,
+  };
+}
+
+/**
+ * 精简矩阵的构造（给 getRendererInfo 展示用）。由返回对象的 `matrix()` 传 this 进来调用，
+ *   抽出成独立函数只是为了让 detectCapabilities 本体保持"只做编排"。
+ * @param {object} caps detectCapabilities 的产出（必须有 texture/atlas/renderer/skeleton/skeletonOps）
+ */
+function matrixOf(caps) {
+  return {
+    textureBind: caps.texture.hasBind,
+    textureFilters: caps.texture.hasSetFilters,
+    atlasResolver: caps.atlas.acceptsResolver,
+    rendererKind: caps.renderer.kind,
+    sceneHasCamera: caps.renderer.hasCameraOnScene,
+    batcher: !!caps.renderer.batcherCtor,
+    skeletonJson: !!caps.skeleton.jsonCtor,
+    skeletonBinary: !!caps.skeleton.binaryCtor,
+    orthoCamera: !!caps.renderer.orthoCtor,
+    skeletonDebug: !!caps.renderer.debugCtor,
+    ops: { ...caps.skeletonOps },
+  };
+}
+
+/**
+ * 探测一个运行时命名空间的能力。
+ * @param {object} spine 运行时命名空间
+ * @param {string} version 版本号（仅记录）
+ * @returns {object} 能力矩阵
+ */
+export function detectCapabilities(spine, version) {
+  const missing = simulatedMissing();
+  const warns = [];
+  /** say：探测结果收集器 —— 不 ok 就记一条 warn，并把 ok 原样返回（供三元/&& 链式使用） */
+  const say = (ok, key, reason) => { if (!ok) warns.push(`${key}：${reason}`); return ok; };
+
+  const m = collectMembers(spine);
+  const texture = probeTexture(m, missing, say);
+  const atlas = probeAtlas(m, missing, say);
+  const renderer = probeRenderer(m, warns);
+  const sk = probeSkeleton(spine, m, warns);
 
   return {
     version, // 仅用于展示
-    texture: { hasBind: textureHasBind, hasSetFilters: textureHasSetFilters, hasDispose: textureHasDispose, glTextureCtor: GLTexture, textureCtor: Texture },
-    atlas: { ctor: TextureAtlas, acceptsResolver: atlasAcceptsResolver, arity: atlasArity },
-    renderer: {
-      kind: rendererKind,
-      sceneCtor: SceneRenderer,
-      skeletonCtor: SkeletonRenderer,
-      sceneArity,
-      hasCameraOnScene,
-      orthoCtor: OrthoCamera,
-      orthoArity,
-      batcherCtor: PolygonBatcher,
-      // 调试绘制（bones/meshes/... 八类）：没有构造器时该能力整体不可用，由调用方降级
-      debugCtor: SkeletonDebugRenderer,
-    },
-    skeleton: { jsonCtor: SkeletonJson, binaryCtor: SkeletonBinary, attachmentLoaderCtor: AtlasAttachmentLoader, vector2: Vector2 },
-    skinCtor: Skin,
-    skeletonOps,
+    texture,
+    atlas,
+    renderer,
+    skeleton: sk.skeleton,
+    skinCtor: m.Skin,
+    skeletonOps: sk.ops,
     warns,
-    /** 精简矩阵（给 getRendererInfo 展示用） */
-    matrix() {
-      return {
-        textureBind: this.texture.hasBind,
-        textureFilters: this.texture.hasSetFilters,
-        atlasResolver: this.atlas.acceptsResolver,
-        rendererKind: this.renderer.kind,
-        sceneHasCamera: this.renderer.hasCameraOnScene,
-        batcher: !!this.renderer.batcherCtor,
-        skeletonJson: !!this.skeleton.jsonCtor,
-        skeletonBinary: !!this.skeleton.binaryCtor,
-        orthoCamera: !!this.renderer.orthoCtor,
-        skeletonDebug: !!this.renderer.debugCtor,
-        ops: { ...this.skeletonOps },
-      };
-    },
+    /**
+     * 精简矩阵（给 getRendererInfo 展示用）。
+     * 这是**返回对象上的方法**，把 `this` 交给 matrixOf 构造 ——
+     *   不要改成箭头函数（箭头函数没有自己的 this，会读到模块作用域）；
+     *   也不要把 capabilities 深拷贝 / JSON 序列化后跨线程传（this 会失效，调用即抛错）。
+     */
+    matrix() { return matrixOf(this); },
   };
 }
 
