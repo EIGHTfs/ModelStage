@@ -47,6 +47,8 @@ function saveLevels(levels) {
 // el 的唯一实现在 infra/dom.js（本文件 31 处调用全靠这一个 import，
 //   删掉旧的私有实现后若漏了它，运行时就是 undefined）。
 import { el } from '../infra/dom.js';
+// 渲染调度（同帧合批）统一走公共内核，不再在本文件里维护第二套 rAF/timer
+import { createScheduler } from '../infra/schedule.js';
 
 /** 内联 SVG 图标（不依赖图标字体/外部库） */
 function icon(name) {
@@ -375,28 +377,32 @@ function createRenderer({ log, list, countEl, badgeEl, state }) {
    * 批量刷新：高频错误下每帧最多重绘一次。
    * 为什么不在 subscribe 里直接 append：一次网络风暴可能几十条同时到，
    *   逐条 append + 滚动会把主线程钉住（面板本来就不该拖慢页面）。
+   *
+   * 调度本身交给 infra/schedule.js（与名册共用同一套"同帧合并"内核）；
+   *   这里只保留面板专属的两件事：① entry === null 的清屏直刷语义 ② 取批后逐条 append 的内容逻辑。
+   * fallbackMs: 0 ⇒ 只靠 rAF，**与改动前的内联实现严格一致**（旧版本来就没有兜底定时器）。
+   *   给面板加兜底属于行为改进（会改变 flush 触发源），要单独评估，不混进这次等价重构。
    */
   let pending = [];
-  let scheduled = false;
+  const scheduler = createScheduler(() => {
+    const batch = pending;
+    pending = [];
+    if (!batch.length) return;
+    const stick = followLatest;   // 先测：append 之后 scrollHeight 变大，就判断不出用户原本在底部
+    const hasEmpty = !!list.querySelector('.dbg-empty');
+    if (hasEmpty) list.replaceChildren();
+    for (const record of batch) if (levelPass(record)) list.append(renderEntry(record, state));
+    updateCount(list.childElementCount);
+    if (stick) scrollToBottom();
+  }, { fallbackMs: 0 });
+
   function scheduleRender(entry) {
+    // null = 清屏后立即整表重绘：清空待刷批次，**不走调度**（不合并、不等下一帧）
+    //   这里刻意不调 scheduler.cancel()：旧实现是让已排队的 rAF 空跑一次、因 batch 为空提前返回；
+    //   加上 cancel 虽然少一次空跑，但 flush/rAF 回调次数会变 ⇒ 属可观测差异，本轮不做。
     if (entry === null) { pending = []; renderAll({ forceBottom: true }); return; }
     pending.push(entry);
-    if (scheduled) return;
-    scheduled = true;
-    const run = () => {
-      scheduled = false;
-      const batch = pending;
-      pending = [];
-      if (!batch.length) return;
-      const stick = followLatest;   // 先测：append 之后 scrollHeight 变大，就判断不出用户原本在底部
-      const hasEmpty = !!list.querySelector('.dbg-empty');
-      if (hasEmpty) list.replaceChildren();
-      for (const record of batch) if (levelPass(record)) list.append(renderEntry(record, state));
-      updateCount(list.childElementCount);
-      if (stick) scrollToBottom();
-    };
-    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
-    else setTimeout(run, 16);
+    scheduler.request();
   }
 
   return { renderAll, appendEntry: scheduleRender, scrollToBottom, isAtBottom, list };
