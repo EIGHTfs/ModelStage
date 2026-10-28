@@ -12,6 +12,7 @@
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import os from 'node:os';
 import path from 'node:path';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -83,6 +84,15 @@ if (args.port !== null) {
 if (args.dataRoot) {
   // 转成绝对路径：serve.mjs 会把它当数据根拼日志与缓存路径，相对路径会随 cwd 漂移
   process.env.MODELSTAGE_DATA_ROOT = path.resolve(args.dataRoot);
+} else if (!process.env.MODELSTAGE_DATA_ROOT) {
+  // 没给 --data-root、也没有环境变量 ⇒ **装成包运行时落用户目录，不是包目录**。
+  //
+  // 为什么必须在这里注入、而不是改 serve.mjs 的默认值：
+  //   serve.mjs 的缺省是"数据根 = 项目根"，从 git 仓库跑（web.sh）时那正是对的 ——
+  //   数据就在仓库里，行为一字不能变。但装成 npm 包后"项目根"= node_modules/modelstage/，
+  //   日志、解包缓存、runtimes 全落进包目录：升级即丢，且包目录可能只读。
+  //   ⇒ 只在 bin 层（包运行专用的入口）注入，仓库运行路径完全不受影响。
+  process.env.MODELSTAGE_DATA_ROOT = path.join(os.homedir(), '.modelstage');
 }
 
 // 交给真正的服务入口：它是模块顶层直接 listen 的，import 即启动，无需再 await 返回值

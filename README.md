@@ -3,7 +3,7 @@
 **多游戏通用的 Spine / Live2D 动画预览器。** 把不同游戏导出的骨骼动画与 Live2D 模型放在同一个界面里浏览：
 左栏按「游戏 → 角色 → 变体」组织，右侧面板调渲染参数，底栏控制播放。
 
-![ModelStage 界面](docs/assets/ui-main.png)
+![ModelStage 界面](https://raw.githubusercontent.com/EIGHTfs/ModelStage/main/docs/assets/ui-main.png)
 
 支持两类内容、两种资源形态：
 
@@ -33,7 +33,7 @@
 游戏客户端的**单个加密/打包文件**不用手工解包也能看：登记资源根后，容器条目会被识别成
 「资源包」，点开时由插件解出骨架 + 图集 + 贴图，再交给渲染层。
 
-能力细节与当前限制见 **[docs/架构/能力层.md](docs/架构/能力层.md)**。
+能力细节与当前限制见 **[docs/架构/能力层.md](https://github.com/EIGHTfs/ModelStage/blob/main/docs/架构/能力层.md)**。
 
 ---
 
@@ -93,7 +93,7 @@ npx modelstage --port 8804 --data-root ~/modelstage-data # 发布到 registry �
 
 Live2D 的版本差异（`Cubism4ModelSettings` ↔ `CubismModelSettings` 之类的命名变化、PIXI 6/8 的构造差异）
 统一收在 `src/web/live2d/runtime-adapter.js` 一处，业务代码不直接触碰 PIXI/Live2D 的 API 形状 ——
-新增一个版本只需拷一个子目录 + 在兼容表里加一行。详见 **[docs/设计/Live2D运行时统一入口.md](docs/设计/Live2D运行时统一入口.md)**。
+新增一个版本只需拷一个子目录 + 在兼容表里加一行。详见 **[docs/设计/Live2D运行时统一入口.md](https://github.com/EIGHTfs/ModelStage/blob/main/docs/设计/Live2D运行时统一入口.md)**。
 
 ---
 
@@ -102,7 +102,7 @@ Live2D 的版本差异（`Cubism4ModelSettings` ↔ `CubismModelSettings` 之类
 资源根指「本机某个游戏资源目录」。在 `config/resources.json` 里登记，界面即可看到。
 每个根可配 `profile`（游戏差异适配，如动作分组与循环规则）。
 
-新增资源根的完整步骤见 **[docs/参考/接口清单.md](docs/参考/接口清单.md)** §三。
+新增资源根的完整步骤见 **[docs/参考/接口清单.md](https://github.com/EIGHTfs/ModelStage/blob/main/docs/参考/接口清单.md)** §三。
 
 **仓库内不含任何游戏提取资源** —— 模型文件均不入库，需自备。
 
@@ -123,22 +123,22 @@ docs/         文档
 web.sh        启停脚本
 ```
 
-模块划分与职责边界见 **[docs/架构/总览.md](docs/架构/总览.md)**。
+模块划分与职责边界见 **[docs/架构/总览.md](https://github.com/EIGHTfs/ModelStage/blob/main/docs/架构/总览.md)**。
 
 ---
 
 ## 文档
 
-完整索引：**[docs/README.md](docs/README.md)**
+完整索引：**[docs/README.md](https://github.com/EIGHTfs/ModelStage/blob/main/docs/README.md)**
 
 | 想了解 | 看这里 |
 |---|---|
-| 能做什么、有什么限制 | [docs/架构/能力层.md](docs/架构/能力层.md) |
-| 架构分层与模块职责 | [docs/架构/总览.md](docs/架构/总览.md) |
-| 改代码不能碰的红线 | [docs/契约/](docs/契约/README.md)（13 条不变量 + 各层契约） |
-| 相机、界面、状态的设计 | [docs/设计/](docs/设计/) |
-| 渲染接入与 API 参考 | [docs/参考/](docs/参考/) |
-| 还没解决的问题 | [docs/架构/能力层.md](docs/架构/能力层.md) §四「已知限制」 |
+| 能做什么、有什么限制 | [docs/架构/能力层.md](https://github.com/EIGHTfs/ModelStage/blob/main/docs/架构/能力层.md) |
+| 架构分层与模块职责 | [docs/架构/总览.md](https://github.com/EIGHTfs/ModelStage/blob/main/docs/架构/总览.md) |
+| 改代码不能碰的红线 | [docs/契约/](https://github.com/EIGHTfs/ModelStage/blob/main/docs/契约/README.md)（13 条不变量 + 各层契约） |
+| 相机、界面、状态的设计 | [docs/设计/](https://github.com/EIGHTfs/ModelStage/blob/main/docs/设计/) |
+| 渲染接入与 API 参考 | [docs/参考/](https://github.com/EIGHTfs/ModelStage/blob/main/docs/参考/) |
+| 还没解决的问题 | [docs/架构/能力层.md](https://github.com/EIGHTfs/ModelStage/blob/main/docs/架构/能力层.md) §四「已知限制」 |
 
 ---
 
@@ -152,7 +152,7 @@ node tool/export-bundle.mjs --root=<id> --path=<资源>   # 资源包 → 标准
 node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果（排查用）
 ```
 
-导出与工具细节见 **[docs/参考/接口清单.md](docs/参考/接口清单.md)** §五。
+导出与工具细节见 **[docs/参考/接口清单.md](https://github.com/EIGHTfs/ModelStage/blob/main/docs/参考/接口清单.md)** §五。
 
 ---
 

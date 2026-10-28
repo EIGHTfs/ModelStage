@@ -9,22 +9,33 @@
   "engines": {
     "node": ">=20"
   },
+  "scripts": {
+    "start": "node bin/modelstage.mjs",
+    "test": "node --test test/*.test.mjs",
+    "check:pack": "node tool/check-pack-boundary.mjs",
+    "prepublishOnly": "npm run check:pack && npm run test"
+  },
   "files": [
     "bin/",
     "src/server/",
     "src/shared/",
     "src/web/",
-    "plugins/",
-    "tool/",
+    "plugins/unity-live2d-bundle/",
+    "plugins/unity-spine-bundle/",
+    "tool/parse-jsonc.mjs",
+    "tool/resolve-live2d-runtimes.mjs",
+    "tool/lib/",
+    "tool/spine-motion-rules.json",
     "config/plugins.json",
     "config/models/",
     "config/names/",
     "config/resources.example.json",
     "config/diag-upload.example.json",
-    "docs/",
-    "!docs/.trash/",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "!**/.trash/",
+    "!**/.tmp-*",
+    "!**/*.bak"
   ],
   "license": "MIT",
   "private": true,
