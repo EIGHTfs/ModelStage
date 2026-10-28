@@ -112,16 +112,31 @@ export function capacity(sourceMb, memory) {
  */
 export function estimatePeakWithBasis(sourceMb, memory) {
   const mem = memory || {};
-  // ① 实测回填优先：同一容器解过包了，用真实峰值 + 5% 环境波动余量（比任何声明都准）
-  if (mem.measuredPeakBytes > 0) {
-    return { peakEstMb: Math.ceil((mem.measuredPeakBytes / (1024 * 1024)) * 1.05), basis: 'measured' };
+  const toMb = (bytes) => Math.ceil(bytes / (1024 * 1024));
+
+  // ① 插件声明值（peakFromDecompressed 表，按 max-of-runs 标定）—— 主值
+  //    没有声明才退回"源包大小分段粗估"（核心不维护容器结构模型，那是插件的责任）
+  const declaredMb = mem.peakBytes > 0 ? toMb(mem.peakBytes) : estimatePeakMb(sourceMb);
+  const declaredBasis = mem.peakBytes > 0 ? 'plugin-peak' : 'legacy-source';
+
+  // ② 实测回填值 —— **只作下限兜底，不能压声明值**
+  //
+  //    measuredPeakBytes 的成因（src/server/unpack/plugin-store.mjs 的 recordMeasuredPeak）：
+  //      峰值 = before.rss + max(0, after.peak - before.peak)，而 VmHWM **只增不减**
+  //      ⇒ 这个数反映的是「本次解包把峰值顶高了多少 + 当时进程已占多少」，
+  //        **不是这一包自身的成本**；同进程连续解包时，后续包的 delta 会退化为 0。
+  //    实测证据：同一进程先后解两个 21MB 包，measured 分别是 225MB 与 1195MB；
+  //      而干净进程测同一包的峰值是 654MB ⇒ measured 会**远低于**真实成本。
+  //
+  //    ⇒ 所以方向必须不对称：measured **高于**声明时信它（说明这包确实更贵），
+  //      measured **低于**声明时忽略（它只是进程状态，不能拿来把声明压低）。
+  //      低估 = 放行 → 真冲高 → OOM/被守护中止；高估只是这次被拒或排队。取大。
+  const measuredMb = mem.measuredPeakBytes > 0 ? Math.ceil((mem.measuredPeakBytes / (1024 * 1024)) * 1.05) : 0;
+
+  if (measuredMb > declaredMb) {
+    return { peakEstMb: measuredMb, basis: 'measured', declaredMb, measuredMb };
   }
-  // ② 插件声明峰值：**直接采信，不叠加安全垫**（准不准是插件的责任，见 docs/契约/插件.md §2.2）
-  if (mem.peakBytes > 0) {
-    return { peakEstMb: Math.ceil(mem.peakBytes / (1024 * 1024)), basis: 'plugin-peak' };
-  }
-  // ③ 回落：按源包大小分段粗估（核心不维护任何"容器结构模型"——那是各插件自己的事）
-  return { peakEstMb: estimatePeakMb(sourceMb), basis: 'legacy-source' };
+  return { peakEstMb: declaredMb, basis: declaredBasis, declaredMb, measuredMb };
 }
 
 /**

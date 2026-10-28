@@ -92,6 +92,49 @@ function dirBytes(dir) {
  * @param {{rootDir: string, pluginDir: string, enqueue?: Function, limits?: object}} opts
  *   enqueue：外部串行队列（serve.mjs 传 backgrounds 的 enqueue，复用同一把锁）；不传则内部自建
  */
+/**
+ * 安全地问一次「插件声明的峰值」——**任何异常都必须被吞掉**。
+ *
+ * 为什么必须有这个兜底：这一步跑在**准入热路径**上（每次缓存未带声明时都会走到）。
+ *   插件可能被卸载、被开关关掉、版本不匹配、blocksSummary 在中途抛错……
+ *   准入判断挂掉比"估得不准"严重得多：前者是**整个加载流程直接失败**，后者只是这一次被拒/放行。
+ *   ⇒ 问不到就返回 null，让调用方退回缓存里的值（再退就到 legacy 的源包大小粗估）。
+ *
+ * 为什么是"现场问"而不是"把 peakBytes 持久化进 probe.json"：
+ *   插件峰值表会随版本更新（标定口径、样本都会变），持久化的 peakBytes 会悄悄变陈旧；
+ *   而一旦陈旧又没有任何机制去失效它 —— 那就成了"同一事实的第二处表达"，正是项目里反复踩的漂移坑。
+ *   现场问的代价是只读块表（P90 < 1ms，实测 P50 0.13ms），完全可接受，
+ *   换来的是"声明值永远等于插件当前表"。⇒ 不要"顺手优化成缓存下来"，那会把安全修变回不安全。
+ *
+ * @param {object} req {rootId, rel, absPath}
+ * @param {Function} [askFn] 注入点（默认 estimateMemoryOf；单测用它注入会抛错的实现）
+ * @returns {object|null} 插件声明；问不到/抛错都返回 null
+ */
+export function askDeclaredSafely(req, askFn = estimateMemoryOf) {
+  try {
+    const declared = askFn(req);
+    return declared && declared.decompressedBytes > 0 ? declared : null;
+  } catch {
+    return null;   // 插件不可用/卸载/解析抛错 ⇒ 兜底，绝不向上抛
+  }
+}
+
+/**
+ * 把"缓存的实测值"与"现场问到的声明值"合成一份准入用的内存声明。
+ *
+ * 合并方向：cached 在前、est 在后 —— 解压量以本次探测为准，
+ *   而 cached 里的 measuredPeakBytes / samples 等字段必须保留（它们是"实测回填"的累积状态）。
+ * 问不到声明（est 为空）⇒ **原样返回 cached**，让准入走 legacy 的源包大小粗估。
+ *
+ * @param {object|null} cached readProbe 的结果
+ * @param {object|null} est askDeclaredSafely 的结果
+ * @returns {object|null}
+ */
+export function mergeDeclared(cached, est) {
+  if (!est) return cached;
+  return { ...(cached || {}), ...est, probeAt: Date.now() };
+}
+
 export function createUnpackStore(opts) {
   // 配置错必须在入口崩：否则 undefined 会一路变成下游的 "path argument must be a string"，
   //   堆栈指不到真正的错处（本项目已多次踩过"错在 A、报在 Z"）。
@@ -186,21 +229,34 @@ export function createUnpackStore(opts) {
    */
   function memoryDeclaration(fp, req) {
     const cached = readProbe(fp);
-    if (cached && (cached.measuredPeakBytes > 0 || cached.decompressedBytes > 0)) return cached;
-    // 缓存没有 ⇒ 现场问插件（只读块表，P90 < 1ms）。**这里不写盘**：
-    //   目标目录 <fp>/ 此刻还不存在，提前 mkdir 会让解包产物"临时目录 rename 到 <fp>"失败（ENOTEMPTY）。
-    //   缓存统一在解包成功后写（recordMeasuredPeak）。
-    const est = estimateMemoryOf(req);
-    if (!est) return cached;
-    // 原样透传插件声明（**包括 peakBytes**：核心要直接采信它，不能只挑解压量把峰值丢掉）
-    return { ...est, probeAt: Date.now() };
+    // 缓存里只有解压量、实测峰值、采样次数，**不含插件声明的 peakBytes**（见 writeProbe 的字段）。
+    //   所以缓存命中时不能直接返回：那样准入拿到的"声明值"会退化成"源包大小粗估"
+    //   （实测：21MB 的 LZMA 包只估到约 200MB，而插件表给 732MB），
+    //   再叠加 measured 会被进程状态压低（同一进程连解两个 21MB 包分别报 225MB / 1195MB），
+    //   两个低估叠加 ⇒ 准入形同不存在。这里补问一次声明（只读块表，P90 < 1ms）。
+    const hasDecl = cached && cached.peakBytes > 0;
+    if (hasDecl) return cached;
+    return mergeDeclared(cached, askDeclaredSafely(req));
   }
 
   /**
    * 解包完成后回填**实测峰值**（契约 §2.2 第①段的数据来源）。
    *
-   * 取"起始 RSS + 本次 VmHWM 增量"：本次创了新高就等于本次峰值；
-   *   没创新高说明历史上解过更大的包，此时保留旧值（上包络语义，宁高不低）。
+   * 计算式：`峰值 = before.rss + max(0, after.peak - before.peak)`（rss=VmRSS，peak=VmHWM 内核峰值）。
+   *   本次创了新高 = "起始占用 + 本次顶高的量"；没创新高说明历史上解过更大的包，
+   *   此时取 max(历史值, 本次) —— 上包络语义，宁高不低。
+   *
+   * ⚠️ 这个数**不是这一包自身的成本**，别当包级峰值用：
+   *   VmHWM **只增不减**，所以它实际是「本次把峰值顶高了多少 **+ 当时进程已占多少**」。
+   *   同进程连续解包时，后续包的 `after.peak - before.peak` 会退化为 0 ⇒ measured 约等于 `before.rss`
+   *   （而那时 RSS 已被上一个包撑起来）。
+   *   实测：同一进程先后解两个 21MB 包，measured 分别 **225MB** 与 **1195MB**；
+   *   干净进程测同类包是 **654MB**。
+   *
+   *   ⇒ 它只能当**下限兜底**：高于插件声明说明这包真更贵（信它）；低于声明只是进程状态，不能拿它压声明。
+   *     取舍实现在 capacity.mjs 的 estimatePeakWithBasis。
+   *   ⇒ 想要真正的包级峰值得换口径（子进程解包 / 解包前重置峰值基线），那会动解包主链路，
+   *     代价与收益不匹配，故保持现状。
    * @param {string} fp
    * @param {{rss:number, peak:number}} before
    * @param {{rss:number, peak:number}} after
