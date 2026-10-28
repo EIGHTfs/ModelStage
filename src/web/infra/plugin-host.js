@@ -334,6 +334,115 @@ export function createPluginHost(opts = {}) {
     }
   }
 
+  /**
+   * 解包 Worker 的单例管理。
+   *
+   * 为什么需要：LZMA 解压实测 300~620ms/MB（解压后），一个 8.28MB 的包要 3.9 秒纯同步 CPU，
+   *   留在主线程就是 4 秒白屏。放进 worker 后主线程照常渲染。
+   * 为什么按 provider 建：不同插件的 lib 清单不同（`files[]` 是加载顺序的权威），
+   *   一个 worker 只装一个 provider 的那份 lib。
+   */
+  const workerPool = new Map();   // providerId → { worker, ready, seq, pending }
+
+  /** 从 `discovered` 找该 provider 的 files[]（按 id 动态找，不硬编码插件名） */
+  function filesOfProvider(providerId) {
+    const pl = discovered.find((p) => p && p.id === providerId);
+    return pl && Array.isArray(pl.files) ? pl.files : null;
+  }
+
+  /** worker 的进度事件 → 状态行 + 调试日志（4 秒里不能一点反馈都没有） */
+  function onWorkerProgress(m) {
+    const d = m.detail || {};
+    if (m.phase === 'blocks') {
+      const est = d.estimateMs ? `，预计约 ${(d.estimateMs / 1000).toFixed(1)} 秒` : '';
+      say.info(`后台解包：${d.algo} / ${d.blocks} 块 / 解压后 ${d.decompressedMB}MB${est}（主线程不阻塞）`);
+      emit('unpack.worker', { phase: 'blocks', ...d });
+    } else if (m.phase === 'unpacking') {
+      emit('unpack.worker', { phase: 'unpacking' });
+    }
+  }
+
+  /**
+   * 取（或建）某个 provider 的 worker；建不起来返回 null（调用方回落同步解包）。
+   * @param {string} providerId
+   * @returns {Promise<object|null>}
+   */
+  function ensureUnpackWorker(providerId) {
+    if (workerPool.has(providerId)) return workerPool.get(providerId).ready;
+    const files = filesOfProvider(providerId);
+    const entry = { worker: null, ready: null, seq: 0, pending: new Map() };
+    workerPool.set(providerId, entry);
+    entry.ready = (async () => {
+      if (typeof Worker !== 'function' || !files || !files.length) return null;
+      let worker;
+      // 静态托管的映射是 src/web/ → 站点根（实测：/app/model-actions.js 可用），
+      //   所以 src/web/plugin/unpack-worker.js 的 URL 就是 /plugin/unpack-worker.js
+      try { worker = new Worker(new URL('/plugin/unpack-worker.js', import.meta.url)); } catch { return null; }
+      entry.worker = worker;
+      const ok = await new Promise((resolve) => {
+        const timer = setTimeout(() => resolve(false), 8000);   // 载 lib 超时 ⇒ 判不可用
+        worker.addEventListener('message', (ev) => {
+          const m = ev.data || {};
+          if (m.t === 'ready') { clearTimeout(timer); resolve(!!m.hasProvider); }
+          else if (m.t === 'progress') onWorkerProgress(m);
+          else if (m.t === 'done' || m.t === 'fail') {
+            const p = entry.pending.get(m.id);
+            if (p) { entry.pending.delete(m.id); p(m); }
+          }
+        });
+        worker.addEventListener('error', () => { clearTimeout(timer); resolve(false); });
+        // files 元素已带插件目录（unity-live2d-bundle/lib/xxx.js），故 base 到 /plugins/
+        worker.postMessage({ t: 'init', base: new URL('/plugins/', import.meta.url).href, files });
+      });
+      if (!ok) { try { worker.terminate(); } catch { /* 忽略 */ } entry.worker = null; return null; }
+      return entry;
+    })();
+    return entry.ready;
+  }
+
+  /**
+   * 用 worker 解包。失败**不抛**，返回 {ok:false} 让调用方回落同步路径（降级不静默，由调用方报）。
+   * @returns {Promise<{ok:boolean, res?:object, src?:string, error?:string}>}
+   */
+  async function resolveViaWorker(prov, file, bytes) {
+    const entry = await ensureUnpackWorker(prov.id);
+    if (!entry) return { ok: false, error: 'worker 不可用（CSP / 老浏览器 / 插件 lib 加载失败）' };
+    const id = (entry.seq += 1);
+    // transferable：8MB 的包做结构化拷贝会再复制一份，白吃内存与时间
+    const alone = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength;
+    const result = await new Promise((resolve) => {
+      const timer = setTimeout(() => { entry.pending.delete(id); resolve({ t: 'fail', message: 'worker 超时（60s）' }); }, 60000);
+      entry.pending.set(id, (m) => { clearTimeout(timer); resolve(m); });
+      const msg = { t: 'unpack', id, file: { rootId: file.rootId, rel: file.rel, name: file.name }, bytes };
+      entry.worker.postMessage(msg, alone ? [bytes.buffer] : []);
+    });
+    if (result.t !== 'done' || !result.res) {
+      return { ok: false, error: `${result.code || 'worker-fail'}: ${result.message || '未知'}` };
+    }
+    // 产物从「[[path, Uint8Array, type]]」还原成 Map<path, **Blob**>：
+    //   vfs.register 只接受 Blob 或字符串（实测传 Uint8Array 直接报"内容必须是 Blob 或字符串"），
+    //   所以必须重建 Blob，并把 worker 带过来的 MIME type 一并还原
+    const files = new Map((result.res.files || []).map(([p, u8, type]) => [
+      p, new Blob([u8], { type: type || 'application/octet-stream' }),
+    ]));
+    return {
+      ok: true,
+      src: 'local-worker',
+      workerMs: result.ms,
+      res: { prefix: result.res.prefix, entry: result.res.entry, files },
+    };
+  }
+
+  /** 读包头判压缩算法：只有 LZMA（flags 低 6 位 == 1）才值得进 worker */
+  function isLzmaContainer(bytes) {
+    try {
+      const ufs = window.__ULB__ && window.__ULB__.unityfs;
+      if (!ufs || typeof ufs.readHeader !== 'function') return false;
+      const head = ufs.readHeader(bytes);
+      return Array.isArray(head.blocks) && head.blocks.some((b) => (b.flags & 0x3f) === 1);
+    } catch { return false; }
+  }
+
   /** 找提供者并 resolve（含返回值契约校验） */
   async function resolveViaProvider(file, bytes) {
     const provider = findProvider({ ...file, bytes });
@@ -625,6 +734,21 @@ const MIME_BY_EXT = {
       //   让帧代价约 16ms，换来"用户知道在解压、不是卡死"。非 LZMA 包几乎不受影响（多一帧）。
       say.info(`本地解包中：${file.rel}（压缩 ${(read.bytes.length / 1048576).toFixed(2)}MB，大包可能要数秒）`);
       emit('unpack.local-start', { rootId: file.rootId, rel: file.rel, bytes: read.bytes.length });
+      // LZMA 包走 worker：实测 300~620ms/MB（解压后），8MB 的包 3.9 秒纯同步 CPU，
+      //   留在主线程就是白屏。LZ4/none 只有 ~0.2s / ~0ms，进 worker 反而多一次往返，仍走同步。
+      const prov = findProvider({ ...file, bytes: read.bytes });
+      if (prov && isLzmaContainer(read.bytes)) {
+        const w = await resolveViaWorker(prov, file, read.bytes);
+        if (w.ok) {
+          if (mon.checkNow()) throw Object.assign(new Error(mon.reason()), { reason: 'memory-guard' });
+          return { ...w.res, provider: prov.id, src: 'local-worker' };
+        }
+        // 降级**不静默**：明确告诉用户"后台解包用不了，接下来会卡数秒"
+        say.warn(`后台解包不可用（${w.error}）—— 回落主线程解包，期间界面会卡住数秒`);
+        emit('unpack.worker-fallback', { rootId: file.rootId, rel: file.rel, error: w.error });
+      }
+      // 同步解压前让出一帧：DOM 改了但主线程随即冻住，浏览器不会给你渲染机会。
+      //   代价约 16ms，换来"用户知道在解压、不是卡死"。
       await new Promise((resolve) => {
         const next = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (cb) => setTimeout(cb, 16);
         next(() => resolve());
@@ -682,7 +806,8 @@ const MIME_BY_EXT = {
     //   回落前端解包 = 服务端明确不能解，才由前端解
     const source = won.src === 'server-hit' ? '解包命中缓存'
       : won.src === 'server-unpack' ? '服务端解包'
-        : '回落前端解包';
+        : won.src === 'local-worker' ? '后台解包（Worker，主线程不阻塞）'
+          : '回落前端解包';
     const detail = { rootId: file.rootId, rel: file.rel, source, files: filesCount(won.files), ms: Math.round(performance.now() - tMat), ...(serverSaidNo ? { miss: serverSaidNo } : {}) };
     say.info(`${source}：${file.rootId}/${file.rel}（${detail.files} 个文件，${detail.ms}ms）`);
     emit('unpack.source', detail);
