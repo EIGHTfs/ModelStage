@@ -11,6 +11,8 @@
 // 为什么这么分：新增渲染面（3D）时只加一个 register()，不必再改画布/尺寸/可见性逻辑。
 
 import { createSwitcher } from './surface-switch.js';
+// 面元数据表：kind/id → 面属性（画布、覆盖层、stageMode）的唯一真相
+import { byIdOrKind, byKind } from './surfaces.js';
 import { buildDocument } from '../infra/document.js';
 
 /** 覆盖层容器 id（Live2D 面用） */
@@ -249,16 +251,21 @@ export function createStageSurface({ root, log } = {}) {
   // ---------------------------------------------------------------- 切面（唯一写入点）
   /**
    * 写 data-stage-mode（**本文件是唯一写入点**）。
-   * @param {'spine'|'live2d'|'loading'} mode
+   * @param {'spine'|'live2d'|'loading'} mode 渲染面的 id/kind，或过渡值 'loading'
    */
   function setMode(mode) {
     const el = rootEl();
-    const next = mode === 'live2d' ? 'live2d' : (mode === 'loading' ? 'loading' : 'spine');
+    // 查表得面属性：'loading' 是过渡遮罩（不属于任何面），其余一律要求命中表项。
+    //   原先 `mode === 'live2d' ? 'live2d' : 'spine'` 会把未知面**静默写成 spine** ——
+    //   于是 CSS 走 2D 布局、覆盖层显隐也按 spine 判，加新面时整个舞台错乱且不报错。
+    const meta = mode === 'loading' ? null : byIdOrKind(mode);
+    const next = mode === 'loading' ? 'loading' : (meta ? meta.stageMode : null);
+    if (!next) throw new Error(`setMode 收到未知渲染面「${mode || '?'}」：未在 render/surfaces.js 注册`);
     if (el) el.dataset.stageMode = next;
-    // 覆盖层只在 live2d 面显示；其它面一律隐藏（避免透明画布压在上面）
+    // 覆盖层显隐由表字段 overlayVisible 决定（只有声明用覆盖层的面才可见）
     const ov = document.getElementById(OVERLAY_ID);
     // 显隐用类切换（样式在 style.css），避免 JS 写 display
-    if (ov) ov.classList.toggle('is-visible', next === 'live2d');
+    if (ov) ov.classList.toggle('is-visible', !!(meta && meta.overlayVisible));
     return next;
   }
 
@@ -285,12 +292,27 @@ export function createStageSurface({ root, log } = {}) {
   // ---------------------------------------------------------------- 注册与句柄
   /**
    * 注册一个渲染器。
-   * @param {{id: string, capabilities: object, mount: Function, dispose?: Function, isActive?: Function, camera?: object, render?: Function}} renderer
+   *
+   * 这里做**启动期断言**：渲染器必须声明 kind，且该 kind 必须在面元数据表里、id 与表项一致。
+   * 目的：让"注册了渲染器却忘了加表项"在启动时就炸，而不是等用户点开那个面才现形
+   *   （那种错表现为静默误判，最难排）。也顺带挡住 register('spine-v2') 这类 id 漂移 ——
+   *   表的 id 是 setMode/handle/卸载模式的推导依据，漂了就会查不到。
+   * @param {{id: string, kind: string, capabilities: object, mount: Function, dispose?: Function, isActive?: Function, camera?: object, render?: Function}} renderer
    */
   function register(renderer) {
     if (!renderer || !renderer.id) throw new Error('stageSurface.register: 渲染器必须有 id');
+    if (!renderer.kind) {
+      throw new Error(`stageSurface.register: 渲染器「${renderer.id}」必须声明 kind（用于面元数据表校验）`);
+    }
+    const meta = byKind(renderer.kind);
+    if (!meta) {
+      throw new Error(`stageSurface.register: 渲染面「${renderer.kind}」未在 render/surfaces.js 注册`);
+    }
+    if (meta.id !== renderer.id) {
+      throw new Error(`stageSurface.register: 渲染器 id「${renderer.id}」与表项 id「${meta.id}」不一致（kind=${renderer.kind}）`);
+    }
     renderers.set(renderer.id, renderer);
-    note(`注册渲染器：${renderer.id}`);
+    note(`注册渲染器：${renderer.id}（kind=${renderer.kind}）`);
     return renderer;
   }
 
@@ -299,12 +321,17 @@ export function createStageSurface({ root, log } = {}) {
    * @param {string} rendererId
    */
   function handle(rendererId) {
-    const isLive2D = rendererId === 'live2d';
+    // 用哪个画布由表字段 overlay 决定：'canvas' ⇒ 该面独占覆盖层 canvas；null ⇒ 用舞台画布。
+    //   原先 `const isLive2D = rendererId === 'live2d'` 让未知面拿到舞台画布 + overlay=null，
+    //   等于静默降级成 spine 的形态（新面会在错误的画布上画）。
+    const meta = byIdOrKind(rendererId);
+    if (!meta) throw new Error(`surface.handle 收到未知渲染面「${rendererId || '?'}」：未在 render/surfaces.js 注册`);
+    const useOverlay = meta.overlay === 'canvas';
     return {
-      /** 该渲染面独占的 canvas（Spine = 舞台画布；Live2D = 覆盖层 canvas） */
-      canvas: isLive2D ? overlayCanvas() : spineCanvas(),
-      /** 覆盖层容器（Live2D 用；Spine 面为 null） */
-      overlay: isLive2D ? ensureOverlay() : null,
+      /** 该渲染面独占的 canvas（表里 overlay=null 的面用舞台画布，overlay='canvas' 的用覆盖层） */
+      canvas: useOverlay ? overlayCanvas() : spineCanvas(),
+      /** 覆盖层容器（声明用覆盖层的面才有；其余为 null） */
+      overlay: useOverlay ? ensureOverlay() : null,
       /** 逻辑尺寸（CSS 像素） */
       get size() { return { ...st.size }; },
       /** 设备像素比 */

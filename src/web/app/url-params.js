@@ -16,6 +16,8 @@
 import { getJson } from '../infra/api.js';
 import { selectModel } from './model-actions.js';
 import { setForcedRuntime } from '../spine/canvas-runtime.js';
+// 深链准入与运行时类型都查面元数据表（不再写死 spine/live2d 字面量）
+import { byKind, knownKinds } from '../render/surfaces.js';
 
 /**
  * 取全量 catalog 条目（跨所有资源根）。
@@ -98,10 +100,29 @@ export async function applyUrlParams() {
   }
 
   const rt = parseRuntime(runtimeArg);
+  // 深链准入：只有声明 deepLink 的面才允许通过 ?model= 直接指定。
+  //   hit.kind 为空是**正常情况**（容器条目解包前不知道内容类型），交给后面判，不在这里报错。
+  const hitMeta = byKind(hit.kind);
+  if (hitMeta && hitMeta.deepLink === false) {
+    report(`URL 参数 model= 指向的条目类型（${hitMeta.label}）不支持深链直接装载；请在页面里手动选择`);
+    return { model: modelArg };
+  }
+  if (hit.kind && !hitMeta) {
+    report(`URL 参数 model= 指向的条目类型「${hit.kind}」不是受支持的渲染面`
+      + `（已知：${knownKinds().join(' / ')}）`);
+    return { model: modelArg };
+  }
+  // 运行时类型对应的面查元数据表（不再写死 'live2d' / 'spine' 两个字面量）。
+  //   未知 kind 显式拒绝：以前会一路静默什么也不做，排查时只看到"参数没效果"。
+  const rtMeta = byKind(rt.kind);
+  if (rt.kind && !rtMeta) {
+    report(`URL 参数 runtime= 的类型「${rt.kind}」不是受支持的渲染面（已知：${knownKinds().join(' / ')}）`);
+    return { model: modelArg, runtime: runtimeArg };
+  }
 
   // Live2D 的运行时由服务端探测决定（/live2d-lib/* 的映射是进程级），按请求切换会变成有状态
   //   ⇒ 明确拒绝而不是静默忽略（忽略会让排查得出"换了没区别"的错误结论）
-  if (rt.kind === 'live2d') {
+  if (rtMeta && rtMeta.id === 'live2d') {
     let actual = '未知';
     try {
       const ad = await import('../live2d/runtime-adapter.js');
@@ -114,7 +135,7 @@ export async function applyUrlParams() {
   }
 
   // Spine：把版本作为**本次装载**的覆盖值（canvas-engine 消费一次后立即清空）
-  if (rt.kind === 'spine' && rt.version) {
+  if (rtMeta && rtMeta.id === 'spine' && rt.version) {
     setForcedRuntime(rt.version);
   }
 

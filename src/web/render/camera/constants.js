@@ -6,6 +6,9 @@
 // 数值来源：引擎 `SpineEngine.SCALE_MIN/SCALE_MAX/FIT_MARGIN`（= 0.125 / 16 / 0.05），
 //   档位步长 0.1 对应引擎 `userScale *= (1 + t*0.1)` 的一档 ±10%。
 
+// 面 → 相机覆盖值的键由元数据表给（不在这里写 kind 二分）
+import { byKind } from '../surfaces.js';
+
 /** 相机通用参数（Spine 与 Live2D 共用同一份） */
 export const CAMERA = Object.freeze({
   /** 最小缩放（12.5%） */
@@ -32,12 +35,25 @@ export const LIVE2D_OVERRIDE = Object.freeze({});
 export const SUBJECT_EXCLUDE = Object.freeze(['bg', 'back', 'background', 'effect', 'mask', 'scene', 'kazari']);
 
 /**
- * 取某个后端实际生效的 limits（CAMERA 叠加 LIVE2D_OVERRIDE）。
+ * 各面的相机覆盖值表（键 = 面元数据表的 cameraKind）。
+ * 加新面时若要限制它的缩放范围，在这里加一个键 —— 不必改 limitsFor 的判断。
+ */
+const CAMERA_OVERRIDES = Object.freeze({
+  live2d: LIVE2D_OVERRIDE,
+});
+
+/**
+ * 取某个后端实际生效的 limits（CAMERA 叠加该面的覆盖值）。
+ *
+ * 覆盖关系查 render/surfaces.js 的 cameraKind，不再写 `kind === 'live2d'`：
+ *   未知 kind ⇒ 不叠加覆盖、直接用通用值。这里刻意**不抛错**：
+ *   相机范围有通用兜底，不像画布/面模式那样写错就错乱，所以"查不到覆盖表键"等同于"这个面没有特殊限制"。
  * @param {'spine'|'live2d'} kind
  * @returns {{min: number, max: number}}
  */
 export function limitsFor(kind) {
-  const override = kind === 'live2d' ? LIVE2D_OVERRIDE : null;
+  const meta = byKind(kind);
+  const override = meta ? (CAMERA_OVERRIDES[meta.cameraKind] || null) : null;
   const min = override && typeof override.MIN === 'number' ? override.MIN : CAMERA.MIN;
   const max = override && typeof override.MAX === 'number' ? override.MAX : CAMERA.MAX;
   return { min, max };

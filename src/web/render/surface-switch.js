@@ -1,4 +1,18 @@
 import { markModelFailed } from '../infra/ready.js';
+// 面元数据表：kind / rendererId → 面属性一律查表，不在这里写二分判断
+import { byIdOrKind, byKind } from './surfaces.js';
+
+/**
+ * 回显"切换前的那个面"。previous 是**渲染器 id**（可能为 null）。
+ * 查不到就退回 'loading'（遮住）而不是猜一个面：
+ *   此刻旧面已经卸载，写错面会让 CSS 布局与覆盖层显隐按错误的面走，比遮住更糟。
+ * @param {string|null} previous
+ * @returns {string} 可直接交给 setMode 的值
+ */
+function modeOfPrevious(previous) {
+  const s = byIdOrKind(previous);
+  return s ? s.stageMode : 'loading';
+}
 // render/surface-switch.js —— 渲染面切换状态机（last-wins 排队 + 单次切换时序）
 //
 // 从 surface.js 拆出的原因：切换是"渲染面"最核心也最易错的一段（串行锁、排队、失败回滚、
@@ -66,7 +80,10 @@ export function createSwitcher(ctx) {
    * @param {string|null} previous 切换前的渲染器 id
    */
   async function unloadPrevious(document, previous) {
-    const nextId = (document && (document.rendererId || (document.kind === 'live2d' ? 'live2d' : 'spine'))) || null;
+    // nextId 推导查表：document.rendererId 优先，否则用 kind 对应的面 id。
+    //   查不到（未知 kind）⇒ nextId=null ⇒ 下面按"不同渲染器"处理走 dispose，
+    //   即彻底拆掉旧引擎与 GL 资源 —— 这是保守方向（契约 §五-7 禁止遗留旧 GL 上下文）。
+    const nextId = (document && (document.rendererId || (byKind(document.kind) || {}).id)) || null;
     const unloadMode = previous && previous === nextId ? 'unmount' : 'dispose';
     note(`卸载模式=${unloadMode}（previous=${previous || 'none'} next=${nextId || 'none'}）`);
     await disposeActive(unloadMode);
@@ -95,10 +112,15 @@ export function createSwitcher(ctx) {
       const why = (document.warnings || []).join('；') || '缺少 Document';
       note(`跳过装载：Document 不可用（${document.state || 'none'}）：${why}`);
       markModelFailed(`Document 不可用（${document.state || 'none'}）：${why}`);
-      setMode(previous === 'live2d' ? 'live2d' : 'spine');
+      setMode(modeOfPrevious(previous));
       return { skipped: true, info: null };
     }
-    const kind = document.kind === 'live2d' ? 'live2d' : 'spine';
+    // kind 查表：未知 kind **显式抛错**，不再"不是 live2d 就当 spine"。
+    //   二分语义只有两个面时成立；加第三个面时它会把新面标成 spine ⇒ setMode 写错面、
+    //   handle() 拿错画布、卸载模式也可能算错，全都无声发生。
+    const meta = byKind(document.kind);
+    if (!meta) throw new Error(`不支持的渲染面「${document.kind || '?'}」：未在 render/surfaces.js 注册`);
+    const kind = meta.kind;
     const rendererId = document.rendererId || kind;
     const entry = renderers.get(rendererId);
     if (!entry) throw new Error(`没有注册渲染器：${rendererId}`);
@@ -121,7 +143,7 @@ export function createSwitcher(ctx) {
    * @returns {{swallowed:boolean}}
    */
   function rollbackOnFailure(document, previous, err) {
-    setMode(previous === 'live2d' ? 'live2d' : 'spine');
+    setMode(modeOfPrevious(previous));
     state.activeId = previous;
     noteSwitch(`activate-failed:${(document && document.kind) || '?'}`);
     if (state.pending) {

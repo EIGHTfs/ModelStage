@@ -9,6 +9,8 @@ import { markModelFailed } from '../infra/ready.js';
 import { buildDocument } from '../infra/document.js';
 import { getSharedVirtualFS } from '../infra/vfs.js';
 import { diagEvent, stageLog, stageStatus } from './status.js';
+// "受支持的渲染面"由元数据表判定（不在这里写死 spine/live2d 枚举）
+import { isKnownKind } from '../render/surfaces.js';
 import { formatError, getJson } from '../infra/api.js';
 import { createRootManager } from './root-manager.js';
 // 容器装载失败按条目记一笔，名册下次渲染直接给 ⚠ 提示（与"缺纹理"同一套展示语义）
@@ -93,7 +95,8 @@ function normalizeEntry(model) {
   //   以前非 spine/live2d 一律当 'spine' —— 而容器条目的 kind 可能为 null
   //   （多个 bundle 插件并存时，解包前无法确定内容类型）⇒ live2d 容器会被当成 spine 走错分支。
   //   现在未知就是 null，由解包产物判（见 expandContainerEntry）；判不出来就明确报错。
-  const known = model && (model.kind === 'spine' || model.kind === 'live2d') ? model.kind : null;
+  //   判据改成查渲染面元数据表（加新面时这里不用改）。
+  const known = isKnownKind(model && model.kind) ? model.kind : null;
   // container 是"这是容器"的事实，但**不假定它一定在**：旧条目可能只有 kind:'bundle'
   const container = (model && model.container) || (legacyBundle ? 'unityfs' : null);
   return { ...model, kind: known, ...(container ? { container } : {}) };

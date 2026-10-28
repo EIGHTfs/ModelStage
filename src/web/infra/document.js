@@ -15,6 +15,8 @@
 //   · Document 不注册 VFS 前缀（注册由提供者负责），因此 dispose() 只撤销"本层自己注册过的"前缀；
 //     当前没有这种前缀 ⇒ dispose 是幂等空操作，绝不会和别处的 revoke 撞车（无双重撤销）。
 import { getSharedVirtualFS } from './vfs.js';
+// 内容类型是否受支持 = 查渲染面元数据表（唯一真相在 render/surfaces.js）
+import { isKnownKind } from '../render/surfaces.js';
 // 模型文件必须走带重试的 fetch：几十个并发裸 fetch 遇上 keep-alive race 会直接 Failed to fetch，
 //   一个文件失败整个模型就画不出来（现场表现：Spine 空白、资源包正常——后者走 blob 不过网络）。
 import { fetchWithRetry } from './api.js';
@@ -64,7 +66,10 @@ async function readBytes(url, label, warnings) {
 /** 判定内容类型：显式 kind 优先，其次按条目形状推断 */
 function detectKind(entry) {
   if (!entry) return null;
-  if (entry.kind === 'spine' || entry.kind === 'live2d') return entry.kind;
+  // 显式 kind 只认**受支持的渲染面**（查表，不写死枚举）。
+  //   原先这里是 `kind === 'spine' || kind === 'live2d'` —— 加第三个面时它会把 3d 判成 null，
+  //   而 null 在 buildDocument 里意味着 state='error'，于是新面永远进不了渲染层且不报"不支持"。
+  if (isKnownKind(entry.kind)) return entry.kind;
   if (entry.skeletonFile) return 'spine';
   if (entry.modelUrl || (entry.entry && entry.entry.url)) return 'live2d';
   return null;
@@ -247,8 +252,12 @@ export async function buildDocument(entry, deps = {}) {
   }
   const doc = baseDocument(entry, kind, vfs);
   try {
+    // 组装分支**显式列全 + 未知抛错**，不再用 `if spine else live2d` 的二分。
+    //   二分写法隐含"只有两个面"：加第三个面时它会被当 live2d 组装，产出一份字段错位的 Document
+    //   （不报错、只是后面渲染乱），比直接失败难排得多。
     if (kind === 'spine') await buildSpineAssets(doc, entry, vfs);
-    else await buildLive2dAssets(doc, entry, vfs);
+    else if (kind === 'live2d') await buildLive2dAssets(doc, entry, vfs);
+    else throw new Error(`不支持的渲染面「${kind}」：组装分支未在 render/surfaces.js 登记`);
   } catch (e) {
     doc.warnings.push(`组装异常：${(e && e.message) || e}`);
   }

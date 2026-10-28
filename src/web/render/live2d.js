@@ -321,6 +321,8 @@ try { if (live2d.syncSize) live2d.syncSize({ size: { width: cssW, height: cssH }
 
   return {
     id: 'live2d',
+    // 声明的 kind 供 surface.register 做面元数据表校验（防"注册了渲染器却忘了加表项"）
+    kind: 'live2d',
     capabilities: {
       // Live2D 不支持 Spine 的插槽/网格类设置项：只声明确实生效的
       // 只声明确实生效的三项：纹理过滤（PIXI scaleMode）、限帧（ticker.maxFPS）、

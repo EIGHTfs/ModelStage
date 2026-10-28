@@ -20,6 +20,8 @@
 import { pickName } from '/shared/names.mjs';
 import { getJson } from '../infra/api.js';
 import { diagEvent } from '../app/status.js';
+// 类型显示名来自面元数据表（label 字段）
+import { byKind } from '../render/surfaces.js';
 
 /** 资源名后缀归一化候选（与 char-tree.js 的 ASSET_SUFFIX_PATTERNS 一致） */
 const ASSET_SUFFIX_PATTERNS = [/_hx$/i];
@@ -142,8 +144,9 @@ export function variantLabel(m) {
   // 先判"是不是容器单文件"：它的 kind 现在是内容类型（live2d），
   //   若先判 kind 就会把资源包标成 Live2D，用户看不出它是包。
   if (m.container) return '资源包';
-  if (m.kind === 'live2d') return 'Live2D';
-  return 'Spine';
+  // 类型名查面元数据表的 label（加新面时不必再来这里补一个三元式）
+  const meta = byKind(m.kind);
+  return meta ? meta.label : 'Spine';
 }
 
 /**

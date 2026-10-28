@@ -13,6 +13,8 @@ import { variantLabel, variantText } from './list.js';
 //   同时对外转发导出，roster/view.js 的 `import { el, ... } from './rows.js'` 无需改动。
 //   注意：只写 `export { el } from '...'` 是**不绑定本地**的 —— 那些内部调用会变成 undefined。
 import { el } from '../infra/dom.js';
+// 名册徽标的配色类来自面元数据表（badge 字段）
+import { byKind } from '../render/surfaces.js';
 
 export { el };
 
@@ -134,7 +136,10 @@ export function renderVariantRow(game, c, v, selectedId, failure) {
 
   const label = variantLabel(m);
   // 样式类按"条目性质"取（容器单文件用 bundle 类，颜色与普通模型区分），与 label 文案解耦
-  const kindClass = m.container ? 'bundle' : (m.kind === 'live2d' ? 'live2d' : 'spine');
+  //   非容器时查面元数据表的 badge；未知 kind 保留 spine 样式（仅配色，不影响功能，
+  //   这里不需要像画布/面模式那样抛错 —— 名册不能因为遇到新类型就画不出来）
+  const meta = byKind(m.kind);
+  const kindClass = m.container ? 'bundle' : (meta ? meta.badge : 'spine');
   row.append(el('span', `tree-type tree-type-${kindClass}`, label));
   row.append(el('span', 'tree-variant-text', text));
   if (origName && origName !== text) row.append(el('span', 'tree-variant-orig', ` · ${origName}`));

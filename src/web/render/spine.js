@@ -108,6 +108,8 @@ export function createSpineRenderer({ stage, onMsaa } = {}) {
 
   return {
     id: 'spine',
+    // 声明的 kind 供 surface.register 做面元数据表校验（防"注册了渲染器却忘了加表项"）
+    kind: 'spine',
     /**
      * 下发插件效果链（**与 Live2D 同一套语义**：顺序/激活/销毁都在 effect-chain.js，
      * 这里只管"怎么把它挂到 Spine 的 batcherShader 上"）。
