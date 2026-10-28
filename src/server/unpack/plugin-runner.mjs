@@ -181,21 +181,38 @@ function pickPlugin(file) {
   }
   const loadErrors = [];
   let firstHandleError = null;
+  let firstReject = null;      // 插件给出的"为什么不认领"（可选钩子 explainReject）
   for (const meta of candidates) {
     const loaded = ensurePlugin(meta.id);
     if (!loaded.ok) {
       loadErrors.push(`${meta.id}: ${loaded.error}`);
       continue;
     }
+    let handled = false;
     try {
-      if (loaded.api.canHandle(file)) return { kind: 'picked', id: meta.id, api: loaded.api };
+      handled = !!loaded.api.canHandle(file);
     } catch (e) {
       // 单个插件判定抛错不终止：继续问下一个插件
       if (!firstHandleError) firstHandleError = `${meta.id}: ${String((e && e.message) || e)}`;
+      continue;
+    }
+    if (handled) return { kind: 'picked', id: meta.id, api: loaded.api };
+    // 不认领时顺带问一句"为什么"：canHandle 的签名只有 boolean，原因只有插件内部知道
+    //   （典型场景：Cubism 2.1 的 .moc 包，两个 provider 都不认，用户只看到"插件判定不处理该文件"）。
+    //   钩子是**可选**的（没有就跳过），取第一个给出结构化原因的插件即可。
+    if (!firstReject && typeof loaded.api.explainReject === 'function') {
+      try {
+        const why = loaded.api.explainReject(file);
+        if (why && why.message) firstReject = { id: meta.id, code: why.code || null, message: String(why.message) };
+      } catch (e) {
+        // 解释失败不影响主判定（它只负责把话说清楚），但记下错误便于排障
+        firstReject = { id: meta.id, code: null, message: '', error: String((e && e.message) || e) };
+      }
     }
   }
   if (loadErrors.length === candidates.length) return { kind: 'plugin-unavailable', message: loadErrors.join('; ') };
   if (firstHandleError) return { kind: 'canhandle-threw', message: firstHandleError };
+  if (firstReject && firstReject.message) return { kind: 'not-handled', reject: firstReject };
   return { kind: 'not-handled' };
 }
 
@@ -336,7 +353,18 @@ export async function unpackFile({ rootId, rel, absPath }) {
   const picked = pickPlugin(file);
   if (picked.kind === 'plugin-unavailable') return { ok: false, reason: 'plugin-unavailable', message: picked.message };
   if (picked.kind === 'canhandle-threw') return { ok: false, reason: 'canhandle-threw', message: picked.message };
-  if (picked.kind === 'not-handled') return { ok: false, reason: 'not-handled', message: '插件判定不处理该文件' };
+  // not-handled 时优先用插件给出的原因（如"Cubism 2.1 的 .moc 不支持"），
+  //   取不到才回落到原来那句固定文案 —— 后者说清了"没人认领"，但说不出"为什么"。
+  if (picked.kind === 'not-handled') {
+    const why = picked.reject;
+    return {
+      ok: false,
+      reason: 'not-handled',
+      message: why && why.message ? why.message : '插件判定不处理该文件',
+      ...(why && why.code ? { code: why.code } : {}),
+      ...(why && why.id ? { by: why.id } : {}),
+    };
+  }
   const t1 = Date.now();
   let res;
   try {

@@ -58,6 +58,94 @@
     }
   }
 
+  // Cubism 2.1 运行时数据 .moc 的魔数：**小写三字节** 'm' 'o' 'c'，紧随其后的第 4 字节是
+  //   **文件版本号**（不是第四位魔数）。取证来源：Cubism 2 官方运行时 live2d.min.js 的
+  //   loadModel() 里逐字节校验 `109 && 111 && 99`，随后把下一字节当 version 与 SDK 版本比较。
+  //   ⇒ 判据**不能**写成 "moc\0"（第 4 字节是版本号，通常非 0）。
+  const CUBISM2_MOC_MAGIC = [0x6d, 0x6f, 0x63];
+
+  /**
+   * 在这个包里找 Cubism 2.1 的 .moc 运行时数据（**只判定存在性，不解析**）。
+   *
+   * 为什么要它：.moc 是 Cubism 2.1 的模型二进制，Cubism 3+ 的 SDK/运行时**完全不支持**它
+   *   （官方帮助文档明说不支持 .moc/.mtn）。这类包既没有 moc3、也没有 .skel，两个 asset-provider
+   *   都不会认领 ⇒ 用户在界面上只看到一句"插件判定不处理该文件"，无法判断是自己资源有问题、
+   *   还是格式超出支持范围。本函数就是为了让上层能说清"这是什么、为什么不行、你能做什么"。
+   *
+   * 判据（**宁缺勿错**，三条全满足才算命中）：
+   *   ① MonoBehaviour（class 114）的字节里出现 'moc' 魔数；
+   *   ② 魔数前 4 字节（u32）是有意义的长度 L，且 `魔数起点 + L === 对象末尾`
+   *      —— 与 findMoc3 同款自洽校验，把"随机字节里凑巧出现 moc"挡掉；
+   *   ③ 魔数后第 4 字节是本文件的版本号，落在合理区间 1..16。
+   * 扩展名不参与判定（只用来在文案里报出文件名，供用户核对）。
+   *
+   * @param {object} sf SerializedFile（NS.serialized.parse 的结果）
+   * @returns {{count:number, names:string[], sample:{object:object, magicOffset:number, version:number, bytes:number}|null}}
+   */
+  function findCubism2Moc(sf) {
+    const out = { count: 0, names: [], sample: null };
+    if (!sf || !NS.serialized || !NS.extract) return out;
+    let monos;
+    try {
+      monos = NS.serialized.byClass(sf, 114);
+    } catch {
+      return out;   // 对象表读不出来就当没发现（宁可漏报，也不把别的包误判成 Cubism 2）
+    }
+    // 第一路（主判据）：MonoBehaviour 内嵌字节里的魔数 + 前置长度自洽 + 版本合理
+    for (const obj of monos) {
+      const bytes = sf.bytes.subarray(obj.dataOffset, obj.dataOffset + obj.byteSize);
+      let from = 0;
+      for (;;) {
+        const at = NS.extract.indexOfMagic(bytes, CUBISM2_MOC_MAGIC, from);
+        if (at < 0) break;
+        from = at + 1;
+        // ② 前置长度自洽：魔数前 4 字节是小端长度，且「魔数起点 + L」恰好到对象末尾
+        //    （与 findMoc3 同款；这一条把"随机字节里凑巧出现 moc"挡掉）
+        if (at < 4) continue;
+        const len = bytes[at - 4] | (bytes[at - 3] << 8) | (bytes[at - 2] << 16) | (bytes[at - 1] << 24);
+        if (!(len > 16) || at + len !== bytes.length) continue;
+        // ③ 版本号合理（Cubism 2.1 的 .moc 版本是个小整数，见魔数注释里的取证）
+        const end = at + 3;
+        if (end >= bytes.length) continue;
+        const version = bytes[end];
+        if (version < 1 || version > 16) continue;
+        out.count += 1;
+        const name = readObjectName(sf, obj);
+        if (name) out.names.push(name);
+        if (!out.sample) out.sample = { object: obj, magicOffset: at, version, bytes: len, by: 'magic' };
+        break;         // 一个对象里只认第一处（同一个 .moc 不会被切成两段）
+      }
+    }
+    // 第二路（兜底，只作辅助）：TextAsset 的名字以 .moc 结尾。
+    //   为什么要这一路：真 .moc 在包里的形态**没有样本可验**（当前资源 0 个）。
+    //   若它是以 TextAsset/独立文件形式存在（而非仿真 moc3 的内嵌 TypelessData），
+    //   就不存在"前置 u32 长度"，第一路会漏报。此时扩展名是唯一线索。
+    //   安全性：本函数只在 run() 里"已确认没有 moc3"之后才被调用，所以不会把 moc3 包误判成 Cubism 2。
+    if (out.count === 0) {
+      try {
+        for (const ta of NS.extract.findTextAssets(sf)) {
+          const nm = ta && ta.name ? String(ta.name) : '';
+          if (!/\.moc$/i.test(nm)) continue;
+          out.count += 1;
+          out.names.push(nm);
+          if (!out.sample) out.sample = { object: ta.object, magicOffset: -1, version: null, bytes: ta.bytes ? ta.bytes.length : null, by: 'name' };
+          break;
+        }
+      } catch { /* 类型树读不出来就不兜底，不影响主判据 */ }
+    }
+    return out;
+  }
+
+  /** 读对象名（读不出来返回空串；名字只用于文案，不参与判定） */
+  function readObjectName(sf, obj) {
+    try {
+      const fields = NS.typetree ? NS.typetree.readObject(sf, obj) : null;
+      return (fields && (fields.m_Name || fields.m_PathName)) || '';
+    } catch {
+      return '';
+    }
+  }
+
   /**
    * 预检一个资源包。
    * @param {Uint8Array} bytes 资源包字节
@@ -108,6 +196,25 @@
     });
     const unsupported = textures.filter((t) => !t.supported).map((t) => t.formatName);
 
+    // Cubism 2.1 的 .moc 存在性：**只有"没有 moc3"时才有意义**（有 moc3 的包一律按 moc3 走，
+    //   哪怕字节里凑巧有 'moc' 片段也不该被说成 Cubism 2 —— 这是判据可靠性的关键）
+    const moc3Hit = !!got.moc3;
+    const cubism2 = moc3Hit ? { count: 0, names: [], sample: null } : findCubism2Moc(sf);
+    // 结构化"为什么没人认领"，交给上层（宿主/调试日志）原样透出给用户
+    let reject = null;
+    if (!moc3Hit && cubism2.count > 0) {
+      const ver = cubism2.sample ? cubism2.sample.version : null;
+      const fileHint = cubism2.names.length ? `（${cubism2.names.join('、')}）` : '';
+      reject = {
+        code: 'LIVE2D_CUBISM2_MOC_UNSUPPORTED',
+        // 三句话缺一不可：这是什么 / 为什么不行 / 用户能做什么
+        message: `这是 Cubism 2.1 的 .moc 模型数据${fileHint}${ver ? `，版本 ${ver}` : ''}。`
+          + 'Cubism 3 及以后的 SDK/运行时已不支持 .moc 与 .mtn 这两种旧格式，本页面的 Live2D 渲染只支持 .moc3。'
+          + '若你手上有该模型的 .cmox 工程文件，可用官方 Cubism Editor 打开并转换为 .moc3 后再放进来；'
+          + '如果是从游戏包里直接拆出的 .moc，则没有可用的转换途径（需要原作者提供工程文件）。',
+      };
+    }
+
     return {
       ok: true,
       container: {
@@ -119,6 +226,8 @@
       },
       objects: (sf.objects || []).length,
       moc3: got.moc3 ? { bytes: got.moc3.length } : null,
+      cubism2Moc: cubism2.count > 0 ? { count: cubism2.count, names: cubism2.names, version: cubism2.sample ? cubism2.sample.version : null } : null,
+      reject,
       physics3: got.physics3 ? { bytes: got.physics3.length } : null,
       nativeFiles: (got.nativeFiles || []).map((f) => f.name),
       textures,
@@ -129,5 +238,5 @@
     };
   }
 
-  NS.bundleProbe = { run, formatSupport };
+  NS.bundleProbe = { run, formatSupport, findCubism2Moc };
 }

@@ -485,6 +485,34 @@ function createProvider({ NS, host, PLUGIN_ID, ulbLog, MIME_OCTET, MIME_JSON, MI
     return file;
   }
 
+  /**
+   * 最近一次「不认领」的原因（模块级槽位，只对紧接着问上来的同一个文件有效）。
+   *
+   * 为什么用槽位而不是返回值：canHandle 的契约签名是 `(file) => boolean`，不能改（改了所有调用方都要动）；
+   *   而宿主确实是"先 canHandle 再 explainReject"同步连续调用同一个 file 对象，
+   *   所以一个只认 fileKey 的槽位足够，且不会把原因张冠李戴到别的文件上。
+   */
+  let rejectNote = null;
+
+  /** 文件标识：只要 rootId|rel 即可区分（bytes 不参与，避免大包做哈希） */
+  function fileKey(ctx) {
+    if (!ctx || typeof ctx !== 'object') return '';
+    return `${ctx.rootId || ''}|${ctx.rel || ctx.name || ''}`;
+  }
+
+  /**
+   * 记下/清除不认领原因。
+   * @param {object} ctx 当前文件上下文
+   * @param {{code:string,message:string}|null} reason 插件给出的结构化原因；null 表示"没有可解释的原因"
+   */
+  function noteReject(ctx, reason) {
+    if (!reason) { rejectNote = null; return; }
+    rejectNote = { key: fileKey(ctx), code: reason.code, message: reason.message };
+    // 级别用 warn：这不是 bug（不抛错、不影响其它包），但**用户需要看见**——
+    //   debug 用户看不到，error 会误导成故障。走统一出口 ulbLog，不裸 console。
+    ulbLog('warn', reason.message);
+  }
+
   // 契约：canHandle 必须是纯判定（无副作用、返回布尔）。
   // 契约 §3.1 判定边界 + §3.7 异常处理（文档已写死，无需再猜）：
   //   允许：读 file.bytes 做容器魔数判定（复用 bundle-probe，与 /api/bundle/probe 同口径）
@@ -507,8 +535,13 @@ function createProvider({ NS, host, PLUGIN_ID, ulbLog, MIME_OCTET, MIME_JSON, MI
       //   包内无 moc3）。两个 asset-provider 插件若都按"容器头匹配"回答 true，宿主只取第一个
       //   （plugin-runner 的 pickPlugin 不重试下一个），被错认领的一方会在 resolve 阶段报
       //   「找不到 moc3」——现场看起来是"这个包坏了"，实际是判定太宽。
-      // 成本不增加：bundleProbe 本来就已经解出 moc3 存在性（bundle-probe.js:111）。
-      return probe.ok && !!probe.moc3;
+      // 成本不增加：bundleProbe 本来就已经解出 moc3 存在性（bundle-probe.js:121）。
+      const accepted = probe.ok && !!probe.moc3;
+      // 不认领时把"为什么"记下来：canHandle 的契约只有 boolean，说不清原因，
+      //   于是用户在界面上只看到宿主那句固定的"插件判定不处理该文件"。
+      //   记在模块级槽位里，供 explainReject() 紧接着取出（宿主是 canHandle → explainReject 同步连续调用）。
+      noteReject(ctx, accepted ? null : probe.ok ? probe.reject : null);
+      return accepted;
     } catch (e) {
       // §3.7：catch 分支不得静默。这里**升到 warn**（不是 debug）：
       //   canHandle 抛错通常不是"文件读不了"（那属于数据问题，返回 false 即可），
@@ -516,9 +549,29 @@ function createProvider({ NS, host, PLUGIN_ID, ulbLog, MIME_OCTET, MIME_JSON, MI
       //   此时表现为"这个文件没有提供者"，只有 warn 才查得动。
       ulbLog('warn', `canHandle 内部异常，按不可读处理：${e.message}`
         + '（若 bytes 类型不符契约 §1.1 的 Uint8Array，请修宿主侧归一）');
+      noteReject(ctx, null);
       return false;
     }
   }
+
+  /**
+   * 契约**可选**钩子：解释"上一次为什么没认领这个文件"。
+   *
+   * 为什么需要它：canHandle 的签名固定为 `(file) => boolean`（契约 §3.1），无法附带原因；
+   *   而"这个包是 Cubism 2.1 的 .moc"这种结论只有插件内部看得见（宿主那层只拿到一个 false），
+   *   结果就是界面上统一显示"插件判定不处理该文件"——既说不出这是什么，也给不出出路。
+   *   宿主在 not-handled 时若发现插件有此方法，就用它给出的文案替换固定文案。
+   *
+   * 只对**刚刚判定过的同一个文件**生效（按 rootId|rel 比对），避免把上一次的陈旧原因张冠李戴。
+   * @param {object} file 与 canHandle 收到的同一形状
+   * @returns {{code:string, message:string}|null} 没有可解释的原因时返回 null（宿主回落到原固定文案）
+   */
+  function explainReject(file) {
+    const ctx = asCtx(file);
+    if (!rejectNote || rejectNote.key !== fileKey(ctx)) return null;
+    return { code: rejectNote.code, message: rejectNote.message };
+  }
+
 
   // 契约：resolve 产出 { prefix, files, entry }；失败抛带 code 的错误（§3.4），不返回缺字段半成品（§5.8）。
   // §1.2：prefix 格式 = `vfs://<providerId>/<rootId>/<相对目录>/`（全局唯一、以 / 结尾、目录不含文件名）。
@@ -599,7 +652,8 @@ function createProvider({ NS, host, PLUGIN_ID, ulbLog, MIME_OCTET, MIME_JSON, MI
     entry = built.entry;
     return { prefix, files, entry };
   }
-  return { canHandle, resolve };
+  // explainReject 是**可选**扩展（契约未强制）：宿主有则用、没有就回落到固定文案，向后兼容。
+  return { canHandle, resolve, explainReject };
 }
 
 /** 内存代价声明：分段峰值表 + 容器解压后大小（走 blocksSummary，不解数据块）。 */
@@ -745,7 +799,7 @@ function createMemoryEstimator({ NS }) {
 
 /** 浏览器侧：把本插件登记进宿主的资产提供者注册表（node 侧 host 为 null，整块跳过）。 */
 function registerWithHost({ host, PLUGIN_ID, api }) {
-  const { canHandle, resolve, estimateMemory } = api;
+  const { canHandle, resolve, estimateMemory, explainReject } = api;
 
   // 契约 §一：plugin.json 的 provides=["asset-provider"] 让宿主把本插件登记进资产提供者注册表。
   //   注册对象上 kind 是产出内容类型（live2d），与 fileKinds 的容器类型 bundle 正交；
@@ -758,6 +812,8 @@ function registerWithHost({ host, PLUGIN_ID, api }) {
       // 契约 §三 的注册面：只留新契约成员 canHandle/resolve。
       canHandle,
       resolve,
+      // 可选扩展：宿主在 not-handled 时用它拿到"为什么不认领"（浏览器侧与 node 侧同一份实现）
+      explainReject,
       // 契约 §2.2：让宿主与检查器都能发现"本插件能自己算内存代价"（估得准不准由本插件负责）
       estimateMemory,
       kind: 'live2d',
@@ -811,6 +867,8 @@ function install() {
   const api = {
     canHandle: provider.canHandle,
     resolve: provider.resolve,
+    // 可选扩展：服务端 plugin-runner 在 not-handled 时用它给出"为什么不认领"，取不到则回落固定文案
+    explainReject: provider.explainReject,
     estimateMemory: mem.estimateMemory,
     peakFromDecompressed: mem.peakFromDecompressed,
     PLUGIN_ID,
