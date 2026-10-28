@@ -104,16 +104,20 @@ function probeRenderer(m, warns) {
 /**
  * 骨架组：四个构造器 + skeletonOps 的四项方法探测。
  *
- * 这里仍然**每次调用 pickMember(spine,'Skeleton')**（共 5 次），没有合并成一次：
- *   合并能少读几次属性、行为也等价，但会改变"成员读取次数"这个可观测事实 ——
- *   本轮是纯结构重构，不改调用次数（将来若要优化，得连等价脚本一起更新）。
+ * `pickMember(spine,'Skeleton')` **只取一次**（局部变量 Skeleton）。
+ *   早先这里是 5 次（setToSetupPose 那行因短路写了两遍、其余三项各一次），当时刻意不合并，
+ *   理由是"合并会改变成员读取次数这个可观测事实"，留给后续单独一轮处理 —— 本轮就是那一轮：
+ *   已合并，读取次数从 5 次（无 Spine 时因短路为 4 次）降为 1 次。
+ *   四项探测结果逐项不变；等价脚本的判据也从"读取序列相同"改成"探测结果相同"
+ *   （见 tool/.tmp-caps-equiv.mjs 的 diff 注释：读取次数是该优化的目标本身，不能同时当等价标尺）。
  */
 function probeSkeleton(spine, m, warns) {
+  const Skeleton = pickMember(spine, 'Skeleton');
   const skeletonOps = {
-    setToSetupPose: !!(pickMember(spine, 'Skeleton') && hasProtoMethod(pickMember(spine, 'Skeleton'), 'setToSetupPose')),
-    updateWorldTransform: hasProtoMethod(pickMember(spine, 'Skeleton'), 'updateWorldTransform'),
-    getBounds: hasProtoMethod(pickMember(spine, 'Skeleton'), 'getBounds'),
-    setSkin: hasProtoMethod(pickMember(spine, 'Skeleton'), 'setSkin'),
+    setToSetupPose: !!(Skeleton && hasProtoMethod(Skeleton, 'setToSetupPose')),
+    updateWorldTransform: hasProtoMethod(Skeleton, 'updateWorldTransform'),
+    getBounds: hasProtoMethod(Skeleton, 'getBounds'),
+    setSkin: hasProtoMethod(Skeleton, 'setSkin'),
   };
   for (const [k, ok] of Object.entries(skeletonOps)) {
     if (!ok) warns.push(`skeletonOps.${k}：缺失（相关功能会降级）`);

@@ -182,11 +182,14 @@ export async function prepareAtlas(ctx) {
   const pmaStage = detectPmaStage({ atlasText, descriptor, pmaMode, supportsStraight, samples, log });
   logPmaStage({ descriptor, pmaMode, ...pmaStage, supportsStraight, log });
   // ③ 上传纹理（口径固定不乘，见 pma.js uploadTextures 注释）
+  //   空判定不在这里重复：uploadTextures 自己就在 out.size === 0 时抛
+  //   「没有成功上传任何贴图到 GPU，无法创建 TextureAtlas」—— 它永不返回空 Map，
+  //   此处再判一次是**不可达的死判定**（同一条件、同一文案）。权威放在产出侧 pma.js：
+  //   只有它知道"实际传上了几页"，消费侧无从复核，也不该有第二份口径。
   const textures = await uploadTextures({
     gl, GLTextureCtor: pickMember(spine, 'GLTexture'), entries, textureFilter, log,
     effectiveMode: pmaStage.pmaInfo.effectiveMode, needPremultiply: pmaStage.pmaInfo.needPremultiply,
   });
-  if (textures.size === 0) throw new Error('没有成功上传任何贴图到 GPU，无法创建 TextureAtlas');
   // ④ 建 atlas（3.x 构造吃 resolver / 4.x 构造后补页的差异在内部消化）
   const atlas = buildAtlasFromTextures({ spine, atlasText, textures });
   // 不再返回 gpuUnpack：上传口径固定不乘（见 pma.js uploadTextures 注释），保留字段名会误导
