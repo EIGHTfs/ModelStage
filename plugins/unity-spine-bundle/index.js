@@ -391,18 +391,20 @@ function install() {
   const MEMORY_RATIO_PER_DECOMPRESSED_MB = 2.3;
 
   /**
-   * LZMA 实测点：解压后 MB → **本次解压在内核峰值 RSS 上的增量** MB。
+   * LZMA 实测点：解压后 MB → **峰值**（MB，未乘余量；表中值已按上包络单调化）。
    *
-   * 测量方法（2026-10-29 实测，与 live2d 插件同一套、同一天）：
-   *   每例独立子进程 → 真实 resolve 解压 → 读 /proc/self/status 的 VmHWM（内核峰值 RSS）减起始 RSS。
-   *   四个样本（Live2D 容器，块格式同样是 UnityFS）：2.76 / 8.55 / 21.37 / 33.4 MB → 131 / 355 / 562 / 722 MB。
+   * 测量口径（与准入同一个量，2026-10-29 用 tool/fit-memory-peak.mjs 标定）：
+   *   `峰值 = 起始 RSS + 本次 VmHWM 增量` —— 与 plugin-store 的 rssNow / recordMeasuredPeak 同式，
+   *   即"服务端解这个包会记录的峰值"；每包一个干净进程测（= 各包在服务端首次解包的情形），
+   *   再按大小升序做累进上包络。10 个样本（解压 2.76~33.4MB）。
    *
    * ⚠️ 本表与 `unity-live2d-bundle/index.js` 里的同名表**必须逐值相同**（同一物理事实）：
-   *   test/memory-peak-parity.test.mjs 会导入两个插件的实现、在一组解压量上比对结果，不一致就红。
-   * 为什么本插件也需要它：上面的线性式（103 + 2.3×）是按 LZ4 包标定的，
-   *   LZMA 在 8.55MB 处实测 355MB 而该式只给 123MB —— **低估 2.9 倍**，对 LZMA 包等于没有准入。
+   *   test/memory-peak-parity.test.mjs 会导入两边实现逐值比对，不一致就红。
+   * 两条口径纪律：① 不要把"进程内连续解压"的结果混进来（VmHWM 只增不减，后测会被前测带偏：
+   *   实测 9.4MB 报 197MB 比 8.5MB 的 399MB 还小，物理上不可能）；② 峰值不是解压量的纯函数
+   *   （9.4MB 实测 333MB < 8.5MB 的 420MB），落表前必须做累进上包络，否则大包反而估得少。
    */
-  const LZMA_PEAK_POINTS = [[2.76, 131], [8.55, 355], [21.37, 562], [33.4, 722]];
+  const LZMA_PEAK_POINTS = [[2.8, 170], [5, 252], [6.5, 297], [8.5, 418], [9.4, 334], [17.1, 450], [18.7, 730], [21.4, 654], [33.4, 992]];
   /** 峰值安全垫：实测 × 1.15（与线性式留余量的口径一致） */
   const PEAK_MARGIN = 1.15;
 
@@ -414,7 +416,15 @@ function install() {
    */
   function peakFromLzma(decompressedMb) {
     if (!(decompressedMb > 0)) return 0;
-    const pts = LZMA_PEAK_POINTS;
+    // 累进上包络：表里存的是**原始实测值**（可能局部下降，如 18.7MB→730 而 21.4MB→654），
+    //   查表前先做 running-max，保证"更大的包不会估得更少"。
+    //   为什么不在表里预先整形：表要能如实反映测量结果（便于回看样本质量），单调性由查找保证。
+    const pts = [];
+    let env = 0;
+    for (const [mb, peak] of LZMA_PEAK_POINTS) {
+      if (peak > env) env = peak;
+      pts.push([mb, env]);
+    }
     // 比最小实测点还小：按最小点算（LZMA 字典开销固定，小包不会更省）
     if (decompressedMb <= pts[0][0]) return Math.ceil(pts[0][1] * PEAK_MARGIN);
     for (let i = 1; i < pts.length; i += 1) {
@@ -422,12 +432,14 @@ function install() {
         const [m0, v0] = pts[i - 1];
         const [m1, v1] = pts[i];
         const t = (decompressedMb - m0) / (m1 - m0);
-        return Math.ceil((v0 + (v1 - v0) * t) * PEAK_MARGIN);
+        // 线性插值 + 下限钳到下界实测值（数据非单调时防止落进"下降区"低于小包；
+        //   也不抬到两端最大值 —— 那会让 21.4~33.4 整段被 992 通吃，过度高估）
+        return Math.ceil(Math.max(v0, v0 + (v1 - v0) * t) * PEAK_MARGIN);
       }
     }
     const [ma, va] = pts[pts.length - 2];
     const [mb, vb] = pts[pts.length - 1];
-    const slope = (vb - va) / (mb - ma);
+    const slope = Math.max(0, (vb - va) / (mb - ma));
     return Math.ceil((vb + (decompressedMb - mb) * slope) * PEAK_MARGIN);
   }
 

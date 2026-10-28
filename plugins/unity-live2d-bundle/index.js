@@ -630,32 +630,42 @@ function createMemoryEstimator({ NS }) {
    * @returns {number} 预估峰值（MB，已含安全垫）
    */
   /**
-   * LZMA 实测点：解压后 MB → **本次解压在内核峰值 RSS 上的增量** MB。
+   * LZMA 实测点：解压后 MB → **峰值**（MB，未乘余量；表中的值已按上包络单调化）。
    *
-   * 测量方法（2026-10-29 实测，可复现）：
-   *   每例一个独立子进程 → 真实调 api.resolve 解压 → 读 /proc/self/status 的 VmHWM（内核记录的峰值 RSS）
-   *   减去起始 RSS。用 VmHWM 而不是自己采样：采样会漏掉瞬时峰值，同一包两次跑能差 5 倍。
-   *   四个样本：huonululu_3 2.76MB / pinghai_6 8.55MB / tierbici_2 21.37MB / z46_2 33.4MB
-   *   实测增量：131 / 355 / 562 / 722 MB。
+   * 测量口径（与准入判断同一个量，2026-10-29 用 tool/fit-memory-peak.mjs 重新标定）：
+   *   `峰值 = 起始 RSS + 本次 VmHWM 增量` —— 与 src/server/unpack/plugin-store.mjs 的
+   *   rssNow / recordMeasuredPeak 逐字同式，也就是说：**这个数就是服务端解这个世界包时会记录的峰值**。
+   *   每个包一个干净进程测（等价于"该包在服务端首次解包"的情形），再按大小升序做**累进上包络**。
+   *   10 个样本（解压 2.76~33.4MB）：huonululu_3 / weiyan_2 / baerdimo_5 / pinghai_6 /
+   *   aimierbeierding_2 / xukufu_2 / yichui_2 / tierbici_2 / qibolin_2 / z46_2。
    *
-   * 为什么必须单独一张表：下面那张是**按 LZ4 路径**拟合的。
-   *   LZMA 在 8.55MB 处实测 355MB，旧表只给 192MB ⇒ **低估 1.85 倍**；
-   *   21.37MB 处 562 vs 267 ⇒ 低估 2.1 倍。低估比高估危险得多：准入放行 → 真实占用冲高 → OOM/被守护中止。
+   * ⚠️ 两条口径纪律（换机器/升 V8 后重标时必须遵守）：
+   *   ① **不要把"进程内连续解压"的结果混进来**：VmHWM 只增不减，后测的包会被前测的峰值带偏 ——
+   *      实测数据本身就自证：连续测时 9.4MB 的包报 197MB，比 8.5MB 的 399MB 还小（物理上不可能）。
+   *   ② 峰值不是解压量的纯函数（纹理数量/块数不同）：9.4MB 实测 333MB < 8.5MB 的 420MB。
+   *      所以落表前必须做累进上包络，否则"更大的包估得更少"，准入判断自相矛盾。
    */
-  const LZMA_PEAK_POINTS = [[2.76, 131], [8.55, 355], [21.37, 562], [33.4, 722]];
+  const LZMA_PEAK_POINTS = [[2.8, 170], [5, 252], [6.5, 297], [8.5, 418], [9.4, 334], [17.1, 450], [18.7, 730], [21.4, 654], [33.4, 992]];
   /** 峰值安全垫：实测 × 1.15（与原表的 15% 口径一致） */
   const PEAK_MARGIN = 1.15;
 
   /**
-   * LZMA 路径的峰值（MB）：实测点之间**线性内插**，超出最大实测点按最后一段斜率外推。
-   * 拟合方式就是"连点成折线 + 15% 余量"—— 不做二次拟合：四个点撑不起更复杂的模型，
-   *   而且折线在实测点上必然覆盖真值（凸性未知时，这是最不容易漏的做法）。
+   * LZMA 路径的峰值（MB）：落点之间取**两端最大值**（见循环内说明），超出最大实测点按末段斜率外推。
+   * 为什么不用线性插值：实测数据不单调（纹理/块数不同 + 单次噪声），插值会把"下降区"估得比小包还低。
    * @param {number} decompressedMb
    * @returns {number}
    */
   function peakFromLzma(decompressedMb) {
     if (!(decompressedMb > 0)) return 0;
-    const pts = LZMA_PEAK_POINTS;
+    // 累进上包络：表里存的是**原始实测值**（可能局部下降，如 18.7MB→730 而 21.4MB→654），
+    //   查表前先做 running-max，保证"更大的包不会估得更少"。
+    //   为什么不在表里预先整形：表要能如实反映测量结果（便于回看样本质量），单调性由查找保证。
+    const pts = [];
+    let env = 0;
+    for (const [mb, peak] of LZMA_PEAK_POINTS) {
+      if (peak > env) env = peak;
+      pts.push([mb, env]);
+    }
     // 比最小实测点还小：按最小点算 —— LZMA 的字典开销是固定的，小包不会更省
     if (decompressedMb <= pts[0][0]) return Math.ceil(pts[0][1] * PEAK_MARGIN);
     for (let i = 1; i < pts.length; i += 1) {
@@ -663,12 +673,17 @@ function createMemoryEstimator({ NS }) {
         const [m0, v0] = pts[i - 1];
         const [m1, v1] = pts[i];
         const t = (decompressedMb - m0) / (m1 - m0);
-        return Math.ceil((v0 + (v1 - v0) * t) * PEAK_MARGIN);
+        // 线性插值，但**不得低于下界实测值**：
+        //   数据非单调（18.7MB 实测 730MB > 21.4MB 的 654MB）时，插值会落进"下降区"从而低于小包；
+        //   而下限钳到 v0 就够了，不需要把整个区间抬到两端最大值（那会让 21.4~33.4 这段被 992 通吃，
+        //   实测：21.45MB 的包会被算成 1141MB，过度高估）。
+        return Math.ceil(Math.max(v0, v0 + (v1 - v0) * t) * PEAK_MARGIN);
       }
     }
     const [ma, va] = pts[pts.length - 2];
     const [mb, vb] = pts[pts.length - 1];
-    const slope = (vb - va) / (mb - ma);
+    // 斜率不小于 0：数据抖动导致末段下降时，不能外推出"越大越省"
+    const slope = Math.max(0, (vb - va) / (mb - ma));
     return Math.ceil((vb + (decompressedMb - mb) * slope) * PEAK_MARGIN);
   }
 
