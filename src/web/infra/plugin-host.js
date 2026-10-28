@@ -619,6 +619,16 @@ const MIME_BY_EXT = {
       if (mon.checkNow()) throw Object.assign(new Error(mon.reason()), { reason: 'memory-guard' });
       const read = await bytesOf(file);
       if (!read.ok) throw Object.assign(new Error(read.message), { reason: 'read-failed' });
+      // 同步解压前先把"在等什么"写出去，并**让出一帧**：
+      //   插件 resolve 是同步的，LZMA 包实测要 1.7~10 秒（≈300~620ms/MB 解压后体积），
+      //   主线程一旦进解压就再没机会渲染这条提示（DOM 已改、但浏览器不会给你帧）。
+      //   让帧代价约 16ms，换来"用户知道在解压、不是卡死"。非 LZMA 包几乎不受影响（多一帧）。
+      say.info(`本地解包中：${file.rel}（压缩 ${(read.bytes.length / 1048576).toFixed(2)}MB，大包可能要数秒）`);
+      emit('unpack.local-start', { rootId: file.rootId, rel: file.rel, bytes: read.bytes.length });
+      await new Promise((resolve) => {
+        const next = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (cb) => setTimeout(cb, 16);
+        next(() => resolve());
+      });
       const got = await resolveViaProvider(file, read.bytes);
       if (mon.checkNow()) throw Object.assign(new Error(mon.reason()), { reason: 'memory-guard' });
       if (!got.ok) throw Object.assign(new Error(got.message || '本地解包失败'), { reason: got.reason, passthrough: got });
