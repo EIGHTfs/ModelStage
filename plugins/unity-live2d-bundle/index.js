@@ -629,8 +629,69 @@ function createMemoryEstimator({ NS }) {
    * @param {number} decompressedMb 解压后容器大小（MB）
    * @returns {number} 预估峰值（MB，已含安全垫）
    */
-  function peakFromDecompressed(decompressedMb) {
+  /**
+   * LZMA 实测点：解压后 MB → **本次解压在内核峰值 RSS 上的增量** MB。
+   *
+   * 测量方法（2026-10-29 实测，可复现）：
+   *   每例一个独立子进程 → 真实调 api.resolve 解压 → 读 /proc/self/status 的 VmHWM（内核记录的峰值 RSS）
+   *   减去起始 RSS。用 VmHWM 而不是自己采样：采样会漏掉瞬时峰值，同一包两次跑能差 5 倍。
+   *   四个样本：huonululu_3 2.76MB / pinghai_6 8.55MB / tierbici_2 21.37MB / z46_2 33.4MB
+   *   实测增量：131 / 355 / 562 / 722 MB。
+   *
+   * 为什么必须单独一张表：下面那张是**按 LZ4 路径**拟合的。
+   *   LZMA 在 8.55MB 处实测 355MB，旧表只给 192MB ⇒ **低估 1.85 倍**；
+   *   21.37MB 处 562 vs 267 ⇒ 低估 2.1 倍。低估比高估危险得多：准入放行 → 真实占用冲高 → OOM/被守护中止。
+   */
+  const LZMA_PEAK_POINTS = [[2.76, 131], [8.55, 355], [21.37, 562], [33.4, 722]];
+  /** 峰值安全垫：实测 × 1.15（与原表的 15% 口径一致） */
+  const PEAK_MARGIN = 1.15;
+
+  /**
+   * LZMA 路径的峰值（MB）：实测点之间**线性内插**，超出最大实测点按最后一段斜率外推。
+   * 拟合方式就是"连点成折线 + 15% 余量"—— 不做二次拟合：四个点撑不起更复杂的模型，
+   *   而且折线在实测点上必然覆盖真值（凸性未知时，这是最不容易漏的做法）。
+   * @param {number} decompressedMb
+   * @returns {number}
+   */
+  function peakFromLzma(decompressedMb) {
     if (!(decompressedMb > 0)) return 0;
+    const pts = LZMA_PEAK_POINTS;
+    // 比最小实测点还小：按最小点算 —— LZMA 的字典开销是固定的，小包不会更省
+    if (decompressedMb <= pts[0][0]) return Math.ceil(pts[0][1] * PEAK_MARGIN);
+    for (let i = 1; i < pts.length; i += 1) {
+      if (decompressedMb <= pts[i][0]) {
+        const [m0, v0] = pts[i - 1];
+        const [m1, v1] = pts[i];
+        const t = (decompressedMb - m0) / (m1 - m0);
+        return Math.ceil((v0 + (v1 - v0) * t) * PEAK_MARGIN);
+      }
+    }
+    const [ma, va] = pts[pts.length - 2];
+    const [mb, vb] = pts[pts.length - 1];
+    const slope = (vb - va) / (mb - ma);
+    return Math.ceil((vb + (decompressedMb - mb) * slope) * PEAK_MARGIN);
+  }
+
+  /**
+   * 按**压缩类型**取预估峰值（MB，已含安全垫）。
+   *
+   * 压缩类型不给时的取舍（这是刻意的，别改成"按 LZ4"）：
+   *   认不出（老调用方没传 / 块类型混合 -1 / 未来新增类型）⇒ **按 LZMA（更保守）**。
+   *   低估 = 放行 → 真冲高 → OOM 或被守护中止（用户看到的是"崩了"）；
+   *   高估 = 这一次被拒或排队（用户看到的是"内存不足，请稍后重试"，行为可预期）。
+   *   两者代价不对等，所以不确定时选更保守的那条。
+   *
+   * @param {number} decompressedMb 解压后容器大小（MB）
+   * @param {number} [compressionType] Unity CompressionType（0 NONE / 1 LZMA / 2 LZ4 / 3 LZ4HC；-1 混合）
+   * @returns {number} 预估峰值（MB）
+   */
+  function peakFromDecompressed(decompressedMb, compressionType) {
+    if (!(decompressedMb > 0)) return 0;
+    // 白名单式判断：只有**明确已知的非 LZMA 类型**（NONE=0 / LZ4=2 / LZ4HC=3）才走老表；
+    //   其余（LZMA=1、未传、混合 -1、未来新增类型）一律按 LZMA —— 见上面的取舍说明。
+    const knownNonLzma = compressionType === 0 || compressionType === 2 || compressionType === 3;
+    if (!knownNonLzma) return peakFromLzma(decompressedMb);
+    // 非 LZMA（LZ4 / LZ4HC / NONE）沿用原表 —— 它是按 LZ4 路径实测拟合的，别动
     if (decompressedMb <= 5) return 147;
     if (decompressedMb <= 8) return 177;
     if (decompressedMb <= 11) return 192;
@@ -652,8 +713,11 @@ function createMemoryEstimator({ NS }) {
       return {
         decompressedBytes: s.decompressedBytes,
         compressedBytes: s.compressedBytes,
+        // 压缩类型取自块表（blocksSummary 顺手带出，不额外扫包）：
+        //   LZMA 与 LZ4 的真实峰值差 ~1.8~2 倍，不区分就等于对 LZMA 系统性低估。
+        compressionType: s.compression,
         // 本插件自己的模型给出峰值；核心直接采信、不再叠加安全垫（这个数里已含 15%）
-        peakBytes: Math.ceil(peakFromDecompressed(decompressedMb) * 1024 * 1024),
+        peakBytes: Math.ceil(peakFromDecompressed(decompressedMb, s.compression) * 1024 * 1024),
       };
     } catch {
       return null;   // 判不出来就让核心走回落，绝不因此阻断加载

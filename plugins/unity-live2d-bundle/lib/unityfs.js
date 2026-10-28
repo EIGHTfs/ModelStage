@@ -326,9 +326,20 @@
     for (const b of h.blocks) { decompressedBytes += b.uncompressedSize; compressedBytes += b.compressedSize; }
     const cab = h.nodes.find((n) => /CAB-/.test(n.path) && !/\.resS$/i.test(n.path));
     const resS = h.nodes.find((n) => /\.resS$/i.test(n.path));
+    // 压缩类型：每块的 flags 低 6 位（Unity 的 CompressionType）。
+    //   为什么要在这里给出来：内存峰值**按压缩类型不同**（LZMA 实测是 LZ4 的 ~1.8 倍，见 index.js 的表），
+    //   而块表本来就已经解析好了 —— 从这里取是"顺手带上"，不需要为它再扫一遍包。
+    const types = [];
+    for (const b of h.blocks) {
+      const t = b.flags & 0x3f;
+      if (!types.includes(t)) types.push(t);
+    }
     return {
       decompressedBytes, compressedBytes, blockCount: h.blocks.length,
       cabBytes: cab ? cab.size : 0, resSBytes: resS ? resS.size : 0,
+      // 全部块只会有一种压缩类型（Unity 打包即如此）；万一是混合，保留全部，由调用方取最保守的
+      compressionTypes: types,
+      compression: types.length === 1 ? types[0] : (types.length ? -1 : 0),
     };
   }
 

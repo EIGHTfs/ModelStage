@@ -158,7 +158,11 @@ export function checkUnpackMemory(sourceBytes, opts = {}) {
     return {
       ok: false,
       reason: 'insufficient-memory',
-      message: `预估峰值 ${peakEstMb}MB 超过可用预算 ${budgetMb}MB（当前可用 ${avail.mb}MB × ${MEM_BUDGET_RATIO}）`,
+      // 说清"为什么被拒 + 还能怎么办"：解包本来就是**串行**的（plugin-store 的 enqueue 链），
+      //   所以这里不是"并发太多"，而是这个包自己就要这么多 —— 能做的只有等内存回来再试。
+      //   不提高全局上限（那等于把守护关掉），也不自动重试（会在内存紧张时形成抖动重试风暴）。
+      message: `预估峰值 ${peakEstMb}MB 超过可用预算 ${budgetMb}MB（当前可用 ${avail.mb}MB × ${MEM_BUDGET_RATIO}）`
+        + '；解包串行执行，稍后内存释放后可重试（或先关掉其它已加载模型）',
       budgetMb,
       peakEstMb,
       availMb: avail.mb,

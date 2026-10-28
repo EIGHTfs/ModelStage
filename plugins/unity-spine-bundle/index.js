@@ -391,6 +391,60 @@ function install() {
   const MEMORY_RATIO_PER_DECOMPRESSED_MB = 2.3;
 
   /**
+   * LZMA 实测点：解压后 MB → **本次解压在内核峰值 RSS 上的增量** MB。
+   *
+   * 测量方法（2026-10-29 实测，与 live2d 插件同一套、同一天）：
+   *   每例独立子进程 → 真实 resolve 解压 → 读 /proc/self/status 的 VmHWM（内核峰值 RSS）减起始 RSS。
+   *   四个样本（Live2D 容器，块格式同样是 UnityFS）：2.76 / 8.55 / 21.37 / 33.4 MB → 131 / 355 / 562 / 722 MB。
+   *
+   * ⚠️ 本表与 `unity-live2d-bundle/index.js` 里的同名表**必须逐值相同**（同一物理事实）：
+   *   test/memory-peak-parity.test.mjs 会导入两个插件的实现、在一组解压量上比对结果，不一致就红。
+   * 为什么本插件也需要它：上面的线性式（103 + 2.3×）是按 LZ4 包标定的，
+   *   LZMA 在 8.55MB 处实测 355MB 而该式只给 123MB —— **低估 2.9 倍**，对 LZMA 包等于没有准入。
+   */
+  const LZMA_PEAK_POINTS = [[2.76, 131], [8.55, 355], [21.37, 562], [33.4, 722]];
+  /** 峰值安全垫：实测 × 1.15（与线性式留余量的口径一致） */
+  const PEAK_MARGIN = 1.15;
+
+  /**
+   * LZMA 路径的峰值（MB）：实测点之间线性内插、超出最大点按最后一段斜率外推。
+   * 为什么用折线而不是拟合曲线：四个点撑不起二次以上模型；折线在实测点上必然覆盖真值。
+   * @param {number} decompressedMb
+   * @returns {number}
+   */
+  function peakFromLzma(decompressedMb) {
+    if (!(decompressedMb > 0)) return 0;
+    const pts = LZMA_PEAK_POINTS;
+    // 比最小实测点还小：按最小点算（LZMA 字典开销固定，小包不会更省）
+    if (decompressedMb <= pts[0][0]) return Math.ceil(pts[0][1] * PEAK_MARGIN);
+    for (let i = 1; i < pts.length; i += 1) {
+      if (decompressedMb <= pts[i][0]) {
+        const [m0, v0] = pts[i - 1];
+        const [m1, v1] = pts[i];
+        const t = (decompressedMb - m0) / (m1 - m0);
+        return Math.ceil((v0 + (v1 - v0) * t) * PEAK_MARGIN);
+      }
+    }
+    const [ma, va] = pts[pts.length - 2];
+    const [mb, vb] = pts[pts.length - 1];
+    const slope = (vb - va) / (mb - ma);
+    return Math.ceil((vb + (decompressedMb - mb) * slope) * PEAK_MARGIN);
+  }
+
+  /**
+   * 认定某压缩类型是否走 LZMA 表。
+   * 认不出（未传 / 混合 -1 / 未来新增类型）⇒ **按 LZMA 算（更保守）**：
+   *   低估会放行 → 真冲高 → OOM 或被守护中止；高估只是"这次被拒/排队"，代价不对等。
+   * @param {number} t
+   * @returns {boolean}
+   */
+  function isLzmaPeak(t) {
+    // 白名单：只有明确已知的非 LZMA 类型（NONE=0 / LZ4=2 / LZ4HC=3）才不用 LZMA 表；
+    //   未传 / 混合 -1 / 未来新增类型 一律按 LZMA（保守）。
+    return !(t === 0 || t === 2 || t === 3);
+  }
+
+  /**
    * 内存代价声明（契约 §2.2 第②段：`decompressedBytes` 必须能从容器块表推出，不许填经验值）。
    *
    * 口径要点：
@@ -410,10 +464,15 @@ function install() {
       const summary = NS.unityfs.blocksSummary(bytes);
       if (!(summary.decompressedBytes > 0)) return null;
       const decompressedMb = summary.decompressedBytes / (1024 * 1024);
-      const peakMb = MEMORY_FIXED_OVERHEAD_MB + decompressedMb * MEMORY_RATIO_PER_DECOMPRESSED_MB;
+      // 压缩类型取自块表（blocksSummary 顺手带出，不额外扫包）；LZMA 走实测折线表，
+      //   其余走原线性式（那是按 LZ4 包标定的）。
+      const peakMb = isLzmaPeak(summary.compression)
+        ? peakFromLzma(decompressedMb)
+        : MEMORY_FIXED_OVERHEAD_MB + decompressedMb * MEMORY_RATIO_PER_DECOMPRESSED_MB;
       return {
         decompressedBytes: summary.decompressedBytes,
         compressedBytes: summary.compressedBytes,
+        compressionType: summary.compression,
         peakBytes: Math.ceil(peakMb * 1024 * 1024),
       };
     } catch {
