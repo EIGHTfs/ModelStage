@@ -148,6 +148,38 @@ export function validateProvides(provides) {
 /** 服务端日志（统一形状 {at,level,tag,msg,detail}） */
 const log = createLogger('plugins');
 
+/**
+ * 归一化清单里的 runtime 字段。
+ * 缺省 "node" = 历史行为（vm 沙盒里按 files[] 顺序跑 classic script）；
+ * "exec" = 插件目录里有一个可执行文件，宿主 spawn 它并用帧协议通信（**没有 js 要加载**）。
+ * @param {unknown} raw 清单里的原始值
+ * @returns {string}
+ */
+function normalizeRuntime(raw) {
+  if (raw === undefined || raw === null || raw === '') return 'node';
+  return String(raw);
+}
+
+/**
+ * 按 runtime 算出"这个插件要加载哪些 js 文件"，并做对应的存在性校验。
+ *
+ * 为什么必须分流：node 插件靠 files[] 顺序加载脚本，而 exec 插件根本没有 js
+ *   （它的入口是 entry 指向的可执行文件）。若不分流，兜底逻辑会把 entry（如 bin/unpack）
+ *   当成 js 读进沙盒，用户看到的是一堆看不懂的语法错误而不是"清单写错了"。
+ * @param {{m: object, runtime: string, dirName: string, isFile: Function}} p
+ * @returns {{ok: true, files: string[]} | {ok: false, reason: string}}
+ */
+function resolveLoadFiles({ m, runtime, dirName, isFile }) {
+  if (runtime === 'exec') {
+    if (!m.entry) return { ok: false, reason: 'runtime:"exec" 的插件缺 entry（相对插件目录的可执行路径），跳过' };
+    return { ok: true, files: [] };
+  }
+  const declared = Array.isArray(m.files) && m.files.length ? m.files : (m.entry ? [m.entry] : ['index.js']);
+  const files = declared.map((f) => String(f).replace(/^\.?\//, '')).filter((f) => isFile(`${dirName}/${f}`));
+  if (!files.length) return { ok: false, reason: '清单里没有任何存在的 js，跳过' };
+  return { ok: true, files };
+}
+
 export function readPluginManifest(pluginsDir, dirName, isFile, disabled, seenEffectIds = null) {
   let m = null;
   try {
@@ -156,12 +188,14 @@ export function readPluginManifest(pluginsDir, dirName, isFile, disabled, seenEf
     log.warn('plugin.json 解析失败，跳过该插件', { plugin: dirName, err: err.message });
     return null;
   }
-  const declared = Array.isArray(m.files) && m.files.length ? m.files : (m.entry ? [m.entry] : ['index.js']);
-  const files = declared.map((f) => String(f).replace(/^\.?\//, '')).filter((f) => isFile(`${dirName}/${f}`));
-  if (!files.length) {
-    log.warn('清单里没有任何存在的 js，跳过', { plugin: dirName });
+  const runtime = normalizeRuntime(m.runtime);
+  // 按 runtime 决定"要加载哪些 js"（exec 插件不加载任何 js），并做对应的存在性校验
+  const filesResult = resolveLoadFiles({ m, runtime, dirName, isFile });
+  if (!filesResult.ok) {
+    log.warn(filesResult.reason, { plugin: dirName });
     return null;
   }
+  const files = filesResult.files;
   const pid = String(m.id || dirName);
   if (isPluginDisabled(disabled, pid, dirName)) {
     log.info('已按 config/plugins.json 禁用', { plugin: pid });
@@ -201,6 +235,12 @@ export function readPluginManifest(pluginsDir, dirName, isFile, disabled, seenEf
     produces: m.produces && typeof m.produces === 'object' ? m.produces : null,
     errorCodes: Array.isArray(m.errorCodes) ? m.errorCodes.map(String) : [],
     files: files.map((f) => `${dirName}/${f}`),
+    /** 运行时（"node" | "exec"，缺省 node）：决定宿主用哪个适配器装载本插件 */
+    runtime,
+    /** exec 运行时的可执行入口（相对插件目录）；node 运行时为 null（入口由 files[] 末项决定） */
+    entry: m.entry ? String(m.entry) : null,
+    /** exec 运行时的帧协议版本；node 运行时为 null */
+    frameProtocol: m.frameProtocol === undefined || m.frameProtocol === null ? null : Number(m.frameProtocol),
     /** 受限扩展点（契约 §九）：空数组表示"没声明"，前端据此建能力键白名单 */
     effects: Array.isArray(m.effects) ? m.effects : [],
     manifest: true,

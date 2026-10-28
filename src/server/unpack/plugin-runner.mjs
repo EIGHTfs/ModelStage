@@ -17,12 +17,12 @@
 //      Uint8Array/Buffer，落盘时逐个取、取完立刻丢引用（详见 unpackBytes 注释）。
 import fs from 'node:fs';
 import path from 'node:path';
-import vm from 'node:vm';
-import zlib from 'node:zlib';
-import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 // 插件发现复用 registry 的扫描（纪律第二条：禁止相似功能多处实现）
 import { readPlugins } from '../plugins/registry.mjs';
+// 装载细节按清单的 runtime 交给对应适配器（node = vm 沙盒 / exec = 子进程，后者本步仅骨架）。
+//   本文件不再直接碰 vm / zlib / crypto —— 那些都在 runtime/node-vm.mjs 里。
+import { loadWithRuntime, readExecPermission, listRuntimes } from './runtime/index.mjs';
 
 // ../../.. ← 本文件在 src/server/unpack/，回退三级才是项目根（少算一级会把 plugins 指到 src/plugins）
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -51,7 +51,15 @@ const pluginCache = new Map();
 export function listProviderPlugins() {
   return readPlugins(PLUGINS_DIR, PLUGIN_SWITCH_FILE)
     .filter((m) => Array.isArray(m.provides) && m.provides.includes(SERVER_UNPACK_ROLE))
-    .map((m) => ({ id: m.id, files: m.files, version: m.version }));
+    .map((m) => ({
+      id: m.id,
+      files: m.files,
+      version: m.version,
+      // 运行时三件套（registry 已带缺省值：runtime 缺省 'node'，另两个 node 下为 null）
+      runtime: m.runtime,
+      entry: m.entry,
+      frameProtocol: m.frameProtocol,
+    }));
 }
 
 /**
@@ -103,60 +111,13 @@ function loadPlugin(pluginId) {
   try {
     const meta = listProviderPlugins().find((m) => m.id === pluginId);
     if (!meta) throw new Error(`未找到可解包的插件：${pluginId}（需要 provides 含 ${SERVER_UNPACK_ROLE}）`);
-    const sandbox = {
-      globalThis: {},
-      console,
-      TextEncoder,
-      TextDecoder,
-      Blob,
-      // node 侧不该建 blob URL：插件里有能力判断，真调到就是回归
-      URL: { createObjectURL: () => { throw new Error('node 侧不应调用 createObjectURL'); } },
-      AbortController,
-      // 插件会用 fetch 拉 profile；拿不到就走内置默认规则（与 17a 同口径）
-      fetch: () => Promise.resolve({ ok: false, status: 404, json: async () => ({}) }),
-      setTimeout, clearTimeout, setInterval, clearInterval,
-    };
-    sandbox.globalThis = sandbox;
-    vm.createContext(sandbox);
-    // 加载顺序完全取清单 files[]：lib 的先后 + 入口文件都在 plugin.json 里声明，
-    //   runner 不再维护一串写死的 lib 名（加插件/调顺序都不该改代码）
-    for (const rel of meta.files) {
-      vm.runInContext(fs.readFileSync(path.join(PLUGINS_DIR, rel), 'utf8'), sandbox, { filename: rel });
-    }
-    const NS = sandbox.__ULB__;
-    // 清单里有 lib/ 的插件必须把能力挂到 __ULB__（manifest 与代码不一致时要响亮报错）；
-    //   没有 lib/ 的插件不建这个命名空间，跳过即可 —— 通用化后不能强制要求它存在
-    const hasLibDir = meta.files.some((f) => f.includes('/lib/'));
-    if (hasLibDir && (!NS || !NS.bytes)) throw new Error('lib/bytes.js 未能挂载 __ULB__');
-    // 以下几块能力在浏览器由 DecompressionStream / 原生 API 提供，node 侧注入等价实现。
-    //   均按"插件是否建了该命名空间/该钩子"判空注入：别的插件不一定有 bytes/png。
-    if (NS && NS.bytes && typeof NS.bytes.setSha256 === 'function') {
-      NS.bytes.setSha256((u8) => crypto.createHash('sha256').update(u8).digest('hex'));
-    }
-    if (NS && NS.png) {
-      NS.png.setInflate((u8) => new Uint8Array(zlib.inflateSync(Buffer.from(u8))));
-      NS.png.setDeflate((u8) => new Uint8Array(zlib.deflateSync(Buffer.from(u8), { level: 6 })));
-      // 流式版：编码器按 64 行一块喂进来，这里不攒整张、不转 Buffer。
-      //   输出与一次性 deflateSync 逐字节相同（deflate 的切分不影响结果，只要不 flush）。
-      //   返回**片段数组**（不 concat）：编码器会把片段直接 set 进一次预分配的 PNG 缓冲，
-      //   多一次 concat 就是多一份 18MB。
-      NS.png.setDeflateStream(async (chunks) => {
-        const d = zlib.createDeflate({ level: 6 });
-        const out = [];
-        d.on('data', (c) => out.push(c));
-        const done = new Promise((res, rej) => { d.on('end', res); d.on('error', rej); });
-        for (const c of chunks) d.write(c);
-        d.end();
-        await done;
-        return out;
-      });
-    }
-    // 统一契约 __PLUGIN_API__；__ULB_NODE__ 是首版键名，保留兼容（老插件继续能装）
-    const api = sandbox.__PLUGIN_API__ || sandbox.__ULB_NODE__;
-    if (!api || typeof api.resolve !== 'function' || typeof api.canHandle !== 'function') {
-      throw new Error('插件未挂载 __PLUGIN_API__（或兼容键 __ULB_NODE__）的 resolve/canHandle');
-    }
-    return { ok: true, api, loadMs: Date.now() - t0 };
+    // 装载细节按清单的 runtime 交给对应适配器：
+    //   "node" → vm 沙盒里按 files[] 顺序跑 classic script（历史行为，逐字节等价）
+    //   "exec" → 宿主 spawn 插件目录里的可执行文件，帧协议通信（本步只有骨架，未实现）
+    // 门禁（exec 默认关闭）与适配器选择都在 runtime/index.mjs，本函数不认识具体运行时。
+    const r = loadWithRuntime(meta, { pluginsDir: PLUGINS_DIR, root: ROOT });
+    if (!r.ok) return { ok: false, error: r.error, code: r.code };
+    return { ok: true, api: r.api, loadMs: Date.now() - t0 };
   } catch (e) {
     // 只记原因、不抛：一个插件坏掉不能带走别的插件，也不能带走服务启动
     return { ok: false, error: String((e && e.message) || e) };
@@ -460,8 +421,14 @@ export function runnerInfo() {
       loadMs: (state && state.loadMs) || 0,
       error: state && state.ok === false ? state.error : null,
       pluginDir: path.relative(ROOT, path.join(PLUGINS_DIR, meta.id)),
+      // 运行时信息（诊断用）：让"这个插件走 vm 沙盒还是 exec 通道"一看就知道
+      runtime: meta.runtime || 'node',
+      entry: meta.entry || null,
+      frameProtocol: meta.frameProtocol === undefined ? null : meta.frameProtocol,
     };
   });
   const first = plugins[0] || { pluginId: null, loaded: false, loadMs: 0, error: null, pluginDir: null };
-  return { ...first, plugins };
+  // exec 通道是否放行（默认 false）：排障时"插件明明写了 exec 却没生效"多半卡在这
+  const execGate = readExecPermission(ROOT);
+  return { ...first, plugins, runtimes: listRuntimes(), execAllowed: execGate.allowed, execGateSource: execGate.source };
 }

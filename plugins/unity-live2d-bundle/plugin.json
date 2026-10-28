@@ -6,6 +6,7 @@
   ],
   "label": "Live2D包",
   "version": 1,
+  "runtime": "node",
   "entry": "index.js",
   "fileKinds": [
     "bundle"
