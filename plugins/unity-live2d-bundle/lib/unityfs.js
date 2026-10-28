@@ -95,6 +95,64 @@
     return dst;
   }
 
+  /**
+   * LZMA 块解压。
+   *
+   * **格式取证（从真实包读出，不是按文档推测）**：UnityFS 的 LZMA 块是
+   *   `[5 字节 props][raw LZMA1 流]` —— **没有** .lzma(alone) 那 8 字节未压缩长度。
+   *   props 5 字节 = 1 字节 lc/lp/pb + 4 字节 dictSize(LE)，实测全部样本恒为 `5d 00 00 08 00`
+   *   （lc=3 / lp=0 / pb=2 / dictSize=512KB，即 LZMA 标准默认值）。
+   *
+   * 做法：补上那 8 字节长度（用容器给的 uncompressedSize，小端）拼成标准 .lzma(alone)，
+   *   再交给 vendored 的 `LZMA.decompress`。这样不必用 raw API —— 任何支持 alone 的解码器都能接。
+   *
+   * **为什么必须自己校验长度**：实测把 uncompressedSize 传错（误用 blocksInfo 的 91 而非本块的
+   *   8677760）时，解码器**不报错**，静默解出 91 字节就返回。不校验会让半截数据流到下游，
+   *   表现成"模型损坏"，极难定位。
+   *
+   * 调用方注意：blocksInfo 传**头的 usz**，block 数据传**该块自己的 uncompressedSize**（两者不同）。
+   * @param {Uint8Array} src 原始压缩字节（含开头 5 字节 props）
+   * @param {number} uncompressedSize 本段声明解压后大小
+   * @param {Uint8Array} [target] 预分配目标缓冲（多块拼接场景）
+   * @param {number} [targetOffset]
+   * @returns {Uint8Array} 解压后的字节
+   */
+  function lzmaDecompress(src, uncompressedSize, target, targetOffset = 0) {
+    // 解码器由 lib/lzma-d-min.js 挂到全局（classic script，靠 plugin.json 的 files[] 顺序加载）
+    const LZMA = root.LZMA;
+    if (!LZMA || typeof LZMA.decompress !== 'function') {
+      throw NS.errors.fail('ULB_ERR_LZMA_UNAVAILABLE',
+        'LZMA 解码器未就绪：lib/lzma-d-min.js 需在 plugin.json 的 files[] 中排在 lib/unityfs.js 之前');
+    }
+    if (!src || src.length < 6) {
+      throw NS.errors.fail('ULB_ERR_LZMA_FAIL',
+        `LZMA 块数据过短：${src ? src.length : 0} 字节（至少需 5 字节 props + 压缩数据）`);
+    }
+    // 拼 13 字节 alone 头：5 props + 8 字节未压缩长度（小端）
+    const alone = new Uint8Array(13 + src.length - 5);
+    alone.set(src.subarray(0, 5), 0);
+    new DataView(alone.buffer, alone.byteOffset).setBigUint64(5, BigInt(uncompressedSize), true);
+    alone.set(src.subarray(5), 13);
+
+    let out;
+    try {
+      out = LZMA.decompress(alone);
+    } catch (e) {
+      throw NS.errors.fail('ULB_ERR_LZMA_FAIL', `LZMA 解压失败：${(e && e.message) || e}`);
+    }
+    // 上游返回普通 Array（且跨 realm）⇒ 统一归一成 Uint8Array，调用方只处理一种类型
+    const bytes = out instanceof Uint8Array ? out : Uint8Array.from(out || []);
+    if (bytes.length !== uncompressedSize) {
+      throw NS.errors.fail('ULB_ERR_LZMA_FAIL',
+        `LZMA 解压长度不符：声明 ${uncompressedSize}，实际 ${bytes.length}（解码器不校验长度，必须由本层兜住）`);
+    }
+    if (target) {
+      target.set(bytes, targetOffset);
+      return target.subarray(targetOffset, targetOffset + bytes.length);
+    }
+    return bytes;
+  }
+
   /** 按压缩类型解压一段数据（flags 低 6 位） */
   function decompress(bytes, uncompressedSize, flags, where, target, targetOffset = 0) {
     const type = flags & ARCHIVE.CompressionTypeMask;
@@ -109,8 +167,13 @@
     if (type === COMPRESSION.LZ4 || type === COMPRESSION.LZ4HC) {
       return lz4Decompress(bytes, uncompressedSize, target, targetOffset);
     }
-    const label = type === COMPRESSION.LZMA ? 'LZMA' : type === COMPRESSION.LZHAM ? 'LZHAM' : `未知(${type})`;
-    throw NS.errors.fail('ULB_ERR_CONTAINER_PARSE', `${where || '数据块'} 使用 ${label} 压缩，本插件尚未支持该分支（已支持 none / LZ4）`);
+    // LZMA 按**每块自己的 flags** 判（Unity 允许 blocksInfo 与 block 用不同压缩：
+    //   实测 57 个包 blocksInfo 是 LZ4HC/LZ4/none 而 block 是 LZMA）⇒ 不能按整包类型一刀切
+    if (type === COMPRESSION.LZMA) {
+      return lzmaDecompress(bytes, uncompressedSize, target, targetOffset);
+    }
+    const label = type === COMPRESSION.LZHAM ? 'LZHAM' : `未知(${type})`;
+    throw NS.errors.fail('ULB_ERR_CONTAINER_PARSE', `${where || '数据块'} 使用 ${label} 压缩，本插件尚未支持该分支（已支持 none / LZ4 / LZMA）`);
   }
 
   /**

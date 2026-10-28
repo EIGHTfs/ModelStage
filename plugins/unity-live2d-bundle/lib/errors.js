@@ -24,6 +24,8 @@
     NOT_UNITYFS: 'ULB_ERR_NOT_UNITYFS',                 // 文件不是 UnityFS 容器
     NO_CAB: 'ULB_ERR_NO_CAB',                           // 容器里没有 CAB-* 节点（不是资产包）
     CONTAINER_PARSE: 'ULB_ERR_CONTAINER_PARSE',         // 容器/序列化/类型树解析失败（数据布局不符该版本）
+    LZMA_FAIL: 'ULB_ERR_LZMA_FAIL',                     // LZMA 解压失败（数据损坏 / 解出长度与声明不符）
+    LZMA_UNAVAILABLE: 'ULB_ERR_LZMA_UNAVAILABLE',       // LZMA 解码器未加载（lib/lzma-d-min.js 未按序声明）
     EXTRACT: 'ULB_ERR_EXTRACT',                         // 从对象表抽取资产失败（缺 .resS、越界等）
     TEXTURE_FORMAT_UNSUPPORTED: 'ULB_ERR_TEX_FORMAT_UNSUPPORTED',   // 纹理格式未实现
     TEXTURE_DATA_SHORT: 'ULB_ERR_TEX_DATA_SHORT',       // 纹理压缩数据不足（截断/尺寸不符）

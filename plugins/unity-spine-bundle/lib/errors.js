@@ -31,6 +31,8 @@
     NOT_UNITYFS: 'SPI_ERR_NOT_UNITYFS',                 // 不是明文 UnityFS 容器（含"原始包已加密，需先解密"的情形）
     NO_CAB: 'SPI_ERR_NO_CAB',                           // 容器里没有 CAB-* 节点（不是资产包）
     CONTAINER_PARSE: 'SPI_ERR_CONTAINER_PARSE',         // 容器/序列化/类型树解析失败（数据布局不符该版本）
+    LZMA_FAIL: 'SPI_ERR_LZMA_FAIL',                     // LZMA 解压失败（数据损坏 / 解出长度与声明不符）
+    LZMA_UNAVAILABLE: 'SPI_ERR_LZMA_UNAVAILABLE',       // LZMA 解码器未加载（lib/lzma-d-min.js 未按序声明）
     NO_SKEL: 'SPI_ERR_NO_SKEL',                         // 容器可读但没有 .skel（不是 Spine 包，或包型不支持）
     NO_ATLAS: 'SPI_ERR_NO_ATLAS',                       // 有 .skel 但缺同名 .atlas
     SKEL_INVALID: 'SPI_ERR_SKEL_INVALID',               // .skel 字节不可用（无 Spine 版本串 / 长度异常）

@@ -18,10 +18,15 @@ const ROOT = path.resolve(__dirname, '..', '..');
 const LIB_DIR = path.join(ROOT, 'plugins', 'unity-live2d-bundle', 'lib');
 
 // 加载顺序即依赖顺序：errors 最先（其余库用它），bundle-probe 最后（它用其余全部）
+// ⚠️ 这份清单与 plugins/unity-live2d-bundle/plugin.json 的 files[] 是**同一事实的两处表达**：
+//   新增 lib 文件时两边都要加，漏一边的表现是「浏览器能跑、服务端预检报缺依赖」。
+//   长期应收敛成「从 plugin.json 派生」（过滤出 lib/ 前缀项），本轮只做 LZMA 接入，故仍手写。
 const LIB_ORDER = [
   'errors.js',
   'bytes.js',
   'common-strings.js',
+  // LZMA 解码器：必须排在 unityfs.js 之前（unityfs 的 lzmaDecompress 取全局 root.LZMA）
+  'lzma-d-min.js',
   'unityfs.js',
   'serialized.js',
   'typetree.js',
