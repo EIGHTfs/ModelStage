@@ -613,6 +613,9 @@ function runSuite(suite) {
     failed: result ? result.failed : null,
     total: result ? result.total : null,
     problems: parsed ? parsed.problemCount : null,
+    // 明细也要带上：只留计数的话，"通过但有 6 个问题"谁都查不到是什么（实测踩过：
+    //   f4-roots problems=6、f1-controls problems=2，落盘后只有数字，只能重跑碰运气）
+    problemList: (parsed && Array.isArray(parsed.problems)) ? parsed.problems : [],
     ms: Date.now() - started,
     failing: (result && result.results ? result.results.filter((r) => !r.ok).map((r) => r.name) : []),
     // 失败明细（断言名 + 实际值）：只留断言名时，排障还得再跑一遍才知道 actual 是什么
@@ -710,6 +713,7 @@ for (const suite of CHOSEN) {
       startedAt: new Date(Date.now() - r.ms).toISOString(),
       finishedAt: new Date().toISOString(),
       ms: r.ms, failed: r.failed, total: r.total, problems: r.problems,
+      problemList: r.problemList || [],
       // skip 必须落盘（含每条原因），否则"跳过"在下一次排查时完全不可见
       skipped: Number(r.skipped) || 0,
       skippedDetail: r.skippedDetail || [],
@@ -724,7 +728,7 @@ for (const suite of CHOSEN) {
       suite: x.name, outcome: x.outcome, ms: x.ms, failed: x.failed, total: x.total,
       skipped: Number(x.skipped) || 0,
       allSkipped: Number(x.total) > 0 && Number(x.skipped) === Number(x.total),
-      problems: x.problems, memAtStart: x.memAtStart, memAtEnd: x.memAtEnd,
+      problems: x.problems, problemList: x.problemList || [], memAtStart: x.memAtStart, memAtEnd: x.memAtEnd,
     })) });
   } catch (e) {
     say(`[test-all] ⚠ 落盘失败（不影响测试结论）：${e && e.message}`);
