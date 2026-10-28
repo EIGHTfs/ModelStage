@@ -26,7 +26,7 @@
 | 资源包自动判型 | 容器先解包、再按**产物**确定内容类型（`entry.json` 含 `skeletonFile` ⇒ Spine；含 `*.model3.json` ⇒ Live2D），不按扩展名猜 |
 | 背景 | 棋盘格 / 纯色 / 透明 / 自定义图；纯色预设可增删改名（服务端存储） |
 | 调试与诊断 | 浮层日志（四档多选）、就绪信号（给机器读的阶段状态机）、诊断探针落盘 |
-| 零依赖 | 无 `node_modules`、无锁文件，全部用 Node 内置能力；`package.json` 仅提供 `bin` / `engines` 等元数据，`dependencies` 为空 |
+| 依赖形态 | **主项目不把零依赖当硬约束**：现状仍是"无 `node_modules`、无锁文件，全部用 Node 内置能力"，但不以此为红线 —— 为功能需要可引入必要依赖；`package.json` 目前只提供 `bin` / `engines` 等元数据。**插件另算**：按独立项目对待，可有自己的 `package.json` 与依赖，唯一硬要求是依赖必须以「vm 沙盒能加载的形态」落地（IIFE / UMD 或构建产物），不能靠运行时 `import` |
 
 ### 资源包（UnityFS 容器）直接打开
 
