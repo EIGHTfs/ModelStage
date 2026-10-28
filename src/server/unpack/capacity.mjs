@@ -125,6 +125,21 @@ export function estimatePeakWithBasis(sourceMb, memory) {
 }
 
 /**
+ * 「已放行」时的说明文案（用户关掉了内存保护开关，请求仍然超预算）。
+ *
+ * 为什么单独抽一个函数：这条文案要在放行与拒绝两种结果里都用同一套数字，
+ *   而且必须是可读的——"放行了"不等于"没风险"，要让用户看到预估峰值与当前可用。
+ * @param {number} peakEstMb
+ * @param {number} budgetMb
+ * @param {number} availMb
+ * @returns {string}
+ */
+export function overLimitText(peakEstMb, budgetMb, availMb) {
+  return `已按「内存保护」开关放行：预估峰值 ${peakEstMb}MB 超过预算 ${budgetMb}MB`
+    + `（当前可用 ${availMb}MB）—— 本次解包可能引起内存紧张，若加载失败请开启内存保护或稍后重试`;
+}
+
+/**
  * 解包入口的内存判据（服务端 resolve 用；**不含时间上限**——用户主动加载不能因为"慢"被拒）。
  *
  * 内存保护开关的落地口径：
@@ -147,7 +162,7 @@ export function checkUnpackMemory(sourceBytes, opts = {}) {
       return {
         ok: true,
         reason: 'over-limit-allowed',
-        message: OVER_LIMIT_TEXT(peakEstMb, budgetMb, avail.mb),
+        message: overLimitText(peakEstMb, budgetMb, avail.mb),
         budgetMb,
         peakEstMb,
         availMb: avail.mb,

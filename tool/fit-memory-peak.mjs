@@ -58,6 +58,21 @@ export function median(nums) {
 }
 
 /**
+ * 重复测量的**最大值**聚合 —— 准入要用这个，不用中位数。
+ *
+ * 准入要回答的是"这个包最坏会到多少"，不是"典型会到多少"：
+ *   中位数 + 固定余量等于在猜抖动幅度（实测同一包 638/638/734，抖动 15%），
+ *   而 max 直接对上"最坏情况"这个问题的形状。代价是表值略升、边界包可能被拒 ——
+ *   那是真实风险，不是误拒。
+ * @param {number[]} nums
+ * @returns {number}
+ */
+export function maxOf(nums) {
+  const arr = (nums || []).filter((n) => Number.isFinite(n));
+  return arr.length ? Math.max(...arr) : 0;
+}
+
+/**
  * 把测量结果整理成行，并判每条是否"低估"。
  * @param {Array<{pack:string, decompressedMb:number, measuredBytes:number, declaredBytes:number}>} samples
  * @returns {Array<{pack:string, decompressedMb:number, measuredMb:number, declaredMb:number, ratio:number, low:boolean}>}
@@ -110,7 +125,15 @@ export function suggestPoints(rows, opts = {}) {
     const prev = byMb.get(r.decompressedMb) || 0;
     if (r.measuredMb > prev) byMb.set(r.decompressedMb, r.measuredMb);
   }
-  const sorted = [...byMb.entries()].sort((a, b) => a[0] - b[0]);
+  // 键保留 2 位小数：只保留 1 位会把 18.69 进位成 18.7，查询（18.69）就落在键下方，
+  //   插值结果会比该点实测略低（实测差 1MB 就被自检判成"低估"）。向下取整到 2 位更贴近真实尺寸。
+  const rounded = new Map();
+  for (const [mb, measured] of byMb) {
+    const key = Math.floor(mb * 100) / 100;
+    const prev = rounded.get(key) || 0;
+    if (measured > prev) rounded.set(key, measured);
+  }
+  const sorted = [...rounded.entries()].sort((a, b) => a[0] - b[0]);
   const out = [];
   let envelope = 0;   // 累进上包络
   for (const [mb, measured] of sorted) {
@@ -193,9 +216,11 @@ async function measureOne(api, pack, repeat = 1) {
   const name = path.basename(pack);
   const decl = api.estimateMemory({ rootId: 'fit', rel: name, name, size: bytes.length, bytes });
   if (!decl || !(decl.decompressedBytes > 0)) throw new Error(`插件读不出块表（不是 UnityFS 容器？）：${pack}`);
-  // 重复测量取中位数：单次受 GC 时机影响可抖 15%+（实测同一包 638/638/734）
+  // 注意：这里**只测一次**。重复测量必须由父进程 spawn 多个独立子进程来做 ——
+  //   同一个进程里连解同一个包，后几次会被插件/引擎内部的缓存托底（实测 5MB 的包
+  //   连测三次中位数只有 171MB，而单次干净进程是 253MB），那样测出来的不是峰值。
   const runs = [];
-  for (let i = 0; i < Math.max(1, repeat); i += 1) {
+  for (let i = 0; i < 1; i += 1) {
     const before = selfMem();
     await api.resolve({ rootId: 'fit', rel: name, name, size: bytes.length, bytes });
     const after = selfMem();
@@ -228,7 +253,8 @@ const USAGE = `用法：
             child  = 每包独立子进程（基准更小，只用于对比，别混进同一张表）
   --out     写 JSON 样本；不给则只打 stdout
   --margin  建议表余量，默认 1.15
-  --repeat  每包重复测量几次取中位数（抗 GC 抖动；child 基准下每轮都是干净进程），默认 1
+  --repeat  每包重复测量几次（child 基准下每轮都是独立干净进程），默认 1
+  --agg     聚合方式：max=取最大（**准入用这个**，答案对的是"最坏会到多少"）/ median=中位数（诊断用）
 
 退出码：0 全部不低估；1 存在低估（declared < measured）；2 用法/环境错误`;
 
@@ -275,6 +301,9 @@ export async function main(argv = process.argv.slice(2)) {
   const margin = Number(valOf('--margin')) || 1.15;
   // 重复测量次数：单次峰值受 GC 时机影响可抖 15%+，多测取中位数更稳
   const repeat = Math.max(1, Number(valOf('--repeat')) || 1);
+  // 聚合方式：max（准入要的是"最坏会到多少"，推荐）/ median（典型值，仅诊断用）
+  const agg = (valOf('--agg') || 'max').toLowerCase();
+  if (agg !== 'max' && agg !== 'median') { console.error('✗ --agg 只能是 max 或 median'); return 2; }
   const outFile = valOf('--out') || null;
 
   const packs = readPackList(packsFile);
@@ -289,7 +318,7 @@ export async function main(argv = process.argv.slice(2)) {
     for (const pack of packs) {
       try {
         const s = await measureOne(api, pack, repeat);
-        samples.push(s);
+        samples.push({ ...s, medianBytes: s.measuredBytes, maxBytes: s.measuredBytes });
         console.log(`  ✓ ${path.basename(pack)}（解压 ${(s.decompressedMb).toFixed(2)}MB）`);
       } catch (e) {
         console.error(`  ✗ ${path.basename(pack)}：${(e && e.message) || e}`);
@@ -297,14 +326,28 @@ export async function main(argv = process.argv.slice(2)) {
     }
   } else {
     for (const pack of packs) {
-      // child 基准下每一轮本来就是干净进程 ⇒ 直接把 --repeat 透传给子进程
-      const r = spawnSync(process.execPath, [fileURLToPath(import.meta.url), '--child', pack, '--repeat', String(repeat)], { encoding: 'utf8', timeout: 900000 });
-      const line = (r.stdout || '').trim().split('\n').filter(Boolean).pop();
-      try {
-        samples.push(JSON.parse(line));
-        console.log(`  ✓ ${path.basename(pack)}`);
-      } catch {
-        console.error(`  ✗ ${path.basename(pack)}：子进程失败 ${(r.stderr || '').slice(0, 80)}`);
+      // 反复测量 = 反复 spawn **独立子进程**（同进程连测会被内部缓存托底，测不出峰值）
+      const measuredRuns = [];
+      let meta = null;
+      for (let i = 0; i < repeat; i += 1) {
+        const r = spawnSync(process.execPath, [fileURLToPath(import.meta.url), '--child', pack], { encoding: 'utf8', timeout: 900000 });
+        const line = (r.stdout || '').trim().split('\n').filter(Boolean).pop();
+        try {
+          const one = JSON.parse(line);
+          meta = one;
+          measuredRuns.push(one.measuredBytes);
+        } catch {
+          console.error(`  ✗ ${path.basename(pack)} 第 ${i + 1} 轮失败：${(r.stderr || '').slice(0, 60)}`);
+        }
+      }
+      if (meta && measuredRuns.length) {
+        const med = median(measuredRuns);
+        const mx = maxOf(measuredRuns);
+        const adopted = agg === 'max' ? mx : med;
+        samples.push({ ...meta, measuredBytes: adopted, medianBytes: med, maxBytes: mx, runs: measuredRuns.map((b) => Math.round(b / MB)) });
+        console.log(`  ✓ ${path.basename(pack)}（${measuredRuns.length} 轮：中位 ${Math.round(med / MB)}MB / 最大 ${Math.round(mx / MB)}MB ⇒ 采纳 ${agg === 'max' ? '最大' : '中位'} ${Math.round(adopted / MB)}MB）`);
+      } else {
+        console.error(`  ✗ ${path.basename(pack)}：全部轮次失败`);
       }
     }
   }
