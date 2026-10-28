@@ -121,12 +121,8 @@ export function estimatePeakWithBasis(sourceMb, memory) {
 
   // ② 实测回填值 —— **只作下限兜底，不能压声明值**
   //
-  //    measuredPeakBytes 的成因（src/server/unpack/plugin-store.mjs 的 recordMeasuredPeak）：
-  //      峰值 = before.rss + max(0, after.peak - before.peak)，而 VmHWM **只增不减**
-  //      ⇒ 这个数反映的是「本次解包把峰值顶高了多少 + 当时进程已占多少」，
-  //        **不是这一包自身的成本**；同进程连续解包时，后续包的 delta 会退化为 0。
-  //    实测证据：同一进程先后解两个 21MB 包，measured 分别是 225MB 与 1195MB；
-  //      而干净进程测同一包的峰值是 654MB ⇒ measured 会**远低于**真实成本。
+  //    measuredPeakBytes 的成因与局限**详见 src/server/unpack/plugin-store.mjs 里
+  //    recordMeasuredPeak 的注释**（那里讲清了为什么它不是"这一包的成本"、以及实测 225MB vs 1195MB 的证据）。
   //
   //    ⇒ 所以方向必须不对称：measured **高于**声明时信它（说明这包确实更贵），
   //      measured **低于**声明时忽略（它只是进程状态，不能拿来把声明压低）。
