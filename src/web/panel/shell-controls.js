@@ -126,7 +126,7 @@ export function applyHangGuard(on) {
     stageStatus('防卡死保护：关', 'info', { show: true });
     return;
   }
-  state.hangGuardStats = { ticks: 0, stalls: 0, recoveries: 0, lastFrames: null };
+  state.hangGuardStats = { ticks: 0, stalls: 0, recoveries: 0, lastFrames: null, skippedHidden: 0 };
   window.__WEB__ && (window.__WEB__.hangGuard = state.hangGuardStats);
   state.hangGuardTimer = setInterval(hangGuardTick, hangGuardConfig.tickMs);
   stageStatus(`防卡死保护：开（连续 ${hangGuardConfig.stallLimit}s 无新帧则尝试恢复）`, 'info', { show: true });
@@ -148,6 +148,15 @@ export function applyMemoryGuard(on) {
 function hangGuardTick() {
   const stats = state.hangGuardStats;
   if (!stats || !stage || typeof stage.stats !== 'function') return;
+  // 标签页在后台时**直接跳过，连统计都不做**：
+  //   浏览器按规范会暂停后台页的 requestAnimationFrame（省电），frames 自然不增长 ——
+  //   那是浏览器的正常行为，不是我们的渲染卡死。在这儿统计只会得出"后台=卡死"的假结论，
+  //   而且下一段的 stallLimit 一到就会真的去 pause()/play() 自愈一次（多余动作）。
+  // 计数单独记 skippedHidden（不是把 stalls 归零），让它可观测：将来要看"到底跳过了多少次"有据可查。
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+    stats.skippedHidden = (stats.skippedHidden || 0) + 1;
+    return;
+  }
   let snap = null;
   try { snap = stage.stats(); } catch { snap = null; }
   if (!snap) return;
@@ -165,7 +174,25 @@ function hangGuardTick() {
     try { stage.pause(); stage.play(); } catch { /* 自愈失败不影响主流程 */ }
   }
   document.documentElement.dataset.hangGuardStats =
-    `ticks=${stats.ticks} stalls=${stats.stalls} rec=${stats.recoveries}`;
+    `ticks=${stats.ticks} stalls=${stats.stalls} rec=${stats.recoveries} skip=${stats.skippedHidden || 0}`;
+}
+
+// 从后台切回可见时**重置基线**：
+//   后台期间 rAF 停着、frames 冻住，stats.lastFrames 是"很久以前的旧值"。
+//   不重置就直接比，会把整个后台时长一次性算成停滞 ⇒ 切回来第一个 tick 就报"渲染停滞"，
+//   和后台误报是同一个病，只是晚了一步。
+// 这里只清基线（lastFrames=null 让下一个 tick 只记录不比较；stalls 归零），
+//   不动 recoveries/skippedHidden（那是累计事实，不该被一次切页抹掉）。
+// 幂等注册：模块只加载一次，监听只挂一次。
+if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+  document.addEventListener('visibilitychange', () => {
+    const stats = state.hangGuardStats;
+    if (!stats) return;
+    if (document.visibilityState === 'visible') {
+      stats.lastFrames = null;
+      stats.stalls = 0;
+    }
+  });
 }
 
 /**
