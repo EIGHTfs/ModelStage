@@ -25,13 +25,23 @@
     50: 'ASTC_RGBA', 51: 'ASTC_RGBA_HDR', 52: 'ASTC_RGB', 53: 'ASTC_RGB_HDR',
   };
 
-  /** 查某个 Unity TextureFormat 是否可解码（以 texdecode.FORMATS 为唯一真相） */
+  /**
+   * 查某个 Unity TextureFormat 是否**可解码**。
+   *
+   * 判据只有一个：`texdecode.canDecode(fmt)`（内部只认 DECODERS 表）。
+   * 为什么不再用 `!!FORMATS[fmt]`：FORMATS 是格式字典（名称/尺寸/block），含 48 ETC2_RGBA1
+   *   这种"有条目但从未实现解码"的格式 ⇒ 预检会报"支持"、真正解包才抛 ULB_ERR_TEX_DECODE，
+   *   同一件事两套判据。改名/尺寸仍走 FORMATS，但"能不能解"不再由它决定。
+   */
   function formatSupport(fmt) {
     const table = NS.texdecode && NS.texdecode.FORMATS ? NS.texdecode.FORMATS : null;
     const entry = table ? table[fmt] : null;
     const raw = NS.texdecode && NS.texdecode.formatName ? NS.texdecode.formatName(fmt) : `未知格式 ${fmt}`;
     const name = entry ? raw : (KNOWN_UNSUPPORTED[fmt] || raw);
-    return { supported: !!entry, formatName: name };
+    const canDecode = NS.texdecode && typeof NS.texdecode.canDecode === 'function'
+      ? NS.texdecode.canDecode(fmt)
+      : false;   // 缺 canDecode 时按"不可解码"处理：宁可早拒绝，也不要报"支持"却在解包时炸
+    return { supported: canDecode, formatName: name };
   }
 
   /** 从序列化文件里按类名统计对象数（避免为了数动作而跑一遍动画转换） */

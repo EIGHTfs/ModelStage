@@ -158,7 +158,7 @@
   function decode(meta, data, opts) {
     const fmt = meta.format;
     const f = FORMATS[fmt];
-    if (!f) throw NS.errors.fail('ULB_ERR_TEX_FORMAT_UNSUPPORTED', `暂不支持纹理格式 ${fmt}（${meta.name || ''}）——已支持：ETC2_RGBA8(47)、ETC2_RGB(45)、ETC2_RGBA1(48)、ETC_RGB4(34)、DXT1(10)、DXT5(12)、BC4(26)、BC5(27)、RGBA32(4)、ARGB32(5)、RGB24(3)、Alpha8(1)、RGB565(7)；暂未实现：ASTC(50 系列)、PVRTC(30/31)、BC6H(24)、BC7(25)`);
+    if (!f) throw NS.errors.fail('ULB_ERR_TEX_FORMAT_UNSUPPORTED', `暂不支持纹理格式 ${fmt}（${meta.name || ''}）——已支持：ETC2_RGBA8(47)、ETC2_RGB(45)、ETC_RGB4(34)、DXT1(10)、DXT5(12)、BC4(26)、BC5(27)、RGBA32(4)、ARGB32(5)、RGB24(3)、Alpha8(1)、RGB565(7)；暂未实现：ETC2_RGBA1(48)、ASTC(50 系列)、PVRTC(30/31)、BC6H(24)、BC7(25)`);
     const need = expectedSize(fmt, meta.width, meta.height);
     if (data.length < need) throw NS.errors.fail('ULB_ERR_TEX_DATA_SHORT', `纹理 ${meta.name || ''}（${f.name} ${meta.width}x${meta.height}）数据不足：需要 ${need} 字节，实际 ${data.length}`);
     // 表里有格式、但没有登记解码器（如 48 ETC2_RGBA1）⇒ 继续走这条兜底，与重构前完全一致
@@ -169,5 +169,21 @@
     return !opts || opts.flipY !== false ? flipY(rgba, meta.width, meta.height) : rgba;
   }
 
-  NS.texdecode = { decode, formatName, expectedSize, flipY, FORMATS };
+  /**
+   * 某个 Unity TextureFormat 能否**真正解码**。
+   *
+   * 为什么需要它：FORMATS 是"格式字典"（名称 / 尺寸 / block 布局），**不代表能解码** ——
+   *   例如 48 ETC2_RGBA1 在 FORMATS 里有条目，但 DECODERS 从未登记，decode() 会抛
+   *   ULB_ERR_TEX_DECODE。若外部（预检 / 面板提示）拿 `!!FORMATS[fmt]` 当"支持"，
+   *   就会先报"支持"、真正解包时才炸 —— 同一件事两套判据。
+   * ⇒ 能力判定只认这张表：**这是"能不能解码"的唯一真相**。
+   *
+   * @param {number} fmt
+   * @returns {boolean}
+   */
+  function canDecode(fmt) {
+    return typeof DECODERS[fmt] === 'function';
+  }
+
+  NS.texdecode = { decode, canDecode, formatName, expectedSize, flipY, FORMATS };
 }
