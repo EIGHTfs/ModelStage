@@ -180,7 +180,9 @@ const skip = (name, sel, expect, reason) => results.push({ name, sel, action: 's
  */
 
   // 基础上下文（其余 helper 由两个工厂提供；工厂内同名解构 ⇒ helper 体内一字不改）
-  const C = { sleep, q, qa, snap, click, results, rec, skip };
+  // thinDataReason：数据不足的声明。**必须挂在 C 上**——赋值发生在顶层 helper（runSearch）里，
+  //   而 IIFE 内用 let 声明的话 helper 看不见（非严格模式下会写成全局，IIFE 读到的仍是空串）。
+  const C = { sleep, q, qa, snap, click, results, rec, skip, thinDataReason: '' };
   // 顺序有依赖：makeListHelpers 里的 charKeysOf 用到 makeBasicHelpers 提供的 gameOf ⇒ basic 必须先 assign
   Object.assign(C, makeBasicHelpers(C));   // rootsByName / until / domRows / gameOf / rosterSig / clickGame
   Object.assign(C, makeListHelpers(C));    // rootModelCounts / charKeysOf / clickChar / section
@@ -214,7 +216,15 @@ const skip = (name, sel, expect, reason) => results.push({ name, sel, action: 's
 // 防再犯：失败项单列 failures（期望 vs 实测并排），这样"failed:1"一眼就能看出差在哪个数值，
 // 不用从 32 条 results 里翻；每条用例的 actual 也必须写实测值而不是布尔结论。
 const failures = results.filter((r) => !r.ok).map((r) => ({ name: r.name, sel: r.sel, expect: r.expect, actual: r.actual }));
-return JSON.stringify({ total: results.length, failed: failures.length, skipped: results.filter((r) => r.skipped === true).length, failures, results }, null, 1);
+return JSON.stringify({
+  total: results.length,
+  failed: failures.length,
+  skipped: results.filter((r) => r.skipped === true).length,
+  // 只有"数据不足"那条真被跳过时才带原因：test-all 会把它显示成可读的 ⚠️ 说明
+  summary: C.thinDataReason ? { skipReason: C.thinDataReason } : {},
+  failures,
+  results,
+}, null, 1);
 })();
 
 /**
@@ -470,6 +480,7 @@ async function runSearch(C) {
   clickGame(firstGame);
   await until(() => gameOf(firstGame).status === 'ready');
   const baseChars = qa('[data-char-key].tree-char').length;
+  const baseVariants = qa('[data-model-id]').length;
   // 关键词取自**当前渲染出来的第一个角色标题**（角色名是数据，不写死具体角色）：
   //   取前 2 个字做子串搜索，既保证能命中，又能验证"结果被收窄"。
   const firstTitle = ((qa('.tree-char-title')[0] || {}).textContent || '').trim();
@@ -484,9 +495,25 @@ async function runSearch(C) {
   const hitChars = qa('[data-char-key].tree-char').length;
   const hitVariants = qa('[data-model-id]').length;
   const titles = qa('.tree-char-title').slice(0, 3).map((n) => n.textContent);
-  rec('搜索框输入（中文名）', '#roster-search', `input "${kw}"（取自第一个角色名）`, '结果收窄且 >0（搜索时自动展开到变体）',
-    `角色 ${baseChars}→${hitChars}，变体 ${hitVariants}，命中=${JSON.stringify(titles)}`,
-    hitChars > 0 && hitChars < baseChars && hitVariants > 0);
+  // 前置条件：展开态得**有足够多的角色行**，"搜索会把结果收窄"才是个有意义的命题。
+  //   实测过的假红：测试实例数据极稀时 baseChars 只有 2，一搜索反而**全量展开**命中 3 个（2→3 变多），
+  //   判据 hitChars < baseChars 不成立。那不是搜索坏了，是数据不足 —— 与 f3-reveal 的"可滚高度 0px"同类。
+  //   ⚠️ 只看 baseChars，**不能**把 baseVariants 当条件：真数据实例（117 个角色）搜索前同样没展开变体，
+  //      baseVariants 也是 0，用它会把数据充足的情况一并跳过（那是把门禁关掉，不是修判据）。
+  //   **判据本身不放宽**（仍要求 收窄且 >0 且 有变体），只在前置不成立时显式声明跳过。
+  const MIN_BASE_CHARS = 5;
+  const thinData = baseChars < MIN_BASE_CHARS;
+  if (thinData) {
+    const why = `当前实例展开态只有 baseChars=${baseChars} 个角色行（要求 ≥${MIN_BASE_CHARS}；baseVariants=${baseVariants}），`
+      + `无法验证"搜索收窄"`;
+    skip('搜索框输入（中文名）', '#roster-search', `input "${kw}"（取自第一个角色名）`,
+      `${why}；实测命中 角色 ${baseChars}→${hitChars}、变体 ${hitVariants}。真数据实例下该断言仍需通过`);
+    C.thinDataReason = why;   // 挂到上下文上，IIFE 汇总时才能读到（见 C 的声明处注释）
+  } else {
+    rec('搜索框输入（中文名）', '#roster-search', `input "${kw}"（取自第一个角色名）`, '结果收窄且 >0（搜索时自动展开到变体）',
+      `角色 ${baseChars}→${hitChars}，变体 ${hitVariants}，命中=${JSON.stringify(titles)}`,
+      hitChars > 0 && hitChars < baseChars && hitVariants > 0);
+  }
   }
 
   await setKw('zzz不存在的角色zzz');

@@ -238,7 +238,8 @@ const f4Sig = () => ({
     total: results.length,
     failed: results.filter((x) => !x.ok).length,
     skipped: results.filter((x) => /^skipped:/.test(String(x.actual))).length,
-    summary: { f4probe: probeBase || null, beforeRoots: beforeIds, afterRoots: (await rootsAll()).map((r) => r.id), probeId: P.probeId },
+    // skipReason：只有"没有磁盘上存在的根可撞名"那条真被跳过时才带（test-all 会显示成可读的 ⚠️）
+    summary: { f4probe: probeBase || null, beforeRoots: beforeIds, afterRoots: (await rootsAll()).map((r) => r.id), probeId: P.probeId, ...(C.dupSkipReason ? { skipReason: C.dupSkipReason } : {}) },
     results,
   }, null, 1);
 })()
@@ -422,14 +423,20 @@ async function runToggleEnabled(C, P) {
 
 /** F4 ErrorSurfacing —— 从原巨型 IIFE 整体提出（用例代码逐字搬运，仅把跨段可变状态改为 P.xxx） */
 async function runErrorSurfacing(C, P) {
-  const { beforeRoots, f4Sig, last, mgr, msg, rec, waitStable } = C;
+  const { beforeRoots, f4Sig, last, mgr, msg, rec, skip, waitStable } = C;
     // ------------------------------------------------------------ ⑤ 三条错误路径（不依赖探针目录，始终执行）
       const rel = await mgr().submitAdd('relative/dir');
       await waitStable(f4Sig, { timeoutMs: 6000, label: '提交后 UI 落定' });
       const relStatus = last().status; const relMsg = msg();
-      // 重复目录用真实根路径（从 GET 取，不写死）
-      const dupPath = beforeRoots[0] && beforeRoots[0].path;
-      let dup = null; let dupStatus = null; let dupMsg = 'skipped: 配置里没有可用根路径';
+      // 重复目录用真实根路径（从 GET 取，不写死）。
+      //   ⚠️ 必须挑**磁盘上确实存在**的根：服务端校验顺序是
+      //     「相对路径→400（write.mjs:408）→ 目录不存在→400（:409）→ 重复登记→409（:412-416）」，
+      //     路径不存在时永远先撞 400「目录不存在或不是目录」，409 那条**结构上不可达**。
+      //     测试实例（runtime/test-instance）正因根路径在磁盘上不存在而假红 —— 是数据不足，不是产品缺陷。
+      //   exists 由 GET /api/roots 现算给出，不自己猜。
+      const dupRoot = (beforeRoots || []).find((r) => r && r.path && r.exists !== false);
+      const dupPath = dupRoot && dupRoot.path;
+      let dup = null; let dupStatus = null; let dupMsg = 'skipped: 没有"磁盘上存在"的根可撞名';
       if (dupPath) {
         dup = await mgr().submitAdd(dupPath);
         await waitStable(f4Sig, { timeoutMs: 6000, label: '提交后 UI 落定' });
@@ -438,12 +445,20 @@ async function runErrorSurfacing(C, P) {
       const miss = await mgr().submitRemove('__nope__');
       await waitStable(f4Sig, { timeoutMs: 6000, label: '提交后 UI 落定' });
       const missStatus = last().status; const missMsg = msg();
-      rec('F4⑤ 错误如实显示（400/409/404）', '#root-msg', '相对路径 / 重复目录 / 删不存在',
-        '三条错误都把后端文案原样显示并带状态码：绝对路径(400)、已登记(409)、未找到(404)',
-        `相对路径→HTTP ${relStatus}“${relMsg}”；重复目录→HTTP ${dupStatus}“${dupMsg}”；删不存在→HTTP ${missStatus}“${missMsg}”`,
-        rel === false && relStatus === 400 && /绝对路径/.test(relMsg)
-          && (!dupPath || (dup === false && dupStatus === 409 && /已登记/.test(dupMsg)))
-          && miss === false && missStatus === 404 && /未找到/.test(missMsg));
+      // 首尾两条（相对路径 400 / 删不存在 404）任何时候都可验；中间那条（重复 409）依赖前置条件
+      const relAndMissOk = rel === false && relStatus === 400 && /绝对路径/.test(relMsg)
+        && miss === false && missStatus === 404 && /未找到/.test(missMsg);
+      if (!dupPath) {
+        C.dupSkipReason = `测试实例没有"磁盘上存在"的资源根可撞名（共 ${(beforeRoots || []).length} 条根，全部 exists=false），`
+          + `409 重复登记无法构造。已实测两条：相对路径→HTTP ${relStatus}“${relMsg}”；`
+          + `删不存在→HTTP ${missStatus}“${missMsg}”（这两条判据仍成立=${relAndMissOk}）`;
+        skip('F4⑤ 错误如实显示（400/409/404）', C.dupSkipReason);
+      } else {
+        rec('F4⑤ 错误如实显示（400/409/404）', '#root-msg', '相对路径 / 重复目录 / 删不存在',
+          '三条错误都把后端文案原样显示并带状态码：绝对路径(400)、已登记(409)、未找到(404)',
+          `相对路径→HTTP ${relStatus}“${relMsg}”；重复目录→HTTP ${dupStatus}“${dupMsg}”（撞名根 exists=${dupRoot.exists}）；删不存在→HTTP ${missStatus}“${missMsg}”`,
+          relAndMissOk && dup === false && dupStatus === 409 && /已登记/.test(dupMsg));
+      }
 }
 
 

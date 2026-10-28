@@ -743,6 +743,9 @@ for (const suite of CHOSEN) {
   //     · 意外全跳过（没有原因）⇒ 仍是红，这是退化信号
   const allSkipped = Number(r.total) > 0 && Number(r.skipped) === Number(r.total);
   const declaredSkip = allSkipped && !!r.declaredSkipReason;
+  // 部分跳过（套件给了 skipReason、但只有个别条目被跳过）：套件本身仍算通过，
+  //   但每条跳过都必须**把原因摆出来** —— 否则"数据不足"会静默混进 ✅ 里，下一个人以为整块都验过了。
+  const partialSkipReason = (!allSkipped && Number(r.skipped) > 0) ? (r.declaredSkipReason || '(套件未声明原因)') : '';
   if (allSkipped && !declaredSkip) report.ok = false;
   if (r.outcomeHint) say(`      ⚠ ${r.outcome}：${r.outcomeHint}`);
   const skipTag = allSkipped ? '（全部 skip）' : (r.skipped > 0 ? `（skip ${r.skipped}）` : '');
@@ -750,6 +753,12 @@ for (const suite of CHOSEN) {
     + (r.failing.length ? `\n      未通过：${r.failing.join(' / ')}` : '')
     + ((r.failingDetail || []).map((d) => `\n         · ${d.name}\n           actual: ${String(d.actual).slice(0, 220)}\n           expect: ${String(d.expect).slice(0, 160)}`).join(''))
     + (declaredSkip ? `\n       ⚠️ 未验证（声明式跳过）：${r.declaredSkipReason}` : '')
+    // 部分跳过：逐条列出"哪条没验 + 为什么"，比只给一句汇总原因更有用
+    + (partialSkipReason
+      ? (r.skippedDetail && r.skippedDetail.length
+        ? r.skippedDetail.map((d) => `\n       ⏭ 未验证：${d.name} —— ${String(d.reason || '(无原因)').slice(0, 220)}`).join('')
+        : `\n       ⚠️ 有 ${r.skipped} 条未验证（声明式跳过）：${partialSkipReason}`)
+      : '')
     + (allSkipped && !declaredSkip ? `\n       🚨 本套件实际未验证：${r.total} 条全部被 skip 且未声明原因（环境缺数据或套件退化，不是代码通过）` : ''));
 }
 
