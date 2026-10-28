@@ -10,6 +10,12 @@
 //   用户要新数字，重新加载模型或重开设置面板即可。
 //
 // 无障碍：整条 role="img" + aria-label 写全三个数值；文字行**始终可见**（触摸端没有 hover）。
+//
+// 失败态（与"主动隐藏"是两件事，别混）：
+//   · 拉取失败 / 数据不完整 ⇒ **保留占位**，条上写「内存：不可用（原因）」，
+//     原因至少能分出 超时 / HTTP xxx / 数据不完整 三种（用户不必猜是接口挂了还是自己被关了保护）。
+//   · 开关关掉（"显示状态信息" / 内存保护关）⇒ 走 hide()，整块不占位 —— 这是主动隐藏，维持原语义。
+//   · 下次轮询/刷新拿到数据 ⇒ 自动恢复正常条（清掉 unavailable 标记）。
 
 import { el } from './dom.js';
 import { stageLog } from '../app/status.js';
@@ -93,6 +99,49 @@ export function mountMemoryBar(selector) {
   };
 
   /**
+   * 拉取失败时：**保留占位、把原因写在条上**，而不是整块消失。
+   *
+   * 为什么要这个（不再一律 hide）：条子突然消失，用户分不清是哪一种情况 ——
+   *   ① 接口挂了/超时 ② 服务端没数据 ③ 内存保护被关。三者在界面上曾长得一模一样。
+   * 与 `hide()` 的分工：hide() 只服务"开关关掉、本来就不该显示"这种**主动隐藏**；
+   *   拉取失败属于**该显示但显示不出**，要留着位置说明白。
+   *
+   * 硬约束：**绝不用 0 或上一次的旧值冒充当前值** —— 三段宽度归零、dataset 数值清空，
+   *   文字只写原因。宁可空轨道 + 一句原因，也不给假数字。
+   * @param {string} reason 已归类的可读原因（超时 / HTTP xxx / 数据不完整）
+   */
+  const showUnavailable = (reason) => {
+    const bar = ensure();
+    if (!bar) return false;
+    const host = getHost();
+    host.hidden = false;                 // 保留占位
+    bar.dataset.unavailable = '1';       // 供断言与排障：这是"不可用态"，不是正常条
+    // 清掉上一次的数值痕迹，避免任何消费方（含断言快照）把旧数字当成当前值
+    delete bar.dataset.pctServer;
+    delete bar.dataset.pctOther;
+    delete bar.dataset.pctAvail;
+    for (const cls of ['--server', '--other', '--avail']) {
+      const seg = bar.querySelector(`.mem-bar-seg${cls}`);
+      if (seg) seg.style.setProperty('--seg-w', '0%');
+    }
+    const label = `内存：不可用（${reason}）`;
+    bar.setAttribute('aria-label', label);
+    const text = bar.querySelector('.mem-bar-text');
+    if (text) text.textContent = label;
+    return false;
+  };
+
+  /** 把 fetch 异常归类成用户看得懂的原因（三种失败要能区分开） */
+  const reasonOfFetchError = (err) => {
+    const msg = String((err && err.message) || err || '');
+    // AbortSignal.timeout() 超时抛的是 name='TimeoutError' 的 DOMException
+    if ((err && err.name === 'TimeoutError') || /abort|timeout/i.test(msg)) return '查询超时';
+    const m = msg.match(/^HTTP (\d{3})$/);
+    if (m) return `HTTP ${m[1]}`;
+    return msg || '接口不可达';
+  };
+
+  /**
    * 拉一次数据并刷新显示。
    * @returns {Promise<boolean>} 是否成功显示
    */
@@ -108,23 +157,23 @@ export function mountMemoryBar(selector) {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       j = await res.json();
     } catch (err) {
-      // 失败就隐藏 + 记 warn（不静默、也不显示假数字）
-      stageLog('warn', `内存条数据取不到：${String((err && err.message) || err)}`, { where: 'memory-bar' });
-      hide();
-      return false;
+      // 失败：留占位 + 把原因写在条上（不静默、也不显示假数字）
+      const reason = reasonOfFetchError(err);
+      stageLog('warn', `内存条数据取不到：${reason}`, { where: 'memory-bar', err: String((err && err.message) || err) });
+      return showUnavailable(reason);
     }
     const total = Number(j.memTotalMb);
     const avail = Number(j.memAvailableMb);
     const server = Number(j.rssMb);
     if (!(total > 0) || !Number.isFinite(avail) || !Number.isFinite(server)) {
-      stageLog('warn', '内存条数据不完整，已隐藏', { total, avail, server });
-      hide();
-      return false;
+      stageLog('warn', '内存条数据不完整（字段缺失或非法）', { total, avail, server });
+      return showUnavailable('数据不完整');
     }
 
     const bar = ensure();
     if (!bar) return false;
     host.hidden = false;
+    delete bar.dataset.unavailable;   // 恢复成正常条（下一轮拿到数据就切回来）
     const p = splitPercents({ total, server, avail });
     const segS = bar.querySelector('.mem-bar-seg--server');
     const segO = bar.querySelector('.mem-bar-seg--other');
