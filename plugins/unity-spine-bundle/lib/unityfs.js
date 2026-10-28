@@ -274,12 +274,49 @@
       const declaredEnd = start + blocksInfoCompressedSize;
       if (declaredEnd > r.pos) r.seek(declaredEnd);
     }
+    // ── 内联 blocksInfo 与数据区之间的**对齐填充**（实测 3 个 version 6 / Unity 5.x.x 包）──
+    //
+    // 实测（aidang_2 / banrenma_2 / xianghe_2，三者结构完全同型）：
+    //   header 50 字节 + blocksInfo 91 字节 = 141，但数据块实际从 **144** 开始
+    //   （141 后跟 3 字节填充，144 正好 16 字节对齐）。
+    //   这三个包的 node.offset 都写着 **3** —— 恰好等于填充量，
+    //   说明节点偏移是以「blocksInfo 末尾」为基准记录的，而不是对齐后的数据起点。
+    //   验证（算术闭合）：144 + node.size == 文件长度
+    //     aidang_2   144 + 18666148 = 18666292 ✓
+    //     banrenma_2 144 +  6115708 =  6115852 ✓
+    //     xianghe_2  144 + 11740648 = 11740792 ✓
+    //   不处理会怎样：数据区少取 3 字节（末 3 字节被切掉），而节点又按 3 起算 ⇒
+    //     报「节点 CAB-xxx 越界：offset=3 size=18666148 数据区=18666148」，与真实原因相距极远。
+    //
+    // 判据用**数据自证**而不是猜标志位：这三包的 dataflags = 0x40，并没有置 0x200
+    //   （BlockInfoNeedPaddingAtStart），所以不能靠标志位判断填充是否存在。
+    //   这里用「文件里剩下的字节 - 各块声明压缩大小之和」当填充量：
+    //     正常包该差值为 0（行为完全不变）；这三个包为 3。
+    const logicalEndForPad = (bundleSize > 0 && bundleSize <= r.length) ? bundleSize : r.length;
+    let dataPadding = 0;
+    if (!blocksInfoAtEnd) {
+      const declaredData = blocks.reduce((a, b) => a + b.compressedSize, 0);
+      const pad = logicalEndForPad - r.pos - declaredData;
+      // 判据必须**两条同时成立**，否则会把"文件尾 trailer"误当成"头部填充"：
+      //   ① 0 < pad < 16（对齐填充的量级）；
+      //   ② **最小节点偏移 == pad** —— 这是决定性判据：
+      //        头部填充时，节点偏移以 blocksInfo 末尾为基准，首个节点正好落在填充之后（offset==pad）；
+      //        尾部 trailer 时，节点偏移本来就以数据起点为基准（首个节点 offset==0），
+      //        差值全在文件末尾。实测：不收紧这条会误判 26 个包、把节点偏移减成负数。
+      const minNodeOffset = nodes.length ? Math.min(...nodes.map((n) => n.offset)) : 0;
+      if (pad > 0 && pad < 16 && minNodeOffset === pad) {
+        dataPadding = pad;
+        // 节点偏移统一减掉填充 ⇒ 全部改为「相对数据起点」，与下面解压出的缓冲同一基准
+        for (const n of nodes) n.offset -= pad;
+        r.seek(r.pos + pad);
+      }
+    }
     if (dataflags & ARCHIVE.BlockInfoNeedPaddingAtStart) r.align(16);
     const dataStart = r.pos;
 
     return {
       signature, version, playerVersion, engineVersion, dataflags, blocksInfoAtEnd,
-      usesEncryption: false, blocks, nodes, blocksInfoContentEnd,
+      usesEncryption: false, blocks, nodes, blocksInfoContentEnd, dataPadding,
       blocksInfoBytes: blocksInfoContentEnd - start, dataStart, blocksInfoHash: B.toHex(hash),
       reader: r,   // 游标停在 dataStart，parse 解压数据块时要用；对外返回前剔除
     };
