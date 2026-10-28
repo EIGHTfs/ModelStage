@@ -353,7 +353,11 @@ export function createPluginHost(opts = {}) {
   /** worker 的进度事件 → 状态行 + 调试日志（4 秒里不能一点反馈都没有） */
   function onWorkerProgress(m) {
     const d = m.detail || {};
-    if (m.phase === 'blocks') {
+    if (m.phase === 'probing') {
+      // 判定包类型也要解一遍（插件的 canHandle 会完整解析），所以它同样是"会等数秒"的一段
+      say.info('后台解包：正在判定包内容类型…（主线程不阻塞）');
+      emit('unpack.worker', { phase: 'probing' });
+    } else if (m.phase === 'blocks') {
       const est = d.estimateMs ? `，预计约 ${(d.estimateMs / 1000).toFixed(1)} 秒` : '';
       say.info(`后台解包：${d.algo} / ${d.blocks} 块 / 解压后 ${d.decompressedMB}MB${est}（主线程不阻塞）`);
       emit('unpack.worker', { phase: 'blocks', ...d });
@@ -406,16 +410,17 @@ export function createPluginHost(opts = {}) {
    */
   async function resolveViaWorker(prov, file, bytes) {
     const entry = await ensureUnpackWorker(prov.id);
-    if (!entry) return { ok: false, error: 'worker 不可用（CSP / 老浏览器 / 插件 lib 加载失败）' };
+    if (!entry) return { ok: false, unavailable: true, error: `worker 不可用（${prov.id}：CSP / 老浏览器 / 插件 lib 加载失败）` };
     const id = (entry.seq += 1);
-    // transferable：8MB 的包做结构化拷贝会再复制一份，白吃内存与时间
-    const alone = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength;
+    // 刻意**不**用 transferable：同一份 bytes 可能要依次交给多个 provider 试（第一个不认就换下一个），
+    //   一旦 transfer 出去主线程的 buffer 就 detached 了。8MB 结构化拷贝只有几十毫秒，
+    //   远比"白跑一次 5.7 秒的 canHandle"划算。
     const result = await new Promise((resolve) => {
       const timer = setTimeout(() => { entry.pending.delete(id); resolve({ t: 'fail', message: 'worker 超时（60s）' }); }, 60000);
       entry.pending.set(id, (m) => { clearTimeout(timer); resolve(m); });
-      const msg = { t: 'unpack', id, file: { rootId: file.rootId, rel: file.rel, name: file.name }, bytes };
-      entry.worker.postMessage(msg, alone ? [bytes.buffer] : []);
+      entry.worker.postMessage({ t: 'unpack', id, file: { rootId: file.rootId, rel: file.rel, name: file.name }, bytes });
     });
+    if (result.t === 'no-handle') return { ok: false, noHandle: true };
     if (result.t !== 'done' || !result.res) {
       return { ok: false, error: `${result.code || 'worker-fail'}: ${result.message || '未知'}` };
     }
@@ -734,18 +739,37 @@ const MIME_BY_EXT = {
       //   让帧代价约 16ms，换来"用户知道在解压、不是卡死"。非 LZMA 包几乎不受影响（多一帧）。
       say.info(`本地解包中：${file.rel}（压缩 ${(read.bytes.length / 1048576).toFixed(2)}MB，大包可能要数秒）`);
       emit('unpack.local-start', { rootId: file.rootId, rel: file.rel, bytes: read.bytes.length });
-      // LZMA 包走 worker：实测 300~620ms/MB（解压后），8MB 的包 3.9 秒纯同步 CPU，
-      //   留在主线程就是白屏。LZ4/none 只有 ~0.2s / ~0ms，进 worker 反而多一次往返，仍走同步。
-      const prov = findProvider({ ...file, bytes: read.bytes });
-      if (prov && isLzmaContainer(read.bytes)) {
-        const w = await resolveViaWorker(prov, file, read.bytes);
-        if (w.ok) {
-          if (mon.checkNow()) throw Object.assign(new Error(mon.reason()), { reason: 'memory-guard' });
-          return { ...w.res, provider: prov.id, src: 'local-worker' };
+      // LZMA 包：**canHandle 与 resolve 都交给 worker**。
+      //   为什么不能在主线程先 findProvider：插件的 canHandle 走 bundleProbe.run → unityfs.parse
+      //   （完整解压数据块），实测对 2.2MB 的 LZMA 包要 **5.7 秒**；而 worker 里 resolve 还要再解一遍
+      //   ⇒ 总耗时 12.5s，其中 5.7s 是纯白干。放进 worker 后这一段不再阻塞主线程，且两判复用同一份缓存。
+      //   LZ4/none 的 canHandle 只有毫秒级，不值得绕这一圈，仍走原来的同步路径。
+      if (isLzmaContainer(read.bytes)) {
+        let fellBack = '';
+        let anyProbed = false;   // 有没有任何一个 worker 真的判过"不认这个包"
+        for (const cand of providersFor(['bundle'])) {
+          const w = await resolveViaWorker(cand, file, read.bytes);
+          if (w.ok) {
+            if (mon.checkNow()) throw Object.assign(new Error(mon.reason()), { reason: 'memory-guard' });
+            return { ...w.res, provider: cand.id, src: 'local-worker' };
+          }
+          // 「这个 worker 建不起来」≠「这个 provider 不认这个包」：
+          //   前者应继续试下一个候选（另一个插件的 worker 可能能用），
+          //   后者才该落到同步路径去问它。写反了会让"第一个候选 worker 失败"直接把整条后台路径废掉
+          //   —— 实测就是这么误降级的（spine 插件 worker 建不起来 ⇒ 明明 live2d worker 可用却回落到同步）。
+          if (w.unavailable) continue;
+          if (w.noHandle) { anyProbed = true; continue; }
+          fellBack = w.error || '解包失败';
+          break;
         }
-        // 降级**不静默**：明确告诉用户"后台解包用不了，接下来会卡数秒"
-        say.warn(`后台解包不可用（${w.error}）—— 回落主线程解包，期间界面会卡住数秒`);
-        emit('unpack.worker-fallback', { rootId: file.rootId, rel: file.rel, error: w.error });
+        // 全都没判成（worker 一个都起不来）才报降级；"有 worker 判过但不认"属正常，
+        //   交给下面的同步路径去给出正确的"没有插件能处理"错误，不该谎报成后台不可用
+        if (!fellBack && !anyProbed) fellBack = '所有候选插件的 worker 都不可用';
+        if (fellBack) {
+          // 降级**不静默**：明确告诉用户"后台解包用不了，接下来会卡数秒"
+          say.warn(`后台解包不可用（${fellBack}）—— 回落主线程解包，期间界面会卡住数秒`);
+          emit('unpack.worker-fallback', { rootId: file.rootId, rel: file.rel, error: fellBack });
+        }
       }
       // 同步解压前让出一帧：DOM 改了但主线程随即冻住，浏览器不会给你渲染机会。
       //   代价约 16ms，换来"用户知道在解压、不是卡死"。

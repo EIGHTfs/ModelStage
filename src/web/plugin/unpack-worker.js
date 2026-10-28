@@ -82,21 +82,12 @@ async function handleMessage(ev) {
       const bytes = toU8(msg.bytes);
       const t0 = Date.now();
 
-      // 先判"这个包认不认"再解，而且**必须在 worker 里做**：
-      //   插件的 canHandle 走 bundleProbe.run → unityfs.parse（**完整解压数据块**），
-      //   实测对 2.2MB 的 LZMA 包要 5.7 秒 —— 留在主线程就是白屏。
-      //   放这里还省一次：canHandle 与紧随其后的 resolve 走同一份插件缓存，
-      //   不像主线程那样"canHandle 解一遍、resolve 再解一遍"（实测总耗时 12.5s，其中 5.7s 是白干）。
-      self.postMessage({ t: 'progress', id: msg.id, phase: 'probing' });
-      let handled = true;
-      try {
-        handled = typeof captured.canHandle === 'function'
-          ? captured.canHandle({ ...msg.file, bytes }) !== false : true;
-      } catch { handled = false; }
-      if (!handled) {
-        self.postMessage({ t: 'no-handle', id: msg.id });
-        return;
-      }
+      // 注意：这里**不调 captured.canHandle**。
+      //   canHandle 走 bundleProbe.run → unityfs.parse（完整解压）+ serialized 解析；
+      //   实测把它放进 worker 会长时间无响应（36 秒未返回，原因未定位），所以回退。
+      //   类型判定改由「主线程调用 canHandle 时不传 bytes」解耦：插件对无 bytes 的调用直接返回 true
+      //   （插件 index.js 的 canHandle 开头 `if (!bytes) return true`），主线程因此零解析成本；
+      //   真正的类型判定交给下面 resolve 的成败 —— 认不了就抛错，由主线程换下一个候选。
 
       // 进度①：读块表（`blocksSummary` 只解 blocksInfo、不碰数据块，实测 ~5ms）
       try {
