@@ -10,7 +10,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { IN_PAGE } from './wait-ready.mjs';
 
-const TEST_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// 扫描目录必须与 test/lib/apply-wait-ready.mjs 的 BROWSER_DIR 一致：
+//   浏览器注入脚本已归档到 test/browser/（见 apply-wait-ready.mjs:75 的注释），
+//   若这里仍扫 test/ 会一个文件都找不到 ⇒ 误报「注入没生效」。
+const TEST_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'browser');
 const BEGIN = '// [wait-ready] begin';
 const END = '// [wait-ready] end';
 
