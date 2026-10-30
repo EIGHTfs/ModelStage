@@ -71,15 +71,21 @@ test('canDecode 对 FORMATS 里每个格式都与"decode 能不能真跑"一致'
   }
 });
 
-test('48 ETC2_RGBA1：FORMATS 有条目、canDecode=false、decode 抛 ULB_ERR_TEX_DECODE', () => {
+test('48 ETC2_RGBA1：FORMATS 有条目、canDecode=true、能解一个 4×4 块', () => {
   const NS = loadLib(LIBS.live2d);
   assert.ok(NS.texdecode.FORMATS[48], 'FORMATS 里应当仍有 48（命名/尺寸仍需要它）');
-  assert.equal(NS.texdecode.canDecode(48), false, '48 从未实现解码，canDecode 必须是 false');
-  assert.throws(
-    () => NS.texdecode.decode({ format: 48, name: 'ETC2_RGBA1', width: 4, height: 4 }, new Uint8Array(64), { flipY: false }),
-    (e) => e && e.code === 'ULB_ERR_TEX_DECODE',
-    '48 的解码必须仍抛 ULB_ERR_TEX_DECODE（本轮不补实现）',
+  // 本条曾断言"48 从未实现解码"——那是当时真实的能力缺口（整包报 ULB_ERR_TEX_DECODE 的原因）。
+  // 现在 48 已实现（ETC2 RGB 块 + 每 4×4 块 8 字节 1bit alpha 平面），断言随之改为"可解"。
+  assert.equal(NS.texdecode.canDecode(48), true, '48 已登记解码器，canDecode 必须是 true');
+  const out = NS.texdecode.decode(
+    { format: 48, name: 'ETC2_RGBA1', width: 4, height: 4 },
+    new Uint8Array(16), // 一个 4×4 块 = 8 字节 RGB 块 + 8 字节 alpha 平面
+    { flipY: false },
   );
+  // decode() 返回裸 RGBA 字节（不是 {data} 包装）。
+  // 注意：lib 跑在 vm 的独立 realm 里 ⇒ 它的 Uint8Array 与本文件的 Uint8Array 不是同一个构造函数，
+  //   所以只能判"是不是 TypedArray" + 长度，不能用 instanceof Uint8Array（会恒假）。
+  assert.ok(ArrayBuffer.isView(out) && out.length === 4 * 4 * 4, '4×4 ETC2_RGBA1 应解出 16×4 字节 RGBA');
   // 命名能力不受影响：面板/预检仍要显示 "ETC2_RGBA1" 而不是 "未知格式 48"
   assert.equal(NS.texdecode.formatName(48), 'ETC2_RGBA1');
 });
@@ -94,8 +100,9 @@ test('预检 formatSupport 的 supported 与 canDecode 全量一致（这是本�
     assert.equal(got.supported, canDecode(fmt),
       `格式 ${fmt}(${FORMATS[fmt].name})：formatSupport.supported=${got.supported} 与 canDecode=${canDecode(fmt)} 不一致`);
   }
-  // 显式钉住历史 bug：48 曾经被报成"支持"
-  assert.equal(NS.bundleProbe.formatSupport(48).supported, false, '48 不许再被报成支持');
+  // 显式钉住 48 的现状：曾经"被报成支持但其实没实现"（假支持），现在真的实现了
+  //   ⇒ 断言从 false 改为 true；上面那条循环仍然负责"预检口径必须与 DECODERS 一致"这个结构约束
+  assert.equal(NS.bundleProbe.formatSupport(48).supported, true, '48 已实现，预检必须报支持');
   assert.equal(NS.bundleProbe.formatSupport(48).formatName, 'ETC2_RGBA1', '48 的显示名仍要可读');
 });
 

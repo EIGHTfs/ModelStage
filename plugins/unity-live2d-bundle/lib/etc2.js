@@ -291,6 +291,48 @@
     return rgba;
   }
 
+  /**
+   * 解 ETC2_RGBA1（Unity TextureFormat 48）—— **ETC2 RGB 块 + 1bit alpha 平面**。
+   *
+   * 块布局（每 4×4 像素固定 16 字节）：
+   *   [0..7]    8 字节 ETC2 RGB 块（与 TextureFormat 45 ETC2_RGB 的块同构，可直接复用 decodeRgbBlock）
+   *   [8..15]   8 字节 1bit alpha 平面 = 64 bit = 4×4 每像素 1 bit
+   *
+   * alpha 位序（ETC2 规范）：**位 0 对应块内第一个像素 (x=0,y=0)，按行推进、LSB first** ——
+   *   即 bitIndex = py*4 + px，字节 = 8 + (bitIndex >> 3)，位 = bitIndex & 7；
+   *   置位 = 完全不透明(255)，清零 = 全透明(0)。（与 RGBA8 的 8 字节 EAC 4bit alpha 完全不同，
+   *   不能复用 decodeAlphaBlock。）
+   *
+   * @param {Uint8Array} data 压缩数据
+   * @param {number} width 宽
+   * @param {number} height 高
+   * @returns {Uint8Array} RGBA
+   */
+  function decodeEtc2Rgba1(data, width, height) {
+    const bw = Math.ceil(width / 4);
+    const bh = Math.ceil(height / 4);
+    const need = bw * bh * 16;
+    if (data.length < need) throw NS.errors.fail('ULB_ERR_TEX_DATA_SHORT', `ETC2_RGBA1 数据不足：需要 ${need} 字节，实际 ${data.length}`);
+    const rgba = new Uint8Array(width * height * 4);
+    for (let by = 0; by < bh; by++) {
+      for (let bx = 0; bx < bw; bx++) {
+        const off = (by * bw + bx) * 16;
+        // 前 8 字节 RGB：复用 ETC2 RGB 解出的 4×4 块（其 alpha 由 punch-through 决定，下面会被覆盖）
+        const block = decodeRgbBlock(data, off, true);
+        // 后 8 字节 1bit alpha：逐行、LSB first
+        for (let py = 0; py < 4; py++) {
+          for (let px = 0; px < 4; px++) {
+            const bit = py * 4 + px;
+            const on = (data[off + 8 + (bit >> 3)] >> (bit & 7)) & 1;
+            block[(py * 4 + px) * 4 + 3] = on ? 255 : 0;
+          }
+        }
+        writeBlock(rgba, block, null, bx * 4, by * 4, width, height);
+      }
+    }
+    return rgba;
+  }
+
   /** 解 ETC1（无 alpha，统一 255）—— 供其他 TextureFormat 复用 */
   function decodeEtc1Rgb(data, width, height) {
     const bw = Math.ceil(width / 4);
@@ -322,7 +364,7 @@
   }
 
   NS.etc2 = {
-    decodeEtc2Rgba8, decodeEtc1Rgb, decodeEtc2Rgb, decodeRgbBlock, decodeAlphaBlock,
+    decodeEtc2Rgba8, decodeEtc2Rgba1, decodeEtc1Rgb, decodeEtc2Rgb, decodeRgbBlock, decodeAlphaBlock,
     WriteOrderTable, WriteOrderTableRev, Etc1ModifierTable, Etc1SubblockTable,
     Etc2DistanceTable, Etc2AlphaModTable, clamp,
   };

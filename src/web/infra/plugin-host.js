@@ -442,10 +442,85 @@ export function createPluginHost(opts = {}) {
     };
   }
 
+  /**
+   * 能"定义模型"的类：有它们就说明这个包自己带骨架/模型/图集定义。
+   *   TextAsset      —— spine 的 .skel.txt / .atlas.txt 就是它；Cubism 的 model3.json 也是
+   *   SkeletonDataAsset / AtlasAsset —— spine-unity 的资产类
+   *   CubismModel / CubismMoc —————— Live2D 的资产类
+   * 只认类名，不看包名/路径/角色名。
+   */
+  const MODEL_DEFINING_CLASSES = ['TextAsset', 'SkeletonDataAsset', 'AtlasAsset', 'CubismModel', 'CubismMoc'];
+  /** 纯美术资源类：这些有、但上面一个都没有 ⇒ 是"给别人用的"依赖包 */
+  const PURE_ART_CLASSES = ['Texture2D', 'Sprite', 'Material', 'Mesh', 'AnimationClip', 'MeshFilter', 'MeshRenderer', 'Shader'];
+
+  /**
+   * 解析一个没人认领的容器，统计包内对象类型构成。
+   *
+   * 只在「所有插件 canHandle 都说不认」的失败路径上跑一次（不进渲染热路径）。
+   * 与文件名的关系：**完全没有** —— 只按包内 className 构成判断形态。
+   * @param {Uint8Array} bytes 容器字节
+   * @returns {Record<string, number>|null} className → 数量；探测不了返回 null
+   */
+  function classHistogramOf(bytes) {
+    try {
+      const NS = typeof window !== 'undefined' ? window.__ULB__ : null;
+      const ufs = NS && NS.unityfs;
+      const ser = NS && NS.serialized;
+      if (!ufs || !ser || typeof ufs.readHeader !== 'function' || !bytes || !bytes.length) return null;
+      const head = ufs.readHeader(bytes);
+      const cab = (head.nodes || []).find((n) => /^CAB-/.test(n.path));
+      if (!cab) return null;
+      const parsed = ufs.parse(bytes);
+      const sf = ser.parse(ufs.nodeBytes(parsed, cab.path));
+      const types = sf.types || [];
+      const byClass = {};
+      for (const obj of (sf.objects || [])) {
+        const t = types.find((x) => x.classID === obj.classID);
+        const name = (t && (t.className || t.name)) || `ClassID ${obj.classID}`;
+        byClass[name] = (byClass[name] || 0) + 1;
+      }
+      return byClass;
+    } catch { return null; }
+  }
+
+  /**
+   * 这个包是不是「美术依赖包」：有纯美术资源，但**没有任何**能定义模型的类。
+   * 依赖包的用途是给同批的模型包提供共享纹理/材质，本身不可单独装载 ——
+   * 所以"没有提供者认领"是正确结果，只是要说清楚，别让用户以为插件坏了。
+   * @param {Record<string, number>} hist className 直方图
+   */
+  function isAssetDependencyPackage(hist) {
+    if (!hist) return false;
+    const hasModelDef = MODEL_DEFINING_CLASSES.some((k) => (hist[k] || 0) > 0);
+    if (hasModelDef) return false;
+    return PURE_ART_CLASSES.some((k) => (hist[k] || 0) > 0);
+  }
+
+  /** 把直方图压成一句可读的类型构成（只报数量最多的前几类，避免文案过长） */
+  function describeHistogram(hist) {
+    return Object.entries(hist)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([k, v]) => `${k}×${v}`)
+      .join('、');
+  }
+
   /** 找提供者并 resolve（含返回值契约校验） */
   async function resolveViaProvider(file, bytes) {
     const provider = findProvider({ ...file, bytes });
     if (!provider) {
+      // 没人认领时先判形态：美术依赖包要说清楚"为什么打不开 + 下一步怎么做"，
+      //   否则用户只会看到泛化的"没有启用的提供者"，误以为插件被禁用或加载失败。
+      const hist = classHistogramOf(bytes);
+      if (isAssetDependencyPackage(hist)) {
+        return {
+          ok: false,
+          reason: 'asset-dependency',
+          message: `这是美术依赖包，不能单独装载：包内只有 ${describeHistogram(hist)}，`
+            + '没有任何骨架或模型定义（spine 的 .skel/.atlas、Live2D 的 model3.json 都不在里面）。'
+            + '它提供给同批的模型包共用；请改选同一目录下带骨架的那个包。',
+        };
+      }
       return {
         ok: false,
         reason: 'no-provider',

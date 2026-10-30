@@ -70,7 +70,9 @@ export function createBundleProbe({ config, probe }) {
 
     let probeBundleBytes;
     try {
-      ({ probeBundleBytes } = await import('../../tool/lib/bundle-probe-node.mjs'));
+      // 本文件在 src/server/assets/ ⇒ 到项目根的 tool/lib/ 要退三层（早前写成两层，
+      //   解析成 src/tool/lib/… ⇒ 该诊断端点一直返回「加载预检模块失败: Cannot find module」）。
+      ({ probeBundleBytes } = await import('../../../tool/lib/bundle-probe-node.mjs'));
     } catch (e) {
       return {
         status: 500,

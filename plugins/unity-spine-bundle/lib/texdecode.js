@@ -133,6 +133,10 @@
     34: (d, w, h) => NS.etc2.decodeEtc1Rgb(d, w, h),
     45: (d, w, h) => NS.etc2.decodeEtc2Rgb(d, w, h),
     47: (d, w, h) => NS.etc2.decodeEtc2Rgba8(d, w, h),
+    // 48 ETC2_RGBA1：ETC2 RGB 块（8 字节）+ 1bit alpha 平面（8 字节）。块布局与位序见
+    //   lib/etc2.js 的 decodeEtc2Rgba1 注释。此格式长期"格式表里有、解码器没登记"，
+    //   导致该格式的包整包报 ULB_ERR_TEX_DECODE（现场：蔚蓝档案部分 spinebackground 包）。
+    48: (d, w, h) => NS.etc2.decodeEtc2Rgba1(d, w, h),
     10: (d, w, h) => NS.dxt.decodeBc1(d, w, h),
     12: (d, w, h) => NS.dxt.decodeBc3(d, w, h),
     26: (d, w, h) => NS.dxt.decodeBc4(d, w, h),
@@ -143,9 +147,6 @@
     3: (d, w, h, need) => rgb24ToRgba(d, w, h, need),
     1: (d, w, h, need) => alpha8ToRgba(d, w, h, need),
     7: (d, w, h, need) => rgb565ToRgba(d, w, h, need),
-    // 48 ETC2_RGBA1：FORMATS 里有、但 decode 从未实现（落到末尾 throw ULB_ERR_TEX_DECODE）。
-    //   这里**故意不登记** —— 补上它等于改变行为（从"报错"变成"能解码"），属功能变更，
-    //   要单独立项 + 配 fixture，不能混在本次等价重构里。
   };
 
   /**
@@ -158,10 +159,10 @@
   function decode(meta, data, opts) {
     const fmt = meta.format;
     const f = FORMATS[fmt];
-    if (!f) throw NS.errors.fail('ULB_ERR_TEX_FORMAT_UNSUPPORTED', `暂不支持纹理格式 ${fmt}（${meta.name || ''}）——已支持：ETC2_RGBA8(47)、ETC2_RGB(45)、ETC_RGB4(34)、DXT1(10)、DXT5(12)、BC4(26)、BC5(27)、RGBA32(4)、ARGB32(5)、RGB24(3)、Alpha8(1)、RGB565(7)；暂未实现：ETC2_RGBA1(48)、ASTC(50 系列)、PVRTC(30/31)、BC6H(24)、BC7(25)`);
+    if (!f) throw NS.errors.fail('ULB_ERR_TEX_FORMAT_UNSUPPORTED', `暂不支持纹理格式 ${fmt}（${meta.name || ''}）——已支持：ETC2_RGBA8(47)、ETC2_RGBA1(48)、ETC2_RGB(45)、ETC_RGB4(34)、DXT1(10)、DXT5(12)、BC4(26)、BC5(27)、RGBA32(4)、ARGB32(5)、RGB24(3)、Alpha8(1)、RGB565(7)；暂未实现：ASTC(50 系列)、PVRTC(30/31)、BC6H(24)、BC7(25)`);
     const need = expectedSize(fmt, meta.width, meta.height);
     if (data.length < need) throw NS.errors.fail('ULB_ERR_TEX_DATA_SHORT', `纹理 ${meta.name || ''}（${f.name} ${meta.width}x${meta.height}）数据不足：需要 ${need} 字节，实际 ${data.length}`);
-    // 表里有格式、但没有登记解码器（如 48 ETC2_RGBA1）⇒ 继续走这条兜底，与重构前完全一致
+    // 表里有格式、但没有登记解码器（如 ASTC 50 系列）⇒ 继续走这条兜底
     const decoder = DECODERS[fmt];
     if (!decoder) throw NS.errors.fail('ULB_ERR_TEX_DECODE', `纹理格式 ${f.name} 的分发分支缺失`);
     const rgba = decoder(data, meta.width, meta.height, need);
@@ -173,7 +174,7 @@
    * 某个 Unity TextureFormat 能否**真正解码**。
    *
    * 为什么需要它：FORMATS 是"格式字典"（名称 / 尺寸 / block 布局），**不代表能解码** ——
-   *   例如 48 ETC2_RGBA1 在 FORMATS 里有条目，但 DECODERS 从未登记，decode() 会抛
+   *   例如 ASTC(50 系列) 在 FORMATS 里可能有条目、但 DECODERS 没登记，decode() 会抛
    *   ULB_ERR_TEX_DECODE。若外部（预检 / 面板提示）拿 `!!FORMATS[fmt]` 当"支持"，
    *   就会先报"支持"、真正解包时才炸 —— 同一件事两套判据。
    * ⇒ 能力判定只认这张表：**这是"能不能解码"的唯一真相**。
