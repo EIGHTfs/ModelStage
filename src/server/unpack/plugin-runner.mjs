@@ -59,6 +59,10 @@ export function listProviderPlugins() {
       runtime: m.runtime,
       entry: m.entry,
       frameProtocol: m.frameProtocol,
+      // builtin 标记必须透传：内置提供者（builtin-spine/builtin-live2d）也声明 asset-provider，
+      //   但它们没有 node 代码、不能被当成插件装载。丢掉这个标记，调用方（解包/装载流程）
+      //   会把它们混进 node 插件列表、按 runtime 去 load，必然失败。
+      builtin: m.builtin === true,
     }));
 }
 

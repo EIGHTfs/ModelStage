@@ -52,9 +52,18 @@ test('plugin.json 的两个真实插件都声明了 runtime:"node"（显式优�
   const { listProviderPlugins } = await import('../src/server/unpack/plugin-runner.mjs');
   const list = listProviderPlugins();
   if (!list.length) return;
-  for (const m of list) {
+  // 内置提供者（builtin-spine / builtin-live2d）也声明 asset-provider 角色、与插件同表返回，
+  //   但它们不是 node 插件、没有 runtime 字段（装载器跑在前端）。本用例只管真实插件，
+  //   否则"每个提供者都必须有 runtime:node"会把内置项误判成违规。
+  const disk = list.filter((m) => m.builtin !== true);
+  for (const m of disk) {
     assert.equal(m.runtime, 'node', `${m.id} 应显式声明 runtime:"node"`);
     assert.equal(m.frameProtocol, null, `${m.id} 是 node 运行时，frameProtocol 应为 null`);
+  }
+  // 内置项必须能被识别（builtin:true），否则上面的过滤会静默漏掉它们；
+  //   且它们不能声明成 node 运行时（装载器跑在前端，没有 node 入口）。
+  for (const m of list.filter((x) => x.builtin === true)) {
+    assert.notEqual(m.runtime, 'node', `${m.id} 是内置提供者，不应声明 node runtime`);
   }
 });
 

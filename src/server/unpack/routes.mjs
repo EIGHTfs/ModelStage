@@ -11,10 +11,32 @@
 //   3. **失败可注入**：`UNPACK_FORCE_FAIL=1` 时 resolve 直接 500，用来验收"前端回落自己解包"。
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { sendFile } from '../http/static.mjs';
 import { capacity } from './capacity.mjs';
 // 包内形态探测（依赖包判定）：与 /api/bundle/probe、前端 plugin-host 共用同一份判据与文案
 import { probeBundleBytes } from '../../../tool/lib/bundle-probe-node.mjs';
+// 条目状态（契约《条目状态与展示归属》§三）：resolve 成功/失败都要留痕 ——
+//   否则列表永远显示"未试过"，S4 的"点击后错误文案与 ⚠ 同源"就断了。
+import { getSharedEntryStates, providerFingerprintOf } from '../data/entry-states.mjs';
+import { createPaths } from '../core/paths.mjs';
+import { createLogger } from '../core/log.mjs';
+import { readPlugins } from '../plugins/registry.mjs';
+
+const log = createLogger('unpack');
+/** 项目根（本文件在 src/server/unpack/ ⇒ 三层）；只为算 plugins/config 路径，与 serve.mjs 同口径 */
+const ROUTES_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+const ROUTES_PATHS = createPaths({
+  root: ROUTES_ROOT,
+  dataRoot: (process.env.MODELSTAGE_DATA_ROOT || '').trim() || undefined,
+});
+
+/**
+ * SSE 心跳间隔（毫秒）。
+ * 2s 是权衡：太短浪费 CPU/带宽（每个打开的流都在发），太长会让中间代理/浏览器把空闲连接判死。
+ * 提成常量是为了让"为什么是 2s"有地方写，也便于以后按实测调。
+ */
+const HEARTBEAT_INTERVAL_MS = 2000;
 
 /** 强制失败开关（验收"回退可用"用；默认关） */
 function forcedFail() {
@@ -60,6 +82,45 @@ export function createUnpackRoutes(deps) {
       return probeBundleBytes(bytes);
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * 把一次 resolve 的结果写进条目状态存储（契约 §三）。
+   *
+   * 为什么**成功和失败都写**：列表上的 ⚠ 与 loadResult 是同一份数据；
+   *   只写成功会让"点开失败"的条目永远显示"未试过"，用户看不出这条已经试过且失败了。
+   *
+   * 旁路原则（INV-D3）：这里任何异常都只记日志 —— 状态上报失败绝不能把解包主流程带崩。
+   * @param {{rootId: string, rel: string, absPath: string, ok: boolean,
+   *          reason?: string|null, message?: string|null, provider?: string|null}} p
+   */
+  function recordEntryResult(p) {
+    try {
+      const states = getSharedEntryStates({ log });
+      const providers = readPlugins(ROUTES_PATHS.pluginsDir, ROUTES_PATHS.pluginSwitchFile);
+      let assetFingerprint = null;
+      try {
+        const st = fs.statSync(p.absPath);
+        assetFingerprint = `${st.size}-${Math.trunc(st.mtimeMs)}`;
+      } catch { /* 文件不在了 ⇒ 指纹留空，失效规则②不参与判定 */ }
+      const key = `${p.rootId}/${p.rel}`;
+      states.put(key, {
+        result: p.ok ? 'ok' : 'failed',
+        reason: p.ok ? null : (p.reason || null),
+        message: p.message || null,
+        provider: p.ok ? (p.provider || null) : null,
+        at: Date.now(),
+        source: 'server',
+      }, {
+        providers,
+        providerFingerprint: providerFingerprintOf(providers),
+        assetFingerprint,
+      });
+      // 去抖写盘（CIFS 上禁止一请求一写）；这里不 await，避免拖慢响应
+      states.flush().catch(() => {});
+    } catch (e) {
+      log.warn('写入条目状态失败（不影响解包结果）', { key: `${p.rootId}/${p.rel}`, err: e.message });
     }
   }
 
@@ -120,9 +181,14 @@ export function createUnpackRoutes(deps) {
           if (out.reason === 'no-provider' || out.reason === 'not-handled') {
             const shape = describeBundleShapeSafe(r.abs);
             if (shape && shape.assetDependency) {
+              // 失败也要留痕（契约 §三 定序裁定）：否则列表永远显示"未试过"
+              recordEntryResult({ rootId, rel, absPath: r.abs, ok: false,
+                reason: 'asset-dependency', message: shape.dependencyReason });
               return sendJson(res, 500, { ok: false, reason: 'asset-dependency', message: shape.dependencyReason });
             }
           }
+          recordEntryResult({ rootId, rel, absPath: r.abs, ok: false,
+            reason: out.reason || 'unpack-failed', message: out.message || '解包失败' });
           // 把判据数字一起回给调用方（insufficient-memory 时要能看到 预算/预估峰值/当前可用）
           return sendJson(res, 500, {
             ok: false,
@@ -131,6 +197,8 @@ export function createUnpackRoutes(deps) {
             ...(out.budgetMb !== undefined ? { budgetMb: out.budgetMb, peakEstMb: out.peakEstMb, availMb: out.availMb } : {}),
           });
         }
+        // 成功：provider 由 store 回报（index.json 里记录的 pluginId，唯一可信来源）
+        recordEntryResult({ rootId, rel, absPath: r.abs, ok: true, provider: out.provider || null });
         return sendJson(res, 200, {
           ok: true,
           hit: out.hit,
@@ -174,7 +242,7 @@ export function createUnpackRoutes(deps) {
     // 往已销毁的连接写通常**不同步抛错**，而是异步 emit 'error' ⇒ 必须挂空处理器，
     //   否则会变成 uncaught error 把进程带走（try/catch 兜不住异步事件）。
     res.on('error', () => {});
-    const heartbeat = setInterval(() => writeFrame({ type: 'ping', data: {} }), 2000);
+    const heartbeat = setInterval(() => writeFrame({ type: 'ping', data: {} }), HEARTBEAT_INTERVAL_MS);
     heartbeat.unref?.();
     res.on('close', () => {
       // 客户端走了：停心跳、不再写帧；**不中止解包**（契约 §五：解完写缓存，下次命中）
@@ -243,7 +311,7 @@ export function createUnpackRoutes(deps) {
     });
   }
 
-  return function handle(req, res, p, url) {
+  return function dispatchRoute(req, res, p, url) {
     if (p === '/api/unpack/resolve' && req.method === 'POST') {
       handleResolve(req, res);
       return true;

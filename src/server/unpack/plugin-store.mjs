@@ -496,7 +496,10 @@ export function createUnpackStore(opts) {
       // 命中也要发一帧（契约 §2.1）：不发的话 stream 请求一帧都收不到，客户端只能干等 15s 停摆。
       //   命中路径只发 done，不发 queued/start/phase（没有解包过程可报）。
       fire('done', { fp, hit: true, prefix: cachedIdx.prefix, entry: cachedIdx.entry, files: cachedIdx.files, unpackMs: 0 });
-      return { ok: true, hit: true, fingerprint: fp, prefix: cachedIdx.prefix, entry: cachedIdx.entry, files: cachedIdx.files, unpackMs: 0 };
+      return { ok: true, hit: true, fingerprint: fp, prefix: cachedIdx.prefix, entry: cachedIdx.entry, files: cachedIdx.files, unpackMs: 0,
+        // 命中缓存也要报出"当年是哪个插件解的"：契约 §二 的 loadResult.provider 决定展示归属，
+        //   index.json 里记录的 pluginId 是唯一可信来源（不能按当前注册表重新猜）。
+        provider: cachedIdx.pluginId || null };
     }
     if (inflight.has(fp)) {
       // 同一 fp 已在解：**不新建任务**，只挂一个订阅者并补一条 queued{waiting}
@@ -558,7 +561,7 @@ export function createUnpackStore(opts) {
       if (!reply.ok) {
         counters.failures += 1;
         fire('error', { reason: reply.reason, message: reply.message });
-        return { ok: false, fingerprint: fp, reason: reply.reason, message: reply.message };
+        return { ok: false, fingerprint: fp, reason: reply.reason, message: reply.message, provider: null };
       }
       const index = reply.index;
       const writeMs = reply.writeMs || 0;
@@ -584,7 +587,9 @@ export function createUnpackStore(opts) {
       fire('phase', { name: 'resolve', ms: phases.pluginResolveMs });
       fire('phase', { name: 'write', ms: phases.writeMs });
       fire('done', { fp, hit: false, files: index.files, unpackMs: index.unpackMs, phases });
-      return { ok: true, hit: false, fingerprint: fp, prefix: index.prefix, entry: index.entry, files: index.files, unpackMs: index.unpackMs, phases, memBasis: mem.basis, peakEstMb: mem.peakEstMb };
+      return { ok: true, hit: false, fingerprint: fp, prefix: index.prefix, entry: index.entry, files: index.files, unpackMs: index.unpackMs, phases, memBasis: mem.basis, peakEstMb: mem.peakEstMb,
+        // 实际解出这个包的插件 id（写 entry-states 的 loadResult.provider 用它 ⇒ 展示归属与颜色）
+        provider: index.pluginId || runnerInfo().pluginId || null };
     }).finally(() => {
       inflight.delete(fp);
       subscribers.delete(fp); // 任务结束清订阅者表，避免 fp 复用时把上一轮的监听者带进来

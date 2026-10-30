@@ -3,8 +3,10 @@
 // 插件是「放目录即加能力」：这里只负责把 plugins/<id>/plugin.json 读成清单，
 // 并回答「某个 fileKind 当前有没有启用的插件」。
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { createLogger } from '../core/log.mjs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseJsonc } from '../../../tool/parse-jsonc.mjs';
 
 /**
@@ -149,6 +151,13 @@ export function validateProvides(provides) {
 const log = createLogger('plugins');
 
 /**
+ * 插件被开关禁用时的统一日志文案。
+ * 抽出来不是为了省字，而是这三处（清单扫描 / 平铺单文件 / 无清单目录）必须说同一句话 ——
+ *   分散成三个字面量后，改文案就得改三处，漏一处日志口径就不一致了。
+ */
+const LOG_DISABLED = '已按 config/plugins.json 禁用';
+
+/**
  * 归一化清单里的 runtime 字段。
  * 缺省 "node" = 历史行为（vm 沙盒里按 files[] 顺序跑 classic script）；
  * "exec" = 插件目录里有一个可执行文件，宿主 spawn 它并用帧协议通信（**没有 js 要加载**）。
@@ -198,7 +207,7 @@ export function readPluginManifest(pluginsDir, dirName, isFile, disabled, seenEf
   const files = filesResult.files;
   const pid = String(m.id || dirName);
   if (isPluginDisabled(disabled, pid, dirName)) {
-    log.info('已按 config/plugins.json 禁用', { plugin: pid });
+    log.info(LOG_DISABLED, { plugin: pid });
     return null;
   }
   // PL1：provides 必选且角色合法，否则整体不注册（并打印可读原因，避免静默消失）
@@ -278,6 +287,58 @@ export function readPluginManifest(pluginsDir, dirName, isFile, disabled, seenEf
  * @returns {Array<{id:string,name:string,files:string[],manifest:boolean}>}
  */
 export function readPlugins(pluginsDir, switchFile) {
+  // 磁盘插件 + 内置提供者，**同一列表**返回：调用方（/api/plugins、catalog 聚合、角色索引）
+  //   不需要知道"谁是内置的" —— 契约《条目状态与展示归属》§一·五 要求两者平权；
+  //   靠 if (kind==='spine') 之类分支区分，就退化回"两套平行体系"了。
+  //   顺序：磁盘插件在前（保持既有稳定顺序），内置项在后（展示先后由 matchPriority 决定）。
+  //
+  // 缓存：/api/catalog 一次请求会调本函数多次（实测 3 次），每次都重新扫目录、读全部
+  //   plugin.json、还要重算内置项的内容哈希 ≈ 16ms/请求，纯浪费。这里按"插件目录 + 开关文件 +
+  //   每个 plugin.json 的 mtime/size"做签名缓存。
+  //   ⚠️ 不能只看目录 mtime：改 plugin.json 的**内容**不改目录 mtime（只有增删条目才改），
+  //   那样会出现"插件升级了但清单还是旧的" —— 比不缓存更危险。
+  const sig = pluginsSignature(pluginsDir, switchFile);
+  if (readPluginsCache.sig === sig) return readPluginsCache.list.slice();
+  const list = readDiskPlugins(pluginsDir, switchFile).concat(readBuiltinProviders());
+  readPluginsCache = { sig, list };
+  return list.slice();
+}
+
+/** readPlugins 的进程内缓存（签名不符才重建） */
+let readPluginsCache = { sig: null, list: [] };
+
+/**
+ * 插件清单的指纹：目录项 + 每个 plugin.json 的 (mtime, size) + 开关文件的 (mtime, size)。
+ * 任一项变化 ⇒ 签名变 ⇒ 缓存失效重扫。
+ * @param {string} pluginsDir
+ * @param {string} switchFile
+ * @returns {string}
+ */
+function pluginsSignature(pluginsDir, switchFile) {
+  const parts = [String(pluginsDir)];
+  try {
+    const st = fs.statSync(switchFile);
+    parts.push(`sw:${st.mtimeMs}:${st.size}`);
+  } catch { parts.push('sw:-'); }
+  let ents = [];
+  try { ents = fs.readdirSync(pluginsDir, { withFileTypes: true }); }
+  catch { return `${parts.join('|')}|dir:-`; }
+  for (const e of ents.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!e.isDirectory()) continue;
+    try {
+      const st = fs.statSync(path.join(pluginsDir, e.name, 'plugin.json'));
+      parts.push(`${e.name}:${st.mtimeMs}:${st.size}`);
+    } catch { parts.push(`${e.name}:-`); }
+  }
+  return parts.join('|');
+}
+
+/**
+ * 只读磁盘插件（原 readPlugins 的逻辑，未改一行）。
+ * @param {string} pluginsDir
+ * @param {string} switchFile
+ */
+function readDiskPlugins(pluginsDir, switchFile) {
   const out = [];
   const disabled = readPluginSwitch(switchFile).disabled;
   if (!fs.existsSync(pluginsDir) || !fs.statSync(pluginsDir).isDirectory()) return out;
@@ -297,7 +358,7 @@ export function readPlugins(pluginsDir, switchFile) {
     if (e.name.startsWith('.')) continue;
     if (e.isFile() && e.name.toLowerCase().endsWith('.js')) {
       const id = e.name.replace(/\.js$/i, '');
-      if (isPluginDisabled(disabled, id, id)) { log.info('已按 config/plugins.json 禁用', { plugin: id }); continue; }
+      if (isPluginDisabled(disabled, id, id)) { log.info(LOG_DISABLED, { plugin: id }); continue; }
       // 平铺单文件没有清单 ⇒ provides 无从声明 ⇒ 按契约 PL1 不注册（日志说清，别静默消失）
       log.warn('未注册：缺少 plugin.json，provides 无法声明', { plugin: id, roles: PLUGIN_ROLES.join(' / ') });
       continue;
@@ -315,7 +376,7 @@ export function readPlugins(pluginsDir, switchFile) {
     try { inner = fs.readdirSync(path.join(pluginsDir, e.name), { withFileTypes: true }); } catch { continue; }
     const js = inner.filter((x) => x.isFile() && x.name.toLowerCase().endsWith('.js')).map((x) => x.name).sort();
     if (!js.length) continue;
-    if (isPluginDisabled(disabled, e.name, e.name)) { log.info('已按 config/plugins.json 禁用', { plugin: e.name }); continue; }
+    if (isPluginDisabled(disabled, e.name, e.name)) { log.info(LOG_DISABLED, { plugin: e.name }); continue; }
     // 目录里没有 plugin.json ⇒ 同上，provides 无从声明 ⇒ 不注册
     log.warn('未注册：目录内缺少 plugin.json，provides 无法声明', { plugin: e.name, roles: PLUGIN_ROLES.join(' / ') });
     continue;
@@ -395,14 +456,19 @@ export function detectBundleContainer(abs) {
  * @param {{pluginsDir: string, pluginSwitchFile: string}} p
  */
 export function createPlugins(p) {
+  // 绑一次读取函数：readPlugins 与 roleIndex 都在同一个闭包里复用它，
+  //   而不是各自写一遍 `readPlugins(p.pluginsDir, p.pluginSwitchFile)`（两处实参完全相同，
+  //   改一处漏一处就会变成"目录换了、角色表还是旧的"）。
+  //   实际扫描频率由 readPlugins 自己的签名缓存兜住（同一请求内多次调用只扫一次）。
+  const loadPlugins = () => readPlugins(p.pluginsDir, p.pluginSwitchFile);
   return {
-    readPlugins: () => readPlugins(p.pluginsDir, p.pluginSwitchFile),
+    readPlugins: loadPlugins,
     /**
      * 角色注册表：角色 → 插件 id 列表（契约 §一 五类角色）。
      * 只列**已注册成功**的插件（PL1 校验通过的），所以这里是"核心真正认得的角色面"。
      * @returns {Record<string, string[]>}
      */
-    roleIndex: () => buildRoleIndex(readPlugins(p.pluginsDir, p.pluginSwitchFile)),
+    roleIndex: () => buildRoleIndex(loadPlugins()),
     readPluginSwitch: () => readPluginSwitch(p.pluginSwitchFile),
     isPluginDisabled,
     enabledPluginKinds: () => enabledPluginKinds(p.pluginsDir, p.pluginSwitchFile),
@@ -424,4 +490,122 @@ export function buildRoleIndex(list) {
     }
   }
   return index;
+}
+
+// ============================================================================
+// 内置提供者（契约《条目状态与展示归属》§一·五）
+//
+// 内置 spine/live2d 装载器没有插件目录、没有 plugin.json，但它对"认领范围 / 展示色 / 优先级"
+//   的声明必须与插件同源、同表 —— 否则 catalog 又要写 if (kind==='spine')，契约就白定了。
+// 所以给它们一份**同形声明文件**（builtin-providers.json），在这里并入 readPlugins 的结果。
+//
+// version 不写死：由 builtinVersionHash() 按"判定相关文件"的内容哈希派生 ——
+//   判定逻辑一改，指纹自动变，旧的"不支持/失败"结论整批失效（契约 §三 规则①）。
+//   免人工递增版本号，也免"改了判据忘了升版本"导致旧 ⚠ 一直误导。
+// ============================================================================
+
+/** 项目根（本文件在 src/server/plugins/ ⇒ 三层） */
+const REGISTRY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+
+/**
+ * 参与内置项版本哈希的文件。
+ * 选它们的理由：这三处共同决定"目录型条目能不能装"的结论 ——
+ *   · builtin-providers.json  —— 声明本身（accent/label/fileKinds 变了，展示与聚合就变了）
+ *   · src/server/data/catalog.mjs —— 服务端目录型 support 判定（缺件 missingTextures 在此算）
+ *   · src/web/spine/probe.mjs     —— 前端目录型认领判定（决定 loadResult 是否还有效）
+ * 缺文件就跳过（不炸）：新环境里某个模块被挪走，也不该让插件列表整个读不出来。
+ */
+const BUILTIN_VERSION_FILES = [
+  'src/server/plugins/builtin-providers.json',
+  'src/server/data/catalog.mjs',
+  'src/web/spine/probe.mjs',
+];
+
+/**
+ * 内置提供者的版本号：判定相关文件内容哈希的前 8 位。
+ * @param {string} [root] 项目根（缺省按本文件位置推）
+ * @returns {string}
+ */
+export function builtinVersionHash(root = REGISTRY_ROOT) {
+  // 缓存：参与哈希的文件里有 src/server/data/catalog.mjs（770 行），每算一次要读它 + 做 sha256
+  //   ≈1.8ms。readPlugins 每请求会被调多次 ⇒ 不缓存等于白烧 CPU。
+  //   缓存键用 (mtime, size)：文件内容一变就重算，不会返回过期版本号。
+  let sig = '';
+  const stats = [];
+  for (const rel of BUILTIN_VERSION_FILES) {
+    try {
+      const st = fs.statSync(path.join(root, rel));
+      stats.push({ rel, ok: true });
+      sig += `${rel}:${st.mtimeMs}:${st.size};`;
+    } catch {
+      stats.push({ rel, ok: false });
+      sig += `${rel}:-;`;
+    }
+  }
+  if (builtinHashCache.sig === sig) return builtinHashCache.value;
+
+  const h = crypto.createHash('sha256');
+  let used = 0;
+  for (const { rel, ok } of stats) {
+    if (!ok) continue;
+    try {
+      h.update(rel);
+      h.update(fs.readFileSync(path.join(root, rel)));
+      used += 1;
+    } catch { /* 单个文件读不了不影响其它文件 */ }
+  }
+  const hashValue = used ? h.digest('hex').slice(0, 8) : '0';
+  builtinHashCache = { sig, value: hashValue };
+  return hashValue;
+}
+
+/** builtinVersionHash 的进程内缓存（签名 = 参与文件的 mtime/size 串） */
+let builtinHashCache = { sig: null, value: '0' };
+
+/**
+ * 读内置提供者声明，返回与磁盘插件**同形**的对象（可直接被 catalog / 角色索引消费）。
+ * 字段口径与 readPluginManifest 对齐：缺省值一律给"未声明"（null/[]），不替它猜。
+ * @param {string} [root]
+ * @returns {Array<object>}
+ */
+export function readBuiltinProviders(root = REGISTRY_ROOT) {
+  const file = path.join(root, 'src/server/plugins/builtin-providers.json');
+  let doc = null;
+  try {
+    if (!fs.existsSync(file)) return [];
+    // 声明文件允许带 _comment（团队注释），解析仍走项目的 JSONC 解析器，与插件清单同一条路径
+    doc = parseJsonc(fs.readFileSync(file, 'utf8'), 'builtin-providers.json');
+  } catch (err) {
+    log.warn('内置提供者声明解析失败，按"没有内置项"处理', { err: err.message });
+    return [];
+  }
+  const list = (doc && Array.isArray(doc.providers)) ? doc.providers : [];
+  const version = builtinVersionHash(root);
+  const out = [];
+  for (const m of list) {
+    if (!m || !m.id) continue;
+    out.push({
+      id: String(m.id),
+      name: String(m.name || m.id),
+      label: m.label ? String(m.label) : null,
+      // 内置装载器只提供 asset-provider 这一个角色（它们不渲染面板、不挂 UI）
+      provides: ['asset-provider'],
+      version,
+      assets: [],
+      fileKinds: Array.isArray(m.fileKinds) ? m.fileKinds.map(String) : [],
+      accent: /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(String(m.accent || '')) ? String(m.accent) : null,
+      matchPriority: Number.isFinite(Number(m.matchPriority)) ? Number(m.matchPriority) : 0,
+      produces: m.produces && typeof m.produces === 'object' ? m.produces : null,
+      errorCodes: [],
+      files: [],
+      runtime: null,
+      entry: null,
+      frameProtocol: null,
+      effects: [],
+      manifest: false,
+      /** 唯一用于区分来源的标记（诊断展示用；判定与聚合一律不读它，避免变成第二套分支） */
+      builtin: true,
+    });
+  }
+  return out;
 }

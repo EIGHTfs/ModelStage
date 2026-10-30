@@ -1,0 +1,30 @@
+{
+  "_comment": [
+    "内置装载器作为**提供者**的声明（契约《条目状态与展示归属》§一·五）。",
+    "与 plugins/<id>/plugin.json 同形、走同一套读取与聚合；区别只有 builtin:true、没有代码文件。",
+    "fileKinds 用 'spine-dir'/'live2d-dir'，与插件声明的 'bundle' **互斥** —— 这是颜色归属聚合的键：",
+    "  若内置项也声明 produces.kind='spine'，按 kind 反查会变成两个候选 ⇒ 现有散目录条目全部掉成中性色。",
+    "accent 与对应插件同值：内置项和插件解的是同一类资产，视觉上应当一致。",
+    "version 不写死：由 registry 的 builtinVersionHash() 按判定模块内容哈希派生（改判据自动失效旧结论）。"
+  ],
+  "providers": [
+    {
+      "id": "builtin-spine",
+      "name": "内置 Spine 装载器",
+      "label": "Spine目录",
+      "accent": "#2b6cb0",
+      "matchPriority": 30,
+      "fileKinds": ["spine-dir"],
+      "produces": { "kind": "spine", "entry": "load(dir)", "fields": ["skeletonFile", "atlasFile", "textureFiles"] }
+    },
+    {
+      "id": "builtin-live2d",
+      "name": "内置 Live2D 装载器",
+      "label": "Live2D目录",
+      "accent": "#6d28d9",
+      "matchPriority": 30,
+      "fileKinds": ["live2d-dir"],
+      "produces": { "kind": "live2d", "entry": "load(dir)", "fields": ["model3File", "mocFile", "textureFiles"] }
+    }
+  ]
+}
