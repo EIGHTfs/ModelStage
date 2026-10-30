@@ -141,6 +141,9 @@ const SUITES = [
   // 容器条目列举（递归 / 深度与命中上限 / 多插件时 kind 置 null）：
   //   它决定"资源包能不能出现在列表里"，且 kind 一旦标错，前端会走错渲染分支
   { name: 'catalog-bundle', runner: 'node-test', file: 'test/catalog-bundle.test.mjs' },
+  // /api/catalog 的入参分流语义：缺 root ⇒ 400（带可用根清单）、未知根 ⇒ 404、合法根 ⇒ 200。
+  //   曾经一律 404，导致"路径拼错"与"根不存在"在日志里不可区分
+  { name: 'catalog-route', runner: 'node-test', file: 'test/catalog-route.test.mjs' },
   // 统一日志工厂（infra/log.js）的记录形状契约：纯 node、秒级，
   //   它是后续"适配层 → 分 3 批迁 stageStatus"的地基，形状一旦漂了后面全歪
   { name: 'log', runner: 'node-test', file: 'test/log.test.mjs' },
@@ -466,14 +469,60 @@ function cleanProfiles() {
  * 只在目标**不存在**时复制 —— 之后测试随便改自己的 config，不回流主项目。
  * @returns {'exists'|'seeded'|'no-source'} 结果（打进日志，避免"配置哪来的"说不清）
  */
+/**
+ * 递归复制一个目录（只在目标不存在/为空时用）。
+ * 为什么不直接 fs.cpSync：CIFS/SMB 上它同样会碰权限位（与 copyFileSync 同一个坑），
+ *   这里逐文件走 copyFilePortable，保证在被测环境中不会 EPERM。
+ * @param {string} src 源目录
+ * @param {string} dst 目标目录（不存在则创建）
+ * @returns {number} 复制了多少个文件
+ */
+function copyDirPortable(src, dst) {
+  let count = 0;
+  fs.mkdirSync(dst, { recursive: true });
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const from = path.join(src, entry.name);
+    const to = path.join(dst, entry.name);
+    if (entry.isDirectory()) count += copyDirPortable(from, to);
+    else if (entry.isFile()) { copyFilePortable(from, to); count += 1; }
+    // 其它类型（符号链接 / 设备节点 / FIFO）不复制：配置目录里不该有它们，
+    //   真出现了也宁可跳过并让它在下游显形，而不是用 cp 的语义猜用户意图
+  }
+  return count;
+}
+
+/**
+ * 首次启动独立实例前，把主项目的配置播种成它的初始状态。
+ *
+ * 播两样，各自独立回报（都遵守"目标已存在就跳过"，绝不覆盖测试实例自己的改动）：
+ *   · config/resources.json —— 没有它测试实例没有资源根，f4-roots 之类无从下手
+ *   · config/names/         —— 名表数据被 gitignore，不播的话 /api/names 必然 404，
+ *                              名表相关行为在测试实例里等于没测
+ * 源缺失只回报状态、不报错：测试该照常跑，让人从汇总里看出"这一块没数据"。
+ * @returns {{config: string, names: string}} 各自的状态：exists | seeded | no-source
+ */
 function seedTestConfig() {
-  const dst = path.join(TEST_DATA_ROOT, 'config', 'resources.json');
-  if (fs.existsSync(dst)) return 'exists';
-  const src = path.join(PROJECT, 'config', 'resources.json');
-  if (!fs.existsSync(src)) return 'no-source';
-  fs.mkdirSync(path.dirname(dst), { recursive: true });
-  copyFilePortable(src, dst);
-  return 'seeded';
+  const result = { config: 'no-source', names: 'no-source' };
+  // ① resources.json
+  const cfgDst = path.join(TEST_DATA_ROOT, 'config', 'resources.json');
+  const cfgSrc = path.join(PROJECT, 'config', 'resources.json');
+  if (fs.existsSync(cfgDst)) {
+    result.config = 'exists';
+  } else if (fs.existsSync(cfgSrc)) {
+    fs.mkdirSync(path.dirname(cfgDst), { recursive: true });
+    copyFilePortable(cfgSrc, cfgDst);
+    result.config = 'seeded';
+  }
+  // ② config/names/（整目录，含子目录）
+  const namesDst = path.join(TEST_DATA_ROOT, 'config', 'names');
+  const namesSrc = path.join(PROJECT, 'config', 'names');
+  if (fs.existsSync(namesDst)) {
+    result.names = 'exists';
+  } else if (fs.existsSync(namesSrc)) {
+    const copied = copyDirPortable(namesSrc, namesDst);
+    result.names = `seeded(${copied} 文件)`;
+  }
+  return result;
 }
 
 async function ensureServer() {
@@ -490,7 +539,7 @@ async function ensureServer() {
     return 'unreachable';
   }
   const seeded = seedTestConfig();
-  say(`[test-all] 服务未就绪，启动独立测试实例：PORT=${TEST_PORT} 数据根=${path.relative(PROJECT, TEST_DATA_ROOT)}（配置 ${seeded}）`);
+  say(`[test-all] 服务未就绪，启动独立测试实例：PORT=${TEST_PORT} 数据根=${path.relative(PROJECT, TEST_DATA_ROOT)}（配置 ${seeded.config} · 名表 ${seeded.names}）`);
   try {
     spawnSync('bash', [path.join(PROJECT, 'web.sh'), 'start'], {
       cwd: PROJECT,

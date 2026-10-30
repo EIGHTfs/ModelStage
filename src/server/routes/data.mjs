@@ -124,7 +124,18 @@ function apiAsync(ctx, req, res, p, url) {
   const { data, sendJson } = ctx;
   const done = (r) => sendJson(res, r.status, r.body);
   const fail = (label) => (e) => sendJson(res, 500, { ok: false, error: `${label}: ${e.message}` });
-  if (p === '/api/catalog') return done(data.catalog.listCatalog(url.searchParams.get('root') || ''));
+  if (p === '/api/catalog') {
+    // 入参分流（只在路由层做，不动 listCatalog 内部报错）：
+    //   · 缺 root / 空串 ⇒ 400（调用方错误）。以前一律回 404，于是"路径拼错了"
+    //     和"根真的不存在"看起来一模一样，排查时白费一轮。
+    //   · 给了非空但找不到的 id ⇒ 仍交 listCatalog 回 404（那才是"资源不存在"）。
+    const rootId = (url.searchParams.get('root') || '').trim();
+    if (!rootId) {
+      const known = data.config.readConfig().map((r) => r.id);
+      return sendJson(res, 400, { ok: false, error: '缺少 root 参数（?root=<资源根 id>）', known });
+    }
+    return done(data.catalog.listCatalog(rootId));
+  }
   if (p === '/api/bundle/probe') {
     data.bundleProbe.probeBundle(url.searchParams.get('root') || '', url.searchParams.get('path') || '')
       .then(done).catch(fail('预检失败'));
