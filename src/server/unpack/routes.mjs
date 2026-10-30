@@ -13,6 +13,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { sendFile } from '../http/static.mjs';
 import { capacity } from './capacity.mjs';
+// 包内形态探测（依赖包判定）：与 /api/bundle/probe、前端 plugin-host 共用同一份判据与文案
+import { probeBundleBytes } from '../../../tool/lib/bundle-probe-node.mjs';
 
 /** 强制失败开关（验收"回退可用"用；默认关） */
 function forcedFail() {
@@ -44,6 +46,21 @@ export function createUnpackRoutes(deps) {
       return { error: '文件不存在' };
     }
     return { abs };
+  }
+
+  /**
+   * 读文件并探包内形态（依赖包判定用）。任何失败都返回 null ——
+   * 这是"给主错误补一句人话"的辅助，绝不能反过来把主错误路径搞坏。
+   * @param {string} absPath 资源包绝对路径
+   * @returns {{assetDependency?: boolean, dependencyReason?: string}|null}
+   */
+  function describeBundleShapeSafe(absPath) {
+    try {
+      const bytes = new Uint8Array(fs.readFileSync(absPath));
+      return probeBundleBytes(bytes);
+    } catch {
+      return null;
+    }
   }
 
   /** POST /api/unpack/resolve */
@@ -95,6 +112,17 @@ export function createUnpackRoutes(deps) {
         // allowOverLimit：面板「内存保护」开关关闭时前端会带这个标记（默认不带 ⇒ 行为与从前完全一致）
         const out = await store.resolve({ rootId, rel, absPath: r.abs, allowOverLimit: body.allowOverLimit === true });
         if (!out.ok) {
+          // 没有插件认领时先判包内形态：美术依赖包要说清"为什么打不开 + 下一步"。
+          //   判据与文案来自 src/shared/bundle-shape.mjs（与前端 plugin-host 同一份），
+          //   否则"页面点开"与"直接调这个接口"会对同一个包给出两种答案。
+          //   两个 reason 是同义：前端 plugin-host 叫 no-provider，服务端 plugin-runner 叫 not-handled
+          //   （见 plugin-runner.mjs 的 kind 表：not-handled = 所有插件都说不处理）。
+          if (out.reason === 'no-provider' || out.reason === 'not-handled') {
+            const shape = describeBundleShapeSafe(r.abs);
+            if (shape && shape.assetDependency) {
+              return sendJson(res, 500, { ok: false, reason: 'asset-dependency', message: shape.dependencyReason });
+            }
+          }
           // 把判据数字一起回给调用方（insufficient-memory 时要能看到 预算/预估峰值/当前可用）
           return sendJson(res, 500, {
             ok: false,

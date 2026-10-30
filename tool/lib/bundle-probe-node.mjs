@@ -12,6 +12,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
+// 依赖包判据与文案（与前端 plugin-host 共用一份，见 src/shared/bundle-shape.mjs）
+import { histogramFromObjects, isAssetDependencyHistogram, dependencyReason } from '../../src/shared/bundle-shape.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..');
@@ -83,13 +85,35 @@ function getSandbox() {
 /**
  * 预检一个资源包字节流。
  * @param {Uint8Array} bytes
- * @returns {object} 与插件内 probe 同源的结论
+ * @returns {object} 与插件内 probe 同源的结论 + 包内类型构成（依赖包判定用）
  */
 export function probeBundleBytes(bytes) {
   const ctx = getSandbox();
   const NS = ctx.__ULB__;
-  if (!NS || !NS.bundleProbe) throw new Error('预检库未能加载（__ULB__.bundleProbe 缺失）');
-  return NS.bundleProbe.run(bytes);
+  const bp = NS && NS.bundleProbe;
+  const res = (bp && typeof bp.run === 'function') ? bp.run(bytes) : null;
+
+  // 附加：包内 className 构成 + 是否"美术依赖包"。
+  //   判据与文案来自 src/shared/bundle-shape.mjs —— 与前端 plugin-host 用的是同一份，
+  //   保证"页面点开"与"直接调 /api/unpack"对同一个包给同一个答案。
+  //   这里再解析一次（诊断路径、不进热路径），因为 run() 不暴露对象表。
+  let shape = null;
+  try {
+    const parsed = NS.unityfs.parse(bytes);
+    const cab = (parsed.nodes || []).find((n) => /^CAB-/.test(n.path));
+    if (cab) {
+      const sf = NS.serialized.parse(NS.unityfs.nodeBytes(parsed, cab.path));
+      const histogram = histogramFromObjects(sf);
+      shape = {
+        objectCount: (sf.objects || []).length,
+        histogram,
+        assetDependency: isAssetDependencyHistogram(histogram),
+      };
+      if (shape.assetDependency) shape.dependencyReason = dependencyReason(histogram);
+    }
+  } catch { /* 形态探测失败不影响主结论（探不到就不下依赖包结论） */ }
+
+  return Object.assign({}, res || {}, shape || {});
 }
 
 // 路径与清单都**不再导出成常量**（常量会诱使别人继续手写第二份）；
