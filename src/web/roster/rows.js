@@ -196,7 +196,9 @@ export function refreshVariantFailure(model, failure) {
   }
   if (!row) return false;
 
-  const badgeTitle = `该资源包无法装载：${(failure && failure.text) || ''}`;
+  // 只取一次：徽标 title 与行 title 用的是同一段文案，重复取值会让"改一处漏一处"成为可能
+  const failureText = (failure && failure.text) || '';
+  const badgeTitle = `该资源包无法装载：${failureText}`;
   const existing = row.querySelector('[data-bundle-failure="1"]');
   if (failure) {
     if (existing) {
@@ -215,6 +217,6 @@ export function refreshVariantFailure(model, failure) {
 
   // 行级 title 里那一句警告同步增删；其余部分（原名 / 目录 / 缺纹理警告）原样保留
   const baseTitle = String(row.title || '').replace(/\n⚠ 不支持：[^\n]*$/, '');
-  row.title = failure ? `${baseTitle}\n⚠ 不支持：${(failure && failure.text) || ''}` : baseTitle;
+  row.title = failure ? `${baseTitle}\n⚠ 不支持：${failureText}` : baseTitle;
   return true;
 }
