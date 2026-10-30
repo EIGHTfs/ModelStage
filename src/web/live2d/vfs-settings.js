@@ -109,7 +109,11 @@ function candidatesFor(key, vfsPrefix, entryDir) {
   const out = [];
   if (vfsPrefix) out.push(vfsPrefix + key);
   if (entryDir) out.push(entryDir + key);
-  return out.length ? out : [key];
+  // 去重：容器模型里 vfsPrefix 与 entryDir **常常是同一个目录**（都从 entryUrl 推出来），
+  //   不去重就会把同一个地址试两遍 —— 多一次 VFS 未命中计数，而且诊断信息里
+  //   "尝试过 2 个候选"会看起来像试了两个不同地址，把排查方向带偏（实测踩到过）。
+  const list = out.length ? out : [key];
+  return list.length > 1 ? [...new Set(list)] : list;
 }
 
 /** 单个候选去问 VFS（异常一律当未命中） */
@@ -128,12 +132,24 @@ function installResolver(settings, ctx) {
     const key = normalizeRef(ref);
     stats.calls += 1;
     if (isDirectUrl(key)) return key;              // data:/blob:/http(s) 已是最终地址
-    for (const cand of candidatesFor(key, vfsPrefix, entryDir)) {
+    const cands = candidatesFor(key, vfsPrefix, entryDir);
+    for (const cand of cands) {
       const hit = tryResolve(vfs, cand);
       if (hit) { stats.hits.push(key); return hit; }
     }
     stats.missing.push(key);
-    note(`Live2D 资源未在 VFS 中命中，回落网络：${key}`, 'warn');
+    // 未命中时**把病因一起打出来**：只给 key 的话，看不出是"prefix 对不上"还是"这包真缺这个文件"。
+    // 实测教训：排查"容器产物明明已注册却回落网络"时，只能临时 hook vfs 才拿得到 prefix / 已注册数，
+    //   而这两项恰好是判断的分水岭（0 个文件 = prefix 不匹配，N>0 个文件 = 只缺这一个）。
+    // 级别保持 warn、信息只增不减 —— 这条 warn 本身就是有价值的信号，不许为"看着干净"而降级。
+    const registered = typeof vfs.prefixFileCount === 'function' ? vfs.prefixFileCount(vfsPrefix || '') : -1;
+    const prefixText = vfsPrefix || '(无前缀)';
+    const why = registered === 0
+      ? '⚠️ 该前缀下没有任何已注册文件 —— 基本可判定是 prefix 对不上（例如缓存产物里存的是旧 prefix），不是偶发 miss'
+      : (registered < 0
+        ? '该前缀的已注册文件数查不到（vfs 没提供 prefixFileCount）'
+        : `该前缀已注册 ${registered} 个文件`);
+    note(`Live2D 资源未在 VFS 中命中，回落网络：${key}（prefix=${prefixText}；${why}；尝试过 ${cands.length} 个候选：${cands.join(' , ')}）`, 'warn');
     return entryDir ? entryDir + key.replace(/^\/+/, '') : key;
   };
 }

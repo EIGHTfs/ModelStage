@@ -117,6 +117,23 @@ export function createVirtualFS(options = {}) {
     entries.set(key, { files: normalized, urls: new Map() });
   }
 
+  /**
+   * 某前缀下已注册多少个文件（**只读诊断接口**；0 = 这个前缀压根没注册过）。
+   *
+   * 为什么需要它：`stats()` 给的是**全部前缀的合计**，看不出"我请求的这个前缀下一个文件都没有"
+   *   这个关键区别 —— 而那正是"prefix 对不上（产物里存的是旧 prefix）"与
+   *   "这个包真的缺这个文件"两种故障的分水岭。没有它，排查只能靠猜。
+   * 不改任何行为：只查表，不注册、不撤销、不创建 Blob、不计命中/未命中。
+   * @param {string} prefix 原始写法（内部按与 register 相同的规则归一化）
+   * @returns {number}
+   */
+  function prefixFileCount(prefix) {
+    const key = normalizePath(prefix);
+    if (!key) return 0;
+    const entry = entries.get(key);
+    return entry && entry.files ? entry.files.size : 0;
+  }
+
   /** 懒创建并缓存某文件的 Blob URL */
   function urlFor(prefix, rel, value) {
     const entry = entries.get(prefix);
@@ -180,7 +197,7 @@ export function createVirtualFS(options = {}) {
     return { prefixes: entries.size, files, bytes, hits, misses, urls: createdUrls };
   }
 
-  return { register, resolve, revoke, stats };
+  return { register, resolve, revoke, stats, prefixFileCount };
 }
 
 /**
