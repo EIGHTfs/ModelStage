@@ -549,6 +549,42 @@ function countSkippedFiles(rootPath, listed) {
 }
 
 /**
+ * 资源根路径体检：返回问题类型码（null = 正常）。
+ *
+ * 为什么单独体检而不是靠扫描结果判断：扫不到条目的原因有三类，
+ *   文案必须不同（"路径没了" / "路径不是目录" / "目录正常但真没模型"），
+ *   否则前端只能笼统显示"该游戏没有可加载模型"，用户拿不到任何线索。
+ * 只看本地文件系统、不抛错：体检失败本身不该让接口 500。
+ * @param {string} rootPath 配置里的根路径
+ * @returns {'missing'|'not-dir'|'unreadable'|null}
+ */
+function inspectRootPath(rootPath) {
+  let stat = null;
+  try {
+    stat = fs.statSync(rootPath);
+  } catch {
+    return 'missing';
+  }
+  if (!stat.isDirectory()) return 'not-dir';
+  try {
+    fs.accessSync(rootPath, fs.constants.R_OK);
+  } catch {
+    return 'unreadable';
+  }
+  return null;
+}
+
+/**
+ * 根级问题的用户可见文案（**不带绝对路径**：那是排障信息，只进日志/diag）。
+ * 只写"哪根出了什么问题"，让前端能直接展示。
+ */
+const ROOT_PATH_PROBLEM_TEXT = {
+  missing: '资源根路径不存在（目录被移动或磁盘未挂载）',
+  'not-dir': '资源根路径不是目录（配置里填的可能是文件）',
+  unreadable: '资源根目录不可读（权限不足）',
+};
+
+/**
  * 装配模型目录（合并该资源根下的 Spine 与 Live2D 两路扫描）。
  * @param {{config: object, spine: object, live2d: object}} deps
  */
@@ -565,15 +601,21 @@ export function createCatalog({ config, spine, live2d, tree, plugins }) {
     }
     const entries = [];
     const warnings = [];
+    /** 扫描过程中抛的错（用于判断 rootWarning 该说"扫不动"还是"真的空"） */
+    const scanErrors = [];
+    // 根路径体检放在扫描之前：路径都没了就不要再问扫描器"里面有什么"
+    const pathProblem = inspectRootPath(cfg.path);
 
     try {
       for (const m of spine.getSpineModels(cfg, false).models) entries.push(toSpineEntry(cfg, m));
     } catch (e) {
+      scanErrors.push(e);
       warnings.push(`spine 扫描失败：${e.message}`);
     }
     try {
       for (const lm of live2d.getLive2DModels(cfg, false).models) entries.push(toLive2DEntry(cfg, lm));
     } catch (e) {
+      scanErrors.push(e);
       warnings.push(`live2d 扫描失败：${e.message}`);
     }
 
@@ -584,12 +626,33 @@ export function createCatalog({ config, spine, live2d, tree, plugins }) {
     entries.push(...bundle.entries);
     if (bundle.warnings.length) warnings.push(...bundle.warnings);
 
+    /**
+     * 根级诊断：**这根本身有没有问题**（与"这根确实没有模型"要能区分）。
+     *
+     * 为什么单开一个字段而不是塞进 warnings：warnings 里混着通用能力说明
+     *   （例如「有 N 个能解包资源包的插件…」），前端拿它拼用户提示会得出
+     *   「因为有两个插件所以没模型」这种错误因果（前端实测踩过）。
+     * 文案一律**不带绝对路径**（那是排障信息，进日志），只带 rootId 便于对照配置。
+     * 优先级：路径问题 > 扫描抛错 > 扫描成功但 0 条目。
+     */
+    let rootWarning = null;
+    // 三种根级问题的文案都以它结尾：格式只在这里定义一次（改样式不用改三处）
+    const rootTag = `（rootId=${cfg.id}）`;
+    if (pathProblem) {
+      rootWarning = `${ROOT_PATH_PROBLEM_TEXT[pathProblem]}${rootTag}`;
+    } else if (scanErrors.length) {
+      rootWarning = `资源根扫描失败${rootTag}：具体原因见 warnings`;
+    } else if (!entries.length) {
+      rootWarning = `扫描完成但没有任何模型条目${rootTag}`;
+    }
+
     return {
       status: 200,
       body: {
         root: { id: cfg.id, name: cfg.name },
         count: entries.length,
         entries,
+        rootWarning,
         ...(bundle.skipped ? { skipped: bundle.skipped } : {}),
         ...(warnings.length ? { warnings } : {}),
       },
