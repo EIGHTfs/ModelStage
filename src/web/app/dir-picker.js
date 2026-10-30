@@ -138,14 +138,30 @@ export function createDirPicker({ onPick, formatError, getLastError } = {}) {
     btn.className = 'mini-btn dir-picker-nav';
     btn.dataset.nav = target;
     btn.textContent = label;
-    btn.addEventListener('click', () => { currentPath = target; renderBody(); });
+    btn.addEventListener('click', () => {
+      // 换目标 ⇒ 之前的「选择此目录」作废。
+      //   不清的后果（实测过的 bug）：在 A 点过选择、再导航到 B 点添加，提交的却是 A，
+      //   服务端按路径判重正确返回 409「该目录已登记为资源根」——
+      //   用户看到的是"我明明没登记 B，凭什么说已登记"，且「✓ 已选择」还挂在 A 上。
+      pickedPath = '';
+      currentPath = target;
+      renderBody();
+    });
     return btn;
   }
 
-  /** 添加：用"已选择的目录"（没点过就用当前目录） */
+  /**
+   * 添加：**只提交当前浏览的目录**。
+   *
+   * 为什么不再用 `pickedPath || currentPath`：pickedPath 是"点过选择此目录"留下的，
+   *   一旦导航没清（历史 bug），它就会是**上一次选过的目录** ⇒ 提交一个与当前视图无关的目标
+   *   ⇒ 服务端按路径判重正确返回 409，而用户完全看不出为什么。
+   *   现在 navBtn 已经"导航即清除"，pickedPath 只可能是空或等于 currentPath；
+   *   这里再兜一层：提交值永远来自 currentPath，两者不一致时不可能发生错位。
+   */
   async function doAdd() {
     if (busy) return;
-    const path = pickedPath || currentPath;
+    const path = currentPath;
     const nameInput = q('[data-role="name"]');
     const name = nameInput ? nameInput.value.trim() : '';
     if (!path) return;
