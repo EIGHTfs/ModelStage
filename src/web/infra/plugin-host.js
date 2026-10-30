@@ -464,7 +464,69 @@ export function createPluginHost(opts = {}) {
     }
     const bad = validateResolved(res);
     if (bad) return { ok: false, reason: 'bad-result', message: `提供者 ${provider.id} 返回不合契约：${bad}` };
+    // 与 worker 候选循环同一把尺子：产物不自洽就当场判定不可用。
+    //   不判的后果是错误被推迟到装载阶段，只剩一句 "Network error."，根因完全看不出来。
+    //   注：本函数只有一个候选（findProvider 选定的那个），不在这里改试下一个 ——
+    //   多候选轮试在 worker 循环里做；这条同步路径只在 ?unpack=0 或 worker 全不可用时才走。
+    const usable = await resolvedUsable(res);
+    if (!usable.ok) {
+      return { ok: false, reason: 'bad-result', message: `提供者 ${provider.id} 的产物不可用：${usable.why}` };
+    }
     return { ok: true, provider: provider.id, res };
+  }
+
+  /**
+   * 产物可用性校验：**"插件说能解"不等于"产物真能用"**。
+   *
+   * 为什么必须有：同一个 UnityFS 包可能被多个 bundle 插件都判成"我能处理" ——
+   *   它们的判定只看包结构，不看"解出来的东西是否自洽"。
+   *   实测（NIKKE 的 spine 资源包）：live2d 插件抢先返回 ok，但它生成的 `model3.json`
+   *   里 Moc 指向的 `moc3.moc3` 内容只有 4 字节、字面量 `null`（包里根本没有 moc3）
+   *   ⇒ 后续按 live2d 装载必然失败（控制台只有一句 Network error），
+   *   而真正能解这个包的 spine 插件永远轮不到 ⇒ 表现为"点一次不出画，
+   *   再点一次（服务端缓存选对了插件）才显示"。
+   *
+   * 判据（对所有 kind 通用，不认包名）：
+   *   ① 入口文件必须真实存在于产物里
+   *   ② 入口是 JSON 时，它引用的每个文件也必须在产物里，且内容不是空/占位（≤8 字节）
+   *   ③ 校验自身出错一律放行（宁可放过一次，不可错杀可用产物）
+   * @param {{entry: string, files: Map<string, Blob>}} res 插件产物
+   * @returns {Promise<{ok: boolean, why?: string}>}
+   */
+  async function resolvedUsable(res) {
+    try {
+      const files = res && res.files;
+      if (!files || typeof files.keys !== 'function' || !files.size) return { ok: false, why: '产物为空' };
+      const norm = (p) => String(p || '').replace(/^\.?\//, '');
+      const keys = [...files.keys()];
+      const find = (name) => keys.find((k) => norm(k) === norm(name));
+      const entryName = norm(res.entry);
+      if (!entryName) return { ok: false, why: '没有入口文件' };
+      const entryKey = find(entryName);
+      if (entryKey === undefined) return { ok: false, why: `入口 ${entryName} 不在产物里` };
+      const blob = files.get(entryKey);
+      if (!blob || typeof blob.text !== 'function') return { ok: true };
+      let meta = null;
+      try { meta = JSON.parse(await blob.text()); } catch { return { ok: false, why: '入口不是合法 JSON' }; }
+      const fr = (meta && meta.FileReferences) || {};
+      const refs = [
+        ...(meta && meta.skeletonFile ? [meta.skeletonFile] : []),
+        ...(meta && meta.atlasFile ? [meta.atlasFile] : []),
+        ...(Array.isArray(meta && meta.textureFiles) ? meta.textureFiles : []),
+        ...(fr.Moc ? [fr.Moc] : []),
+        ...(Array.isArray(fr.Textures) ? fr.Textures : []),
+        ...(fr.Physics ? [fr.Physics] : []),
+      ];
+      for (const r of refs) {
+        const k = find(r);
+        if (k === undefined) return { ok: false, why: `引用文件 ${r} 不在产物里` };
+        const b = files.get(k);
+        if (b && typeof b.size === 'number' && b.size <= 8) {
+          return { ok: false, why: `引用文件 ${r} 只有 ${b.size} 字节（空/占位）` };
+        }
+      }
+      return { ok: true };
+    } catch { return { ok: true }; }
   }
 
   /** 注册进 VirtualFS；同前缀重复装载时先撤再注册（不泄漏旧 prefix） */
@@ -820,6 +882,16 @@ const MIME_BY_EXT = {
           const w = await resolveViaWorker(cand, file, read.bytes);
           if (w.ok) {
             if (mon.checkNow()) throw Object.assign(new Error(mon.reason()), { reason: 'memory-guard' });
+            // 「说能解」≠「解出来能用」：产物不自洽就换下一个候选（判据见 resolvedUsable 注释）。
+            //   不加这一步：排在前面的插件用伪造产物（例如 moc3 写成 null）抢先成功，
+            //   真正能解它的插件永远轮不到 ⇒ 装载阶段才炸，且只留一句 Network error。
+            const usable = await resolvedUsable(w.res);
+            if (!usable.ok) {
+              anyProbed = true;
+              say.warn(`候选 ${cand.id} 的产物不可用（${usable.why}）—— 换下一个候选`);
+              emit('unpack.candidate-reject', { rootId: file.rootId, rel: file.rel, provider: cand.id, why: usable.why });
+              continue;
+            }
             return { ...w.res, provider: cand.id, src: 'local-worker' };
           }
           // 「这个 worker 建不起来」≠「这个 provider 不认这个包」：
@@ -861,25 +933,54 @@ const MIME_BY_EXT = {
     //   **不按"等了几秒"判死** —— 超时只记日志并重试一次，不据此改走另一条路。
     let won = null;
     let serverSaidNo = '';
-    if (unpackOn && !file.bytes && file.rootId && file.rel) {
-      // 前台只问「有没有缓存」，**绝不在前台让服务端解包**。
-      //   实测服务端解一个 42MB 资源包要 11.4s（慢在 vm 沙箱里跑插件），
-      //   而前端在正常 JS 上下文里只要 4.3s —— 前台等它只会让首次加载从 4.3s 变成 16s。
-      //   miss 就直接走本地解包（见下面的 localPath），解完再把产物落盘给下次用。
-      try {
-        won = await resolveFromServer(file, { mon });
-      } catch (e) {
-        // 未命中（或查询失败）都走本地解包；查询失败已由 resolveFromServer 记进 diag
-        serverSaidNo = (e && (e.reason || e.message)) || 'server-miss';
-        won = null;
+
+    // 第一个**成功**的结果；全部失败才抛（抛最先失败那条的错误，形状最接近单条路径）。
+    //   为什么不用 Promise.race：race 以"第一个 settle"为准 —— 一条线失败就整体失败，
+    //   而这里任一成功就算成功（另一条线失败只是"没抢到"，不是结论）。
+    //   落败的那条不取消：它的产物由它自己的调用约定处理（本地线只返回、不注册 VFS），
+    //   但必须挂上 catch，否则它稍后 reject 会变成 unhandledrejection。
+    const firstWon = (ps) => new Promise((resolve, reject) => {
+      let left = ps.length;
+      let firstErr = null;
+      const down = () => { left -= 1; if (left === 0) reject(firstErr || new Error('解包失败：两条通路都没有结果')); };
+      for (const p of ps) {
+        p.then((v) => { if (v) resolve(v); else down(); }, (e) => { if (!firstErr) firstErr = e; down(); });
       }
-    }
-    if (!won) {
+    });
+
+    if (unpackOn && !file.bytes && file.rootId && file.rel) {
+      // **双端解**：服务端命中查询与本地解包**同时开始**，谁先出结果用谁。
+      //   设计口径：miss 时两端都解 —— 前端先解完就先显示（首屏不接受被后端拖住），
+      //   后端那条线解完落盘做缓存，供下次点击直接命中（命中路径仍然最快）。
+      //
+      //   为什么不能串行（先 await 查服务端、miss 再本地解）：
+      //     服务端是单进程 Node，它正在跑另一个解包时事件循环被占住，
+      //     连"只读缓存索引"的 peek 都得排队 ⇒ 前端本地解包被推迟到后端忙完，
+      //     表现为"日志里解包/预热都完成了、画布却不出画，再点一次（后端已落盘）才显示"。
+      //     并行之后：服务端慢只影响"能不能省一次解包"，绝不影响首屏。
+      //
+      //   前台仍然**绝不请求服务端解包**（hitOnly）：解包由本地线或那两条预热线负责。
+      const serverP = resolveFromServer(file, { mon }).catch((e) => {
+        // 未命中（或查询失败）都交给本地线；查询失败已由 resolveFromServer 记进 diag
+        serverSaidNo = (e && (e.reason || e.message)) || 'server-miss';
+        return null;
+      });
+      const localP = localPath();
+      try {
+        won = await firstWon([serverP, localP]);
+      } catch (e) {
+        if (e && e.passthrough) return e.passthrough; // 本地失败保持原有返回形状
+        // 内存保护的判定是**结论**，不是"服务端失败"：绝不能回落本地解包把它绕过去
+        return { ok: false, reason: (e && e.reason) || 'unpack-failed', message: String((e && e.message) || e) };
+      }
+      emit('unpack.race', {
+        rootId: file.rootId, rel: file.rel,
+        winner: won && won.src,          // server-hit | local-worker | local
+        serverMiss: serverSaidNo || null,
+      });
+    } else {
       try {
         won = await localPath();
-        // 前台走的是"前端本地解"这条快路 ⇒ 解完把产物交给服务端存起来（不 await：不挡渲染）
-        if (unpackOn && won && won.src === 'local' && file.rootId && file.rel) {
-        }
       } catch (e) {
         if (e && e.passthrough) return e.passthrough; // 本地失败保持原有返回形状
         // 内存保护的判定是**结论**，不是"服务端失败"：绝不能回落本地解包把它绕过去

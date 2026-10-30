@@ -57,7 +57,18 @@ parentPort.on('message', async (msg) => {
       return;
     }
     const tWrite0 = Date.now();
-    const { index } = await writeResult({ rootDir, fp, res, meta, probeStore, sampleRss });
+    // pluginId 必须记「**真正解出产物的那个**插件」：store 传进来的 meta.pluginId 来自 runnerInfo()，
+    //   它恒为**列表第一个**注册插件（多插件环境下常与真正命中的不是同一个）⇒ 与 prefix 自相矛盾
+    //   （prefix 是 picked.id 算出来的，而 index.json 却记了别人，prefix 校验因此 25/25 报不一致）。
+    //   这里用 unpackFile 回传的 picked.id 覆盖，不再多写一次盘（方案 B 才需要回写）。
+    const { index } = await writeResult({
+      rootDir,
+      fp,
+      res,
+      meta: { ...meta, pluginId: res.pluginId || meta.pluginId },
+      probeStore,
+      sampleRss,
+    });
     const writeMs = Date.now() - tWrite0;
     const after = rssNow(localPeak);
     // **顺序不变**：recordMeasuredPeak 必须在 writeResult 之后 ——
