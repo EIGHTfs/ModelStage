@@ -8,7 +8,36 @@
 //   兜成"已预乘"最多是直通图混合略暗。少乘远比多乘可接受。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { detectPma, resolvePmaInfo, detectPmaFromImageData, shouldPremultiplyOnUpload } from '../src/web/engine/pma.js';
+import { detectPma, resolvePmaInfo, detectPmaFromImageData, shouldPremultiplyOnUpload, planTextureUpload, planBlend } from '../src/web/engine/pma.js';
+
+// 混合口径（premultiplied / straight）同样只从 decision 派生；
+//   needHook 必须与 blend.js 里 installBlendHooks 的内部判据同源（直通才需要改写 blendFunc）。
+test('planBlend：三档混合口径 + 热路径零分配', () => {
+  assert.equal(planBlend(resolvePmaInfo('auto', { finalIsPremultiplied: true }, false)).premultiplied, true, '源图预乘 ⇒ 预乘混合');
+  assert.equal(planBlend(resolvePmaInfo('auto', { finalIsPremultiplied: false }, false)).premultiplied, true, 'upload 路径 ⇒ 也是预乘混合');
+  assert.equal(planBlend(resolvePmaInfo('auto', { finalIsPremultiplied: false }, true)).premultiplied, false, 'straight 路径 ⇒ 直通混合');
+
+  assert.equal(planBlend(resolvePmaInfo('auto', { finalIsPremultiplied: false }, true)).needHook, true, '直通口径要改写 blendFunc（与 blend.js 内部判据同源）');
+  assert.equal(planBlend(resolvePmaInfo('auto', { finalIsPremultiplied: true }, false)).needHook, false, '预乘口径不需要改写');
+
+  // planBlend 每帧都被调用 ⇒ 必须返回共享常量，不能每帧 new
+  assert.equal(planBlend({ blendMode: 'straight' }), planBlend({ blendMode: 'straight' }), '同档位必须返回同一对象（零分配）');
+  assert.equal(planBlend({ blendMode: 'premultiplied' }), planBlend({ blendMode: 'premultiplied' }), '同档位必须返回同一对象（零分配）');
+  assert.equal(planBlend(undefined).premultiplied, false, 'pmaInfo 缺失 ⇒ 按直通（与旧表达式 !!(...) 的 false 一致）');
+});
+
+// pmaFlag 的语义：**上传完成后 GPU 上的数据是否预乘**（不是"源图是否预乘"）。
+//   早前写成 `effectiveMode === 'premultiplied'`，把 upload 路径也标成 false —— 与它其实已乘过自相矛盾。
+test('planTextureUpload：unpack 与 pmaFlag 都从 decision 派生，三档各钉一条', () => {
+  const pm = planTextureUpload(resolvePmaInfo('auto', { finalIsPremultiplied: true }, false));
+  assert.deepEqual(pm, { unpack: false, pmaFlag: true }, '源图已预乘 ⇒ 不乘，上传后仍是预乘');
+
+  const up = planTextureUpload(resolvePmaInfo('auto', { finalIsPremultiplied: false }, false));
+  assert.deepEqual(up, { unpack: true, pmaFlag: true }, 'upload 路径 ⇒ 乘一次，乘完就是预乘（pmaFlag 必须是 true）');
+
+  const st = planTextureUpload(resolvePmaInfo('auto', { finalIsPremultiplied: false }, true));
+  assert.deepEqual(st, { unpack: false, pmaFlag: false }, 'straight 路径 ⇒ 原样，数据仍是直通');
+});
 
 // 上传口径（unpack 与否）必须由 needPremultiply 决定 —— 三种输入各钉一条。
 //   这三条直接对应三块真实资产：

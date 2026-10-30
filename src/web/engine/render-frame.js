@@ -5,6 +5,7 @@
 
 import { hideFilteredSlots, restoreFilteredSlots } from './skins.js';
 import { createFrameGate } from './frame-gate.js';
+import { planBlend } from './pma.js';
 
 /** 绘制一帧 */
 export function renderFrame(engine) {
@@ -15,8 +16,8 @@ export function renderFrame(engine) {
   if (!gl || !skeleton || !renderTarget || !engine.adapters) return;
   gl.clearColor(0, 0, 0, 0);
   gl.clear(gl.COLOR_BUFFER_BIT);
-  // ：批处理器的 premultiplied 参数由 pmaInfo.blendMode 决定（不是纹理是否预乘）
-  const blendPma = !!(engine.pmaInfo && engine.pmaInfo.blendMode === 'premultiplied');
+  // 混合口径由 pma 决策派生出（不是纹理是否预乘）：planBlend 返回共享常量，热路径零分配
+  const blendPma = planBlend(engine.pmaInfo).premultiplied;
   // 部件过滤要在绘制前摘件、绘制后挂回（finally 保证异常路径也不缺件）
   hideFilteredSlots(engine);
   let ok = false;
