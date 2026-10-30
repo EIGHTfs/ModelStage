@@ -139,7 +139,10 @@ function install() {
    * @returns {string[]} 页名（保持 atlas 中的顺序）
    */
   function parseAtlasPages(atlasBytes) {
-    const text = new TextDecoder('utf-8').decode(atlasBytes);
+    // 先剥一次 BOM：JS 的 \s 包含 U+FEFF，而 AssetStudio 导出的 atlas 首行是「BOM + 页名」，
+    //   不剥就会把第一页页名当成"有前导空白"整行跳过（多页图集第一页丢失，画面空白）。
+    //   服务端 probe.mjs 同口径（那边读文件后剥），前端 textures.js 靠"先 trim"天然免疫 —— 三份一致。
+    const text = new TextDecoder('utf-8').decode(atlasBytes).replace(/^\uFEFF/, '');
     const pages = [];
     for (const line of text.split('\n')) {
       if (/^[^\s].*\.(png|jpg|jpeg|webp)\s*$/i.test(line)) pages.push(line.trim());
@@ -511,7 +514,9 @@ function install() {
   }
 
   // node 侧返回解析入口：服务端解包直接从返回值取 canHandle/resolve，不经过宿主注册。
-  return { canHandle, resolve, estimateMemory, probeContainer, PLUGIN_ID };
+  // __test 只给单测用（纯函数、无副作用、宿主不读它）：parseAtlasPages 是闭包内私有函数，
+  //   没有它就无法为"带 BOM 的 atlas 首行"补单测（这正是 NIKKE 根 34 份带 BOM 的 atlas 丢第一页贴图的根因）。
+  return { canHandle, resolve, estimateMemory, probeContainer, PLUGIN_ID, __test: { parseAtlasPages } };
 }
 
 // 执行安装。为什么不用 `export { canHandle }`：那会把文件变成 ESM，

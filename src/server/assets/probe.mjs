@@ -144,7 +144,13 @@ export function detectAtlasKey(file) {
  */
 export function parseAtlasPages(atlasPath) {
   try {
-    const txt = fs.readFileSync(atlasPath, 'utf8');
+    // 先剥一次 BOM 再按行匹配。原因：JS 的 \s **包含 U+FEFF**，而 AssetStudio 导出的 atlas
+    //   首行是「BOM + 页名」（EF BB BF ...）⇒ 不剥的话首行被 /^[^\s]/ 判成"有前导空白"整行跳过
+    //   ⇒ 多页图集的**第一页页名丢失**（现场：NIKKE 根 247 个模型里 34 份 atlas 带 BOM，均丢第一页 ⇒ 贴图拿不到、画面空白）。
+    // 为什么前端 src/web/engine/textures.js 没这个坑：它**先 trim() 再匹配**，而 trim() 会把 U+FEFF
+    //   当空白吃掉 —— 所以那边页名本来就干净。这里剥 BOM 就是与"先 trim"等价，别删。
+    // 只剥解析用的文本：**不改 atlas 落盘字节、不改页名大小写**（产物必须逐字节不变）。
+    const txt = fs.readFileSync(atlasPath, 'utf8').replace(/^\uFEFF/, '');
     const pages = [];
     for (const line of txt.split('\n')) {
       if (/^[^\s].*\.(png|jpg|jpeg|webp)\s*$/i.test(line)) pages.push(line.trim());

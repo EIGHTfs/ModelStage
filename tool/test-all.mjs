@@ -138,6 +138,8 @@ const SUITES = [
   // 缓存命中的 prefix 形态校验：插件改了 prefix 算法而指纹没覆盖时，
   //   旧产物会带旧 prefix 进 VFS ⇒ 客户端按新形态拼地址全部 miss ⇒ 静默回落网络（不报错、只变慢）
   { name: 'unpack-prefix-check', runner: 'node-test', file: 'test/unpack-prefix-check.test.mjs' },
+  // atlas 页名解析：带 BOM 的首行必须算第一页（JS 的 \s 含 U+FEFF，不剥 BOM 会丢第一页贴图）
+  { name: 'atlas-pages', runner: 'node-test', file: 'test/atlas-pages.test.mjs' },
   // Spine 资源包插件（UnityFS 容器 → .skel/.atlas/贴图 + entry.json）：
   //   与 live2d 插件共用 fileKinds:['bundle']，判型互斥错了会互相抢单，必须有回归
   { name: 'spine-bundle-plugin', runner: 'node-test', file: 'test/spine-bundle-plugin.test.mjs' },
