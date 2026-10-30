@@ -438,16 +438,6 @@ export function createPluginHost(opts = {}) {
     };
   }
 
-  /** 读包头判压缩算法：只有 LZMA（flags 低 6 位 == 1）才值得进 worker */
-  function isLzmaContainer(bytes) {
-    try {
-      const ufs = window.__ULB__ && window.__ULB__.unityfs;
-      if (!ufs || typeof ufs.readHeader !== 'function') return false;
-      const head = ufs.readHeader(bytes);
-      return Array.isArray(head.blocks) && head.blocks.some((b) => (b.flags & 0x3f) === 1);
-    } catch { return false; }
-  }
-
   /** 找提供者并 resolve（含返回值契约校验） */
   async function resolveViaProvider(file, bytes) {
     const provider = findProvider({ ...file, bytes });
@@ -739,15 +729,23 @@ const MIME_BY_EXT = {
       //   让帧代价约 16ms，换来"用户知道在解压、不是卡死"。非 LZMA 包几乎不受影响（多一帧）。
       say.info(`本地解包中：${file.rel}（压缩 ${(read.bytes.length / 1048576).toFixed(2)}MB，大包可能要数秒）`);
       emit('unpack.local-start', { rootId: file.rootId, rel: file.rel, bytes: read.bytes.length });
-      // LZMA 包：**canHandle 与 resolve 都交给 worker**。
-      //   为什么不能在主线程先 findProvider：插件的 canHandle 走 bundleProbe.run → unityfs.parse
-      //   （完整解压数据块），实测对 2.2MB 的 LZMA 包要 **5.7 秒**；而 worker 里 resolve 还要再解一遍
-      //   ⇒ 总耗时 12.5s，其中 5.7s 是纯白干。放进 worker 后这一段不再阻塞主线程，且两判复用同一份缓存。
-      //   LZ4/none 的 canHandle 只有毫秒级，不值得绕这一圈，仍走原来的同步路径。
-      if (isLzmaContainer(read.bytes)) {
+      // **所有压缩类型**都先试 worker：resolve 的成本只看包有多大，与压缩类型无关。
+      //   为什么从"只看 canHandle"改成"看 resolve 成本"：
+      //     · 旧门禁只看 canHandle 贵不贵（LZMA 的 canHandle 要 5.7s、LZ4 只要毫秒级），
+      //       就据此决定 LZ4/none 继续走同步 —— 但 canHandle 那点差异，在 resolve 面前可忽略。
+      //     · resolve 要解压**全部数据块** + 抽文件 + 产物归一，实测代价：
+      //         aijier_3（LZ4，解压后 44MB）同步 resolve 6.8s，主线程最长 longtask 2.8~3.9s；
+      //         live2d/z46_2（LZMA，解压后 35MB）走 worker，主线程最长 longtask 仅 462ms。
+      //       两个包大小同级，主线程占用差 8 倍以上 —— 差别只在走不走 worker。
+      const bundleCands = providersFor(['bundle']);
+      // 「没有任何 bundle 插件」≠「所有候选 worker 都不可用」：
+      //   候选为空时下面的循环压根不跑，若照旧写死那句结论，就会把"没有插件能处理这个包"
+      //   误报成"worker 不可用"，把排查方向带偏到 CSP / worker 加载。
+      //   候选为空就跳过整段，落到同步路径去报正确的"没有插件能处理"。
+      if (bundleCands.length) {
         let fellBack = '';
         let anyProbed = false;   // 有没有任何一个 worker 真的判过"不认这个包"
-        for (const cand of providersFor(['bundle'])) {
+        for (const cand of bundleCands) {
           const w = await resolveViaWorker(cand, file, read.bytes);
           if (w.ok) {
             if (mon.checkNow()) throw Object.assign(new Error(mon.reason()), { reason: 'memory-guard' });
