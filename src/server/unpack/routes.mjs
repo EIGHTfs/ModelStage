@@ -63,6 +63,18 @@ export function createUnpackRoutes(deps) {
       if (!rootId || !rel) return sendJson(res, 400, { ok: false, reason: 'bad-args', message: '需要 rootId 与 rel' });
       const r = resolveRequest(rootId, rel);
       if (r.error) return sendJson(res, 404, { ok: false, reason: 'not-found', message: r.error });
+      // ── 事件流（契约 §二/§五）：只有 body.stream === true 才走这里 ──────────────
+      // 分流点必须在 404 判定**之后**：开流前的错误（bad-json / bad-args / not-found）
+      //   一律按现状回一次性 JSON，绝不"先开流再发 error"（契约 §六）。
+      if (body.stream === true) {
+        return handleStream(req, res, {
+          rootId,
+          rel,
+          absPath: r.abs,
+          hitOnly: body.hitOnly === true,
+          allowOverLimit: body.allowOverLimit === true,
+        });
+      }
       // hitOnly：**只查缓存，绝不在这里解包**（形态 C 的前台路径）。miss 时返回 hit:false，
       //   前端据此走本地解包；真正的解包由「空闲预热」另一次请求触发。
       if (body.hitOnly === true) {
@@ -108,6 +120,65 @@ export function createUnpackRoutes(deps) {
         return sendJson(res, 500, { ok: false, reason: 'exception', message: String((e && e.message) || e) });
       }
     });
+  }
+
+  /**
+   * 事件流分支（契约 `unpack/events/v1`）：SSE 分帧 + 心跳 + 断连清理。
+   * 只有 `body.stream === true` 会进来；其余请求完全走原路径（契约 §1.3 逐字同现状）。
+   */
+  async function handleStream(req, res, { rootId, rel, absPath, hitOnly, allowOverLimit }) {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      // no-transform 禁中间层改写/压缩；X-Accel-Buffering 是 nginx 认的"别缓冲"开关（设计 §三）
+      'Cache-Control': 'no-cache, no-transform',
+      'X-Accel-Buffering': 'no',
+      Connection: 'keep-alive',
+    });
+    res.flushHeaders(); // 必须先发头，客户端才能开始读
+    let closed = false;
+    /** 写一帧；写已断开的连接静默吞（契约 §五：客户端走了是正常现象） */
+    const writeFrame = (evt) => {
+      if (closed) return;
+      try {
+        res.write(`event: ${evt.type}\ndata: ${JSON.stringify(evt.data || {})}\n\n`);
+      } catch { /* 静默吞 */ }
+    };
+    // 往已销毁的连接写通常**不同步抛错**，而是异步 emit 'error' ⇒ 必须挂空处理器，
+    //   否则会变成 uncaught error 把进程带走（try/catch 兜不住异步事件）。
+    res.on('error', () => {});
+    const heartbeat = setInterval(() => writeFrame({ type: 'ping', data: {} }), 2000);
+    heartbeat.unref?.();
+    res.on('close', () => {
+      // 客户端走了：停心跳、不再写帧；**不中止解包**（契约 §五：解完写缓存，下次命中）
+      closed = true;
+      clearInterval(heartbeat);
+    });
+    try {
+      if (hitOnly) {
+        // hitOnly + stream：沿用 hitOnly 语义（只查缓存、绝不解包），命中/未命中都只发一帧 done
+        const p = store.peek({ rootId, rel, absPath });
+        if (!p.ok) {
+          writeFrame({ type: 'error', data: { reason: p.reason || 'peek-failed', message: '缓存索引不可读' } });
+        } else {
+          writeFrame({
+            type: 'done',
+            data: { fp: p.fingerprint, hit: !!p.hit, prefix: p.prefix || null, entry: p.entry || null, files: p.files || [], unpackMs: 0 },
+          });
+        }
+        return;
+      }
+      const out = await store.resolve({ rootId, rel, absPath, allowOverLimit }, { onEvent: writeFrame });
+      // 成功时 store 已通过 onEvent 发过 done（含命中路径），这里只补失败
+      if (!out.ok) {
+        writeFrame({ type: 'error', data: { reason: out.reason || 'unpack-failed', message: out.message || '解包失败' } });
+      }
+    } catch (e) {
+      writeFrame({ type: 'error', data: { reason: 'exception', message: String((e && e.message) || e) } });
+    } finally {
+      clearInterval(heartbeat);
+      closed = true;
+      try { res.end(); } catch { /* 忽略：连接可能已断 */ }
+    }
   }
 
   /** GET /api/unpack/file?fp=&path= */

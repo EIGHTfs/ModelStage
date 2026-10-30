@@ -225,6 +225,8 @@ export function createUnpackStore(opts) {
   };
   /** fp → Promise（同一包的并发只解一次） */
   const inflight = new Map();
+  /** fp → Set<订阅者>：同一 fp 的后到请求挂这里，事件广播给所有等待者（一个包仍只解一次） */
+  const subscribers = new Map();
   /** 串行队列：解包是单核密集操作，串行避免抢渲染 */
   let chain = Promise.resolve();
   const enqueue = opts.enqueue || ((fn) => {
@@ -275,6 +277,9 @@ export function createUnpackStore(opts) {
   //   硬超时 120s 只用于"防死循环把队列永久堵住"，不是"约束合法解包" ——
   //   锚点包 azurlane_bundle/live2d/z46_2（解压 33.4MB 的 LZMA）实测墙钟 17.83s、unpackMs 9416ms，
   //   120s 有 6.7 倍余量，正常解包一辈子不该触发它。
+  //   ⚠️ 别把这个 120s 与"客户端不设总时长上限"当成矛盾，两者防的不是一回事：
+  //     这里防的是「worker 死循环把串行队列永久堵死」（服务端自保，与有没有人看无关）；
+  //     客户端防的是「连续 15s 没有任何进展」（停摆判据，见契约 §四），慢但仍在推事件不算失败。
   const workerClient = createUnpackWorkerClient({
     rootDir,
     timeoutMs: 120000,
@@ -460,11 +465,27 @@ export function createUnpackStore(opts) {
 
   /**
    * 解析一个资源包：命中直接返回清单；未命中则解包落盘（同 fp 并发共用一次解包）。
+   * 事件流（契约 `unpack/events/v1`）：可选的 `opts.onEvent` 收进度事件。
+   *   **不传 ⇒ 一个事件都不发、代码路径与从前完全一致**（"不带 stream 逐字同现状"的落点）。
+   *   事件消费方（写 SSE 帧）抛错一律吞掉：写已断开的连接是正常现象，不能带崩解包。
+   *
    * @param {{rootId: string, rel: string, absPath: string}} req
+   * @param {{onEvent?: (evt: {type: string, data: object}) => void}} [opts]
    */
-  async function resolve(req) {
+  async function resolve(req, opts = {}) {
+    const emit = typeof opts.onEvent === 'function' ? opts.onEvent : null;
     const stat = fs.statSync(req.absPath);
     const fp = fingerprintOf({ ...req, stat });
+    /**
+     * 发一条事件：广播给「本请求的订阅者」+「同一 fp 的后到等待者」。
+     * 两侧抛错都静默吞 —— 写已断开的连接是正常现象（契约 §五），不能让事件消费方带崩解包。
+     */
+    const fire = (type, data) => {
+      const evt = { type, data };
+      if (emit) { try { emit(evt); } catch { /* 静默吞 */ } }
+      const set = subscribers.get(fp);
+      if (set) for (const fn of set) { try { fn(evt); } catch { /* 静默吞 */ } }
+    };
     const cachedIdx = readIndex(fp);
     const verdict = hitCheck(cachedIdx, stat);
     if (verdict.hit) {
@@ -472,9 +493,24 @@ export function createUnpackStore(opts) {
       touch(fp, cachedIdx);
       warnIfPrefixStale(fp, cachedIdx);
       cleanup();
+      // 命中也要发一帧（契约 §2.1）：不发的话 stream 请求一帧都收不到，客户端只能干等 15s 停摆。
+      //   命中路径只发 done，不发 queued/start/phase（没有解包过程可报）。
+      fire('done', { fp, hit: true, prefix: cachedIdx.prefix, entry: cachedIdx.entry, files: cachedIdx.files, unpackMs: 0 });
       return { ok: true, hit: true, fingerprint: fp, prefix: cachedIdx.prefix, entry: cachedIdx.entry, files: cachedIdx.files, unpackMs: 0 };
     }
-    if (inflight.has(fp)) return inflight.get(fp); // 并发去重：同一 fp 只解一次
+    if (inflight.has(fp)) {
+      // 同一 fp 已在解：**不新建任务**，只挂一个订阅者并补一条 queued{waiting}
+      //   waiting 取 inflight.size（粗粒度、含自己这个 fp）；不发"瞬时精确 0"（契约 §2.1）。
+      if (emit) {
+        let set = subscribers.get(fp);
+        if (!set) { set = new Set(); subscribers.set(fp, set); }
+        set.add(emit);
+        // 只发给自己这一条，**不能用 fire()**：fire 会广播，而自己此刻已在 subscribers 里
+        //   ⇒ 同一个 queued 会收到两遍（实测踩到过：后到客户端收到 2 条 queued）。
+        try { emit({ type: 'queued', data: { waiting: inflight.size } }); } catch { /* 静默吞 */ }
+      }
+      return inflight.get(fp); // 并发去重：同一 fp 只解一次
+    }
     counters.misses += 1;
     // 未命中原因：优先报"插件版本变了"（跨目录比对），否则报 hitCheck 给的具体原因
     counters.lastMissReason = detectMissCause({ ...req, stat }) || verdict.reason || 'no-index';
@@ -491,6 +527,7 @@ export function createUnpackStore(opts) {
       if (!mem.ok) {
         counters.failures += 1;
         counters.lastFailReason = mem.reason;
+        fire('error', { reason: mem.reason, message: mem.message });
         return { ok: false, fingerprint: fp, reason: mem.reason, message: mem.message, budgetMb: mem.budgetMb, peakEstMb: mem.peakEstMb, availMb: mem.availMb };
       }
       sampleRss();
@@ -500,6 +537,8 @@ export function createUnpackStore(opts) {
       //   慢的到底是解压还是写盘，不量就只能猜（写盘目标是 SMB 挂载 + 23~39 个小文件，最可疑）。
       // 解包 + 落盘 + 写 probe **整段在 worker 里**（主线程不再碰任何产物文件）：
       //   这是搬 worker 的唯一目的 —— 让这几秒（锚点包实测墙钟 17.8s）不占住事件循环。
+      // start：worker 真正要开工了（此前是排队与内存准入）。三个字段对齐契约 §2.1。
+      fire('start', { fp, rootId: req.rootId, rel: req.rel });
       const tUnpack0 = Date.now();
       const reply = await workerClient.run({
         rootId: req.rootId,
@@ -518,6 +557,7 @@ export function createUnpackStore(opts) {
       const unpackWallMs = Date.now() - tUnpack0;
       if (!reply.ok) {
         counters.failures += 1;
+        fire('error', { reason: reply.reason, message: reply.message });
         return { ok: false, fingerprint: fp, reason: reply.reason, message: reply.message };
       }
       const index = reply.index;
@@ -537,9 +577,21 @@ export function createUnpackStore(opts) {
         totalMs: Date.now() - t0,
         files: index.files.length,
       };
+      // phase 三段：read / resolve / write（名字对齐 phases 键，契约 §2.2）。
+      //   ⚠️ 实测口径：read、resolve、write **都在 worker 内部完成**，主线程只有等 reply 才知道毫秒数，
+      //   所以这三条是"段结束后立即发"，不是"段进行中实时发"（真正实时要 worker 增量上报，不在本轮）。
+      fire('phase', { name: 'read', ms: phases.readMs });
+      fire('phase', { name: 'resolve', ms: phases.pluginResolveMs });
+      fire('phase', { name: 'write', ms: phases.writeMs });
+      fire('done', { fp, hit: false, files: index.files, unpackMs: index.unpackMs, phases });
       return { ok: true, hit: false, fingerprint: fp, prefix: index.prefix, entry: index.entry, files: index.files, unpackMs: index.unpackMs, phases, memBasis: mem.basis, peakEstMb: mem.peakEstMb };
-    }).finally(() => inflight.delete(fp));
+    }).finally(() => {
+      inflight.delete(fp);
+      subscribers.delete(fp); // 任务结束清订阅者表，避免 fp 复用时把上一轮的监听者带进来
+    });
     inflight.set(fp, task);
+    // queued：入队后立即发一条（waiting 取 inflight.size，粗粒度、含自己这个 fp；契约 §2.1）
+    fire('queued', { waiting: inflight.size });
     const out = await task;
     cleanup();
     return out;
