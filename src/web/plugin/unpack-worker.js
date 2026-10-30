@@ -12,13 +12,14 @@
 //   → {t:'ready'}                             lib 载好，provider 已捕获
 //   → {t:'progress', phase, detail}          进度（块表 / 开始解压 / 完成）
 //   ← {t:'unpack',  id, file:{rootId,rel}, bytes}
-//   → {t:'done',    id, res:{prefix,entry,files:[[path, Uint8Array]]}, ms}
+//   → {t:'done',    id, res:{prefix,entry,files:[[path, Blob|Uint8Array, type]]}, ms}
 //   → {t:'fail',    id, code, message}
 //
 // 硬约束：
-//   · 产物字节**一律归一成 Uint8Array** 再 postMessage（LZMA 解出的中间结果是普通 Array，
-//     Array 过通道还是 Array，主线程按字节数组处理就会错位）
-//   · 用 transferable 移交 ArrayBuffer（8MB 的包做结构化拷贝会再复制一份，白吃内存与时间）
+//   · 产物出口**两种形态**：插件交付的 Blob 原样透传（= 零拷贝，Blob 过通道是引用语义）；
+//     非 Blob（LZMA 中间结果是普通 Array / TypedArray）才归一成 Uint8Array，并带上 MIME type
+//     供主线程按需重建 Blob。Array 过通道还是 Array，所以那一路必须先归一，否则主线程按字节处理会错位。
+//   · 只有 Uint8Array 那一路进 transfer 列表（transferable 只认 ArrayBuffer 系；Blob 不能也不需 transfer）
 
 // 插件 index.js 顶层读 `window.SpineViewerPlugins`（懒获取宿主面）。
 // worker 里没有 window ⇒ 用 self 兜上，再挂一个**宽容的 stub**：只捕获 register，
@@ -119,13 +120,21 @@ async function handleMessage(ev) {
         return;
       }
 
-      // 出口归一：Blob / Array → Uint8Array，并带上 MIME type（主线程要重建 Blob）
-      //   vfs.register 只收 Blob 或字符串，所以这里必须把 type 一起带过去
+      // 出口归一：**Blob 原样透传，其余才转 Uint8Array**
+      //   为什么不再一律转 Uint8Array：插件产物本来就是 Blob（vfs.register 只收 Blob 或字符串），
+      //   而 Blob → Uint8Array 要整份读出来（44MB 级的包就是一次全量复制），
+      //   主线程收到后再 new Blob([u8]) 又复制一次 —— 一进一出两次都是白做的。
+      //   Blob 过 postMessage 是**引用/快照语义**（不复制字节），原样传就等于零拷贝到主线程。
       const files = [];
       const transfer = [];
       const src = res.files instanceof Map ? res.files : Object.entries(res.files);
       for (const [path, val] of src) {
         const type = (val && typeof val.type === 'string') ? val.type : '';
+        if (typeof Blob !== 'undefined' && val instanceof Blob) {
+          // 零拷贝：不读、不转，也不能进 transfer 列表（transferable 只认 ArrayBuffer 系）
+          files.push([path, val, type]);
+          continue;
+        }
         const u8 = await toU8(val);
         files.push([path, u8, type]);
         if (u8.buffer instanceof ArrayBuffer) transfer.push(u8.buffer);

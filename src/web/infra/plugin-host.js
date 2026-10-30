@@ -424,11 +424,15 @@ export function createPluginHost(opts = {}) {
     if (result.t !== 'done' || !result.res) {
       return { ok: false, error: `${result.code || 'worker-fail'}: ${result.message || '未知'}` };
     }
-    // 产物从「[[path, Uint8Array, type]]」还原成 Map<path, **Blob**>：
-    //   vfs.register 只接受 Blob 或字符串（实测传 Uint8Array 直接报"内容必须是 Blob 或字符串"），
-    //   所以必须重建 Blob，并把 worker 带过来的 MIME type 一并还原
-    const files = new Map((result.res.files || []).map(([p, u8, type]) => [
-      p, new Blob([u8], { type: type || 'application/octet-stream' }),
+    // 产物从「[[path, Blob|Uint8Array, type]]」还原成 Map<path, **Blob**>。
+    //   vfs.register 只接受 Blob 或字符串（实测传 Uint8Array 会报"内容必须是 Blob 或字符串"）。
+    //   worker 侧现在会把插件的 Blob 原样透传（零拷贝），只有非 Blob 产物才需要我们在这里建；
+    //   所以大部分文件走 `val` 直通，一个字节都不用再复制。
+    const files = new Map((result.res.files || []).map(([p, val, type]) => [
+      p,
+      (typeof Blob !== 'undefined' && val instanceof Blob)
+        ? val
+        : new Blob([val], { type: type || 'application/octet-stream' }),
     ]));
     return {
       ok: true,
