@@ -140,7 +140,14 @@ export function resolvePmaInfo(mode, detection, supportsStraight) {
       //     · 兜底成"已预乘" ⇒ 不乘 ⇒ 若图其实是直通 ⇒ 只是混合略暗
       //   少乘的可接受程度远高于多乘，所以不确定时选"不乘"。
       if (auto === false) {
-        return { effectiveMode: 'upload', needPremultiply: true, blendMode: 'premultiplied', runtimeSupportsStraight: supportsStraight, degraded: false };
+        // 检测为"非预乘"。**运行时支持直通时，这一档必须与显式 straight 完全等价**：
+        //   都走 straight 混合、都不预乘。不看能力就无条件 upload（上传时预乘 + premultiplied 混合）
+        //   会让"自动"与"用户强制选非预乘"对同一张图给出两种画面 —— 实测就是面部/眼周白斑。
+        //   能力不允许时才退回 upload（与显式 straight 的降级方向一致，但 degraded 保持 false：
+        //   这不是"降级"，而是这台运行时唯一可行的路径，与改动前逐字段相同）。
+        return supportsStraight
+          ? { effectiveMode: 'straight', needPremultiply: false, blendMode: 'straight', runtimeSupportsStraight: supportsStraight, degraded: false }
+          : { effectiveMode: 'upload', needPremultiply: true, blendMode: 'premultiplied', runtimeSupportsStraight: supportsStraight, degraded: false };
       }
       return { effectiveMode: 'premultiplied', needPremultiply: false, blendMode: 'premultiplied', runtimeSupportsStraight: supportsStraight, degraded: false };
     }

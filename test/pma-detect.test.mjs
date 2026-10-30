@@ -33,6 +33,53 @@ test('resolvePmaInfo：显式档位不受兜底影响', () => {
   assert.equal(degraded.degraded, true);
 });
 
+test('resolvePmaInfo：auto+非预乘 且运行时支持直通 ⇒ 与显式 straight 逐字段相同', () => {
+  // 这条是本次修的核心：能力允许时，"自动"不该比"用户强制选非预乘"多做一次预乘。
+  //   不做的话同一张图两种档位出两种画面（实测：面部/眼周白斑）。
+  const auto = resolvePmaInfo('auto', { finalIsPremultiplied: false }, true);
+  const forced = resolvePmaInfo('straight', { finalIsPremultiplied: false }, true);
+  assert.deepEqual(auto, forced, 'auto 与显式 straight 必须给出同一个对象');
+  assert.equal(auto.effectiveMode, 'straight');
+  assert.equal(auto.needPremultiply, false);
+  assert.equal(auto.blendMode, 'straight');
+  assert.equal(auto.degraded, false, '这是正常路径，不是降级');
+});
+
+test('resolvePmaInfo：auto+非预乘 但运行时**不支持**直通 ⇒ 仍 upload（与改前逐字段相同）', () => {
+  const r = resolvePmaInfo('auto', { finalIsPremultiplied: false }, false);
+  assert.deepEqual(r, {
+    effectiveMode: 'upload', needPremultiply: true, blendMode: 'premultiplied',
+    runtimeSupportsStraight: false, degraded: false,
+  });
+});
+
+test('resolvePmaInfo：auto+已预乘/检测不出 ⇒ premultiplied 且不预乘（与运行时能力无关）', () => {
+  for (const sup of [true, false]) {
+    for (const det of [{ finalIsPremultiplied: true }, { finalIsPremultiplied: null }, undefined, null]) {
+      const r = resolvePmaInfo('auto', det, sup);
+      assert.equal(r.effectiveMode, 'premultiplied', `auto=${JSON.stringify(det)} sup=${sup} 应按已预乘`);
+      assert.equal(r.needPremultiply, false, '已预乘/检测不出都不能再乘一次（多乘 = 黑圈）');
+    }
+  }
+});
+
+test('resolvePmaInfo：显式三档在两种能力下逐字段不变（回归）', () => {
+  for (const sup of [true, false]) {
+    assert.deepEqual(resolvePmaInfo('premultiplied', { finalIsPremultiplied: false }, sup), {
+      effectiveMode: 'premultiplied', needPremultiply: false, blendMode: 'premultiplied',
+      runtimeSupportsStraight: sup, degraded: false,
+    });
+    assert.deepEqual(resolvePmaInfo('upload', { finalIsPremultiplied: true }, sup), {
+      effectiveMode: 'upload', needPremultiply: true, blendMode: 'premultiplied',
+      runtimeSupportsStraight: sup, degraded: false,
+    });
+    const st = resolvePmaInfo('straight', { finalIsPremultiplied: true }, sup);
+    assert.deepEqual(st, sup
+      ? { effectiveMode: 'straight', needPremultiply: false, blendMode: 'straight', runtimeSupportsStraight: true, degraded: false }
+      : { effectiveMode: 'upload', needPremultiply: true, blendMode: 'premultiplied', runtimeSupportsStraight: false, degraded: true });
+  }
+});
+
 test('detectPma：像素不足且 atlas 未声明 ⇒ 按已预乘（safe-fallback）', () => {
   const d = detectPma({ atlasDeclared: null, filenameHint: null, samples: [] });
   assert.equal(d.pixelDetected, null, '没有像素样本 ⇒ 无像素结论');
