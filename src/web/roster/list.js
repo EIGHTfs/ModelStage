@@ -113,37 +113,41 @@ export function lookupName(index, assetName) {
  *   由调用方按自己的语义决定"要不要把 reason 变成用户可见的失败状态"。
  * 判据只看"有没有拿到 entries 数组"，**不看 HTTP 状态码**
  *   （服务端对缺 root 的状态码正在从 404 改 400，按状态码写死会跟着坏）。
- * `warnings` 与 `reason` 是**两档不同的东西**，别混：
- *   · reason   = **拿不到清单**（rootId 不存在 / 5xx / 网络失败）—— 查询失败，可考虑重试
- *   · warnings = **清单拿到了，但服务端说这根的扫描有异常/提示**（例如 path 不存在、
- *                "有 2 个插件都能解包"）—— 查询成功，但话没说完
- *   混进同一个字段会让"取不到"这个词失准，也会让"要不要重试"这类判断跟着出错。
+ * `warnings` / `rootWarning` / `reason` 是**三档不同的东西**，别混：
+ *   · reason      = **拿不到清单**（rootId 不存在 / 5xx / 网络失败）—— 查询失败，可考虑重试
+ *   · rootWarning = **清单拿到了，但这一根自己的扫描有问题**（服务端结构化字段，正常根为 null）：
+ *                   路径不存在 / 不是目录 / 不可读 / 扫描失败 / 扫完没有任何条目。
+ *                   **这是唯一可以拿去拼用户提示的一档**（文案由服务端给，带 rootId、不含绝对路径）
+ *   · warnings    = 通用说明（如"有 2 个插件能解包"），**混着与根无关的内容**。
+ *                   拿它拼因果会得出"因为有两个插件所以没模型"这种错误结论 —— 只能进日志，不许进提示。
  * @param {string} rootId
- * @returns {Promise<{entries: object[], reason: string|null, warnings: string[]}>}
+ * @returns {Promise<{entries: object[], reason: string|null, warnings: string[], rootWarning: string|null}>}
  */
 export async function fetchRootEntries(rootId) {
   const id = String(rootId || '');
-  if (!id) return { entries: [], reason: '资源根 id 为空', warnings: [] };
+  if (!id) return { entries: [], reason: '资源根 id 为空', warnings: [], rootWarning: null };
   let data = null;
   try {
     data = await getJson(`/api/catalog?root=${encodeURIComponent(id)}`);
   } catch (e) {
     const why = (e && e.message) || String(e);
     diagEvent('catalog.fail', { root: id, reason: why }, { level: 'warn', src: 'app' });
-    return { entries: [], reason: `清单取不到：${why}`, warnings: [] };
+    return { entries: [], reason: `清单取不到：${why}`, warnings: [], rootWarning: null };
   }
   const warnings = Array.isArray(data && data.warnings) ? data.warnings.map((w) => String(w)) : [];
+  // 服务端的结构化"这一根怎么了"（正常根 null）。**只透传，不在这里编文案**
+  const rootWarning = (data && typeof data.rootWarning === 'string' && data.rootWarning) ? data.rootWarning : null;
   const entries = Array.isArray(data && data.entries) ? data.entries : null;
   if (!entries) {
     diagEvent('catalog.fail', { root: id, reason: '响应里没有 entries 数组' }, { level: 'warn', src: 'app' });
-    return { entries: [], reason: '清单响应里没有 entries 数组', warnings };
+    return { entries: [], reason: '清单响应里没有 entries 数组', warnings, rootWarning };
   }
-  // 成功但一条都没有、且服务端有话说 ⇒ 记一条 warn：
+  // 成功但一条都没有、且服务端明确说了这一根有问题 ⇒ 记一条 warn：
   //   否则 UI 只会显示"该游戏没有可加载模型"，与"这个根真的没有模型"完全无法区分。
-  if (!entries.length && warnings.length) {
-    diagEvent('catalog.empty', { root: id, warning: warnings[0] }, { level: 'warn', src: 'app' });
+  if (!entries.length && rootWarning) {
+    diagEvent('catalog.empty', { root: id, rootWarning }, { level: 'warn', src: 'app' });
   }
-  return { entries, reason: null, warnings };
+  return { entries, reason: null, warnings, rootWarning };
 }
 
 /**

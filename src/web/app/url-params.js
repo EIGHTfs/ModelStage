@@ -27,8 +27,9 @@ import { byKind, knownKinds } from '../render/surfaces.js';
  *   而这里要"精确匹配任意一条"，直接问服务端最可靠。
  * @returns {Promise<{entries: object[], failures: string[], emptyRoots: string[]}>}
  *   failures   = 清单**取不到**的根（带原因）—— 查询失败，可能要重试
- *   emptyRoots = 清单拿到了但**一条都没有**、且服务端有 warnings 的根 —— 查询成功但有话说
- *   两档分开：前者是"查询失败"，后者是"根配错/根是空的"，处置方向完全不同
+ *   emptyRoots = 清单拿到了但**一条都没有**、且服务端给了 **rootWarning**（明确说这一根怎么了）
+ *   ⚠️ 不要用 `warnings` 拼这一档：那是通用说明（"有 N 个插件能解包"），
+ *      拿它拼因果会得出"因为有两个插件所以没模型"这种错误结论。
  */
 async function fetchAllEntries() {
   const roots = await getJson('/api/roots').catch(() => null);
@@ -39,11 +40,12 @@ async function fetchAllEntries() {
   for (const r of list) {
     const id = r && (r.id || r.name);
     if (!id) continue;
-    const { entries, reason, warnings } = await fetchRootEntries(id);
+    const { entries, reason, rootWarning } = await fetchRootEntries(id);
     if (reason) failures.push(`${id}（${reason}）`);
-    // 只在"一条都没有"时才带 warnings：正常根服务端也会给通用提示（例如"有 2 个插件能解包"），
-    //   塞进正常提示就是纯噪音
-    else if (!entries.length && warnings.length) emptyRoots.push(`${id}（${String(warnings[0]).slice(0, 80)}）`);
+    // 只在"一条都没有"且**服务端明确说这一根有问题**（rootWarning 非空）时才收进来。
+    //   不拿 warnings 兜底：那是通用说明（如"有 2 个插件能解包"），
+    //   拿它拼因果会得出"因为有两个插件所以没模型"这种错误结论。
+    else if (!entries.length && rootWarning) emptyRoots.push(`${id}（${rootWarning.slice(0, 80)}）`);
     for (const e of entries) out.push({ ...e, rootId: e.rootId || id });
   }
   return { entries: out, failures, emptyRoots };
