@@ -117,6 +117,77 @@ export function askDeclaredSafely(req, askFn = estimateMemoryOf) {
 }
 
 /**
+ * 取一份 index.json 里的 rel（VFS 相对路径），统一归一化成 `/` 分隔。
+ * 单独抽出来是因为有两个用处：算期望 prefix（取 dirname）和写日志（原样展示）——
+ *   两处必须看到同一个 rel，否则日志里出现反斜杠会让人以为是另一份缓存。
+ *
+ * @param {{source?: {rel?: string}}|null} idx index.json 的内容
+ * @returns {string} 归一化后的 rel（缺失时为空串）
+ */
+function relOf(idx) {
+  const rel = (idx && idx.source && idx.source.rel) || '';
+  return String(rel).replace(/\\/g, '/');
+}
+
+/**
+ * 由 index.json 自己记录的 pluginId / source 反推「prefix 应该长什么样」。
+ *
+ * 契约 §1.2：prefix = `vfs://<providerId>/<rootId>/<相对目录>/`，
+ *   相对目录取 rel 的 dirname（rel 指向容器文件本身，prefix 以该文件所在目录为命名空间）。
+ * 实测 24 份现存缓存 100% 符合（三种形态都在内：无目录 / `live2d` / `live2d_<HASH>`），
+ *   所以这里做**精确比对**，不用"以 /live2d/ 结尾"那种猜法 —— 那个对多层 rel 会误判。
+ *
+ * @param {{pluginId?: string, source?: {rootId?: string, rel?: string}}} idx index.json 的内容
+ * @returns {string} 期望的 prefix（含结尾 /）
+ */
+export function expectedPrefix(idx) {
+  const pluginId = (idx && idx.pluginId) || '';
+  const rootId = (idx && idx.source && idx.source.rootId) || '';
+  const dir = path.posix.dirname(relOf(idx));   // 'aijier_3' → '.' ｜ 'live2d/x' → 'live2d'
+  const dirPart = dir && dir !== '.' ? `${dir}/` : '';
+  return `vfs://${pluginId}/${rootId}/${dirPart}`;
+}
+
+/**
+ * 缓存里的 prefix 是否与「当前该有的形态」不符；不符返回明细，一致返回 null。
+ *
+ * 抽成纯函数（不读盘、不打日志）是为了能被单测直接钉住 ——
+ *   走 peek() 验证要凑齐指纹（含 pluginVersion）才能命中，太脆；
+ *   判据本身才是要锁的东西。
+ *
+ * @param {{pluginId?: string, prefix?: string, source?: object}} idx index.json 的内容
+ * @returns {{cached: string, expect: string, rel: string}|null}
+ */
+export function prefixMismatch(idx) {
+  const cached = idx && idx.prefix;
+  if (typeof cached !== 'string') return null;
+  const expect = expectedPrefix(idx);
+  if (cached === expect) return null;
+  // rel 与 expectedPrefix 用同一份归一化结果（日志与判据看到同一个 rel）
+  return { cached, expect, rel: relOf(idx) || '?' };
+}
+
+/**
+ * 缓存命中时校验 prefix 是否还是「当前该有的形态」，不符就打一条 warn。
+ *
+ * **只告警、不改行为**：自动失效会把用户已经解好的包重新解一遍
+ *   （实测单包 9~15 秒），代价远大于多几次 HTTP 往返。
+ *   先让「整批 prefix 陈旧」这件事可见，等看到真实频率再决定要不要失效。
+ * 命中路径的返回字段 / 状态码 / 耗时都不变；prefix 与预期一致的正常缓存不产生任何日志。
+ *
+ * @param {string} fp 指纹（日志里用来定位是哪一份缓存）
+ * @param {object} idx 命中的 index.json
+ */
+function warnIfPrefixStale(fp, idx) {
+  const bad = prefixMismatch(idx);
+  if (!bad) return;
+  console.warn(`[unpack-store] 缓存 prefix 与预期不符（fp=${fp} rel=${bad.rel}）：`
+    + `缓存=${bad.cached} 预期=${bad.expect}`
+    + ' —— 插件可能改了 prefix 算法而指纹没覆盖到；本次仍按缓存返回，'
+    + '但客户端按新形态拼的地址会 miss 并回落网络');
+}
+
+/**
  * 把"缓存的实测值"与"现场问到的声明值"合成一份准入用的内存声明。
  *
  * 合并方向：cached 在前、est 在后 —— 解压量以本次探测为准，
@@ -383,6 +454,7 @@ export function createUnpackStore(opts) {
     if (!verdict.hit) return { ok: true, hit: false, fingerprint: fp, reason: verdict.reason || 'no-index' };
     counters.peekHits += 1;
     touch(fp, idx);
+    warnIfPrefixStale(fp, idx);
     return { ok: true, hit: true, fingerprint: fp, prefix: idx.prefix, entry: idx.entry, files: idx.files, unpackMs: 0 };
   }
 
@@ -398,6 +470,7 @@ export function createUnpackStore(opts) {
     if (verdict.hit) {
       counters.hits += 1;
       touch(fp, cachedIdx);
+      warnIfPrefixStale(fp, cachedIdx);
       cleanup();
       return { ok: true, hit: true, fingerprint: fp, prefix: cachedIdx.prefix, entry: cachedIdx.entry, files: cachedIdx.files, unpackMs: 0 };
     }

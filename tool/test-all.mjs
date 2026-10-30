@@ -135,6 +135,9 @@ const SUITES = [
   { name: 'api-retry', runner: 'node-test', file: 'test/api-retry.test.mjs' },
   // 解包产物判型纪律（假成功防线）：服务端解包链路的入口，判错会把"没文件"当"有文件"
   { name: 'unpack-filesview', runner: 'node-test', file: 'test/unpack-filesview.test.mjs' },
+  // 缓存命中的 prefix 形态校验：插件改了 prefix 算法而指纹没覆盖时，
+  //   旧产物会带旧 prefix 进 VFS ⇒ 客户端按新形态拼地址全部 miss ⇒ 静默回落网络（不报错、只变慢）
+  { name: 'unpack-prefix-check', runner: 'node-test', file: 'test/unpack-prefix-check.test.mjs' },
   // Spine 资源包插件（UnityFS 容器 → .skel/.atlas/贴图 + entry.json）：
   //   与 live2d 插件共用 fileKinds:['bundle']，判型互斥错了会互相抢单，必须有回归
   { name: 'spine-bundle-plugin', runner: 'node-test', file: 'test/spine-bundle-plugin.test.mjs' },
@@ -196,6 +199,7 @@ const EST_SEC = {
   'test-lock': 3,
   'api-retry': 6,
   'unpack-filesview': 8,
+  'unpack-prefix-check': 1,
   'manifest-stamp': 2,
   'catalog-motions': 2,
   'pma-detect': 2,
