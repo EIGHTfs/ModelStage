@@ -144,6 +144,15 @@ export function applyMemoryGuard(on) {
   stageStatus(value ? '内存保护：开（解包按可用内存准入）' : '内存保护：关（允许超预算解包，请自行确认内存充足）', 'info', { show: true });
 }
 
+/** 把看门狗计数发布到 dataset（纯可观测性，失败不影响任何行为） */
+function publishHangGuardStats(stats) {
+  try {
+    document.documentElement.dataset.hangGuardStats =
+      `ticks=${stats.ticks} stalls=${stats.stalls} rec=${stats.recoveries}`
+      + ` skip=${stats.skippedHidden || 0} skipPaused=${stats.skippedPaused || 0}`;
+  } catch { /* dataset 只是可观测性 */ }
+}
+
 /** 看门狗单次采样 */
 function hangGuardTick() {
   const stats = state.hangGuardStats;
@@ -160,10 +169,40 @@ function hangGuardTick() {
   let snap = null;
   try { snap = stage.stats(); } catch { snap = null; }
   if (!snap) return;
+
+  // **暂停时完全跳过**（不碰 ticks / stalls / lastFrames），与"后台标签页"同型：
+  //   暂停本来就不该有帧（canvas-api 的 pause() 会 stopFrameTick），拿它去判"渲染停滞"必然误判。
+  // 实测代价（2026-10-30，8899，spine char000101）：暂停后每 tick frames 不涨 ⇒ stalls 累加到 3
+  //   ⇒ 看门狗执行 pause();play() 自愈 ⇒ rec 0→1、paused 被改回 false、
+  //   引擎 animationId 从"字段不存在"变成 522 并持续递增。
+  //   ⇒ 用户点了暂停，**画面 3~4 秒后自己继续动** —— 这是用户可见的功能缺陷，不是计数虚涨。
+  // 计 skippedPaused 保持可观测（与 skippedHidden 一致），但**不参与停滞判定**；
+  //   注意不要改成"暂停时把 stalls 归零"（那是另一种语义：仍在拿不该涨的东西当判据）。
+  if (snap.paused === true) {
+    stats.skippedPaused = (stats.skippedPaused || 0) + 1;
+    stats.wasPaused = true;
+    publishHangGuardStats(stats);
+    return;
+  }
+
+  // 从暂停回到播放的第一个 tick **只重置基线、不比较**：
+  //   frames 在暂停期间冻住，若直接拿 lastFrames（暂停前的旧值）去比，
+  //   恢复播放后可能立刻算成一次停滞（同一个误报的镜像）。
+  if (stats.wasPaused) {
+    stats.wasPaused = false;
+    stats.lastFrames = null;
+    stats.stalls = 0;
+    stats.ticks += 1;
+    publishHangGuardStats(stats);
+    return;
+  }
+
   stats.ticks += 1;
   const frames = typeof snap.frames === 'number' ? snap.frames : null;
-  // 没模型在渲染时不计停滞：没东西可卡，报了就是误报
-  const loaded = !!(snap.model || snap.phase === 'ready');
+  // 没模型在渲染时不计停滞：没东西可卡，报了就是误报。
+  // 只看 model：`snap.phase` 是**恒假**的死条件 —— statsOf() 不返回 phase
+  //   （`phase: 'ready'` 只出现在 canvas-api 的 onStatus 回调里，不是 stats() 快照的一部分）。
+  const loaded = !!snap.model;
   if (!loaded || frames === null) { stats.lastFrames = frames; return; }
   stats.stalls = stats.lastFrames !== null && frames <= stats.lastFrames ? stats.stalls + 1 : 0;
   stats.lastFrames = frames;
@@ -173,8 +212,7 @@ function hangGuardTick() {
     stageLog('warn', `检测到渲染停滞（${hangGuardConfig.stallLimit}s 无新帧），已尝试恢复`, { stallLimit: hangGuardConfig.stallLimit });
     try { stage.pause(); stage.play(); } catch { /* 自愈失败不影响主流程 */ }
   }
-  document.documentElement.dataset.hangGuardStats =
-    `ticks=${stats.ticks} stalls=${stats.stalls} rec=${stats.recoveries} skip=${stats.skippedHidden || 0}`;
+  publishHangGuardStats(stats);
 }
 
 // 从后台切回可见时**重置基线**：

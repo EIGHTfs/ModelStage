@@ -93,6 +93,10 @@ export function statsOf(st) {
     runtimeKeys: [...st.runtimeKeys],
     contexts: e && e.gl ? 1 : 0,
     frames: st.frames,
+    // 暂停状态（给外部读快照用：看门狗要判断"这段时间本来就不该有帧"）。
+    //   放这里而不是让调用方改用 debug()：stats() 每秒被看门狗调一次，
+    //   而 debug() 内部是 `{...statsOf(st), engine, tickCalls, paused}` —— 每秒多造一层对象纯属浪费。
+    paused: !!st.paused,
     fps: e && e.getCurrentFps ? e.getCurrentFps() : null,
     loads: st.loads,
     disposes: st.disposes,
