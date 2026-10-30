@@ -16,6 +16,8 @@
 import { getJson } from '../infra/api.js';
 import { selectModel } from './model-actions.js';
 import { setForcedRuntime } from '../spine/canvas-runtime.js';
+// 取清单走 roster 的**唯一入口**（失败记 diag warn + 回传 reason），与名册那条路同一份实现
+import { fetchRootEntries } from '../roster/list.js';
 // 深链准入与运行时类型都查面元数据表（不再写死 spine/live2d 字面量）
 import { byKind, knownKinds } from '../render/surfaces.js';
 
@@ -23,19 +25,22 @@ import { byKind, knownKinds } from '../render/surfaces.js';
  * 取全量 catalog 条目（跨所有资源根）。
  * 为什么不用名册里的已加载数据：名册按游戏/角色分组且可能未展开，
  *   而这里要"精确匹配任意一条"，直接问服务端最可靠。
- * @returns {Promise<object[]>}
+ * @returns {Promise<{entries: object[], failures: string[]}>} failures = 取不到清单的根（带原因），
+ *   用于在"深链匹配不到"时把"为什么取不到"这层带进提示（否则深链失效零线索）
  */
 async function fetchAllEntries() {
   const roots = await getJson('/api/roots').catch(() => null);
   const list = (roots && (roots.roots || roots.items)) || [];
   const out = [];
+  const failures = [];
   for (const r of list) {
     const id = r && (r.id || r.name);
     if (!id) continue;
-    const cat = await getJson(`/api/catalog?root=${encodeURIComponent(id)}`).catch(() => null);
-    for (const e of (cat && cat.entries) || []) out.push({ ...e, rootId: e.rootId || id });
+    const { entries, reason } = await fetchRootEntries(id);
+    if (reason) failures.push(`${id}（${reason}）`);
+    for (const e of entries) out.push({ ...e, rootId: e.rootId || id });
   }
-  return out;
+  return { entries: out, failures };
 }
 
 /** 两种写法都认：先 id 全等，再 `rootId/rel` 全等 */
@@ -60,14 +65,18 @@ function parseRuntime(arg) {
   return { kind: 'spine', version: raw };   // 裸版本号默认按 spine 解释
 }
 
+/**
+ * 报告一条 URL 参数相关的失败：**状态行（用户可见）+ 日志（面板/上传）** 两条都写。
+ *
+ * 这里不再自己找 DOM 写文本：`#stage-msg` / `[data-role="stage-msg"]` 在全仓都不存在
+ *   （status.js 的状态行由 renderStatusLine 统一渲染），那段是死代码，已删。
+ *   统一走 stageStatus ⇒ 同一份文案、同一个渲染入口，不会出现"两处各写一份、样式不一致"。
+ */
 function report(message, level = 'error') {
-  const el = document.getElementById('stage-msg') || document.querySelector('[data-role="stage-msg"]');
-  if (el) el.textContent = message;
-  // 与其它装载失败同口径：日志 + 状态行都要有，别只在控制台
   import('./status.js').then((m) => {
     if (level === 'error') m.stageLog('error', message, { source: 'url-params', reason: 'url-params' });
     m.stageStatus(message, level === 'error' ? 'error' : 'warn', { show: true });
-  }).catch(() => { /* 状态模块不可用就算了，上面的 el 已写 */ });
+  }).catch(() => { /* 状态模块不可用：静默放弃（URL 参数只是增强入口，不该让页面挂掉） */ });
 }
 
 /**
@@ -86,16 +95,21 @@ export async function applyUrlParams() {
     return { runtime: runtimeArg };
   }
 
-  const entries = await fetchAllEntries();
+  const { entries, failures } = await fetchAllEntries();
   const { hit, by, ambiguous } = matchEntry(entries, modelArg);
 
   if (!hit) {
     const sample = entries.slice(0, 5)
       .map((e) => `  · id=${e.id || '(无)'}   或   ${e.rootId || ''}/${e.rel || ''}`)
       .join('\n');
+    // 把"某个根的清单根本没取到"这层带进提示：否则深链失效看起来就像"模型不存在"，
+    //   而真实原因可能是该根路径写错/服务端拒绝（那是完全不同的处置方向）。
+    const failed = failures.length
+      ? `。另外有 ${failures.length} 个根的清单取不到：${failures.slice(0, 3).join('；')}${failures.length > 3 ? ' …' : ''}`
+      : '';
     report(ambiguous && ambiguous.length
       ? `URL 参数 model=${modelArg} 命中 ${ambiguous.length} 条（按 ${by} 匹配），无法确定用哪一条；请改用更精确的写法`
-      : `URL 参数 model=${modelArg} 没有匹配到任何条目（两种写法都支持：条目 id，或 rootId/rel）。前 5 个候选：\n${sample}`);
+      : `URL 参数 model=${modelArg} 没有匹配到任何条目（两种写法都支持：条目 id，或 rootId/rel）${failed}。前 5 个候选：\n${sample}`);
     return { model: modelArg };
   }
 

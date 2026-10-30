@@ -105,20 +105,64 @@ export function lookupName(index, assetName) {
 }
 
 /**
+ * 取一个资源根的模型清单 —— **全仓唯一的 catalog 消费入口**。
+ *
+ * 为什么抽出来：此前有两处各写一遍、失败处理还不一致（url-params 静默吞 ⇒ 深链失效零提示；
+ *   roster 直接抛 ⇒ 上层各自 catch）。现在统一成：失败一律
+ *   ① 记一条 diag warn（带 root id 与原因）② 返回空清单 + 可读 reason（**不抛**），
+ *   由调用方按自己的语义决定"要不要把 reason 变成用户可见的失败状态"。
+ * 判据只看"有没有拿到 entries 数组"，**不看 HTTP 状态码**
+ *   （服务端对缺 root 的状态码正在从 404 改 400，按状态码写死会跟着坏）。
+ * `warnings` 与 `reason` 是**两档不同的东西**，别混：
+ *   · reason   = **拿不到清单**（rootId 不存在 / 5xx / 网络失败）—— 查询失败，可考虑重试
+ *   · warnings = **清单拿到了，但服务端说这根的扫描有异常/提示**（例如 path 不存在、
+ *                "有 2 个插件都能解包"）—— 查询成功，但话没说完
+ *   混进同一个字段会让"取不到"这个词失准，也会让"要不要重试"这类判断跟着出错。
+ * @param {string} rootId
+ * @returns {Promise<{entries: object[], reason: string|null, warnings: string[]}>}
+ */
+export async function fetchRootEntries(rootId) {
+  const id = String(rootId || '');
+  if (!id) return { entries: [], reason: '资源根 id 为空', warnings: [] };
+  let data = null;
+  try {
+    data = await getJson(`/api/catalog?root=${encodeURIComponent(id)}`);
+  } catch (e) {
+    const why = (e && e.message) || String(e);
+    diagEvent('catalog.fail', { root: id, reason: why }, { level: 'warn', src: 'app' });
+    return { entries: [], reason: `清单取不到：${why}`, warnings: [] };
+  }
+  const warnings = Array.isArray(data && data.warnings) ? data.warnings.map((w) => String(w)) : [];
+  const entries = Array.isArray(data && data.entries) ? data.entries : null;
+  if (!entries) {
+    diagEvent('catalog.fail', { root: id, reason: '响应里没有 entries 数组' }, { level: 'warn', src: 'app' });
+    return { entries: [], reason: '清单响应里没有 entries 数组', warnings };
+  }
+  // 成功但一条都没有、且服务端有话说 ⇒ 记一条 warn：
+  //   否则 UI 只会显示"该游戏没有可加载模型"，与"这个根真的没有模型"完全无法区分。
+  if (!entries.length && warnings.length) {
+    diagEvent('catalog.empty', { root: id, warning: warnings[0] }, { level: 'warn', src: 'app' });
+  }
+  return { entries, reason: null, warnings };
+}
+
+/**
  * 取一个资源根的模型清单。
  * @param {{id: string, name: string, kind?: string}} root
  * @returns {Promise<{models: object[], source: string}>}
+ * @throws 清单取不到时抛（上层 view.js 据此把该根标成 error 状态并显示原因，这条 UI 语义要保留）
  */
 export async function loadRootModels(root) {
-  const id = encodeURIComponent(root.id);
   // 单一发现路径：/api/catalog 一次给出该根下的**全部**模型条目
   //   （spine 模型 + live2d 模型 + 容器单文件），所以不必再"按根类型猜该问哪个扫描器"，
   //   同一个根里既能放普通模型目录、也能放容器文件。
   //   容器条目的 kind 由插件声明（解包后是什么内容），并带 `container` 标记供装载层解包用。
-  const data = await getJson(`/api/catalog?root=${id}`);
-  const models = Array.isArray(data.entries) ? data.entries : [];
+  const { entries: models, reason } = await fetchRootEntries(root.id);
+  // 抛给上层：view.js 捕获后把根标成 status='error' + 显示 error 文案。
+  //   若这里改成"返回空清单不抛"，UI 会从"加载失败"退化成"这个根有 0 个模型"—— 信息反而更少。
+  if (reason) throw new Error(`${root.name || root.id}：${reason}`);
   const containers = models.filter((m) => m.container).length;
-  diagEvent('bundle.parse', { root: id, source: 'catalog', models: models.length, containers }, { level: 'info', src: 'app' });
+  diagEvent('bundle.parse', { root: encodeURIComponent(root.id), source: 'catalog', models: models.length, containers }, { level: 'info', src: 'app' });
   return { models, source: 'catalog' };
 }
 
