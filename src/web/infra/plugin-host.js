@@ -655,6 +655,20 @@ const MIME_BY_EXT = {
   }
 
   /**
+   * 在途预热去重：key = `${rootId}/${rel}`。
+   *
+   * 为什么必须去重：`model-actions` 每次装载都会调 warmup()，同一个模型被装载多次就排多次请求；
+   *   而服务端的解包是**串行**的（plugin-store 的 inflight + 队列），后到的那几个全部 join 到
+   *   同一个 inflight 上 —— 于是每个都等足同一段时长、每个都被前台的 8.5s 掐断一次、每个再重试一次。
+   *   实测（500 条日志那批）：同一个 rel 被重复预热 4~6 次
+   *     xukufu_3_hx：ms=1969 / 19933 / 12770 / 18598(hit=true) 四条，全是同一次解包的不同等待者。
+   *
+   * 为什么"完成即删"而不是"永久记住已预热"：插件版本升级、服务端缓存被清（LRU/手工删目录）之后，
+   *   同一个包仍然需要能重新预热 —— 记死就再也不会补了。
+   */
+  const warmupInflight = new Set();
+
+  /**
    * 真正执行预热：**选中即触发**，不等空闲、不延迟。
    *
    * 为什么删掉了 requestIdleCallback(timeout 3000) + setTimeout(2000)：
@@ -663,18 +677,34 @@ const MIME_BY_EXT = {
    *   服务端解包是原生能力，不是"抢 CPU 的备选"，不该被推迟到空闲。
    */
   function scheduleWarmup(file, emitWarm, cap) {
+    const key = `${file.rootId}/${file.rel}`;
+    // 去重命中时**静默返回**（连 diag 也不发）：验收口径是「unpack.warmup 条数 == 不同 rel 个数」，
+    //   这里多发一条就等于把噪音从网络层搬到日志层。say 没有 debug 级，所以干脆不说话。
+    if (warmupInflight.has(key)) return;
+    warmupInflight.add(key);
     (async () => {
       const t0 = performance.now();
       try {
-        // 超时用默认值：它**不作为**"改走另一条路"的依据（超时只记日志），见 materialize
-        // retries:2 同上 —— 预热请求幂等（同 rel 同产物），重发安全
+        // 预热是**后台**任务，不能借用前台的超时/重试策略：
+        // · retries: 0 —— 重试对幂等虽安全，但服务端解包是串行的，重发只会把队列压得更长，
+        //   而且每次超时都记一条 error（上一批日志里 13 条 resolve 超时有一半就是这么来的）。
+        // · timeoutMs: 120000 —— 前台的 8.5s 是"用户等不了这么久"，而后台预热**本来就该等**：
+        //   服务端串行队列下同一次解包实测等过 19s，8.5s 必然误判成失败。
+        //   ⇒ 用独立的长超时，让"真的解完了"这件事能如实记成 ok。
         const j = await postJson('/api/unpack/resolve',
           { rootId: file.rootId, rel: file.rel, allowOverLimit: !memoryGuard.isMemoryGuardOn() },
-          { retries: 2 });
+          { retries: 0, timeoutMs: 120000 });
         emitWarm({ ok: !!j.ok, hit: !!(j && j.hit), peakEstMb: cap && cap.peakEstMb, ms: Math.round(performance.now() - t0) });
         say.info(`预热完成：${file.rel}（${j && j.hit ? '已有缓存' : '已落盘'}，${Math.round(performance.now() - t0)}ms）`);
       } catch (e) {
-        emitWarm({ ok: false, error: String((e && e.message) || e).slice(0, 120) });
+        const why = String((e && e.message) || e).slice(0, 120);
+        emitWarm({ ok: false, error: why });
+        // 预热失败**不是错误**：前台装载有自己的路径（本地解包 / 服务端命中），预热只是"下次更快"。
+        //   记 info 不记 error/warn —— 否则每次装载都在日志里刷一条红，把真问题淹掉。
+        say.info(`后台预热未完成：${file.rel}（${why}）—— 服务端仍会解完并写缓存，下次命中即可`);
+      } finally {
+        // 成功/失败/超时都要移除，否则一次失败会让这个 rel 永远不再预热
+        warmupInflight.delete(key);
       }
     })();
   }
