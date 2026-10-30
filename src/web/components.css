@@ -4,8 +4,10 @@
   --color-accent-action: #2b6cb0;      /* 主操作按钮底色 */
   --color-accent-action-hover: #3178c6;
   --color-on-accent: #fff;             /* 主色/类型标签上的文字 */
-  --color-type-spine: #2b6cb0;         /* 变体标签：Spine */
-  --color-type-live2d: #6d28d9;        /* 变体标签：Live2D / 资源包 */
+  /* 变体标签颜色**不在这里定义**：由插件在 plugin.json 里自声明 accent，
+     运行期以内联变量 --badge-accent 落到该元素上（见 roster/rows.js）。
+     这里只留一个"判不出归属"的中性兜底色，避免没声明的插件被涂成别人的颜色。 */
+  --color-type-unknown: #4a5568;       /* 变体标签：归属待定/未声明 */
   --color-text-strong: #cfd6dd;        /* 变体行主文本 */
   --color-text-dim: #9aa;              /* 展开箭头等弱提示 */
   --color-orig-border: #4a5;           /* 角色行「原名」标签描边 */
@@ -320,22 +322,16 @@
   cursor: help;
 }
 
-/* 变体行的类型标签：Spine 蓝 / Live2D 与资源包 紫（配色） */
+/* 变体行的类型标签：颜色**由插件声明**（内联 --badge-accent，来自 plugin.json 的 accent）。
+   这里不再有 kind → 颜色的映射：拿不到声明就落中性色，绝不替插件假装一种颜色。
+   （类名 tree-type-spine / -live2d / -bundle 仍由 roster/rows.js 打上，只作分组用，不再上色） */
 .tree-type {
   flex: 0 0 auto;
   padding: 0 5px;
   border-radius: 4px;
+  background: var(--badge-accent, var(--color-type-unknown));
   color: var(--color-on-accent);
   font-size: 10px;
-}
-
-.tree-type-spine {
-  background: var(--color-accent-action);
-}
-
-.tree-type-live2d,
-.tree-type-bundle {
-  background: var(--color-type-live2d);
 }
 
 .tree-variant-text {

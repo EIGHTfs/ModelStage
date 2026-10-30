@@ -232,6 +232,19 @@ export function readPluginManifest(pluginsDir, dirName, isFile, disabled, seenEf
     version: m.version === undefined ? null : m.version,
     assets: Array.isArray(m.assets) ? m.assets.map(String) : [],
     fileKinds: Array.isArray(m.fileKinds) ? m.fileKinds.map(String) : [],
+    /**
+     * 展示色（插件自声明，如 "#2b6cb0"）：列表徽标用它上色，前端不再按 kind 硬编码。
+     * 只接受 #rgb / #rrggbb / #rrggbbaa，非法值一律按"未声明"处理（给 null ⇒ 前端走中性色），
+     *   绝不替插件猜一个颜色 —— 猜错就等于用颜色撒谎。
+     */
+    accent: /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(String(m.accent || '')) ? String(m.accent) : null,
+    /**
+     * 匹配优先级（数字，越大越靠前）：**只用于展示归属的排序**，不参与装载决策。
+     * 多个插件都声明能读同一类资源（fileKinds 都是 bundle）时，解包前无法判定谁对，
+     *   于是"已解包过的包以实际命中的插件为准，没解包过的一律中性色"，
+     *   优先级只决定候选列表在提示里的先后。
+     */
+    matchPriority: Number.isFinite(Number(m.matchPriority)) ? Number(m.matchPriority) : 0,
     produces: m.produces && typeof m.produces === 'object' ? m.produces : null,
     errorCodes: Array.isArray(m.errorCodes) ? m.errorCodes.map(String) : [],
     files: files.map((f) => `${dirName}/${f}`),

@@ -135,12 +135,22 @@ export function renderVariantRow(game, c, v, selectedId, failure) {
   }
 
   const label = variantLabel(m);
-  // 样式类按"条目性质"取（容器单文件用 bundle 类，颜色与普通模型区分），与 label 文案解耦
-  //   非容器时查面元数据表的 badge；未知 kind 保留 spine 样式（仅配色，不影响功能，
-  //   这里不需要像画布/面模式那样抛错 —— 名册不能因为遇到新类型就画不出来）
+  // 样式类按"条目性质"取（容器单文件用 bundle 类），只用来分组，**不再带颜色**。
+  //   颜色一律来自插件声明：服务端 /api/catalog 给条目带上 badgeAccent（插件 accent，
+  //   容器条目只有"已解包过的包"才有值，没解包过为 null）。拿不到就落中性色，
+  //   绝不按 kind 猜一个 —— 猜错就是用颜色撒谎（资源包曾被一律涂成 Live2D 紫）。
   const meta = byKind(m.kind);
   const kindClass = m.container ? 'bundle' : (meta ? meta.badge : 'spine');
-  row.append(el('span', `tree-type tree-type-${kindClass}`, label));
+  const typeBadge = el('span', `tree-type tree-type-${kindClass}`, label);
+  if (m.badgeAccent) typeBadge.style.setProperty('--badge-accent', String(m.badgeAccent));
+  if (m.container) {
+    // 容器：解包前归属未定，把候选插件放到 title 里，用户悬停即可知道该找谁
+    const cands = Array.isArray(m.providerCandidates) ? m.providerCandidates : [];
+    typeBadge.title = m.displayProvider
+      ? `解包插件：${m.displayProvider}`
+      : `归属待解包确定${cands.length ? `（候选：${cands.join('、')}）` : ''}`;
+  }
+  row.append(typeBadge);
   row.append(el('span', 'tree-variant-text', text));
   if (origName && origName !== text) row.append(el('span', 'tree-variant-orig', ` · ${origName}`));
   // 资产残缺预警：目录版声明了但磁盘缺失的纹理 ⇒ 列表里就标出来，别等用户点了才报错

@@ -98,6 +98,9 @@ const unpackStore = createUnpackStore({
   //   plugin-store 会把根下每个插件的版本汇总进指纹。
   pluginDir: data.paths.pluginsDir,
 });
+// 只读注入：catalog 用它查"这个包被哪个插件解出来过"（列表徽标的展示归属）。
+//   只是读缓存索引，不触发任何解包，也不改变 catalog 的缓存行为。
+data.catalog.setUnpackStore(unpackStore);
 const unpackRoutes = createUnpackRoutes({
   store: unpackStore,
   readConfig: () => data.config.readConfig(),

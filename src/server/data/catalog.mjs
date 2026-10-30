@@ -351,14 +351,20 @@ function buildLive2DWarnings(fromDef, textureCheck) {
  */
 export function resolveBundleProvider(plugins) {
   const list = plugins.readPlugins()
-    .filter((p) => Array.isArray(p.fileKinds) && p.fileKinds.includes('bundle'));
+    .filter((p) => Array.isArray(p.fileKinds) && p.fileKinds.includes('bundle'))
+    // 优先级只决定**候选列表的先后**（提示用），不决定装载、也不决定颜色：
+    //   解包前谁也判不出一个包该归哪个插件，颜色只认"已解包过的实际 pluginId"。
+    .sort((a, b) => (Number(b.matchPriority) || 0) - (Number(a.matchPriority) || 0));
+  /** 展示用候选（按 matchPriority 降序）：前端拿它拼"归属待解包确定（候选：A、B）" */
+  const candidates = list.map((p) => ({ id: p.id, accent: p.accent || null, matchPriority: Number(p.matchPriority) || 0 }));
   if (!list.length) {
-    return { id: null, kind: null, reason: 'no-provider', warning: '未找到能解包资源包的插件：条目 kind 无法确定' };
+    return { id: null, kind: null, candidates, reason: 'no-provider', warning: '未找到能解包资源包的插件：条目 kind 无法确定' };
   }
   if (list.length > 1) {
     return {
       id: null,
       kind: null,
+      candidates,
       reason: 'multi-provider',
       warning: `有 ${list.length} 个能解包资源包的插件（${list.map((p) => p.id).join('、')}）：`
         + '解包前无法确定内容类型，条目 kind 置空，由解包产物（entry.json 的 skeletonFile / model3.json）判定',
@@ -369,6 +375,7 @@ export function resolveBundleProvider(plugins) {
   return {
     id: provider.id,
     kind: declared,
+    candidates,
     reason: declared ? null : 'undeclared-kind',
     warning: declared ? null : `提供者 ${provider.id} 未声明产出类型（produces.kind）：kind 置空，由渲染层拒绝装载`,
   };
@@ -377,8 +384,12 @@ export function resolveBundleProvider(plugins) {
 /**
  * 资源包条目 → ModelEntry。
  * 解包前拿不到内部资产，故 assets 为空、meta 只填容器信息与大小。
+ * @param {{id: string, name: string}} cfg 资源根
+ * @param {{rel?: string, name: string, size?: number, container?: string}} file 容器文件
+ * @param {{id: string|null, kind: string|null, candidates?: object[], reason?: string|null, warning?: string|null}} provider 列举阶段的候选信息
+ * @param {{id: string, accent: string|null}|null} [owner] 已解包过的包：**实际解出它的插件**（唯一可信的展示归属）
  */
-export function toBundleEntry(cfg, file, provider) {
+export function toBundleEntry(cfg, file, provider, owner = null) {
   const rel = file.rel || file.name;
   const warnings = ['motions 需解包后枚举：资源包内部资产在打开时才可读'];
   // kind 为空有两种成因，文案必须区分：否则排障时会去改插件的 produces.kind，
@@ -418,6 +429,15 @@ export function toBundleEntry(cfg, file, provider) {
     },
     iconUrl: null,
     warnings,
+    // ---- 展示归属（只影响徽标颜色与提示，**不参与任何装载决策**）----
+    // 解包过的包：以 index.json 里真实记录的 pluginId 为准 ⇒ 颜色可信。
+    // 没解包过的包：谁也判不出该归哪个插件（两个插件都声明 fileKinds:["bundle"]）
+    //   ⇒ badgeAccent 为 null，前端用中性色，绝不猜成某个插件的颜色。
+    badgeAccent: owner && owner.accent ? owner.accent : null,
+    /** 展示用归属插件 id（null = 待解包确定） */
+    displayProvider: owner && owner.id ? owner.id : null,
+    /** 候选插件（按 matchPriority 降序），前端在 title 里列出来 */
+    providerCandidates: Array.isArray(provider.candidates) ? provider.candidates.map((c) => c.id) : [],
   };
 }
 
@@ -520,9 +540,12 @@ export function findContainerFiles(rootPath, detectContainer, opts = {}) {
  *
  * @returns {{entries: Array, warnings: string[], skipped: number}}
  */
-export function listBundleEntries(cfg, { plugins }) {
+export function listBundleEntries(cfg, { plugins, unpack = null }) {
   const provider = resolveBundleProvider(plugins);
   const warnings = provider.warning ? [provider.warning] : [];
+  // 已解包过的包 → 实际解出它的插件（展示归属的唯一可信来源）。每次列举只扫一遍缓存目录。
+  const accentById = new Map(plugins.readPlugins().map((p) => [p.id, p.accent || null]));
+  const owned = unpack && typeof unpack.cachedProviders === 'function' ? unpack.cachedProviders() : new Map();
 
   const found = findContainerFiles(cfg.path, plugins.detectBundleContainer);
   if (found.stopped) {
@@ -533,7 +556,10 @@ export function listBundleEntries(cfg, { plugins }) {
       + '更深的资源包不会被列出');
   }
 
-  const entries = found.files.map((f) => toBundleEntry(cfg, f, provider));
+  const entries = found.files.map((f) => {
+    const ownerId = owned.get(`${cfg.id}/${f.rel || f.name}`) || null;
+    return toBundleEntry(cfg, f, provider, ownerId ? { id: ownerId, accent: accentById.get(ownerId) || null } : null);
+  });
   // skipped 保持旧语义：**根层**「有文件但没探到容器魔数」的数量，不因递归而改变含义
   const rootLevelContainers = found.files.filter((f) => !f.rel.includes('/')).length;
   return { entries, warnings, skipped: countSkippedFiles(cfg.path, rootLevelContainers) };
@@ -590,7 +616,15 @@ const ROOT_PATH_PROBLEM_TEXT = {
  * 装配模型目录（合并该资源根下的 Spine 与 Live2D 两路扫描）。
  * @param {{config: object, spine: object, live2d: object}} deps
  */
-export function createCatalog({ config, spine, live2d, tree, plugins }) {
+export function createCatalog({ config, spine, live2d, tree, plugins, unpack = null }) {
+  /**
+   * 解包缓存句柄（只读用途：查"这个包被哪个插件解出来过"）。
+   * 装配顺序上 store 在 data 之后创建（serve.mjs），所以留 setter 注入，
+   *   不去改启动顺序 —— 那会牵动一批初始化依赖。
+   * 没注入时一切照旧：容器条目 badgeAccent=null（前端中性色）。
+   */
+  let unpackRef = unpack;
+  function setUnpackStore(store) { unpackRef = store || null; }
   /**
    * 最近一次**各根** catalog 构建的服务端耗时（只保留最近一次，不做历史数组）。
    *
@@ -648,9 +682,31 @@ export function createCatalog({ config, spine, live2d, tree, plugins }) {
     // 容器单文件（资源包本质是打包来的模型）：与普通模型一起出现在同一份清单里，
     //   所以"同一个根里既有普通模型又有容器"能被同时识别。
     //   条目 kind 取插件声明的 produces.kind（内容类型），容器标记另行保留给装载层解包用。
-    const bundle = listBundleEntries(cfg, { tree, plugins });
+    const bundle = listBundleEntries(cfg, { tree, plugins, unpack: unpackRef });
     entries.push(...bundle.entries);
     if (bundle.warnings.length) warnings.push(...bundle.warnings);
+
+    // 非容器条目（spine / live2d 目录型）：颜色取**声明了该产出类型**的插件的 accent。
+    //   多个插件声明同一 kind 时判不出该归谁 ⇒ null（前端中性色），不猜。
+    //   容器条目已在 toBundleEntry 里按"实际解出它的插件"设过 badgeAccent，这里跳过（非 undefined）。
+    {
+      const byKind = new Map(); // kind → [accent|null, ...]
+      for (const p of plugins.readPlugins()) {
+        const k = p.produces && p.produces.kind ? String(p.produces.kind) : null;
+        if (!k) continue;
+        if (!byKind.has(k)) byKind.set(k, []);
+        byKind.get(k).push(p.accent || null);
+      }
+      for (const e of entries) {
+        if (e.badgeAccent !== undefined) continue;
+        const list = byKind.get(String(e.kind)) || [];
+        e.badgeAccent = list.length === 1 ? list[0] : null;
+        e.displayProvider = list.length === 1
+          ? (plugins.readPlugins().find((p) => p.produces && String(p.produces.kind) === String(e.kind)) || {}).id || null
+          : null;
+        e.providerCandidates = [];
+      }
+    }
 
     /**
      * 根级诊断：**这根本身有没有问题**（与"这根确实没有模型"要能区分）。
@@ -710,5 +766,5 @@ export function createCatalog({ config, spine, live2d, tree, plugins }) {
     return { at: stats.at, totalMs: stats.totalMs, roots: stats.roots.map((r) => ({ ...r })) };
   }
 
-  return { listCatalog, getCatalogStats };
+  return { listCatalog, getCatalogStats, setUnpackStore };
 }

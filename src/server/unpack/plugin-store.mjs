@@ -664,5 +664,29 @@ export function createUnpackStore(opts) {
    */
 
 
-  return { resolve, memoryOf, peek, readIndex, filePathOf, stats, cleanup, fingerprintOf };
+  /**
+   * 只读：**已解包过的包**分别被哪个插件解出来的（key = `${rootId}/${rel}` → pluginId）。
+   *
+   * 用途只有一个：列表徽标的展示归属。资源包在**解包前**谁也判不出该归哪个插件
+   *   （两个插件都声明 fileKinds:["bundle"]），所以"没解包过 ⇒ 没有归属 ⇒ 中性色"，
+   *   解包过就以 index.json 里真实记录的 pluginId 为准 —— 那是唯一可信的来源。
+   * 实现：扫一遍缓存目录读 index.json（每次 catalog 只调一次，不按条目查）。
+   *   **绝不触发重建**，也不改任何缓存状态。
+   * @returns {Map<string, string>}
+   */
+  function cachedProviders() {
+    const out = new Map();
+    try {
+      for (const e of fs.readdirSync(rootDir, { withFileTypes: true })) {
+        if (!e.isDirectory() || e.name.startsWith('.tmp-')) continue;
+        const idx = readIndex(e.name);
+        const src = idx && idx.source;
+        if (!src || !src.rootId || !src.rel || !idx.pluginId) continue;
+        out.set(`${src.rootId}/${src.rel}`, String(idx.pluginId));
+      }
+    } catch { /* 目录未建：没有任何已解包的包，返回空表 */ }
+    return out;
+  }
+
+  return { resolve, memoryOf, peek, readIndex, filePathOf, stats, cleanup, fingerprintOf, cachedProviders };
 }
