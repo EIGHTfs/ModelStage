@@ -1,8 +1,6 @@
 #!/usr/bin/env node
-// serve.mjs —— 新前端自带的完整服务入口（不依赖旧服务）
-//
-// 与 src/web/dev-server.mjs 的区别：**不再反代上游**。所有请求都由这里处理：
-//   · /api/*            数据层：调 src/server/** 的现有函数（与 server.mjs 同一份实现）
+// serve.mjs —— 服务入口。所有请求都由这里处理：
+//   · /api/*            数据层：调 src/server/** 的实现
 //   · /api/file /files  模型资源流式返回（安全路径解析 + MIME 复用 probe.mjs）
 //   · /icons/*          头像（资源根配置里的 icons 目录）
 //   · /live2d-lib/*     Live2D 运行时库（tool/resolve-live2d-runtimes.mjs 探测结果）
@@ -38,6 +36,7 @@ import { handleDiag } from './routes/diag.mjs';
 import { handleReady } from './routes/ready.mjs';
 import { handleBackgrounds } from './routes/backgrounds.mjs';
 import { handleBackgroundSolids } from './routes/background-solids.mjs';
+import { handleEntries, createContextFor } from './routes/entries.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const WEB_ROOT = path.join(ROOT, 'src', 'web');
@@ -180,6 +179,12 @@ function readBody(req, res, onBody, maxBytes = 2e6) {
 const ctx = {
   data, staticRoutes, diag, diagUpload, ready, writeApi, backgrounds, solids, unpackRoutes,
   resolveSafe, browseDir, sendFile, toRootView, sendJson, sendText, readBody, fs, path, log,
+  // 条目状态（契约 §三）：写读一体的存储实例与"条目静态事实"查询
+  entryStates: data.entryStates,
+  contextFor: createContextFor({
+    providers: () => data.plugins.readPlugins(),
+    describe: (key) => data.catalog.describeEntry(key),
+  }),
 };
 
 /**
@@ -209,6 +214,8 @@ function dispatch(req, res, p, url) {
   //   必须先让纯色预设那组认领，否则会被 backgrounds 的 404 分支吃掉
   if (handleBackgroundSolids(req, res, p, ctx)) return true;
   if (handleBackgrounds(req, res, p, ctx)) return true;
+  // 条目状态（写读一体）：必须在 handleData 之前认领，否则 /api/ 前缀兜底会当未知接口 404
+  if (handleEntries(req, res, p, url, ctx)) return true;
   if (handleData(req, res, p, url, ctx)) return true;
   if (staticRoutes.serveAssets(req, res, p)) return true;
   if (res.headersSent) return true;

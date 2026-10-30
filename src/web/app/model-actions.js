@@ -14,11 +14,19 @@ import { diagEvent, stageLog, stageStatus } from './status.js';
 import { isKnownKind } from '../render/surfaces.js';
 import { formatError, getJson } from '../infra/api.js';
 import { createRootManager } from './root-manager.js';
-// 容器装载失败按条目记一笔，名册下次渲染直接给 ⚠ 提示（与"缺纹理"同一套展示语义）
-// recordFailure / clearFailure 各自会就地刷新名册上那一行的 ⚠（见 roster/bundle-failures.js），
-//   所以这里不需要再关心 DOM —— 装载结果变化后名册自己跟上。
-import { recordFailure, clearFailure } from '../roster/bundle-failures.js';
+// 装载结果上报服务端（契约《条目状态与展示归属》§三）：成功/失败都报，
+//   响应带回重算后的三字段 ⇒ 就地更新那一行（不重拉 catalog、不整表重建）。
+//   前端不再自己存"装载失败记忆"（原 roster/bundle-failures.js 的 localStorage 层已删）。
+import { reportEntryResult } from './entry-report.js';
 import { createDirPicker } from './dir-picker.js';
+
+/**
+ * 本次装载实际命中的提供者 id（容器由 resolve 给出，目录型为 builtin-*；都没有则 null）。
+ * 由 loadModel 在 mount 之前写入，mountEntry 的成功/失败回调读它去上报 loadResult.provider。
+ * 为什么不塞进 loadModel 的返回值：那个返回值是"渲染器 info"，形状被多处消费，
+ *   加私货会污染契约；而这个值只有"上报"一处用得上。
+ */
+let lastMountProvider = null;
 
 async function loadWebConfig() {
   try {
@@ -333,7 +341,7 @@ async function loadModel(model, name) {
   if (!src.ok) {
     stage.unload();
     stageLog('error', `无法装载 ${name}：${src.message}`, { model: name, kind: model && model.kind, reason: src.message });
-    recordFailure(model, src.reason || null, src.message);
+    reportEntryResult(model, { result: 'failed', reason: src.reason || null, message: src.message });
     markModelFailed(`无法装载 ${name}：${src.message}`);
     return null;
   }
@@ -356,7 +364,7 @@ async function loadModel(model, name) {
     if (expanded.error) {
       stage.unload();
       stageLog('error', `无法装载 ${name}：${expanded.error}`, { model: name, kind: model && model.kind, reason: expanded.error });
-      recordFailure(model, expanded.reason || null, expanded.error);
+      reportEntryResult(model, { result: 'failed', reason: expanded.reason || null, message: expanded.error });
       markModelFailed(`无法装载 ${name}：${expanded.error}`);
       return null;
     }
@@ -371,7 +379,7 @@ async function loadModel(model, name) {
       + '：非容器条目没有可判定的产物，容器条目也没有 entry.json(skeletonFile) 或 *.model3.json';
     stage.unload();
     stageLog('error', `无法装载 ${name}：${why}`, { model: name, kind, reason: 'kind-undetermined' });
-    recordFailure(model, 'kind-undetermined', why);
+    reportEntryResult(model, { result: 'failed', reason: 'kind-undetermined', message: why });
     markModelFailed(`无法装载 ${name}：${why}`);
     return null;
   }
@@ -389,7 +397,7 @@ async function loadModel(model, name) {
     const why = (doc && (doc.warnings || []).join('；')) || '原因未知';
     stageLog('error', `无法装载 ${name}：${why}`, { model: name, kind, reason: why });
     // 这条失败没有结构化 reason（是 Document 组装的 warnings 汇总）⇒ reason 传 null，走 message 兜底
-    recordFailure(model, null, why);
+    reportEntryResult(model, { result: 'failed', reason: null, message: why });
     markModelFailed(`无法装载 ${name}：${why}`);
     return null;
   }
@@ -402,6 +410,15 @@ async function loadModel(model, name) {
   if (model && model.container && state.pluginHost && typeof state.pluginHost.warmup === 'function') {
     try { state.pluginHost.warmup({ rootId: model.rootId, rel: model.rel, size: model.size }); } catch { /* 预热失败不影响播放 */ }
   }
+  // 本次装载**实际命中的提供者**（容器由 resolve 给出；目录型由内置装载器给出）。
+  //   记在模块级是为了让 mountEntry 的成功回调能拿到它 —— 那里才有"装上了"的信号。
+  //   它只用于上报 loadResult.provider（服务端据此重算 display），不参与选面判定。
+  // ⚠ 目录型必须也给出 provider，不能留 null：存储层的规则是"ok 但没有 provider ⇒ 视作
+  //   无法确定归属、降格记 failed"（entry-states.mjs 的一致性约束）。实测踩过：
+  //   目录型装载全部被误记 failed ⇒ 名册每个模型都挂上 ⚠。
+  //   目录型的归属服务端早就算好了（display.provider = 唯一认领它的 builtin-*，来自插件声明），
+  //   这里读条目自带的 display.provider 兜底 —— 权威仍在服务端，前端不硬编码任何提供者 id。
+  lastMountProvider = (src && src.provider) || (model && model.display && model.display.provider) || null;
   return state.currentRenderer ? state.currentRenderer.mount(doc) : stage.load({ document: doc });
 }
 
@@ -468,9 +485,10 @@ function mountEntry(entry, name) {
       try { refreshPanelAnimations(); } catch { /* 动作列表刷新失败不影响主流程 */ }
       document.documentElement.dataset.stageReady = '1';
       // 走到这里才是**真的装载成功**（resolve 成功但 mount 失败的会落到 .catch 里，到不了这行）。
-      // 清掉这条的失败记忆；撤掉行上 ⚠ 也在 clearFailure 内部一并做了（写入口负责通知 UI）。
-      //   不清的后果：⚠ 永远留在 localStorage 里，刷新页面、甚至清设置之前都不会掉。
-      clearFailure(entry);
+      // 上报服务端：result:'ok' + 实际命中的 provider（`lastMountProvider` 由 loadModel 在 mount 前写入）。
+      //   服务端的响应就是重算后的三字段 ⇒ 这一行当场变色、⚠ 消失（不需要刷新页面）。
+      //   前端不再自己维护"失败记忆"（原 localStorage 层已删）。
+      reportEntryResult(entry, { result: 'ok', provider: lastMountProvider || null });
     })
     .catch((err) => {
       // 被取代属正常竞态结果（不是故障）：只记一条 info，不显示红色错误
@@ -480,6 +498,8 @@ function mountEntry(entry, name) {
       state.stageError = msg;
       stageLog('error', `渲染失败：${msg}`, { model: name, err: msg });
       document.documentElement.dataset.stageReady = 'error';
+      // 失败也上报：reason 用渲染器给的结构化码（没有就用 null），文案与列表悬浮提示同源
+      reportEntryResult(entry, { result: 'failed', reason: (err && err.reason) || null, message: msg, provider: lastMountProvider || null });
     });
 }
 

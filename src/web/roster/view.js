@@ -17,14 +17,13 @@ import { readSaved, saveState } from './persist.js';
 import {
   createNameIndex, mergeNameTable, loadRootModels, loadRootNames, buildChars,
 } from './list.js';
-import { el, renderGameRow, renderCharRow, renderVariantRow } from './rows.js';
+import { el, renderGameRow, renderCharRow, renderVariantRow, applyEntryState } from './rows.js';
 import { formatError } from '../infra/api.js';
 // 名册就绪那句 info 走项目统一的日志通道（与 catalog/bundle 那些 diag 同一出口）
 import { stageLog } from '../app/status.js';
 // 渲染调度（rAF 合批 + 后台标签页兜底）抽到公共层，行为与原先内联实现一致
 import { createScheduler } from '../infra/schedule.js';
 // 容器条目的装载失败记忆：渲染时读出注入行渲染（保持 rows.js 的"纯 DOM 工厂"性质）
-import { ensureFingerprint, getFailureSnapshot } from './bundle-failures.js';
 
 /** localStorage 键名：不得改名（M7 要用它做持久化，改名会让用户既有状态失效） */
 
@@ -173,7 +172,12 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
           if (table) mergeNameTable(nameIndex, table);
         }
         const { models, source, serverSource } = await loadRootModels(root);
-        for (const m of models) modelById.set(m.id, { model: m, rootId: root.id });
+        for (const m of models) {
+        // 名册持有的就是这个对象本身（buildChars 的 variants[].model 也是它），
+        //   所以"写回三字段"必须落在这里 —— 只改 DOM 的话，下一次 render 读的还是旧对象，
+        //   表现为"当场变了色、一切换/搜索就掉回中性色"。
+        modelById.set(m.id, { model: m, rootId: root.id });
+      }
         entry.status = 'ready';
         entry.models = models;
         entry.source = source;
@@ -248,20 +252,14 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
   // ------------------------------------------------------------ 渲染
 
   /** 渲染整棵树（只渲染可见部分；展开的角色才生成变体行） */
-  /** 容器失败指纹是否已发起初始化（只发起一次；拿到后用同一次 render 重画一遍） */
-  let fpInitStarted = false;
-
   function render() {
     counters.render += 1;
     listEl.replaceChildren();
 
     // 首次渲染时插件指纹还没取到 ⇒ 这一帧不显示"不支持"标记（避免用过期结论误导），
     //   指纹就绪后再重画一次。之所以放在 render 里而不是 mount 里：mount 是同步函数。
-    if (!fpInitStarted) {
-      fpInitStarted = true;
-      ensureFingerprint().then(() => { render(); }).catch(() => { /* 取不到指纹就不显示标记 */ });
-    }
-    const failMap = getFailureSnapshot();
+    // 徽标颜色 / ⚠ / 文案全部来自条目自带的三字段（display/support/loadResult，契约 §一）：
+    //   名册不再有"本地失败缓存"这一层，也就不需要指纹初始化与快照拉取。
 
     const searching = state.keyword.length > 0;
     let totalChars = 0;
@@ -303,10 +301,9 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
         totalVariants += c.variants.length;
         if (!charOpen) continue;
         for (const v of c.variants) {
-          const m = v.model;
-          // 容器条目上次装载失败的记录（目录型条目这里恒为 null，缺纹理走 catalog 那套）
-          const fail = failMap.get(String((m && (m.id || m.name)) || '')) || null;
-          listEl.append(renderVariantRow(game, c, v, selectedId, fail));
+          // 行内的颜色 / ⚠ / 文案全部由条目自带的三字段渲染（display/support/loadResult），
+          //   这里不再注入任何本地失败记录 —— 服务端是唯一权威（契约 §一）。
+          listEl.append(renderVariantRow(game, c, v, selectedId));
         }
       }
       if (!chars.length) {
@@ -593,8 +590,34 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     return { restored: false, reason: 'missing', modelId };
   }
 
+  /**
+   * 把服务端的三字段写回名册条目并就地重画那一行（契约 §一 INV-D1 的前端落点）。
+   *
+   * 为什么"写回对象"和"刷 DOM"两件事都要做（只刷 DOM 就是之前那个 bug）：
+   *   DOM 是一次性快照，`render()` 每次都用条目对象重画该行。
+   *   实测过的错位：装载成功后只改了 DOM ⇒ 当场看着对了，
+   *   随后任意一次重渲染（切换模型 / 搜索 / 展开折叠）又把旧值画回来 ⇒ "马上变回中性色"。
+   *   所以权威写回必须落在**名册持有的那个对象**上（modelById 与 buildChars 的
+   *   variants[].model 是同一引用，改它两边都生效）。
+   * @param {string} modelId 条目 id
+   * @param {{display?:object, support?:object, loadResult?:object}|null} entryState 服务端三字段
+   * @returns {boolean} 条目不在名册里返回 false（调用方可忽略）
+   */
+  function setEntryState(modelId, entryState) {
+    const hit = modelById.get(String(modelId || ''));
+    if (!hit || !hit.model) return false;
+    const st = entryState || {};
+    hit.model.display = st.display || { accent: null, provider: null, candidates: [] };
+    hit.model.support = st.support || { state: 'unknown', detail: null };
+    hit.model.loadResult = st.loadResult || null;
+    // 对象已更新 ⇒ 只重画这一行（不整表重建，保留展开态/选中态/滚动位置）
+    try { applyEntryState(hit.model, st); } catch { /* 单行重画失败不影响数据 */ }
+    return true;
+  }
+
   return {
     mount, state, snapshot, render, ensureGameLoaded, selectById, listVariants, variantsOf,
+    setEntryState,
     restoreLast,
     revealActive: reveal.revealActive,
     markUserScroll: reveal.markUserScroll,

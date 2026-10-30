@@ -18,6 +18,7 @@ import { createLive2d } from './data/live2d.mjs';
 import { createNames } from './data/names.mjs';
 import { createTree } from './data/tree.mjs';
 import { createModelMeta } from './data/model-meta.mjs';
+import { getSharedEntryStates } from './data/entry-states.mjs';
 import { createBundleProbe } from './assets/bundle-probe.mjs';
 import { createCatalog } from './data/catalog.mjs';
 import * as probe from './assets/probe.mjs';
@@ -52,6 +53,9 @@ export function createServerData({ root, dataRoot, avatarRoot }) {
   const tree = createTree({ config, plugins, probe });
   const modelMeta = createModelMeta({ config, probe, motionRulesFile: paths.motionRulesFile });
   const bundleProbe = createBundleProbe({ config, probe });
-  const catalog = createCatalog({ config, spine, live2d, tree, plugins });
-  return { paths, env, config, plugins, probe, spine, live2d, names, tree, modelMeta, bundleProbe, catalog };
+  // 条目状态存储：**进程内共享单例**（catalog 读、/api/entries/result 写必须是同一份实例，
+  //   否则"写完读不到"是必然的）。路径按 MODELSTAGE_DATA_ROOT 定位 ⇒ 测试实例自带一份。
+  const entryStates = getSharedEntryStates({ root });
+  const catalog = createCatalog({ config, spine, live2d, tree, plugins, entryStates });
+  return { paths, env, config, plugins, probe, spine, live2d, names, tree, modelMeta, bundleProbe, catalog, entryStates };
 }

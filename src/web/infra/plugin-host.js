@@ -608,6 +608,24 @@ const MIME_BY_EXT = {
   }
 
   /**
+   * 从 VFS 前缀里取出真正解出这份产物的提供者 id。
+   *
+   * 为什么必须取：服务端命中路径过去把 provider 写死成 `'server'`，而 `'server'` 不是注册表里
+   *   任何一个提供者 ⇒ 服务端按 id 反查声明色得到 null ⇒ 徽标掉回中性色。
+   *   实测的两个症状都出在这：①"颜色当场变了、切回来又变回中性"②第二次点击（命中缓存）
+   *   上报的 provider 是假 id，把存储里的正确记录覆盖坏。
+   * 前缀形态与 server/unpack/plugin-store.mjs 的 expectedPrefix 同源（同一套拼接规则）：
+   *   `vfs://<providerId>/<rootId>/<相对目录>/`
+   * @param {string} prefix VFS 前缀
+   * @returns {string|null} 解析不出就返回 null（调用方按"未确定归属"处理，绝不编一个 id）
+   */
+  function providerFromPrefix(prefix) {
+    const s = String(prefix || '');
+    const m = /^vfs:\/\/([^/]+)\//.exec(s);
+    return m ? m[1] : null;
+  }
+
+  /**
    * 竞速取"第一个成功"的（注意：不是第一个 settle 的——先失败的那条不该让我们提前放弃）。
    * @param {Array<Promise<any>>} ps
    * @returns {Promise<any>} 首个 fulfilled 的值；全失败则抛最后一个错误
@@ -685,7 +703,15 @@ const MIME_BY_EXT = {
     const files = new Map(got);
     if (!files.size) throw new Error('服务端返回的产物为空');
     // src 区分"命中已有缓存"与"服务端刚解出来"：验收要看 unpack.source 到底走没走重复劳动
-    return { prefix: j.prefix, entry: j.entry, files, hit: true, provider: 'server', src: hitOnly ? 'server-hit' : 'server-unpack' };
+    // provider 取**真正解出这份产物的插件 id**（从 VFS 前缀解析，见 providerFromPrefix），
+    //   不再写死 'server'：那是个注册表里不存在的假 id，会让服务端反查声明色得到 null
+    //   ⇒ 表现为"命中缓存的第二次点击颜色反而掉回中性色"。
+    //   解析不出（前缀形态异常）时返回 null，由上层按"归属未定"处理，绝不编一个 id 上去。
+    return {
+      prefix: j.prefix, entry: j.entry, files, hit: true,
+      provider: providerFromPrefix(j.prefix),
+      src: hitOnly ? 'server-hit' : 'server-unpack',
+    };
   }
 
   /** 容量探测缓存（60s）；失败时**保守不放行**（reason=fallback），绝不当成"随便解包" */
@@ -1095,8 +1121,16 @@ const MIME_BY_EXT = {
       loaded = true;
       return { discovered: 0, registered: 0 };
     }
-    say.info(`发现 ${discovered.length} 个启用插件：${discovered.map((p) => p.id).join(', ')}`);
-    for (const pl of discovered) {
+    // 内置装载器（builtin:true）是**纯声明条目**：它没有 plugin.json 那样的代码文件可注入，
+    //   存在的意义是给服务端提供者注册表一份统一的"颜色 / 候选 / 指纹"表（契约 §一·五）。
+    //   过去把它们当普通插件走"注入脚本 → 等 register()"的生效判定，files 为空 ⇒ 循环不跑，
+    //   必然产出「插件未生效：脚本已加载但没有调用 register()」这种误报（实测 builtin-spine /
+    //   builtin-live2d 各一条）。这里把它们从"需要装载"的名单里分出来：只声明、不装载、不算失败。
+    const scripts = discovered.filter((p) => p && p.builtin !== true);
+    const builtinDecls = discovered.filter((p) => p && p.builtin === true);
+    say.info(`发现 ${discovered.length} 个启用插件：${discovered.map((p) => p.id).join(', ')}`
+      + (builtinDecls.length ? `（其中 ${builtinDecls.length} 个为内置装载器声明，无代码需注入）` : ''));
+    for (const pl of scripts) {
       if (pl && pl.id) {
         manifestProvides.set(pl.id, Array.isArray(pl.provides) ? pl.provides.map(String) : []);
         // effects 可选；形状不合法在这里就归一成空数组（服务端已校验过，这里只防脏数据）
@@ -1106,8 +1140,9 @@ const MIME_BY_EXT = {
     }
     loaded = true;
     const ok = countRegistered();
-    say.info(`插件装载完成：加载 ${discovered.length} 个、注册 ${ok} 个提供者`
-      + (ok < discovered.length ? `（${discovered.length - ok} 个未生效，见上方警告）` : ''));
+    // "未生效"只对账**需要装载代码的**那些：内置声明不参与 register()，算进分母就又造假告警
+    say.info(`插件装载完成：需装载 ${scripts.length} 个、注册 ${ok} 个提供者`
+      + (ok < scripts.length ? `（${scripts.length - ok} 个未生效，见上方警告）` : ''));
     // 面板侧要知道"插件已经交完声明了" —— 它启动时先建面板，插件是之后异步注入的，
     //   不通知就永远看不到插件控件（实测：控件节收到了，但面板不会自己重建）。
     try {

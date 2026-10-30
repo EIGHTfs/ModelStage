@@ -429,15 +429,15 @@ export function toBundleEntry(cfg, file, provider, owner = null) {
     },
     iconUrl: null,
     warnings,
-    // ---- 展示归属（只影响徽标颜色与提示，**不参与任何装载决策**）----
-    // 解包过的包：以 index.json 里真实记录的 pluginId 为准 ⇒ 颜色可信。
-    // 没解包过的包：谁也判不出该归哪个插件（两个插件都声明 fileKinds:["bundle"]）
-    //   ⇒ badgeAccent 为 null，前端用中性色，绝不猜成某个插件的颜色。
-    badgeAccent: owner && owner.accent ? owner.accent : null,
-    /** 展示用归属插件 id（null = 待解包确定） */
-    displayProvider: owner && owner.id ? owner.id : null,
-    /** 候选插件（按 matchPriority 降序），前端在 title 里列出来 */
-    providerCandidates: Array.isArray(provider.candidates) ? provider.candidates.map((c) => c.id) : [],
+    // ---- 展示归属的**原始输入**（契约 §二 的三字段由 listCatalog 末尾统一 recompute 产出）----
+    // 这里只放"扫描阶段知道的事实"，不自己拼 display/support/loadResult：
+    //   那三个字段的唯一产出点是 entry-states 的 recompute()，多拼一处就会多一套口径。
+    /** 容器在根内的相对路径（entry-states 的键 = `${rootId}/${rel}`） */
+    rel,
+    /** 已解包过的包：index.json 里真实记录的 pluginId（null = 没解过，归属未定） */
+    ownerProvider: owner && owner.id ? owner.id : null,
+    /** 声明可认领该类资源的提供者（按 matchPriority 降序） */
+    candidates: Array.isArray(provider.candidates) ? provider.candidates.map((c) => c.id) : [],
   };
 }
 
@@ -586,6 +586,21 @@ function countSkippedFiles(rootPath, listed) {
  * @param {string} rootPath 配置里的根路径
  * @returns {'missing'|'not-dir'|'unreadable'|null}
  */
+/**
+ * 这条 warning 是"通用能力说明"还是"这一根的具体问题"（契约 §四 的分轨判据）。
+ *
+ * 判据只看**语义类别**，不看具体文案措辞：能力说明讲的是"整体扫描/插件能力边界"
+ * （深度上限、插件数量、插件未声明类型…），根级问题讲的是"这一根哪里不对"
+ * （路径没了、扫描抛错、某文件缺失、列举被截断）。
+ * 宁严勿宽：拿不准的一律算根级问题（`rootIssues`）—— 混进 capabilityNotes 会让用户看不到该看的那条。
+ * @param {string} text
+ * @returns {boolean}
+ */
+function isCapabilityNote(text) {
+  const s = String(text || '');
+  return /超过深度上限|未扫描|插件|提供者|未声明|需要运行时枚举|需运行时枚举/.test(s);
+}
+
 function inspectRootPath(rootPath) {
   let stat = null;
   try {
@@ -608,15 +623,14 @@ function inspectRootPath(rootPath) {
  */
 const ROOT_PATH_PROBLEM_TEXT = {
   missing: '资源根路径不存在（目录被移动或磁盘未挂载）',
-  'not-dir': '资源根路径不是目录（配置里填的可能是文件）',
-  unreadable: '资源根目录不可读（权限不足）',
+  'not-dir': '资源根路径不是目录（配置里填的可能是文件）',  unreadable: '资源根目录不可读（权限不足）',
 };
 
 /**
  * 装配模型目录（合并该资源根下的 Spine 与 Live2D 两路扫描）。
  * @param {{config: object, spine: object, live2d: object}} deps
  */
-export function createCatalog({ config, spine, live2d, tree, plugins, unpack = null }) {
+export function createCatalog({ config, spine, live2d, tree, plugins, unpack = null, entryStates = null }) {
   /**
    * 解包缓存句柄（只读用途：查"这个包被哪个插件解出来过"）。
    * 装配顺序上 store 在 data 之后创建（serve.mjs），所以留 setter 注入，
@@ -633,6 +647,34 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
    * 零副作用：只在这里记账；`getCatalogStats()` 只读这份内存，绝不触发任何重建。
    */
   const stats = { at: null, totalMs: 0, roots: [] };
+
+  /**
+   * 条目描述缓存：key（`${rootId}/${rel}`）→ 该条目的静态事实
+   * （候选提供者 / size / 缺贴图）。供 `/api/entries/result` 写读一体时喂 recompute。
+   *
+   * 为什么在 catalog 里记：这些事实来自扫描（谁认领这个形态、缺哪些贴图），
+   *   只有 catalog 知道；entry-states 只管"状态 + 上下文 → 三字段"。
+   * 容量上限：按最后访问顺序淘汰，避免长跑进程无限增长（条目数万级时也就几 MB）。
+   */
+  const ENTRY_DESC_MAX = 60000;
+  const entryDesc = new Map();
+  function rememberEntry(key, desc) {
+    entryDesc.delete(key);
+    entryDesc.set(key, desc);
+    if (entryDesc.size > ENTRY_DESC_MAX) {
+      const oldest = entryDesc.keys().next();
+      if (!oldest.done) entryDesc.delete(oldest.value);
+    }
+  }
+
+  /**
+   * 查一条目的静态事实（没扫过这一根时返回空对象：调用方按"未知"处理，不编造）。
+   * @param {string} key `${rootId}/${rel}`
+   * @returns {{candidates?: string[], size?: number, missingTextures?: string[], assetDependency?: object|null}}
+   */
+  function describeEntry(key) {
+    return entryDesc.get(String(key || '')) || {};
+  }
 
   /** 记一条根的耗时（同一根只留最新一条；totalMs 按各根最新值求和） */
   function recordRootStat(one) {
@@ -686,27 +728,82 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
     entries.push(...bundle.entries);
     if (bundle.warnings.length) warnings.push(...bundle.warnings);
 
-    // 非容器条目（spine / live2d 目录型）：颜色取**声明了该产出类型**的插件的 accent。
-    //   多个插件声明同一 kind 时判不出该归谁 ⇒ null（前端中性色），不猜。
-    //   容器条目已在 toBundleEntry 里按"实际解出它的插件"设过 badgeAccent，这里跳过（非 undefined）。
-    {
-      const byKind = new Map(); // kind → [accent|null, ...]
-      for (const p of plugins.readPlugins()) {
-        const k = p.produces && p.produces.kind ? String(p.produces.kind) : null;
-        if (!k) continue;
-        if (!byKind.has(k)) byKind.set(k, []);
-        byKind.get(k).push(p.accent || null);
-      }
-      for (const e of entries) {
-        if (e.badgeAccent !== undefined) continue;
-        const list = byKind.get(String(e.kind)) || [];
-        e.badgeAccent = list.length === 1 ? list[0] : null;
-        e.displayProvider = list.length === 1
-          ? (plugins.readPlugins().find((p) => p.produces && String(p.produces.kind) === String(e.kind)) || {}).id || null
-          : null;
-        e.providerCandidates = [];
+    // ---- 展示归属：聚合键是 **fileKinds**，不是 produces.kind ----
+    //
+    // 为什么必须用 fileKinds（改错这里所有散目录条目会一起掉成中性色）：
+    //   内置装载器（builtin-spine/builtin-live2d）与插件**同时**声明了 produces.kind='spine'/'live2d'，
+    //   若按 produces.kind 反查"谁认领"，每个目录型条目都会得到两个候选 ⇒ 判不出 ⇒ accent=null。
+    //   而 fileKinds 是**互斥**的：内置项是 'spine-dir'/'live2d-dir'，资源包插件是 'bundle'。
+    //   ⇒ 目录型条目只匹配到 builtin-*，容器条目只匹配到 bundle 插件。
+    const providers = plugins.readPlugins();
+    /** 条目形态 → 能认领它的提供者（按 matchPriority 降序，同分按 id 稳定排序） */
+    const byFileKind = new Map();
+    for (const p of providers) {
+      for (const fk of (Array.isArray(p.fileKinds) ? p.fileKinds : [])) {
+        const k = String(fk);
+        if (!byFileKind.has(k)) byFileKind.set(k, []);
+        byFileKind.get(k).push(p);
       }
     }
+    for (const list of byFileKind.values()) {
+      list.sort((a, b) => (Number(b.matchPriority) || 0) - (Number(a.matchPriority) || 0)
+        || String(a.id).localeCompare(String(b.id)));
+    }
+    /** 目录型条目用哪种形态（契约 §一·五：目录型是 spine-dir / live2d-dir） */
+    const dirKindOf = (kind) => (kind === 'live2d' ? 'live2d-dir' : (kind === 'spine' ? 'spine-dir' : null));
+
+    for (const e of entries) {
+      const isContainer = !!e.container;
+      const fileKind = isContainer ? 'bundle' : dirKindOf(e.kind);
+      const cands = (fileKind && byFileKind.get(fileKind)) || [];
+      // candidates 顺序即 matchPriority 顺序；容器条目在 toBundleEntry 里已经带过一份，取更全的这里
+      e.candidates = cands.map((p) => String(p.id));
+      // 目录型：唯一候选 ⇒ 归属确定；多候选/零候选 ⇒ null（中性色，不猜）
+      if (!isContainer) {
+        e.ownerProvider = cands.length === 1 ? String(cands[0].id) : null;
+      }
+      // 三字段统一由 entry-states 的 recompute 产出（唯一口径，见契约 §二）
+      const key = `${cfg.id}/${e.rel || e.name}`;
+      e.stateKey = key;
+      // 记下这条的静态事实，供 /api/entries/result 的写读一体使用（见 rememberEntry）
+      // 条目的静态事实（谁认领 / 尺寸 / 缺哪些贴图）——**只写一次**：
+      //   既记进 describeEntry 供 /api/entries/result 写读一体复用，也喂本行的 recompute。
+      //   两处各写一份字面量就是"改一处漏一处"的经典漂移源。
+      //   注意不含 providers：消费方（contextFor）自己取注册表，存进缓存只会白占内存。
+      const entryFacts = {
+        candidates: e.candidates,
+        size: Number.isFinite(e.size) ? Number(e.size) : undefined,
+        // 目录型条目没有"未解包"这一说 ⇒ 传 undefined 表示"没做资产检查"→ unknown，
+        //   有 missingTextures（含空数组）时才由 recompute 判 ready/unsupported
+        missingTextures: e.meta && Array.isArray(e.meta.missingTextures) ? e.meta.missingTextures : undefined,
+        assetDependency: null,
+      };
+      rememberEntry(key, entryFacts);
+      const state = entryStates ? entryStates.get(key) : null;
+      const computed = entryStates
+        ? entryStates.recompute(state, { providers, ...entryFacts })
+        : { display: { accent: null, provider: null, candidates: e.candidates }, support: { state: 'unknown', detail: null }, loadResult: null };
+      e.display = computed.display;
+      e.support = computed.support;
+      e.loadResult = computed.loadResult;
+      // 归属确定的条目把色补上（**只有唯一认领者时才确定**，多候选/零候选保持 null 不猜）：
+      //   · 容器：解包过 ⇒ 实际命中的插件（toBundleEntry 里设的 ownerProvider）
+      //   · 目录型：唯一认领它的内置装载器（上面按 fileKinds 算出的 ownerProvider）
+      //   loadResult.ok 时 recompute 已经给对了 provider/accent，这里只在"还没有归属"时补，
+      //   不覆盖 recompute 的结论（一致性约束：ok 的 loadResult 说了算）。
+      if (e.ownerProvider && !e.display.provider) {
+        const hit = providers.find((p) => String(p.id) === String(e.ownerProvider));
+        if (hit) {
+          e.display.provider = String(hit.id);
+          e.display.accent = hit.accent ? String(hit.accent) : null;
+        }
+      }
+      // 注意：不再输出 badgeAccent / displayProvider / providerCandidates 这类旧别名。
+      //   契约 §一 规定"展示归属"的唯一权威是 display.*；同义字段两份就是 INV-D1 违规，
+      //   而且一旦两边漂移，前端读哪个都能对、也都能错（比没有更糟）。
+      //   前端与服务端在同一次提交里切到三字段，不做灰度兼容层。
+    }
+
 
     /**
      * 根级诊断：**这根本身有没有问题**（与"这根确实没有模型"要能区分）。
@@ -740,6 +837,20 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
       at: Date.now(),
     });
 
+    // ---- warnings 分轨（契约 §四）----
+    //   rootIssues[]      = "这一根怎么了"（可拼用户提示，带 rootId、不带绝对路径）
+    //   capabilityNotes[] = 通用能力说明（"有几个插件能解包"这类），**不许**拿来拼因果
+    // 为什么必须拆：两者混在一起时，前端拿 warnings 拼提示会得出
+    //   "因为有两个插件所以没有模型" 这种错误因果（实测踩过）。
+    // warnings 保留一版（契约 §五 迁移期），前端切换后删除。
+    const capabilityNotes = warnings.filter((w) => isCapabilityNote(w));
+    const inlineRootIssues = warnings.filter((w) => !isCapabilityNote(w))
+      .map((text) => ({ rootId: cfg.id, text }));
+    const rootIssues = [
+      ...(rootWarning ? [{ rootId: cfg.id, text: rootWarning }] : []),
+      ...inlineRootIssues,
+    ];
+
     return {
       status: 200,
       body: {
@@ -751,6 +862,8 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
         source: cachedAll ? 'cache' : 'built',
         entries,
         rootWarning,
+        rootIssues,
+        capabilityNotes,
         ...(bundle.skipped ? { skipped: bundle.skipped } : {}),
         ...(warnings.length ? { warnings } : {}),
       },
@@ -766,5 +879,5 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
     return { at: stats.at, totalMs: stats.totalMs, roots: stats.roots.map((r) => ({ ...r })) };
   }
 
-  return { listCatalog, getCatalogStats, setUnpackStore };
+  return { listCatalog, getCatalogStats, setUnpackStore, describeEntry };
 }

@@ -118,10 +118,8 @@ export function renderCharRow(game, c, open) {
  * @param {object} c
  * @param {{model: object, nm: object|null}} v
  * @param {string|null} selectedId 当前选中的模型 id
- * @param {{text:string, reason:string|null}|null} [failure] 容器条目的装载失败记录（由 view.js 注入，
- *   见 roster/bundle-failures.js）；目录型条目传 null
  */
-export function renderVariantRow(game, c, v, selectedId, failure) {
+export function renderVariantRow(game, c, v, selectedId) {
   const m = v.model;
   const { text, origName } = variantText(m, v.nm);
   const row = rowBase('tree-variant', {
@@ -135,88 +133,106 @@ export function renderVariantRow(game, c, v, selectedId, failure) {
   }
 
   const label = variantLabel(m);
-  // 样式类按"条目性质"取（容器单文件用 bundle 类），只用来分组，**不再带颜色**。
-  //   颜色一律来自插件声明：服务端 /api/catalog 给条目带上 badgeAccent（插件 accent，
-  //   容器条目只有"已解包过的包"才有值，没解包过为 null）。拿不到就落中性色，
-  //   绝不按 kind 猜一个 —— 猜错就是用颜色撒谎（资源包曾被一律涂成 Live2D 紫）。
+  // 样式类只用来分组（容器单文件用 bundle 类），**不带颜色**。
+  //   颜色/归属/可装载性/失败原因全部来自服务端三字段（契约 §一 INV-D1）：
+  //     display.accent  徽标底色（null ⇒ 中性色）
+  //     display.provider 归属提供者 id（展示名按 /api/plugins 的 label 查）
+  //     display.candidates 候选提供者（按 matchPriority 降序）
+  //     support.state   ready | unknown | unsupported
+  //     support.detail  不支持时的 { reason, message }（与装载失败文案同源）
+  //     loadResult      最近一次真实装载尝试的结果
+  //   前端**不做任何判定**：不按 kind 猜色、不自己算"能不能装"、不读 localStorage。
   const meta = byKind(m.kind);
   const kindClass = m.container ? 'bundle' : (meta ? meta.badge : 'spine');
   const typeBadge = el('span', `tree-type tree-type-${kindClass}`, label);
-  if (m.badgeAccent) typeBadge.style.setProperty('--badge-accent', String(m.badgeAccent));
-  if (m.container) {
-    // 容器：解包前归属未定，把候选插件放到 title 里，用户悬停即可知道该找谁
-    const cands = Array.isArray(m.providerCandidates) ? m.providerCandidates : [];
-    typeBadge.title = m.displayProvider
-      ? `解包插件：${m.displayProvider}`
-      : `归属待解包确定${cands.length ? `（候选：${cands.join('、')}）` : ''}`;
-  }
+  const display = (m && m.display) || {};
+  if (display.accent) typeBadge.style.setProperty('--badge-accent', String(display.accent));
+  // 悬浮文案：归属定了说"谁"，没定就把候选列出来（用户悬停就知道该找哪个插件）
+  const cands = Array.isArray(display.candidates) ? display.candidates : [];
+  if (display.provider) typeBadge.title = `归属：${display.provider}`;
+  else if (cands.length) typeBadge.title = `归属待定（候选：${cands.join('、')}）`;
   row.append(typeBadge);
   row.append(el('span', 'tree-variant-text', text));
   if (origName && origName !== text) row.append(el('span', 'tree-variant-orig', ` · ${origName}`));
-  // 资产残缺预警：目录版声明了但磁盘缺失的纹理 ⇒ 列表里就标出来，别等用户点了才报错
-  //   （现场：azurlane 根 119 个模型里有 13 个缺 texture_00.png，逐个点着试体验很差）
-  const missingTex = (m.meta && m.meta.missingTextures) || [];
-  if (missingTex.length) {
+
+  // ⚠ 只有一处来源：support 判"装不动"，或 loadResult 判"上次失败"。
+  //   两者的文案都由服务端给（support.detail.message / loadResult.message），前端只展示。
+  //   契约保证 support.unsupported 与 loadResult.ok 不并存 ⇒ 这里不会出现"一边说不行一边说刚成功"。
+  const support = (m && m.support) || {};
+  const loadResult = (m && m.loadResult) || null;
+  const warnText = (support.state === 'unsupported' && support.detail && support.detail.message)
+    ? String(support.detail.message)
+    : (loadResult && loadResult.result === 'failed'
+      ? String(loadResult.message || loadResult.reason || '装载失败')
+      : '');
+  if (warnText) {
     const badge = el('span', 'tree-variant-warn', '⚠');
-    badge.title = `缺少纹理文件：${missingTex.join('、')}（该条目本身无法渲染；有资源包版本的会自动改用）`;
-    row.append(badge);
-    row.classList.add('is-incomplete');
-  } else if (failure) {
-    // 容器条目上次装载失败（解包前判不出类型的那些）⇒ 列表里就标出来，别等用户再点一次才发现。
-    //   与上面缺纹理**共用**同一个徽标类与行级 class（不新建样式）；
-    //   两者天然互斥：missingTextures 只出现在目录型条目，failure 只对 container 条目记录。
-    const badge = el('span', 'tree-variant-warn', '⚠');
-    // 打标记：与"缺纹理"徽标同 class，靠这个标记才能只删对的那一个（见 refreshVariantFailure）
-    badge.dataset.bundleFailure = '1';
-    badge.title = `该资源包无法装载：${failure.text}`;
+    // 打标记：applyEntryState 就地刷新时**只认这个标记**找回已有的 ⚠。
+    //   不打的话它会以为"这行还没有警告"，于是再 append 一个 ⇒ 同一行挂两个 ⚠（实测踩过）。
+    badge.dataset.entryWarn = '1';
+    badge.title = warnText;
     row.append(badge);
     row.classList.add('is-incomplete');
   }
-  const warnLine = missingTex.length
-    ? `\n⚠ 缺纹理：${missingTex.join('、')}`
-    : (failure ? `\n⚠ 不支持：${failure.text}` : '');
-  row.title = `${origName}${m.srcDir && m.srcDir !== origName ? `  ·  ${m.srcDir}` : ''}${warnLine}`;
+  row.title = `${origName}${m.srcDir && m.srcDir !== origName ? `  ·  ${m.srcDir}` : ''}${warnText ? `\n⚠ ${warnText}` : ''}`;
   return row;
 }
 
 /**
- * 按条目**就地**刷新「装载失败」徽标：只动命中那一行，**不重渲染整棵名册**。
+ * 按条目**就地**刷新徽标：只动命中那一行，**不重渲染整棵名册**。
  *
  * 为什么不能整棵重渲染：名册是带展开态 / 选中态 / 滚动位置的树，
  *   重渲染会把这三样全部丢掉 —— 用户看到的是"点一下模型，列表跳回顶部、节点全折叠"。
  *
- * 与「缺纹理」徽标的区分：两者共用 `.tree-variant-warn` 样式类，
- *   所以失败徽标带了 `data-bundle-failure` 标记；删除时**只认这个标记**，
- *   绝不误删缺纹理那一个。同理，只有行内再无任何 ⚠ 时才撤 `is-incomplete`
- *   （否则会让"缺纹理"的残缺行看起来正常）。
+ * 服务端返回的 display/support/loadResult 是唯一真相（契约 §一 INV-D1）：
+ *   本函数只把三个字段"画"到那一行，不接收前端自造的失败记录、不猜颜色。
+ *   ⇒ 装载成功后服务端 recompute 一变，照着画就对（这就是"当场变色"的全部机制）。
  *
  * @param {object} model 名册条目（只需 id / name）
- * @param {{text:string}|null} failure null = 清除（装载成功）；有值 = 标记（装载失败）
+ * @param {{display?:object, support?:object, loadResult?:object}|null} entryState 服务端三字段；
+ *        null/缺省 = 该条目已无状态（等价于全部清空）
  * @returns {boolean} 命中并处理了返回 true；该条目当前不在名册里（被折叠/搜索过滤）返回 false
  */
-export function refreshVariantFailure(model, failure) {
+export function applyEntryState(model, entryState) {
   const id = String((model && (model.id || model.name)) || '');
   if (!id) return false;
-  // 不用属性选择器：条目 id 里常有空格 / 斜杠 / 引号
-  //   （形如 `bundle-<rootId>-<角色> - <变体>/<文件>`），拼进选择器必须转义，
-  //   而 CSS.escape 不是所有环境都有。名册是数百行量级，直接遍历更稳也更清楚。
+  // 不用属性选择器：条目 id 里常有空格 / 斜杠 / 引号，拼进选择器必须转义，
+  //   而 CSS.escape 不是所有环境都有。名册数百行量级，直接遍历更稳也更清楚。
   let row = null;
   for (const candidate of document.querySelectorAll('.tree-row.tree-variant')) {
     if (candidate.dataset && candidate.dataset.modelId === id) { row = candidate; break; }
   }
   if (!row) return false;
 
-  // 只取一次：徽标 title 与行 title 用的是同一段文案，重复取值会让"改一处漏一处"成为可能
-  const failureText = (failure && failure.text) || '';
-  const badgeTitle = `该资源包无法装载：${failureText}`;
-  const existing = row.querySelector('[data-bundle-failure="1"]');
-  if (failure) {
-    if (existing) {
-      existing.title = badgeTitle;          // 已有徽标：只更新文案（不重复 append）
-    } else {
+  const st = entryState || {};
+  const display = st.display || {};
+  const support = st.support || {};
+  const loadResult = st.loadResult || null;
+
+  // ① 徽标颜色：只认 display.accent（null ⇒ 中性色，绝不按 kind 猜）
+  const typeBadge = row.querySelector('.tree-type');
+  if (typeBadge) {
+    if (display.accent) typeBadge.style.setProperty('--badge-accent', String(display.accent));
+    else typeBadge.style.removeProperty('--badge-accent');
+    const cands = Array.isArray(display.candidates) ? display.candidates : [];
+    if (display.provider) typeBadge.title = `归属：${display.provider}`;
+    else if (cands.length) typeBadge.title = `归属待定（候选：${cands.join('、')}）`;
+    else typeBadge.title = '';
+  }
+
+  // ② ⚠：support 说"装不动" 或 loadResult 说"上次失败"；文案由服务端给
+  const warnText = (support.state === 'unsupported' && support.detail && support.detail.message)
+    ? String(support.detail.message)
+    : (loadResult && loadResult.result === 'failed'
+      ? String(loadResult.message || loadResult.reason || '装载失败')
+      : '');
+  const existing = row.querySelector('[data-entry-warn="1"]');
+  if (warnText) {
+    if (existing) existing.title = warnText;
+    else {
       const badge = el('span', 'tree-variant-warn', '⚠');
-      badge.dataset.bundleFailure = '1';
-      badge.title = badgeTitle;
+      badge.dataset.entryWarn = '1';
+      badge.title = warnText;
       row.append(badge);
     }
     row.classList.add('is-incomplete');
@@ -225,8 +241,8 @@ export function refreshVariantFailure(model, failure) {
     if (!row.querySelector('.tree-variant-warn')) row.classList.remove('is-incomplete');
   }
 
-  // 行级 title 里那一句警告同步增删；其余部分（原名 / 目录 / 缺纹理警告）原样保留
-  const baseTitle = String(row.title || '').replace(/\n⚠ 不支持：[^\n]*$/, '');
-  row.title = failure ? `${baseTitle}\n⚠ 不支持：${failureText}` : baseTitle;
+  // ③ 行级 title：正文（原名 / 目录）原样保留，只替换末尾那句警告
+  const baseTitle = String(row.title || '').replace(/\n⚠ [^\n]*$/, '');
+  row.title = warnText ? `${baseTitle}\n⚠ ${warnText}` : baseTitle;
   return true;
 }

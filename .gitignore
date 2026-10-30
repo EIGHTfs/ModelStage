@@ -47,6 +47,11 @@ src/live2d-runtimes/
 # 服务端解包落盘缓存（17b）：可重建（源包 + 插件版本变了就失效），不入库。
 #   注意逐项写死路径，不用 data/ 或 /data/ 通配 —— 那会连带忽略 src/server/data/
 /data/unpacked/
+# 条目状态（契约《条目状态与展示归属》§三）：最近一次装载结果的缓存，
+#   可由"再点一次"重建；含各机器特有路径与失败记忆，不入库。
+#   同样逐项写死，不用 data/ 通配（会连带忽略 src/server/data/）。
+/data/entry-states.json
+/data/entry-states.json.tmp
 /data/export/
 # 上游游戏原始数据快照（名表导入的原料）：体积 17MB / 113 万行，远大于项目其余全部内容，
 #   且随游戏版本变化、可由导入脚本重新获取 ⇒ 属外部数据而非源码，不入库。
