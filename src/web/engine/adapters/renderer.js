@@ -47,9 +47,19 @@ export function createRendererAdapter({ caps, canvas, gl, size, onWarn }) {
       if (typeof r.begin === 'function') r.begin();
       try {
         if (typeof r.drawSkeleton === 'function') {
-          // 二参是否被接受用声明参数个数判断（3.x: 2；老版本可能只有 1）
-          if (r.drawSkeleton.length >= 2) r.drawSkeleton(skeleton, premultiplied === true);
-          else r.drawSkeleton(skeleton);
+          // 不要用 drawSkeleton.length 判断"接不接受第二个参数"——那是错的判据：
+          //   4.0 的签名是 `drawSkeleton(skeleton, premultipliedAlpha = false, slotRangeStart = -1, …)`，
+          //   第 2 个参数**带默认值** ⇒ Function.length 只数默认值之前的形参 ⇒ 结果是 1，
+          //   `length >= 2` 恒为假 ⇒ 永远走单参分支 ⇒ 从来不传 premultiplied。
+          // 后果在 spine-webgl-4.0 的 SceneRenderer.drawSkeleton 内部：
+          //   this.skeletonRenderer.premultipliedAlpha = premultipliedAlpha   ← 一直停在默认 false
+          // 而 `_SkeletonRenderer` 里这个字段同时决定两件事：
+          //   :10544  srcFunc = premultipliedAlpha ? gl.ONE : gl.SRC_ALPHA        ← blend 的 src 因子
+          //   :10809  if (premultipliedAlpha) { finalColor.r *= finalColor.a; … } ← 顶点色是否乘 alpha
+          // 于是 atlas 声明 pma:true 的模型（像素已预乘）变成"预乘纹理 + 非预乘公式"，
+          //   柔边被二次乘 alpha ⇒ 眼周/嘴周发暗。
+          // 老版本只有 1 个形参时，多传的那个参数会被 JS 忽略，所以统一传两个是安全的。
+          r.drawSkeleton(skeleton, premultiplied === true);
         } else if (typeof r.draw === 'function') {
           r.draw(skeleton);
         } else {
