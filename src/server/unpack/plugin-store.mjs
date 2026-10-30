@@ -17,18 +17,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { unpackFile, runnerInfo, providerFingerprint } from './plugin-runner.mjs';
+import { runnerInfo, providerFingerprint } from './plugin-runner.mjs';
 import { checkUnpackMemory } from './capacity.mjs';
 import { estimateMemoryOf } from './plugin-runner.mjs';
+// 解包（含 vm 沙盒装载、原子落盘、probe 写入）整段跑在 worker 里 —— 主线程只做准入与索引维护。
+//   这四个模块是"单一实现"：worker 与主线程共用，不在两边各写一份。
+import { createProbeStore } from './probe-store.mjs';
+import { rssNow } from './mem-probe.mjs';
+import { createUnpackWorkerClient } from './worker-client.mjs';
 
 /** 1MB 的字节数（下面多处换算用；写成常量避免 1048576 散落） */
 const BYTES_PER_MB = 1024 * 1024;
 
 /** 缓存上限（可用 config 覆盖；4GB 可用内存 / 磁盘都在这个量级以内安全） */
 const DEFAULT_LIMITS = { maxDirs: 20, maxBytes: 8 * 1024 * 1024 * 1024 };
-
-/** 内存声明/实测的缓存文件名（在 data/unpacked/<fp>/ 下） */
-const PROBE_FILE = 'probe.json';
 
 /** 清理解包的节流间隔：resolve 后最多 10 分钟扫一次目录 */
 const CLEANUP_INTERVAL_MS = 10 * 60 * 1000;
@@ -67,11 +69,6 @@ function pluginVersion(dir) {
   } catch {
     return '0';
   }
-}
-
-/** 逐层建目录（写文件前确保父目录存在） */
-function ensureDir(p) {
-  fs.mkdirSync(p, { recursive: true });
 }
 
 /** 递归统计目录占用（清理时用） */
@@ -174,16 +171,8 @@ export function createUnpackStore(opts) {
    * 验收内存必须用内核峰值，不能用抽样最小值。
    * @returns {{rss: number, peak: number, source: 'vmhwm'|'sample'}}
    */
-  function rssNow() {
-    try {
-      const txt = fs.readFileSync('/proc/self/status', 'utf8');
-      const hwm = /VmHWM:\s+(\d+)\s+kB/.exec(txt);
-      const rss = /VmRSS:\s+(\d+)\s+kB/.exec(txt);
-      if (hwm) return { rss: rss ? Number(rss[1]) * 1024 : process.memoryUsage().rss, peak: Number(hwm[1]) * 1024, source: 'vmhwm' };
-    } catch { /* 非 Linux：退回抽样 */ }
-    const rss = process.memoryUsage().rss;
-    return { rss, peak: Math.max(counters.peakRss, rss), source: 'sample' };
-  }
+  // rssNow 由 mem-probe.mjs 提供（worker 与主线程同一实现）；这里只保留采样兜底：
+  //   非 Linux 上 VmHWM 读不到时，用 counters.peakRss 作为峰值基线，所以调用点要把它传进去。
 
   /** 采样 RSS 峰值（VMHWM 不可用时的兜底；同时保留抽样序列的最大值） */
   function sampleRss() {
@@ -204,23 +193,27 @@ export function createUnpackStore(opts) {
   }
 
   const fpDir = (fp) => path.join(rootDir, fp);
-  /** 内存声明/实测的缓存文件（与解包产物同指纹同目录，跟着 LRU 一起回收） */
-  const probePath = (fp) => path.join(fpDir(fp), PROBE_FILE);
 
-  /** 读 probe 缓存（不存在/损坏都当没有，不让缓存问题阻断解包） */
-  function readProbe(fp) {
-    try { return JSON.parse(fs.readFileSync(probePath(fp), 'utf8')); } catch { return null; }
-  }
+  // probe.json 的读**与写**都由 probe-store.mjs 提供 —— worker 里解完要写同一份 probe.json
+  //   （recordMeasuredPeak 与 writeResult 的"取走旧 probe → rename → 写回"强耦合），
+  //   主线程的准入路径也要读它。两边共用一个实现，避免两份逻辑各自漂移。
+  const probeStore = createProbeStore({ rootDir });
+  const readProbe = (fp) => probeStore.read(fp);
 
-  /** 合并写 probe 缓存 */
-  function writeProbe(fp, patch) {
-    const next = { ...(readProbe(fp) || {}), ...patch };
-    try {
-      fs.mkdirSync(fpDir(fp), { recursive: true });
-      fs.writeFileSync(probePath(fp), `${JSON.stringify(next, null, 2)}\n`, 'utf8');
-    } catch { /* 缓存写不进去不影响正确性 */ }
-    return next;
-  }
+  // 解包 worker 客户端：**常驻 1 个**（与既有串行队列一致，不并发解包）。
+  //   硬超时 120s 只用于"防死循环把队列永久堵住"，不是"约束合法解包" ——
+  //   锚点包 azurlane_bundle/live2d/z46_2（解压 33.4MB 的 LZMA）实测墙钟 17.83s、unpackMs 9416ms，
+  //   120s 有 6.7 倍余量，正常解包一辈子不该触发它。
+  const workerClient = createUnpackWorkerClient({
+    rootDir,
+    timeoutMs: 120000,
+    log: (level, message, extra) => {
+      // 服务端日志（stdout 会进 runtime/model-stage-web.log）；超时/崩溃这类事件必须留痕，
+      //   否则真触发时没人知道发生过。
+      const fn = level === 'error' ? console.error : console.warn;
+      fn(`[unpack-worker] ${message}`, extra ? JSON.stringify(extra) : '');
+    },
+  });
 
   /**
    * 本次准入要用的内存声明：缓存优先，其次现场问插件（轻量，不解压），都没有返回 null。
@@ -229,7 +222,7 @@ export function createUnpackStore(opts) {
    */
   function memoryDeclaration(fp, req) {
     const cached = readProbe(fp);
-    // 缓存里只有解压量、实测峰值、采样次数，**不含插件声明的 peakBytes**（见 writeProbe 的字段）。
+    // 缓存里只有解压量、实测峰值、采样次数，**不含插件声明的 peakBytes**（字段见 probe-store.mjs）。
     //   所以缓存命中时不能直接返回：那样准入拿到的"声明值"会退化成"源包大小粗估"
     //   （实测：21MB 的 LZMA 包只估到约 200MB，而插件表给 732MB），
     //   再叠加 measured 会被进程状态压低（同一进程连解两个 21MB 包分别报 225MB / 1195MB），
@@ -261,20 +254,8 @@ export function createUnpackStore(opts) {
    * @param {{rss:number, peak:number}} before
    * @param {{rss:number, peak:number}} after
    */
-  function recordMeasuredPeak(fp, before, after, decl) {
-    const guess = before.rss + Math.max(0, after.peak - before.peak);
-    const prev = readProbe(fp) || {};
-    const measuredPeakBytes = Math.max(prev.measuredPeakBytes || 0, guess);
-    return writeProbe(fp, {
-      // 声明值存档（供下次准入直接用，避免再 probe）
-      decompressedBytes: (decl && decl.decompressedBytes) || prev.decompressedBytes || 0,
-      compressedBytes: (decl && decl.compressedBytes) || prev.compressedBytes || 0,
-      probeAt: (decl && decl.probeAt) || prev.probeAt || Date.now(),
-      measuredPeakBytes,
-      measuredAt: Date.now(),
-      samples: (prev.samples || 0) + 1,
-    });
-  }
+  // recordMeasuredPeak 已随解包一起搬进 worker（unpack-worker.mjs 调 probe-store 的同一实现）。
+  //   留在主线程没有调用点；两份实现会在下次只改一处时静默失效，所以这里不保留委托版。
   const indexPath = (fp) => path.join(fpDir(fp), 'index.json');
 
   /** 读索引（不存在/损坏 → null） */
@@ -308,64 +289,25 @@ export function createUnpackStore(opts) {
   }
 
   /** 命中时更新 lastUsedAt（LRU 依据），失败不影响命中 */
+  /**
+   * 命中时更新 lastUsedAt（LRU 依据），失败不影响命中。
+   *
+   * ⚠️ 这是 index.json 的**第二个写者**（第一个是 worker 里的 writeResult，它把 index.json
+   *   连同 files/ 一起 rename 成 <fp>/ —— rename 必须带上 index.json 才能保证"产物与索引同时就位"，
+   *   所以那份留在 worker，不搬回主线程）。
+   *   **两者不会并发**：解包进行中该 fp 一定在 `inflight` Map 里（见 resolve 的 `inflight.set`），
+   *   此时任何对同一 fp 的请求都由 `inflight.has(fp)` 直接复用同一个 promise，
+   *   不会走到 hit/touch 这条路径；而 worker 的 rename 发生在那个 promise resolve 之前。
+   *   ⇒ touch 只可能在"该 fp 没有解包在跑"时执行。改这段前请重新确认这条互斥仍然成立。
+   */
   function touch(fp, index) {
     try {
       fs.writeFileSync(indexPath(fp), JSON.stringify({ ...index, lastUsedAt: new Date().toISOString() }, null, 2), 'utf8');
     } catch { /* 只影响 LRU 精度 */ }
   }
 
-  /** 把一次解包结果原子落盘；返回 { files, unpackMs } */
-  async function writeResult(fp, res, meta) {
-    const tmpDir = path.join(rootDir, `.tmp-${fp}-${process.pid}-${crypto.randomBytes(3).toString('hex')}`);
-    ensureDir(path.join(tmpDir, 'files'));
-    const files = [];
-    try {
-      for (const { path: relPath } of res.files.entries) {
-        const bytes = await res.files.take(relPath);
-        if (!bytes) continue;
-        const dst = path.join(tmpDir, 'files', relPath);
-        ensureDir(path.dirname(dst));
-        fs.writeFileSync(dst, bytes);
-        files.push({ path: relPath, size: bytes.length });
-        // 写完立刻从沙盒 Map 里删掉引用（42MB 包 RSS 增量约 210MB，逐个释放能显著削峰）
-        res.files.release(relPath);
-        sampleRss();
-      }
-      const now = new Date().toISOString();
-      const index = {
-        v: 1,
-        fingerprint: fp,
-        pluginId: meta.pluginId,
-        pluginVersion: meta.pluginVersion,
-        source: { rootId: meta.rootId, rel: meta.rel, size: meta.size, mtimeMs: Math.round(meta.mtimeMs) },
-        prefix: res.prefix,
-        entry: res.entry,
-        files,
-        createdAt: now,
-        lastUsedAt: now,
-        unpackMs: res.unpackMs,
-      };
-      fs.writeFileSync(path.join(tmpDir, 'index.json'), JSON.stringify(index, null, 2), 'utf8');
-      // 同卷 rename：原子替换，读者要么看到旧目录要么看到新目录。
-      // 目标目录已存在时 POSIX rename 会报 ENOTEMPTY（旧实现直接失败 ⇒
-      //   "files 缺失要重新解包"这条恢复路径其实一直不可用）。这里先取走 probe 缓存、
-      //   删掉旧目录再 rename，然后把缓存写回，避免重新解包把内存实测值一起丢掉。
-      const keepProbe = readProbe(fp);
-      try {
-        fs.renameSync(tmpDir, fpDir(fp));
-      } catch (e) {
-        if (e && (e.code === 'ENOTEMPTY' || e.code === 'EEXIST' || e.code === 'EPERM')) {
-          fs.rmSync(fpDir(fp), { recursive: true, force: true });
-          fs.renameSync(tmpDir, fpDir(fp));
-          if (keepProbe) writeProbe(fp, keepProbe);
-        } else throw e;
-      }
-      return { index, files };
-    } catch (e) {
-      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* 清理失败不影响主流程 */ }
-      throw e;
-    }
-  }
+  // 原子落盘（writeResult）整段在 write-result.mjs 里，由 worker 调用 —— 主线程**不再有任何
+  //   "写产物"的路径**。两份原子写 = 下次只改一处、另一处静默失效，本项目栽过，所以这里不留备用实现。
 
   /** LRU 清理：超 maxDirs / maxBytes 时删最久未用的（直接删，理由见文件头第 4 条） */
   function cleanup() {
@@ -479,34 +421,43 @@ export function createUnpackStore(opts) {
         return { ok: false, fingerprint: fp, reason: mem.reason, message: mem.message, budgetMb: mem.budgetMb, peakEstMb: mem.peakEstMb, availMb: mem.availMb };
       }
       sampleRss();
-      const memBefore = rssNow();
+      const memBefore = rssNow(counters.peakRss);
       // 分段打点（先量再改）：解压 / 落盘 / 索引探针 三段分别计时。
       //   为什么要量：服务端解包 10~11s，而前端本地解同一包只要 4s ——
       //   慢的到底是解压还是写盘，不量就只能猜（写盘目标是 SMB 挂载 + 23~39 个小文件，最可疑）。
+      // 解包 + 落盘 + 写 probe **整段在 worker 里**（主线程不再碰任何产物文件）：
+      //   这是搬 worker 的唯一目的 —— 让这几秒（锚点包实测墙钟 17.8s）不占住事件循环。
       const tUnpack0 = Date.now();
-      const res = await unpackFile({ rootId: req.rootId, rel: req.rel, absPath: req.absPath });
+      const reply = await workerClient.run({
+        rootId: req.rootId,
+        rel: req.rel,
+        absPath: req.absPath,
+        fp,
+        meta: {
+          ...req,
+          size: stat.size,
+          mtimeMs: stat.mtimeMs,
+          pluginId: runnerInfo().pluginId,
+          pluginVersion: version,
+        },
+        decl,
+      });
       const unpackWallMs = Date.now() - tUnpack0;
-      const memAfter = rssNow();
-      if (!res.ok) {
+      if (!reply.ok) {
         counters.failures += 1;
-        return { ok: false, fingerprint: fp, reason: res.reason, message: res.message };
+        return { ok: false, fingerprint: fp, reason: reply.reason, message: reply.message };
       }
-      const tWrite0 = Date.now();
-      const { index } = await writeResult(fp, res, { ...req, size: stat.size, mtimeMs: stat.mtimeMs, pluginId: res.pluginId || runnerInfo().pluginId, pluginVersion: version });
-      const writeMs = Date.now() - tWrite0;
-      const tProbe0 = Date.now();
-      // 实测回填必须在 writeResult **之后**：产物是"临时目录 rename 到 <fp>"落的盘，
-      //   目标目录若被提前创建（写 probe.json 会 mkdir）会让 rename 报 ENOTEMPTY。
-      if (res.ok) recordMeasuredPeak(fp, memBefore, memAfter, decl);
-      const probeMs = Date.now() - tProbe0;
+      const index = reply.index;
+      const writeMs = reply.writeMs || 0;
+      const probeMs = reply.probeMs || 0;
       counters.unpackCount += 1;
       counters.lastUnpackMs = Date.now() - t0;
       sampleRss();
       // phases 随响应回给调用方（排查与验收要能看到"时间花在哪一段"）
       // 解压段再细分：readMs = 从盘读整包（19MB 走 SMB 可能就要几秒）、pluginResolveMs = 插件真正解压
       const phases = {
-        readMs: res.readMs,
-        pluginResolveMs: res.unpackMs,
+        readMs: reply.readMs,
+        pluginResolveMs: reply.unpackMs,
         unpackWallMs,
         writeMs,
         probeMs,

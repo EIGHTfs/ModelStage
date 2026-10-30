@@ -104,11 +104,11 @@ export function capacity(sourceMb, memory) {
  *   ② 给了 decompressedBytes（或缓存里的实测解压量）→ 按模型算（模型自带 15% 垫）
  *   ③ 什么都没有（第三方/旧插件）     → 回落到「源包大小分段」= 既有行为，保证不倒退
  *
- * 另外：缓存里若有该包的**实测峰值**（runningPeakBytes），优先用它 ×1.05
- *   ——公式只是冷启动初值，真值由运行积累（见设计文档 §5 回填）。
+ * 另外：**实测峰值（measuredPeakBytes）不再参与判定**，只随返回值回传供观测
+ *   —— 解包搬进 worker 后它含 worker 常驻内存，随执行线程变化（详见下方 ② 的注释）。
  * @param {number} sourceMb 源包大小（MB）
  * @param {{peakBytes?:number, decompressedBytes?:number, measuredPeakBytes?:number}} [memory]
- * @returns {{peakEstMb:number, basis:'measured'|'plugin-peak'|'model-decompressed'|'legacy-source'}}
+ * @returns {{peakEstMb:number, basis:'plugin-peak'|'model-decompressed'|'legacy-source', declaredMb:number, measuredMb:number}}
  */
 export function estimatePeakWithBasis(sourceMb, memory) {
   const mem = memory || {};
@@ -124,14 +124,17 @@ export function estimatePeakWithBasis(sourceMb, memory) {
   //    measuredPeakBytes 的成因与局限**详见 src/server/unpack/plugin-store.mjs 里
   //    recordMeasuredPeak 的注释**（那里讲清了为什么它不是"这一包的成本"、以及实测 225MB vs 1195MB 的证据）。
   //
-  //    ⇒ 所以方向必须不对称：measured **高于**声明时信它（说明这包确实更贵），
-  //      measured **低于**声明时忽略（它只是进程状态，不能拿来把声明压低）。
-  //      低估 = 放行 → 真冲高 → OOM/被守护中止；高估只是这次被拒或排队。取大。
+  // ② 实测回填值 —— **不再参与准入判定**，只作为观测数据回传（probe.json / 日志 / 前端提示）
+  //
+  //    为什么从"取 max"改成"完全不采信"（2026-10-30 实测取证）：
+  //      解包搬进 worker 后，measured 的公式 `峰值 = 起始 RSS + 本次 VmHWM 增量` 里的**起始 RSS
+  //      已经含 worker 的常驻内存**（独立 V8 isolate + 预热装载的插件 lib + vm 沙盒）。
+  //      同一个包、同一台机器：搬 worker 前 136.7MB → 搬之后 212~225MB（+55~65%）；
+  //      即使预热把"首次装载插件"的一次性开销移出了测量窗口，第 2 次仍偏高（212MB）。
+  //    ⇒ 一个**随执行线程（以及"是不是该线程的第一个包"）变化**的数不能当准入依据，
+  //      否则同样大小的包会"有时过有时不过"。准入只信 declared（插件声明值，按 max-of-runs 标定）。
   const measuredMb = mem.measuredPeakBytes > 0 ? Math.ceil((mem.measuredPeakBytes / (1024 * 1024)) * 1.05) : 0;
 
-  if (measuredMb > declaredMb) {
-    return { peakEstMb: measuredMb, basis: 'measured', declaredMb, measuredMb };
-  }
   return { peakEstMb: declaredMb, basis: declaredBasis, declaredMb, measuredMb };
 }
 
