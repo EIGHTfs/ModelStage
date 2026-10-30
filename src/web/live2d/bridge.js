@@ -226,6 +226,11 @@ function createLoadGroup(ctx, st, note) {
       if (!reusable) {
         note(`Live2D 装载：${model.name}`);
         await ctx.api.model.loadModel(model);
+        // 换模型 = 换内容：清掉上一个模型的"当前动作"标签。
+        //   为什么必须清：loadForEngine 的返回值会作为 info.motion 回传给应用层，
+        //   而 fillTransportOptions 会把它当成"新模型要播的动作"。旧 label 若恰好同名
+        //   （碧蓝航线 live2d 的动作全叫 idle/home/…）⇒ 新模型真的会去播上一个模型选的那条。
+        st.currentLabel = '';
       } else {
         note(`Live2D 复用已加载模型：${model.name}`);
       }

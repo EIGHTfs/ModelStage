@@ -106,6 +106,14 @@ export class SpineEngine {
     });
     this.stop();
     this.disposeContent();
+    // 换模型 = 换内容：动作名 / 皮肤列表 / 时长缓存都是「当前模型」的属性，不能跟着旧模型走进新模型。
+    //   不清的后果：动作下拉回显旧模型的动作名；纹理重建（PMA 档位）那条路径还会拿旧动作名去 setAnimation
+    //   （新模型没有该动作 ⇒ 静默失败或播错），循环推进时长也会用旧模型的数字。
+    // 为什么不能塞进 disposeContent()：纹理重建（appearance.js）也调它，而那条路径属于
+    //   「同一内容换口径」，必须保留这三个字段来"重建后重放当前状态" —— 塞进去就会把重放弄坏。
+    this.animationName = '';
+    this.activeSkins = [];
+    this.durations = {};
     this.pendingPresent = true;
     const model = await buildModel({
       adapters: this.adapters,

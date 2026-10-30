@@ -4,6 +4,7 @@
 // 具体怎么画由渲染器负责；本模块不碰引擎内部。
 
 import { dom, stage, state } from './context.js';
+import { resetMotionState } from './anim-list.js';
 import { refreshStage } from './memory-bars.js';
 import { markModelFailed } from '../infra/ready.js';
 import { buildDocument } from '../infra/document.js';
@@ -490,6 +491,10 @@ function onSelectModel(model) {
     return;
   }
 
+  // 换模型 = 换内容：先把「当前动作」的副本清掉（动作是模型属性，见设计 §1.9）。
+  //   必须在这里清而不是装载成功后清：装载失败/被拒时也不该残留上一个模型的动作名，
+  //   否则新模型的清单里只要恰好有同名项（碧蓝航线 live2d 全都叫 idle/home/…）就会被继续播。
+  resetMotionState();
   // 无残缺（绝大多数情况）：直接走统一装载入口
   return mountEntry(entry, name);
 }

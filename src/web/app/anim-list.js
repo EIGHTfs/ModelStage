@@ -119,6 +119,23 @@ export function syncTransportOptions() {
   return list.length;
 }
 
+/**
+ * 清掉「当前动作」的所有内存副本（换模型时调用）。
+ *
+ * 为什么需要：动作是**模型属性**（设计 §1.9），但它的三个副本都是应用层状态，不会自己跟着模型走：
+ *   · `cycle.currentId`  —— 循环推进用，名字命中新清单就会继续按旧项推进
+ *   · `state.transportMotion` —— 底栏下拉的副本，被 `currentAnimationId()` 优先读取
+ *   · 底栏下拉自身的值 —— 新模型若有同名动作（碧蓝航线 live2d 全都叫 idle/home/…），
+ *     "保留同名项"的规则会让它原样停在上一个模型选的那条 ⇒ 新模型**真的播它**
+ * 三者不清，就会出现"选了 home、切哪个模型都播 home"。
+ */
+export function resetMotionState() {
+  cycle.currentId = '';
+  cycle.startedAt = 0;
+  if (state) state.transportMotion = '';
+  try { delete document.documentElement.dataset.transportMotion; } catch { /* 忽略 */ }
+}
+
 /** 当前播放项 id：唯一真相是底栏下拉的值（契约 §七） */
 export function currentAnimationId() {
   // 唯一真相 = state.transportMotion（底栏自绘下拉没有 <select>.value，句柄也可能刚被重建）
