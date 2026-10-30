@@ -56,6 +56,8 @@ export function releaseLive2DResources({ st, note, stopDiag, doc } = {}) {
   st.meta = null;
   st.motionMap = new Map();
   st.vfsStats = null;
+  // 与 model.js 的 publishVfsStats 对称：释放后 dataset 里的读数必须消失，否则下一次排查会读到旧值
+  try { if (d && d.documentElement) delete d.documentElement.dataset.vfsStats; } catch { /* 忽略 */ }
   st.active = false;
 
   const did = hadApp || hadOverlay;

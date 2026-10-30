@@ -12,6 +12,12 @@
 // 为什么不会踩到"blob 不能当基址"：
 //   settings.url 只用于给库做占位/校验，真实解析全由我们的 resolveURL 完成；
 //   返回的 blob URL 直接进 XHR/Image，不再经过库里的 url.resolve。
+//
+// ⚠️ 本文件**只对容器模型**生效（entryUrl 是 vfs://）：VFS 只登记容器产物，
+//   散目录模型的每个内部文件来查都必然 miss（白跑查找 + 每文件一条 warn），
+//   所以 model.js 的 buildVfsSettingsOrNull 对散目录直接返回 null、走原生 URL 路径。
+//   ⇒ 能走到下面 resolveURL 的都是"本该命中 VFS"的模型；这里 miss 意味着
+//     **容器产物真缺该文件**，那条 warn 值得看（不是噪音）。
 import { isDirectUrl } from './stage-ctx.js';
 // 版本差异（settings 类名）只在 runtime-adapter 里收敛：本文件不再出现具体类名
 import { getSettingsCtor } from './runtime-adapter.js';

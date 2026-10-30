@@ -119,15 +119,50 @@ async function prepareStage(ctx) {
 
 // ---------------------------------------------------------------- 实例创建（VFS 优先）
 
-/** 构造 VFS settings（缺定义 / 缺 vfs 时返回 null） */
+/** 构造 VFS settings（缺定义 / 缺 vfs / **散目录模型** 时返回 null） */
 function buildVfsSettingsOrNull(ctx, def, entryUrl) {
   if (!def || !def.json) return null;
+  // 散目录模型（entryUrl 是 http 路径、不是 vfs://）**不装** VFS resolver：
+  //   VFS 只登记容器产物（注册点只有 infra/plugin-host.js，prefix 契约 vfs://<provider>/<root>/…），
+  //   散目录模型的每个内部文件去查它**必然 miss** —— 白跑一次查找 + 每个文件刷一条 warn，
+  //   会把"容器真缺文件"这类真问题淹掉（实测：散目录模型 命中 0 / 回落 3；容器模型 命中 4 / 回落 0）。
+  // 返回 null 在这里是**正常状态**、不是异常：调用方看到 null 直接走原生 URL 路径
+  //   （对散目录模型来说网络本来就是唯一正确来源），而且不会打 warn ——
+  //   warnSettingsUnavailable 只在 via.reason 存在时才说话，null 没有 reason。
+  // 真正该 warn 的情况仍会 warn：entryUrl 是 vfs:// 但 vfs 缺失/不可用（由 createVfsSettings 的 reason 报）。
+  //
+  // ⚠️ 这条路的**已知代价**（接受，别当 bug 去"优化"）：
+  //   settings 分支是用**已经 fetch 好的** model3.json 构造的（不再请求入口文件）；
+  //   走原生 URL 分支时 `Live2DModel.from(url)` 会让库**自己再取一次 model3.json**。
+  //   实测：散目录模型内部资源 18 条（去重后与改前完全一致）+ 多一次入口请求（2308 字节）。
+  //   因为 /files/* 带 `Cache-Control: no-store`，这一次是真请求（不是缓存命中），
+  //   但同源/局域网、2.3KB、一次装载一次 —— 换来的是少一层"必然 miss 的查找"和一条噪音 warn。
+  //   若将来要省掉这次请求，正确做法是**改回 settings 分支并把 warn 降级**，而不是在这里加缓存分支。
+  if (!/^vfs:\/\//i.test(String(entryUrl || ''))) return null;
   return createVfsSettings({ json: def.json, entryUrl, vfs: ctx.vfs, log: ctx.note });
 }
 
 /** settings 不可用时的 warn（reason 说明为什么没启用） */
 function warnSettingsUnavailable(note, via) {
   if (via && via.reason) note(`VFS settings 未启用（${via.reason}），走 URL 路径`, 'warn');
+}
+
+/**
+ * 把「VFS 命中/回落」发布到 `<html data-vfs-stats>`，供机器读取（api-verifiable-frontend 的落地）。
+ *
+ * 为什么需要：stats 原本只赋给 `st.vfsStats`，全仓没有任何读取方 ——
+ *   唯一的出口是那条 info 日志，排查时只能翻日志。挂 dataset 后
+ *   `document.documentElement.dataset.vfsStats` 就是 `{"hit":4,"miss":0}`，脚本/面板都能直接读。
+ * 传 null 表示清掉（切模型 / 回落 URL 路径 / 释放）。
+ * 命名与既有 dataset 一致（camelCase：transportMotion / memoryGuard / screenshot）。
+ */
+function publishVfsStats(stats) {
+  try {
+    const el = typeof document !== 'undefined' ? document.documentElement : null;
+    if (!el) return;
+    if (!stats) delete el.dataset.vfsStats;
+    else el.dataset.vfsStats = JSON.stringify({ hit: stats.hits.length, miss: stats.missing.length });
+  } catch { /* dataset 只是可观测性，失败绝不影响装载 */ }
 }
 
 /**
@@ -148,6 +183,7 @@ async function tryVfsInstance(ctx, def, entryUrl) {
     const inst = await createModelInstance(via.settings, { autoInteract: false });
     if (!via.stats.calls) throw new Error('resolveURL 未被调用');
     ctx.st.vfsStats = via.stats;
+    publishVfsStats(via.stats);
     ctx.note(`Live2D 内部资源经 VFS：命中 ${via.stats.hits.length} 项，回落 ${via.stats.missing.length} 项`);
     return inst;
   } catch (e) {
@@ -168,14 +204,23 @@ async function createInstance(ctx, def, entryUrl, url) {
   const inst = await tryVfsInstance(ctx, def, entryUrl);
   if (inst) return inst;
   ctx.st.vfsStats = null;
+  publishVfsStats(null);   // 回落 URL 路径：清掉上一次的读数，别让 dataset 说谎
   const vfs = ctx.vfs;
   return createModelInstance(url, {
     autoInteract: false,
     resolveVfs: (raw) => {
+      const text = String(raw == null ? '' : raw);
       try {
-        if (vfs && typeof vfs.resolve === 'function') return vfs.resolve(raw) || null;
+        if (vfs && typeof vfs.resolve === 'function') {
+          const hit = vfs.resolve(text);
+          if (hit) return hit;
+        }
       } catch { /* 解析失败按"不可用"处理，由 adapter 抛明确错误 */ }
-      return null;
+      // 不是 vfs:// 的地址（散目录模型的 /files/… 或 http 绝对地址）**本来就是可 fetch 的**，原样交回。
+      //   必要性：adapter.createModel 对 URL 形态要求 resolveVfs 返回非空，否则抛
+      //   「模型地址无法解析」——散目录模型在 B1 之后正是走这条分支，不原样返回就会卡在 loading。
+      //   对 vfs:// 仍返回 null（保持"解析不出来就是坏地址"的原语义，交给 adapter 报错）。
+      return /^vfs:\/\//i.test(text) ? null : text;
     },
   });
 }
