@@ -2,6 +2,9 @@
 //
 // 做什么：给上层提供 getJson() / postJson()，把「网络失败、超时、非 2xx、非 JSON」四类问题
 //   在这一层统一处理，上层调用点的语义保持不变（仍旧是"成功拿数据、失败抛 Error(message)"）��
+// ⚠️ **一个刻意的例外：postStream()**（事件流，见文件末尾）。它**不走**重试/退避/固定超时那一套 ——
+//   流式响应的判据是"有没有进展"（连续无帧才算停摆），不是"总时长"：套用 8.5s 会重演
+//   "慢机器被误判成失败"的老坑。除它以外，本文件所有请求仍统一走 fetchWithRetry。
 // 为什么集中在这一层：M2 之后调用点越来越多（tree/models/model-meta/plugins…），
 //   重试与超时若各写一遍必然漂移；而网络抖动是全局问题，不是某个接口的个性。
 //
@@ -379,6 +382,135 @@ export function getJson(path, options = {}) {
  */
 export function postJson(path, body, options = {}) {
   return requestJson(path, { ...options, method: 'POST', body });
+}
+
+/**
+ * 解析一帧 SSE 文本（`event: <name>` + `data: <json>`，帧间以空行分隔）。
+ * 只认这两行；其余字段（id:/retry:/注释行）按 SSE 规范忽略。
+ * @param {string} frame
+ * @returns {{name:string, data:object}|null}
+ */
+function parseSseFrame(frame) {
+  const text = String(frame == null ? '' : frame);
+  if (!text.trim()) return null;
+  let name = 'message';
+  const dataLines = [];
+  for (const line of text.split('\n')) {
+    if (line.startsWith('event:')) name = line.slice(6).trim();
+    else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+  }
+  let data = {};
+  if (dataLines.length) {
+    try { data = JSON.parse(dataLines.join('\n')); } catch { data = { raw: dataLines.join('\n') }; }
+  }
+  return { name, data };
+}
+
+/**
+ * POST 并按**事件流**增量读取（SSE 风格分帧），供"后台预热 / 等服务端解包"用。
+ *
+ * 为什么不复用 fetchWithRetry：它按「单次请求 8.5s」判失败并自动重发，而流式响应的正确判据是
+ *   **有没有进展**（契约 §四）。重发会把"慢但正常"变成"重复排进串行队列"，总时长上限更是
+ *   会把慢机器误判成失败 —— 那正是本设计要消灭的东西。
+ *   ⇒ 本函数刻意不设总时长上限，只用「连续无帧」判停摆；命名与文案一律用 stalled/停摆，
+ *     绝不出现 timeout/超时（`setTimeout`/`clearTimeout` 是浏览器 API 名，不是文案，无法也不该改）。
+ *
+ * 兼容（契约 §七 + E10）：服务端不认识 `stream` 时会回一次性 JSON；开流前就失败（400/404）也是 JSON。
+ *   两者都靠 **Content-Type** 分辨：不是 text/event-stream ⇒ 整体解析后原样返回，调用方无需分支。
+ *
+ * @param {string} path
+ * @param {any} body
+ * @param {{onEvent?:Function, signal?:AbortSignal, idleMs?:number, onStall?:Function, headers?:object}} [opts]
+ *   onEvent(name, data) 每帧回调（含 ping）；onStall(info) 停摆时回调一次
+ * @returns {Promise<object>} done 的 data（`{ok:true,...}`）/ error 的 `{ok:false,reason,message}` /
+ *   停摆的 `{ok:false,reason:'stalled'}` / 一次性 JSON 原样
+ */
+export async function postStream(path, body, opts = {}) {
+  const idleMs = Number(opts.idleMs) > 0 ? Number(opts.idleMs) : 15000;
+  const onEvent = typeof opts.onEvent === 'function' ? opts.onEvent : () => {};
+  const onStall = typeof opts.onStall === 'function' ? opts.onStall : () => {};
+  const ctrl = new AbortController();
+  const onOuterAbort = () => { try { ctrl.abort(); } catch { /* 已结束 */ } };
+  if (opts.signal) {
+    if (opts.signal.aborted) onOuterAbort();
+    else opts.signal.addEventListener('abort', onOuterAbort, { once: true });
+  }
+  let idleTimer = null;
+  let stalled = false;
+  const stopIdle = () => { if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; } };
+  // 每收到任意一帧（含 ping）就重置：ping 每 2s 一条 ⇒ 15s 容忍连丢 7 个心跳，够扛反代抖动
+  const bumpIdle = () => {
+    stopIdle();
+    idleTimer = setTimeout(() => { stalled = true; onOuterAbort(); }, idleMs);
+  };
+  try {
+    bumpIdle();
+    const res = await fetch(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(opts.headers || {}) },
+      body: typeof body === 'string' ? body : JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+    const ctype = String((res.headers && res.headers.get && res.headers.get('content-type')) || '');
+    if (!/text\/event-stream/i.test(ctype)) {
+      // 老服务端 / 开流前失败：整体解析，形状与服务端 JSON 一致，调用方无需分支
+      stopIdle();
+      const text = await res.text();
+      let data = null;
+      try { data = text ? JSON.parse(text) : null; } catch { data = null; }
+      if (!res.ok) {
+        throw new Error((data && (data.message || data.error)) || `HTTP ${res.status}`);
+      }
+      if (data && typeof data === 'object') return { ...data, streamFallback: true };
+      throw new Error(`响应既不是事件流也不是 JSON（Content-Type=${ctype || '无'}）`);
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    let last = null;
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      buf += dec.decode(chunk.value, { stream: true });
+      let cut = buf.indexOf('\n\n');
+      while (cut >= 0) {
+        const frameText = buf.slice(0, cut);
+        buf = buf.slice(cut + 2);          // 不完整帧留在 buffer 等下一块，不丢
+        cut = buf.indexOf('\n\n');
+        const ev = parseSseFrame(frameText);
+        if (!ev) continue;
+        bumpIdle();
+        if (ev.name === 'done') {
+          last = { ok: true, ...(ev.data || {}) };
+        } else if (ev.name === 'error') {
+          last = {
+            ok: false,
+            reason: (ev.data && ev.data.reason) || 'unpack-failed',
+            message: (ev.data && ev.data.message) || '服务端解包失败',
+          };
+        }
+        onEvent(ev.name, ev.data || {});
+      }
+    }
+    stopIdle();
+    if (last) return last;
+    return { ok: false, reason: 'stream-ended', message: '事件流已结束但没收到 done/error' };
+  } catch (e) {
+    stopIdle();
+    if (stalled) {
+      // 措辞铁律：这里是"停摆"，不是"超时"（见契约 §四）
+      const info = { ok: false, reason: 'stalled', message: `服务端停摆（${Math.round(idleMs / 1000)}s 无任何事件），已放弃等待` };
+      try { onStall(info); } catch { /* 回调失败不影响结果 */ }
+      return info;
+    }
+    if (e && (e.name === 'AbortError' || /abort/i.test(String(e.message || '')))) {
+      return { ok: false, reason: 'aborted', message: '已取消等待' };
+    }
+    throw e;
+  } finally {
+    stopIdle();
+    if (opts.signal) { try { opts.signal.removeEventListener('abort', onOuterAbort); } catch { /* 忽略 */ } }
+  }
 }
 
 /**

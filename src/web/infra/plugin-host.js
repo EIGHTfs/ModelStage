@@ -17,7 +17,7 @@
 
 import { getSharedVirtualFS } from './vfs.js';
 import * as memoryGuard from '../app/memory-guard.js';
-import { postJson, getJson, fetchWithRetry, mapLimit } from './api.js';
+import { postJson, postStream, getJson, fetchWithRetry, mapLimit } from './api.js';
 
 /** 宿主提示通道：优先用注入的 log（项目调试日志），否则退回 console */
 function makeLogger(log) {
@@ -669,6 +669,13 @@ const MIME_BY_EXT = {
   const warmupInflight = new Set();
 
   /**
+   * `phase.name` → 界面措辞（契约 §四 ④：服务端只发 read/resolve/write 三个名字，文案归前端）。
+   * 放这一处常量、别散落到各处：措辞变了只改这里，也避免服务端被逼着下发界面文字。
+   * 注意**没有百分比**：解压是一次性整段，服务端给不出可信进度，假进度条比没有更糟。
+   */
+  const WARMUP_PHASE_TEXT = { read: '读盘中', resolve: '解压中', write: '写盘中' };
+
+  /**
    * 真正执行预热：**选中即触发**，不等空闲、不延迟。
    *
    * 为什么删掉了 requestIdleCallback(timeout 3000) + setTimeout(2000)：
@@ -684,21 +691,51 @@ const MIME_BY_EXT = {
     warmupInflight.add(key);
     (async () => {
       const t0 = performance.now();
+      let events = 0;
       try {
-        // 预热是**后台**任务，不能借用前台的超时/重试策略：
-        // · retries: 0 —— 重试对幂等虽安全，但服务端解包是串行的，重发只会把队列压得更长，
-        //   而且每次超时都记一条 error（上一批日志里 13 条 resolve 超时有一半就是这么来的）。
-        // · timeoutMs: 120000 —— 前台的 8.5s 是"用户等不了这么久"，而后台预热**本来就该等**：
-        //   服务端串行队列下同一次解包实测等过 19s，8.5s 必然误判成失败。
-        //   ⇒ 用独立的长超时，让"真的解完了"这件事能如实记成 ok。
-        const j = await postJson('/api/unpack/resolve',
-          { rootId: file.rootId, rel: file.rel, allowOverLimit: !memoryGuard.isMemoryGuardOn() },
-          { retries: 0, timeoutMs: 120000 });
-        emitWarm({ ok: !!j.ok, hit: !!(j && j.hit), peakEstMb: cap && cap.peakEstMb, ms: Math.round(performance.now() - t0) });
-        say.info(`预热完成：${file.rel}（${j && j.hit ? '已有缓存' : '已落盘'}，${Math.round(performance.now() - t0)}ms）`);
+        // 预热是**后台**任务，不能借用前台的判失败策略：
+        // · 不重试 —— 服务端解包是串行的，重发只会把队列压得更长。postStream 不走 fetchWithRetry，
+        //   天生不重试，所以这一条与上一轮定的 `retries: 0` 等价（那条约定的目的不变）。
+        // · **不设总时长上限** —— 慢机器解 30s、60s 都属正常。判失败只看「有没有进展」：
+        //   postStream 每收到任意一帧（含 ping）就重置停摆计时，连续 15s 无帧才中止（契约 §四）。
+        //   上一轮那个 120s 固定上限是"没有进展信号时"的妥协；有了事件流就该撤掉它。
+        const j = await postStream('/api/unpack/resolve',
+          { rootId: file.rootId, rel: file.rel, allowOverLimit: !memoryGuard.isMemoryGuardOn(), stream: true },
+          {
+            onEvent: (name, data) => {
+              events += 1;
+              // 进度只进**现有**日志/状态行，不新造 UI 控件；也不给百分比（服务端给不出可信的）
+              if (name === 'queued') say.info(`预热排队中：${file.rel}（前面约 ${Number((data && data.waiting) || 0)} 个）`);
+              else if (name === 'start') say.info(`预热开始解包：${file.rel}`);
+              else if (name === 'phase') {
+                const ph = (data && data.name) || '';
+                say.info(`预热${WARMUP_PHASE_TEXT[ph] || `${ph || '进行'}中`}：${file.rel}（${Number((data && data.ms) || 0)}ms）`);
+              }
+              // ping 不显示：它只用于维持停摆计时（postStream 内部每帧都会重置计时器）
+            },
+            onStall: () => {
+              // 措辞铁律（契约 §四）：这里是"停摆"，不是"超时"
+              say.info(`预热停摆（15s 无事件），已放弃等待；服务端仍会解完并写缓存：${file.rel}`);
+            },
+          });
+        emitWarm({
+          ok: !!j.ok,
+          hit: !!(j && j.hit),
+          peakEstMb: cap && cap.peakEstMb,
+          ms: Math.round(performance.now() - t0),
+          events,
+          ...(j && j.reason ? { reason: j.reason } : {}),
+        });
+        if (j && j.ok) {
+          // done 即完成：hit:true（已有缓存）与 hit:false（本次已落盘）都算成功
+          say.info(`预热完成：${file.rel}（${j.hit ? '已有缓存' : '已落盘'}，${Math.round(performance.now() - t0)}ms）`);
+        } else {
+          // 流内 error / 停摆：都只记 info —— 预热失败不是错误，前台装载有自己的路径
+          say.info(`后台预热未完成：${file.rel}（${(j && j.message) || (j && j.reason) || '未知原因'}）—— 服务端仍会解完并写缓存，下次命中即可`);
+        }
       } catch (e) {
         const why = String((e && e.message) || e).slice(0, 120);
-        emitWarm({ ok: false, error: why });
+        emitWarm({ ok: false, error: why, events });
         // 预热失败**不是错误**：前台装载有自己的路径（本地解包 / 服务端命中），预热只是"下次更快"。
         //   记 info 不记 error/warn —— 否则每次装载都在日志里刷一条红，把真问题淹掉。
         say.info(`后台预热未完成：${file.rel}（${why}）—— 服务端仍会解完并写缓存，下次命中即可`);
