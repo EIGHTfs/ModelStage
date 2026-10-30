@@ -16,6 +16,8 @@
 // 扫描不在此重复实现：直接复用 spine.getSpineModels() 与 live2d.getLive2DModels()。
 import fs from 'node:fs';
 import path from 'node:path';
+// 单调时钟：计时口径用它，不能用 Date.now()（会被系统时间校准拉走）
+import { performance } from 'node:perf_hooks';
 import { encodePath } from '../assets/probe.mjs';
 // 扩展名集合复用 tree.mjs 那一份：容器列举与目录浏览必须用同一套「哪些扩展名要探魔数」，
 //   两处各写一份会漂移（一处加了新扩展名、另一处没加 ⇒ 某个根莫名列不出容器，且不报错）。
@@ -590,10 +592,28 @@ const ROOT_PATH_PROBLEM_TEXT = {
  */
 export function createCatalog({ config, spine, live2d, tree, plugins }) {
   /**
+   * 最近一次**各根** catalog 构建的服务端耗时（只保留最近一次，不做历史数组）。
+   *
+   * 为什么需要：`/api/catalog` 的耗时在「清单缓存命中」与「真扫盘重建」之间差一个数量级，
+   *   前端只能看到"总共多久"，看不出是哪一根慢、慢在命中还是重建。
+   * 零副作用：只在这里记账；`getCatalogStats()` 只读这份内存，绝不触发任何重建。
+   */
+  const stats = { at: null, totalMs: 0, roots: [] };
+
+  /** 记一条根的耗时（同一根只留最新一条；totalMs 按各根最新值求和） */
+  function recordRootStat(one) {
+    const i = stats.roots.findIndex((r) => r.rootId === one.rootId);
+    if (i >= 0) stats.roots[i] = one; else stats.roots.push(one);
+    stats.at = one.at;
+    stats.totalMs = stats.roots.reduce((s, r) => s + (Number(r.ms) || 0), 0);
+  }
+
+  /**
    * @param {string} rootId
    * @returns {{status: number, body: object}}
    */
   function listCatalog(rootId) {
+    const t0 = performance.now();
     const cfg = config.readConfig().find((r) => r.id === rootId);
     if (!cfg) {
       // 形状与其它接口的错误体保持一致；按约定这里用 404（资源根不存在）
@@ -603,17 +623,23 @@ export function createCatalog({ config, spine, live2d, tree, plugins }) {
     const warnings = [];
     /** 扫描过程中抛的错（用于判断 rootWarning 该说"扫不动"还是"真的空"） */
     const scanErrors = [];
+    /** 两根扫描器是否都走了清单缓存（决定 source 报 cache 还是 built） */
+    let cachedAll = true;
     // 根路径体检放在扫描之前：路径都没了就不要再问扫描器"里面有什么"
     const pathProblem = inspectRootPath(cfg.path);
 
     try {
-      for (const m of spine.getSpineModels(cfg, false).models) entries.push(toSpineEntry(cfg, m));
+      const scan = spine.getSpineModels(cfg, false);
+      for (const m of scan.models) entries.push(toSpineEntry(cfg, m));
+      if (scan.cached !== true) cachedAll = false;
     } catch (e) {
       scanErrors.push(e);
       warnings.push(`spine 扫描失败：${e.message}`);
     }
     try {
-      for (const lm of live2d.getLive2DModels(cfg, false).models) entries.push(toLive2DEntry(cfg, lm));
+      const scan = live2d.getLive2DModels(cfg, false);
+      for (const lm of scan.models) entries.push(toLive2DEntry(cfg, lm));
+      if (scan.cached !== true) cachedAll = false;
     } catch (e) {
       scanErrors.push(e);
       warnings.push(`live2d 扫描失败：${e.message}`);
@@ -646,11 +672,27 @@ export function createCatalog({ config, spine, live2d, tree, plugins }) {
       rootWarning = `扫描完成但没有任何模型条目${rootTag}`;
     }
 
+    // 记账（只此一处写）：耗时口径 = 本次 listCatalog 从入口到末尾的墙钟时间，
+    //   source 只有两种：两根扫描器都命中清单缓存 ⇒ cache；任一重建（或抛错）⇒ built。
+    //   容器列举本身没有清单缓存、每次都要 readdir，所以它不计入 cache/built 的判定
+    //   （这一点必须写清：否则"cache 却也慢"会被当成 bug 去查）。
+    recordRootStat({
+      rootId: cfg.id,
+      ms: Math.round(performance.now() - t0),
+      count: entries.length,
+      source: cachedAll ? 'cache' : 'built',
+      at: Date.now(),
+    });
+
     return {
       status: 200,
       body: {
         root: { id: cfg.id, name: cfg.name },
         count: entries.length,
+        // 这一根的清单来源：两根扫描器都命中缓存 ⇒ cache；任一重建 ⇒ built。
+        //   给前端名册计时用（perRoot 要能看出"哪根慢在命中还是重建"），纯附加字段，
+        //   不改变任何缓存行为。
+        source: cachedAll ? 'cache' : 'built',
         entries,
         rootWarning,
         ...(bundle.skipped ? { skipped: bundle.skipped } : {}),
@@ -659,5 +701,14 @@ export function createCatalog({ config, spine, live2d, tree, plugins }) {
     };
   }
 
-  return { listCatalog };
+  /**
+   * 只读快照：最近一次各根 catalog 构建的服务端耗时。
+   * **零副作用** —— 绝不在请求时触发重建，只把内存里记下的数拷一份出来。
+   * @returns {{at: number|null, totalMs: number, roots: Array<{rootId: string, ms: number, count: number, source: 'cache'|'built', at: number}>}}
+   */
+  function getCatalogStats() {
+    return { at: stats.at, totalMs: stats.totalMs, roots: stats.roots.map((r) => ({ ...r })) };
+  }
+
+  return { listCatalog, getCatalogStats };
 }

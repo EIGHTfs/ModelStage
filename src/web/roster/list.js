@@ -147,7 +147,12 @@ export async function fetchRootEntries(rootId) {
   if (!entries.length && rootWarning) {
     diagEvent('catalog.empty', { root: id, rootWarning }, { level: 'warn', src: 'app' });
   }
-  return { entries, reason: null, warnings, rootWarning };
+  return {
+    entries, reason: null, warnings, rootWarning,
+    // 服务端自报的清单来源（cache=命中清单缓存 / built=真扫盘重建）；老服务端没有这个字段时为 null。
+    //   只透传、不在这里推断 —— 前端拿不到"服务端是命中还是重建"的任何本地证据。
+    serverSource: (data && (data.source === 'cache' || data.source === 'built')) ? data.source : null,
+  };
 }
 
 /**
@@ -161,13 +166,14 @@ export async function loadRootModels(root) {
   //   （spine 模型 + live2d 模型 + 容器单文件），所以不必再"按根类型猜该问哪个扫描器"，
   //   同一个根里既能放普通模型目录、也能放容器文件。
   //   容器条目的 kind 由插件声明（解包后是什么内容），并带 `container` 标记供装载层解包用。
-  const { entries: models, reason } = await fetchRootEntries(root.id);
+  const { entries: models, reason, serverSource } = await fetchRootEntries(root.id);
   // 抛给上层：view.js 捕获后把根标成 status='error' + 显示 error 文案。
   //   若这里改成"返回空清单不抛"，UI 会从"加载失败"退化成"这个根有 0 个模型"—— 信息反而更少。
   if (reason) throw new Error(`${root.name || root.id}：${reason}`);
   const containers = models.filter((m) => m.container).length;
   diagEvent('bundle.parse', { root: encodeURIComponent(root.id), source: 'catalog', models: models.length, containers }, { level: 'info', src: 'app' });
-  return { models, source: 'catalog' };
+  // serverSource 只用于名册计时（perRoot.source），不参与渲染与缓存判断
+  return { models, source: 'catalog', serverSource: serverSource || null };
 }
 
 /**

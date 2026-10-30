@@ -124,6 +124,12 @@ function apiAsync(ctx, req, res, p, url) {
   const { data, sendJson } = ctx;
   const done = (r) => sendJson(res, r.status, r.body);
   const fail = (label) => (e) => sendJson(res, 500, { ok: false, error: `${label}: ${e.message}` });
+  // 最近一次各根 catalog 构建的服务端耗时（只读内存，零副作用：不会触发任何重建）。
+  //   必须放在 /api/catalog 分支之前：两条件互斥（等值比较），但顺序写清更不会被后来人改错。
+  if (p === '/api/catalog/stats') {
+    const s = data.catalog.getCatalogStats();
+    return sendJson(res, 200, { ok: true, at: s.at, totalMs: s.totalMs, roots: s.roots });
+  }
   if (p === '/api/catalog') {
     // 入参分流（只在路由层做，不动 listCatalog 内部报错）：
     //   · 缺 root / 空串 ⇒ 400（调用方错误）。以前一律回 404，于是"路径拼错了"

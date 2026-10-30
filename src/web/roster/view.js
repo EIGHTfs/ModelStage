@@ -19,6 +19,8 @@ import {
 } from './list.js';
 import { el, renderGameRow, renderCharRow, renderVariantRow } from './rows.js';
 import { formatError } from '../infra/api.js';
+// 名册就绪那句 info 走项目统一的日志通道（与 catalog/bundle 那些 diag 同一出口）
+import { stageLog } from '../app/status.js';
 // 渲染调度（rAF 合批 + 后台标签页兜底）抽到公共层，行为与原先内联实现一致
 import { createScheduler } from '../infra/schedule.js';
 // 容器条目的装载失败记忆：渲染时读出注入行渲染（保持 rows.js 的"纯 DOM 工厂"性质）
@@ -60,6 +62,75 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
    */
   const counters = { render: 0, ensureRootLoaded: 0, renderScheduled: 0 };
 
+  // ------------------------------------------------------------ 名册加载计时（A）
+  //
+  // 口径（写清是为了以后不要"人均一套秒表"）：
+  //   · 起点 = 第一次调用 ensureRootLoaded（第一个根开始取 catalog）
+  //   · 终点 = **所有已知根都 settle**（ready 与 error 都算 settle）
+  //     为什么把 error 也算：不然一个根失败会让总时长永远不结束，这个数就永远出不来。
+  //   · 计时一律 performance.now()（单调），不用 Date.now()（会被系统时间校准拉走）。
+  //   · 不做阈值判断、不认根名：这里只报事实。
+  let rosterT0 = null;
+  /** rootId → { rootId, ms, count, source, at, error? }（同一根只留最新一次） */
+  const rosterPerRoot = new Map();
+  /** 「名册就绪」只打一次：之后再有根被补加载（懒加载/搜索）不再重复刷屏 */
+  let rosterLogged = false;
+
+  /** 记一个根的加载结果；若此刻所有已知根都已 settle，打一条 info 日志并定稿 */
+  function recordRootLoad(rootId, t0, count, source, error) {
+    rosterPerRoot.set(String(rootId), {
+      rootId: String(rootId),
+      ms: Math.round(performance.now() - t0),
+      count: Number(count) || 0,
+      source: error ? 'error' : (source || 'built'),
+      at: Date.now(),
+      ...(error ? { error: String(error) } : {}),
+    });
+    if (rosterLogged) return;
+    const all = state.games.flatMap((g) => g.roots.map((r) => String(r.id)));
+    if (!all.length || !all.every((id) => rosterPerRoot.has(id))) return;
+    rosterLogged = true;
+    // 延后一拍再取数：根 settle 的那一刻，调用方（ensureGameLoaded）的
+    //   「跨根归并角色」还没跑（它在 await 之后才执行），此刻取 chars 会偏小，
+    //   导致日志里的角色数与 rosterStats() 对不上。放到宏任务里取，归并已完成。
+    setTimeout(() => {
+      const s = rosterStats();
+      // 走既有 say/log 通道（与 catalog/bundle 那些 diag 同一出口），文案里不带路径与根名
+      stageLog('info', `名册就绪：${s.roots} 根 / ${s.chars} 角色 / ${s.ms} ms`, {
+        tag: 'roster', roots: s.roots, entries: s.entries, chars: s.chars, ms: s.ms,
+        slowest: s.perRoot.slice().sort((a, b) => b.ms - a.ms).slice(0, 3),
+      });
+    }, 0);
+  }
+
+  /**
+   * 名册加载统计快照（`window.__WEB__.rosterStats()` 的实现在这里）。
+   *
+   * 主要用途是**看哪一根慢/失败**：perRoot 按实际加载顺序给出每根的耗时与来源，
+   *   `source` 的 cache/built 来自服务端 `/api/catalog` 的自报（前端拿不到这个证据），
+   *   失败根为 `error` 并带 `error` 文本 —— 失败绝不从表里消失。
+   * @returns {{at: number|null, ms: number, roots: number, entries: number, chars: number,
+   *            perRoot: Array<{rootId: string, ms: number, count: number, source: string, at: number, error?: string}>}}
+   */
+  function rosterStats() {
+    const perRoot = [...rosterPerRoot.values()].map((r) => ({ ...r }));
+    let chars = 0;
+    for (const v of state.gameChars.values()) chars += Array.isArray(v && v.chars) ? v.chars.length : 0;
+    // 汇总只算**名册自己的根**：perRoot 允许出现额外条目（别的调用方加载过某个根），
+    //   但那不属于"名册加载"，算进来会让 roots/entries 与左栏数字对不上。
+    const named = new Set(state.games.flatMap((g) => g.roots.map((r) => String(r.id))));
+    const mine = perRoot.filter((r) => named.has(r.rootId));
+    return {
+      at: mine.length ? Math.max(...mine.map((r) => r.at)) : null,
+      // 全部根还没 settle 时给"到目前为止"的耗时：仍是有意义的读数，不是假值
+      ms: rosterT0 === null ? 0 : Math.round(performance.now() - rosterT0),
+      roots: named.size,
+      entries: mine.reduce((s, r) => s + r.count, 0),
+      chars,
+      perRoot,
+    };
+  }
+
   // ------------------------------------------------------------ 渲染调度（rAF 合并）
   // 加载阶段每条路径都会触发一次全树重绘（N 个资源根 ≈ 2N+ 次），中间态在同一帧里根本看不到；
   //   合批后既省时间也减少闪烁。三条性质与"为什么"见 infra/schedule.js 的文件头。
@@ -85,10 +156,14 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
    */
   function ensureRootLoaded(root) {
     counters.ensureRootLoaded += 1;
+    // 名册计时：从**第一次**请求某根开始，到"所有已知根都 settle"结束。
+    //   为什么用 performance.now()：单调时钟，系统时间校准不会把耗时拉成负数。
+    if (rosterT0 === null) rosterT0 = performance.now();
     const cur = state.loaded.get(root.id);
     if (cur && cur.promise) return cur.promise.then(() => cur);
     if (cur && cur.status === 'ready') return Promise.resolve(cur);
     const entry = { status: 'loading', models: [], source: '', error: null, promise: null };
+    const rootT0 = performance.now();
     entry.promise = (async () => {
       try {
         // 名表按根取一次并合并进全局索引（同名表只并一次，避免重复 assign）
@@ -97,14 +172,18 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
           const table = await loadRootNames(root.id);
           if (table) mergeNameTable(nameIndex, table);
         }
-        const { models, source } = await loadRootModels(root);
+        const { models, source, serverSource } = await loadRootModels(root);
         for (const m of models) modelById.set(m.id, { model: m, rootId: root.id });
         entry.status = 'ready';
         entry.models = models;
         entry.source = source;
+        recordRootLoad(root.id, rootT0, models.length, serverSource || 'built', null);
       } catch (err) {
         entry.status = 'error';
         entry.error = formatError(err);
+        // 失败也要进 perRoot（source:'error'）：否则"某个根挂了"在计时里凭空消失，
+        //   总耗时看起来还挺快 —— 那正是这个功能最该暴露的情形。
+        recordRootLoad(root.id, rootT0, 0, 'error', entry.error);
       }
       entry.promise = null;
       scheduleRender();          // 加载完成：合并到下一帧（不再每个根各渲一次）
@@ -521,6 +600,8 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     markUserScroll: reveal.markUserScroll,
     /** 调试计数（渲染/加载次数）：优化前后用同一口径对比 */
     counters: () => ({ ...counters }),
+    /** 名册加载计时快照（`window.__WEB__.rosterStats()` 用它；口径见文件内"名册加载计时"注释） */
+    rosterStats,
     /** 立刻落地待渲染的请求（测试/自检用：不依赖 rAF 时机） */
     flushRender,
     /** 归零计数（测量前调用，避免把上一段的调用混进来） */

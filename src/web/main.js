@@ -556,6 +556,11 @@ function boot() {
     panelSelfCheck: () => runPanelSelfCheck(),
     /** 面板三态快照（禁用/可用/隐藏），切换渲染器前后各取一次做对比 */
     panelSnapshot: () => panelSnapshot(),
+    /**
+     * 名册加载计时快照：{ at, ms, roots, entries, chars, perRoot[] }。
+     * 名册还没建（启动早期）时返回 null，不编一个空对象冒充。
+     */
+    rosterStats: () => (state.roster && typeof state.roster.rosterStats === 'function' ? state.roster.rosterStats() : null),
     state,
     version: 'M4',
     /** 渲染舞台（测试脚本用它取像素、看统计） */
