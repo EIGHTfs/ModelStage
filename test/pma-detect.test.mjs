@@ -8,7 +8,43 @@
 //   兜成"已预乘"最多是直通图混合略暗。少乘远比多乘可接受。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { detectPma, resolvePmaInfo, detectPmaFromImageData } from '../src/web/engine/pma.js';
+import { detectPma, resolvePmaInfo, detectPmaFromImageData, shouldPremultiplyOnUpload } from '../src/web/engine/pma.js';
+
+// 上传口径（unpack 与否）必须由 needPremultiply 决定 —— 三种输入各钉一条。
+//   这三条直接对应三块真实资产：
+//     · Nikke c072_00（atlas pma:true）        —— 源图已预乘，再乘就是黑圈
+//     · 碧蓝档案 airi0_home（3.8，不支持直通） —— 源图 straight，必须乘，否则白斑
+//     · 棕色尘埃2 / 4.1+ 的 straight 资源      —— 源图 straight，走 straight 混合，不许乘
+test('shouldPremultiplyOnUpload：三种输入（源图预乘 / straight+不支持直通 / straight+支持直通）', () => {
+  // ① 源图已预乘（atlas pma:true）⇒ 上传必须原样
+  const pm = resolvePmaInfo('auto', { finalIsPremultiplied: true }, false);
+  assert.equal(pm.effectiveMode, 'premultiplied');
+  assert.equal(shouldPremultiplyOnUpload(pm), false, '源图已预乘时上传不许再乘（多乘 = 明显黑圈）');
+
+  // ② 源图 straight + 运行时不支持直通（Spine 3.8）⇒ 必须乘一次
+  //    这是本次修的白斑根因：要求预乘却没乘 ⇒ GPU 上是直通数据，却按预乘混合绘制。
+  const up = resolvePmaInfo('auto', { finalIsPremultiplied: false }, false);
+  assert.equal(up.effectiveMode, 'upload');
+  assert.equal(up.needPremultiply, true);
+  assert.equal(shouldPremultiplyOnUpload(up), true, 'upload 路径必须真的乘一次，否则直通数据配预乘混合 ⇒ 白斑');
+
+  // ③ 源图 straight + 运行时支持直通（4.1+）⇒ 不许乘
+  const st = resolvePmaInfo('auto', { finalIsPremultiplied: false }, true);
+  assert.equal(st.effectiveMode, 'straight');
+  assert.equal(shouldPremultiplyOnUpload(st), false, 'straight 路径上传必须原样（乘了就和 straight blend 错配）');
+
+  // ④ 显式档位同样遵此口径
+  assert.equal(shouldPremultiplyOnUpload(resolvePmaInfo('upload', null, false)), true, '显式 upload 档要乘');
+  assert.equal(shouldPremultiplyOnUpload(resolvePmaInfo('premultiplied', { finalIsPremultiplied: false }, false)), false, '显式 premultiplied 档不乘');
+  assert.equal(shouldPremultiplyOnUpload(resolvePmaInfo('straight', null, true)), false, '显式 straight 档不乘');
+
+  // ⑤ 字段缺失/类型不对一律不乘 —— 与 auto 兜底同一条"失败代价不对称"：
+  //    少乘最多混合略暗，多乘是明显黑圈。
+  assert.equal(shouldPremultiplyOnUpload(undefined), false);
+  assert.equal(shouldPremultiplyOnUpload(null), false);
+  assert.equal(shouldPremultiplyOnUpload({}), false);
+  assert.equal(shouldPremultiplyOnUpload({ needPremultiply: 'yes' }), false, '非布尔真值不算"要求预乘"');
+});
 
 test('resolvePmaInfo：三态分开（明确预乘/明确非预乘/检测不出）', () => {
   assert.equal(resolvePmaInfo('auto', { finalIsPremultiplied: true }, false).effectiveMode, 'premultiplied');

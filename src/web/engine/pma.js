@@ -73,18 +73,24 @@ export function detectPmaFromImageData(imageData, step = PIXEL_STEP, minSamples 
  *            finalIsPremultiplied: boolean, reason: string}}
  */
 /**
- * ⚠️ **本探测结论只作诊断，不驱动上传口径**（上传一律 `UNPACK_PREMULTIPLY_ALPHA_WEBGL=false`）。
+ * 像素采样探测：判断**源图**是不是预乘的。
  *
- * 为什么必须写清：探测用的测量路径是"`UNPACK=false` 上传 → `readPixels` 读回"，而
- *   `UNPACK=false` 的定义就是"浏览器把预乘数据 un-premultiply 后上传" ⇒ **读回来的必然是直通数据**，
- *   与源图本身是否预乘无关 —— 这是**循环论证**。
- *   同一张图（char021301.png，375 718 个半透明像素）实测：
- *     · UNPACK=false 读回 → r>a 占 **89.32%**（看起来"直通"）
- *     · UNPACK=true  读回 → r>a 占 **0%**，且 meanT=55.59 ≈ F*a/255=55.57（就是又乘了一次）
- *   ⇒ 谁再用这套数字判断"源图是否预乘"，就会重犯我们已经犯过的错。
+ * 结论**会**参与判定（经 `resolvePmaInfo` 的 auto 档 → `needPremultiply` / `blendMode`），
+ *   所以这里的判据必须可信。当前取的是原图：`sampleSourceImageData` 把图**画到 2D canvas 再
+ *   `getImageData`**（不经 WebGL ⇒ **不受 `UNPACK_PREMULTIPLY_ALPHA_WEBGL` 影响**），
+ *   于是「RGB 超过 A 的像素占比」就能反映源图本身的 alpha 形态。
  *
- * 保留它的理由：① 面板四行诊断展示（Atlas 声明 / 像素检测 / 直通支持 / 实际生效）
- *              ② pma.resolve / pma.detect 日志，换资产或换运行时后仍是重要线索。
+ * ⚠️ 反面教训：**不要用 `readPixels` 读回的数据反推源图**。
+ *   `readPixels` 读的是 **GPU 上的数据**，已经过上传口径处理 —— 开关一变，同一张图的数字就变，
+ *   与源图是否预乘无关，那是循环论证。早前那版实现踩过，实测记录（char021301.png，
+ *   375,718 个半透明像素）的正确解读是：
+ *     · 按 `UNPACK=false`（原样）上传后读回 → r>a 占 **89.32%** ⇒ 源图是**直通**
+ *     · 按 `UNPACK=true` 上传后读回 → r>a 占 **0%**      ⇒ alpha 被乘了进去，
+ *       这正是 `upload` 路径**想要**的效果；当时把它读成"又乘了一次"，
+ *       而那个说法成立的前提是"源图已预乘"，与上一行的读数直接矛盾，结论下错了。
+ *
+ * 保留本探测的理由：① 面板四行诊断展示（Atlas 声明 / 像素检测 / 直通支持 / 实际生效）
+ *                    ② pma.resolve / pma.detect 日志，换资产或换运行时后仍是重要线索。
  */
 export function detectPma({ atlasDeclared, filenameHint, samples }, log = () => {}) {
   for (const img of (Array.isArray(samples) ? samples : samples ? [samples] : [])) {
@@ -233,15 +239,35 @@ export function hasBlendHooks(gl) {
 // ============================ 预乘：纹理上传（唯一路径） ============================
 
 /**
+ * 上传口径：这一页贴图要不要在 `texImage2D` 那一下让浏览器乘一次 alpha。
+ *
+ * 三种输入（恰好是 `resolvePmaInfo` 的三个出口），只有第三种必须乘：
+ *   · 源图已预乘（`effectiveMode:'premultiplied'`，needPremultiply=false）⇒ **不乘**：再乘就是双重预乘
+ *   · 源图 straight 且走 straight 路径（`effectiveMode:'straight'`，needPremultiply=false）⇒ **不乘**：
+ *     乘了就和 straight 混合错配（数据是预乘、blend 却按直通）
+ *   · 源图 straight 且走 upload 路径（`effectiveMode:'upload'`，needPremultiply=true）⇒ **乘**：
+ *     运行时不支持直通混合，只能把数据也预乘，让"预乘数据 + 预乘 blend"配套
+ *
+ * 为什么单列成纯函数：`needPremultiply` 此前只作诊断、没有任何地方执行它，
+ *   于是 upload 路径「要求预乘却没乘」⇒ GPU 上是直通数据、却按预乘混合绘制 ⇒ 半透明边缘发白。
+ *   抽出来才能用单测把三种输入钉死，避免再次退化成"硬编码 false"。
+ * @param {{needPremultiply?: boolean}} info `resolvePmaInfo` 的结果
+ * @returns {boolean} 是否在上传时预乘
+ */
+export function shouldPremultiplyOnUpload(info) {
+  return !!(info && info.needPremultiply === true);
+}
+
+/**
  * 按 PMA 口径上传贴图。**这是全项目唯一的纹理上传路径**（预乘相关代码都收在本文件）。
  *
- * 做法逐字对齐既有口径 `loadAtlas`（dist 展开后）：原图直传 + `UNPACK_PREMULTIPLY_ALPHA_WEBGL = !pma`，
- *   让浏览器在 `texImage2D` 那一下完成预乘，**不经 2D canvas 中转**。
- * 为什么不经 canvas：2D canvas 的后备存储是预乘的，`texImage2D(canvas)` 在 `UNPACK=false` 时会
+ * 上传口径由 `shouldPremultiplyOnUpload` 按 `needPremultiply` 决定，见该函数的三种输入说明。
+ *   源图直传时让浏览器在 `texImage2D` 那一下完成预乘，**不经 2D canvas 中转**——
+ *   2D canvas 的后备存储是预乘的，`texImage2D(canvas)` 在 `UNPACK=false` 时会
  *   把 alpha **除回去**（un-premultiply）⇒ "CPU 先乘一遍"白做，上传到 GPU 仍是直通数据。
- *   只用 `Uint8Array` 源或原图 + UNPACK 才能真正控制上传字节。
+ *   所以要么用 `Uint8Array` 源、要么用原图 + UNPACK 开关，才能真正控制上传字节。
  *
- * pma 语义：`pma = true` 表示**这张图已经是预乘的** ⇒ 上传时 `!pma = false`，不再乘。
+ * pma 语义：`pma = true` 表示**这张图已经是预乘的**。
  *
  * @param {{gl: WebGLRenderingContext, GLTextureCtor: Function|null, entries: Map,
  *          effectiveMode: string, needPremultiply: boolean, textureFilter: string,
@@ -249,10 +275,10 @@ export function hasBlendHooks(gl) {
  * @returns {Promise<Map<string, object>>} 页名 → 纹理对象
  */
 export async function uploadTextures(ctx) {
-  const { gl, GLTextureCtor, entries, effectiveMode, textureFilter, log = () => {}, onUpload } = ctx;
+  const { gl, GLTextureCtor, entries, effectiveMode, needPremultiply, textureFilter, log = () => {}, onUpload } = ctx;
   const plan = {
-    // **上传口径：一律不乘（见文件顶部说明与实测数字）**；needPremultiply 仅作诊断
-    unpack: false,
+    // 只有 needPremultiply 为真时才真的乘（此前这里硬编码 false，把它当纯诊断字段 ⇒ 白斑）
+    unpack: shouldPremultiplyOnUpload({ needPremultiply }),
     pmaFlag: effectiveMode === 'premultiplied',
     textureFilter,
     log,
