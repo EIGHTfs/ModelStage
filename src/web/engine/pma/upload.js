@@ -23,6 +23,9 @@ export async function uploadTextures(ctx) {
   const plan = {
     unpack,
     pmaFlag,
+    // 诊断标签用"走的哪条路"（upload / straight / premultiplied），不能拿 pmaFlag 代替它：
+    //   pmaFlag 回答的是"上传后数据是不是预乘"（upload 路径也是 true），两者语义不同。
+    mode: effectiveMode,
     textureFilter,
     log,
     onUpload,
@@ -50,16 +53,15 @@ function uploadOnePage(gl, GLTextureCtor, pageName, entry, plan) {
   return uploadManually(gl, pageName, entry, source, plan);
 }
 
-/** 用运行时的 GLTexture 上传（构造期即完成上传；必要时写法补一次 update） */
+/** 用运行时的 GLTexture 上传（构造期即完成上传） */
 function uploadViaGLTexture(gl, GLTextureCtor, pageName, entry, source, plan) {
   const prevUnpack = readUnpack(gl);
   try {
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, plan.unpack);
     const tex = new GLTextureCtor(gl, source);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, prevUnpack);
-    refreshTextureIfNeeded(gl, tex, plan, prevUnpack);
     applyTextureFilterLike(gl, tex, plan.textureFilter);
-    notify(plan, { page: pageName, mode: plan.pmaFlag ? 'premultiplied' : 'upload',
+    notify(plan, { page: pageName, mode: plan.mode,
       unpack: plan.unpack, source: entry.img ? 'img' : 'canvas', path: 'GLTexture', texHasPma: 'pma' in tex });
     return tex;
   } catch (e) {
@@ -67,16 +69,6 @@ function uploadViaGLTexture(gl, GLTextureCtor, pageName, entry, source, plan) {
     try { gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, prevUnpack); } catch { /* 忽略 */ }
     return null;
   }
-}
-
-/** 纹理带 pma 属性时同步一次并触发 update（无该属性 ⇒ 整块跳过；所有已装运行时都不带，属保留路径） */
-function refreshTextureIfNeeded(gl, tex, plan, prevUnpack) {
-  if (!('pma' in tex)) return;
-  tex.pma = plan.pmaFlag;
-  if (typeof tex.update !== 'function') return;
-  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, plan.unpack);
-  try { tex.update(tex.useMipMaps === true); } catch { /* 忽略 */ }
-  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, prevUnpack);
 }
 
 /** 回退：手动 createTexture + texImage2D（同样按 plan.unpack 决定是否让浏览器乘） */
@@ -93,7 +85,7 @@ function uploadManually(gl, pageName, entry, source, plan) {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filterMode);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  notify(plan, { page: pageName, mode: plan.pmaFlag ? 'premultiplied' : 'upload',
+  notify(plan, { page: pageName, mode: plan.mode,
     unpack: plan.unpack, source: 'manual', path: 'manual', texHasPma: false });
   return {
     _image: source, getImage() { return this._image; },

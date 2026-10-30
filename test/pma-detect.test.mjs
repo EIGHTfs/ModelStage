@@ -10,15 +10,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { detectPma, resolvePmaInfo, detectPmaFromImageData, shouldPremultiplyOnUpload, planTextureUpload, planBlend } from '../src/web/engine/pma.js';
 
-// 混合口径（premultiplied / straight）同样只从 decision 派生；
-//   needHook 必须与 blend.js 里 installBlendHooks 的内部判据同源（直通才需要改写 blendFunc）。
+// 混合口径（premultiplied / straight）同样只从 decision 派生，只回答"按预乘还是直通混合"。
+//   "要不要改写 blendFunc"不在这里：那个判断在 blend.js 的 installBlendHooks 内部按 blendMode 做，
+//   这里再暴露一个字段就是第二份平行语义（早前版本有过 needHook，已删）。
 test('planBlend：三档混合口径 + 热路径零分配', () => {
   assert.equal(planBlend(resolvePmaInfo('auto', { finalIsPremultiplied: true }, false)).premultiplied, true, '源图预乘 ⇒ 预乘混合');
   assert.equal(planBlend(resolvePmaInfo('auto', { finalIsPremultiplied: false }, false)).premultiplied, true, 'upload 路径 ⇒ 也是预乘混合');
   assert.equal(planBlend(resolvePmaInfo('auto', { finalIsPremultiplied: false }, true)).premultiplied, false, 'straight 路径 ⇒ 直通混合');
 
-  assert.equal(planBlend(resolvePmaInfo('auto', { finalIsPremultiplied: false }, true)).needHook, true, '直通口径要改写 blendFunc（与 blend.js 内部判据同源）');
-  assert.equal(planBlend(resolvePmaInfo('auto', { finalIsPremultiplied: true }, false)).needHook, false, '预乘口径不需要改写');
+  assert.deepEqual(Object.keys(planBlend({ blendMode: 'straight' })), ['premultiplied'], '返回值只有 premultiplied 一个字段');
 
   // planBlend 每帧都被调用 ⇒ 必须返回共享常量，不能每帧 new
   assert.equal(planBlend({ blendMode: 'straight' }), planBlend({ blendMode: 'straight' }), '同档位必须返回同一对象（零分配）');

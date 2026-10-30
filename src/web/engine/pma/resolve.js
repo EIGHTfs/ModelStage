@@ -93,19 +93,19 @@ export function planTextureUpload(info) {
 
 // 混合口径只有两种结果，预建成冻结常量：planBlend 在**每帧**都会被调用，
 //   每次 new 一个对象等于每帧一次 GC 压力。返回共享常量既零分配也不会被误改。
-const BLEND_PREMULTIPLIED = Object.freeze({ premultiplied: true, needHook: false });
-const BLEND_STRAIGHT = Object.freeze({ premultiplied: false, needHook: true });
+const BLEND_PREMULTIPLIED = Object.freeze({ premultiplied: true });
+const BLEND_STRAIGHT = Object.freeze({ premultiplied: false });
 
 /**
- * 混合口径的**完整派生**：`{ premultiplied, needHook }`。
+ * 混合口径派生：只回答一件事 —— **绘制时按预乘还是直通混合**。
  *
- * premultiplied 传给绘制（决定 src 因子是 `ONE` 还是 `SRC_ALPHA`、顶点色是否乘 alpha）
- * needHook      该口径下是否需要改写运行时的 blendFunc —— **与 blend.js 的 installBlendHooks
- *               内部判据同源**（那里写的是 `const straight = !(… blendMode === 'premultiplied')`）。
- *               这里只是把同一判据显式化，供调用方与单测对齐，**不是新语义**；钩子本身仍总是装上，
- *               真正的改写发生在每次 blendFunc 调用时。
+ * `premultiplied` 直接喂给绘制层（决定 blend 的 src 因子是 `ONE` 还是 `SRC_ALPHA`、
+ *   以及顶点色是否乘 alpha）。"要不要改写 blendFunc"这件事**不在这里回答**：
+ *   blend.js 的 `installBlendHooks` 在每个上下文上装一次钩子，改写与否由它自己在
+ *   每次 `blendFunc` 调用时按 `pmaInfo.blendMode` 判断 —— 这里再给一个 needHook 字段
+ *   只会多出一份没人消费的平行语义（早前版本就这么干过，已删）。
  * @param {{blendMode?: string}} info `resolvePmaInfo` 的结果
- * @returns {{premultiplied: boolean, needHook: boolean}} 冻结的共享常量
+ * @returns {{premultiplied: boolean}} 冻结的共享常量（零分配）
  */
 export function planBlend(info) {
   return (info && info.blendMode === 'premultiplied') ? BLEND_PREMULTIPLIED : BLEND_STRAIGHT;
