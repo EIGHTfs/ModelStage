@@ -38,6 +38,11 @@ export const SPEC = (() => {
     for (const ctl of (group && group.controls) || []) {
       if (!ctl || !ctl.id) continue;
       if (ctl.kind === 'actions' || ctl.kind === 'readonly' || ctl.kind === 'dynamic-list') continue;
+      // 皮肤不持久化（与动作列表同一条思路）：它的取值域由**当前模型**决定，
+      //   跨模型记一个皮肤名毫无意义（A 模型的 "00" 到 B 模型可能根本不存在），
+      //   而记住上一个模型的皮肤还会让"装载后自动挑一个能画出东西的皮肤"失效 ——
+      //   表现为刷新后又回到空白画面。每次装载重新挑最稳。
+      if (ctl.capabilityKey === 'skin') continue;
       // 开关即使没写 defaultOn 也算"有状态"：DOM 默认就是关（false）。
       //   `ctl-anim-loop` 正是这种写法——漏了它，本 bug 的控件根本进不了工厂。
       const isSwitch = ctl.kind === 'switch';
@@ -142,6 +147,26 @@ export function pruneUnregistered() {
 
 /** id → SPEC 声明 */
 const byId = new Map(SPEC.map((it) => [it.id, it]));
+
+/**
+ * 更新某个控件的**取值域**（运行时动态选项用）。
+ *
+ * 为什么必须有它：SPEC 的取值域是从 schema 的静态 `options` 推出来的，而有些控件的选项
+ *   是**装载模型后才填**的（皮肤列表：schema 里只声明了 `default` 占位，真实皮肤名
+ *   由 `panel.setOptions` 在运行时补进来）。
+ *   不把动态选项同步进域 ⇒ `set()` 的校验判它"非法"⇒ 回落默认值 ⇒
+ *   表现成"点了没反应"（实测：点皮肤 `00` 会切回 `default`，且连高亮都不动）。
+ * @param {string} id 控件 id
+ * @param {string[]} list 新的候选值（字符串化后保存）
+ * @returns {boolean} 该控件是否已登记
+ */
+export function setDomain(id, list) {
+  const key = String(id);
+  const it = byId.get(key);
+  if (!it) return false;
+  it.values = Array.isArray(list) ? list.map(String) : null;
+  return true;
+}
 
 /** 当前值（唯一真相源；启动时由 loadAll 填充，用户改动由 set 更新） */
 const values = new Map();

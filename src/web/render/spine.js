@@ -302,7 +302,18 @@ export function createSpineRenderer({ stage, onMsaa } = {}) {
       if (!st) return null;
       if (dbg) return !!(st.debug && st.debug[dbg[1]]);
       // 内容操作四键：回显**生效值**（INV-08），读舞台/引擎的真实状态，不是请求值
-      if (key === 'skin') return st.skin || 'default';
+      if (key === 'skin') {
+        // 必须读引擎**真正在用**的皮肤（activeSkins），不能只读舞台的 settings.skin：
+        //   装载时会自动挑一个"能画出东西"的皮肤（有些资源的 default 是空壳、附件全在具名皮肤里），
+        //   那条路径不经过 api.setSkin ⇒ st.skin 会停在旧值/默认值。
+        //   拿假值回显会让 setSetting 的"同值短路"误判 —— 表现为"点回 default 完全没反应"
+        //   （它以为已经是 default，直接 return true 什么都不做）。实测踩到过。
+        const engSkin = engineOf();
+        const active = engSkin && Array.isArray(engSkin.activeSkins) && engSkin.activeSkins.length
+          ? engSkin.activeSkins[0]
+          : null;
+        return active || st.skin || 'default';
+      }
       if (key === 'mixMode') return (Number(st.mixTime) || 0) > 0;
       // 混合时长：回显生效秒数（0 = 不混合）
       if (key === 'mixTime') return Number(st.mixTime) || 0;

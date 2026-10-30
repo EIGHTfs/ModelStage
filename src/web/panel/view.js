@@ -386,7 +386,7 @@ function renderGroup(group, ctx) {
  *   onSetting：已接线控件的回传口（面板只把"点了哪个选项"翻成机器值，具体生效由接线方决定）
  * @returns {{groups: number, controls: number, setFps: (fps: number|null) => void}}
  */
-export function mountPanel({ headEl, bodyEl, onSetting, wiredIds, groups, initialValue }) {
+export function mountPanel({ headEl, bodyEl, onSetting, wiredIds, groups, initialValue, onDomain }) {
   // schema 可由调用方按渲染器能力过滤后传入；缺省用全量 PANEL_GROUPS（保持原有行为）
   const schema = Array.isArray(groups) && groups.length ? groups : PANEL_GROUPS;
   // 滑块 id → 控件声明：外部同步（恢复上次设置 / 生效值回显）时要按声明格式化读数
@@ -463,6 +463,12 @@ export function mountPanel({ headEl, bodyEl, onSetting, wiredIds, groups, initia
   function setOptions(id, options, selected) {
     const box = find(`[data-ctl="${id}"]`);
     if (!box || !Array.isArray(options)) return false;
+    // 选项是运行时才确定的（如皮肤列表）⇒ 必须把新的候选值同步给"值工厂"的取值域，
+    //   否则工厂按 schema 的静态占位（只有 default）判这些值非法、回落默认值，
+    //   表现成"点了没反应"（实测：点皮肤 00 会切回 default，连高亮都不动）。
+    if (typeof onDomain === 'function') {
+      try { onDomain(id, options.map((o) => String(o && typeof o === 'object' ? o.value : o))); } catch { /* 域同步失败不影响渲染 */ }
+    }
     // 该项可能因"当前渲染面未声明该能力"而禁用：重建选项时必须**保留禁用态**，
     //   否则装载模型后刷新皮肤列表会把禁用按钮换成可点按钮（表现为"换面后又能点了"）。
     const blocked = ctx && typeof ctx.disabledReason === 'function' ? ctx.disabledReason(id) : null;

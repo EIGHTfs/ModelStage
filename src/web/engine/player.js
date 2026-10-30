@@ -16,7 +16,7 @@ import { buildModel } from './loader.js';
 import { capabilitiesFor } from './runtime-capabilities.js';
 import { createAdapters } from './adapters/index.js';
 import * as appearance from './appearance.js';
-import { getSkins as skinList, setSkins as skinApply, normalizeKeywords, countFilterableSlots } from './skins.js';
+import { getSkins as skinList, setSkins as skinApply, pickInitialSkin, normalizeKeywords, countFilterableSlots } from './skins.js';
 import { engineDefaults, mergeDebugDraw, rendererInfo } from './engine-state.js';
 import * as cameraOps from './camera-adapter.js';
 import { describeModel } from './model-info.js';
@@ -193,6 +193,16 @@ export class SpineEngine {
 
   /** 应用外观（混合钩子 + 滤镜）；必须在渲染器建好之后调用 */
   applyAppearance() {
+    // 先定皮肤、再装 blend/filter：附件都没挂上时谈混合模式没有意义。
+    //   只在"当前没有已选皮肤"时挑默认值 —— 用户手选过的皮肤（activeSkins 非空）不许被覆盖；
+    //   纹理重建（appearance.js）走这条路径时 activeSkins 已非空 ⇒ 天然跳过，重建后仍按用户的选择重放。
+    if (!this.activeSkins || !this.activeSkins.length) {
+      const picked = pickInitialSkin(this);
+      if (picked) {
+        const ok = skinApply(this, [picked]);
+        if (ok) this.log('info', `默认皮肤：${picked}（按"该皮肤下有附件"自动选中）`, 'skin');
+      }
+    }
     appearance.installBlend(this);
     appearance.applyFilter(this);
   }

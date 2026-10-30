@@ -37,9 +37,19 @@ import { connectPanelRefresh, connectReloadApp, rebuildPanelFor, refreshPanelAni
 function refreshSkinList() {
   if (!state.panel || !stage) return;
   const skins = stage.getSkins ? stage.getSkins() : ['default'];
-  const current = skins.includes('default') ? 'default' : skins[0];
+  // 当前项取**引擎实际生效的那个**，不要用"列表里有没有 default"去猜：
+  //   装载时会自动挑一个"能画出东西"的皮肤（有些资源的 default 是空壳），
+  //   猜成 default 就会出现"下拉显示 default、画面其实是 00"这种自相矛盾的显示。
+  const active = typeof stage.getActiveSkin === 'function' ? stage.getActiveSkin() : null;
+  const current = (active && skins.includes(active))
+    ? active
+    : (skins.includes('default') ? 'default' : skins[0]);
   state.panel.setOptions('ctl-skin-list', skins.map((s) => ({ text: s, value: s })), current);
   if (state.transport) state.transport.setOptions('transport-skin', skins.map((s) => ({ text: s, value: s })), current);
+  // 注意：**不把皮肤记进值工厂**（不持久化）。皮肤名是"模型局部语义"——
+  //   当前模型的 "00" 换个模型可能根本不存在，记住它只会让下次装载按一个不存在的名字去设，
+  //   还会盖掉"装载时自动挑一个能画出东西的皮肤"这条逻辑（表现为刷新后又空白）。
+  //   与动作列表同一条思路：这类"取值域随模型变"的项，每次装载重新来。
   try { refreshPanelAnimations(); } catch { /* 动作列表刷新失败不影响主流程 */ }
   document.documentElement.dataset.skinCount = String(skins.length);
 }

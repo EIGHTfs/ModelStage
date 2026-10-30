@@ -141,6 +141,13 @@ export function restorePanelSettings(skipIds) {
 function applyPanelSetting(id, value) {
   // 一次性动作（导出/导入/恢复默认）：执行，不进持久化（ONE_SHOT_IDS 已在工厂侧双保险）
   if (ONE_SHOT_IDS.has(String(id))) { runSettingsAction(value); return; }
+  // 皮肤：**不进值工厂**（它的取值域随模型变，持久化没有意义 —— 见 ui-state 的 SPEC 过滤），
+  //   直接下发渲染器。与动作列表同一条思路：面板只负责"把点到的值送出去"。
+  if (String(id) === 'ctl-skin-list') {
+    const fn = SHELL_APPLIERS[id];
+    if (typeof fn === 'function') { try { fn(value); } catch { /* 下发失败保持原皮肤 */ } }
+    return;
+  }
   // 其余一律经工厂：校验 → apply（生效）→ render（显示）→ 去抖落盘。
   //   这样"谁是真相"只有一处（契约 R1），也就不会出现"值对但显示错"。
   uiState.set(id, value);
@@ -438,6 +445,9 @@ function rebuildPanelFor(renderer) {
     groups,
     headEl: dom.panelHead,
     bodyEl: dom.panelBody,
+    // 动态选项 → 值工厂的取值域。皮肤列表这类"选项由模型决定"的控件，schema 里只有占位值；
+    //   不同步域的话，工厂会把运行时补进来的值判成非法并回落默认（表现为"点了没反应"）。
+    onDomain: (id, list) => { try { uiState.setDomain(id, list); } catch { /* 域同步失败不影响面板 */ } },
     // 面板控件回调统一入口 + 暂停补帧：面板里的设置是**直调 renderer.setSetting**（不经
     //   app/renderer-setting.js），所以补帧必须挂在这一层，否则暂停中改设置"改了看不见"。
     onSetting: (id, value) => {

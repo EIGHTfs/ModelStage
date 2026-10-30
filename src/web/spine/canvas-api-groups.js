@@ -79,6 +79,20 @@ api.getSkins = () => {
 };
 
 /**
+ * 当前**实际生效**的皮肤名（引擎侧记账，装载时自动选中的那个也在内）。
+ *
+ * 为什么需要它：面板刷新时若拿"皮肤列表里有没有 default"去猜当前项，会把
+ *   "自动选中了具名皮肤"的资源显示成 default —— 设置里写 A、画面是 B，排查时会被这条假信息带偏。
+ * 返回 null 表示引擎还没设过皮肤（调用方自行决定回落成什么）。
+ * @returns {string|null}
+ */
+api.getActiveSkin = () => {
+  if (!st.engine) return null;
+  const list = st.engine.activeSkins;
+  return Array.isArray(list) && list.length ? list[0] : null;
+};
+
+/**
  * 切换皮肤（引擎按名称匹配；找不到时保持原皮肤）。
  * 成功与否必须取引擎返回值：否则面板会记下一个并不存在的皮肤名，
  *   表现为"设置里显示 skin_X、画面还是 default"，且下次重建贴图时又按错名字去设一遍。
