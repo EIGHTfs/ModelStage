@@ -15,7 +15,9 @@ import { isKnownKind } from '../render/surfaces.js';
 import { formatError, getJson } from '../infra/api.js';
 import { createRootManager } from './root-manager.js';
 // 容器装载失败按条目记一笔，名册下次渲染直接给 ⚠ 提示（与"缺纹理"同一套展示语义）
-import { recordFailure } from '../roster/bundle-failures.js';
+// recordFailure / clearFailure 各自会就地刷新名册上那一行的 ⚠（见 roster/bundle-failures.js），
+//   所以这里不需要再关心 DOM —— 装载结果变化后名册自己跟上。
+import { recordFailure, clearFailure } from '../roster/bundle-failures.js';
 import { createDirPicker } from './dir-picker.js';
 
 async function loadWebConfig() {
@@ -455,6 +457,10 @@ function mountEntry(entry, name) {
       // 缓存对齐后再刷一次右栏，保证"底栏 == 右栏高亮"（两处逐项一致，契约 §一/§七）
       try { refreshPanelAnimations(); } catch { /* 动作列表刷新失败不影响主流程 */ }
       document.documentElement.dataset.stageReady = '1';
+      // 走到这里才是**真的装载成功**（resolve 成功但 mount 失败的会落到 .catch 里，到不了这行）。
+      // 清掉这条的失败记忆；撤掉行上 ⚠ 也在 clearFailure 内部一并做了（写入口负责通知 UI）。
+      //   不清的后果：⚠ 永远留在 localStorage 里，刷新页面、甚至清设置之前都不会掉。
+      clearFailure(entry);
     })
     .catch((err) => {
       // 被取代属正常竞态结果（不是故障）：只记一条 info，不显示红色错误

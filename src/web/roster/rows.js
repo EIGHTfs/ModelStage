@@ -156,6 +156,8 @@ export function renderVariantRow(game, c, v, selectedId, failure) {
     //   与上面缺纹理**共用**同一个徽标类与行级 class（不新建样式）；
     //   两者天然互斥：missingTextures 只出现在目录型条目，failure 只对 container 条目记录。
     const badge = el('span', 'tree-variant-warn', '⚠');
+    // 打标记：与"缺纹理"徽标同 class，靠这个标记才能只删对的那一个（见 refreshVariantFailure）
+    badge.dataset.bundleFailure = '1';
     badge.title = `该资源包无法装载：${failure.text}`;
     row.append(badge);
     row.classList.add('is-incomplete');
@@ -165,4 +167,54 @@ export function renderVariantRow(game, c, v, selectedId, failure) {
     : (failure ? `\n⚠ 不支持：${failure.text}` : '');
   row.title = `${origName}${m.srcDir && m.srcDir !== origName ? `  ·  ${m.srcDir}` : ''}${warnLine}`;
   return row;
+}
+
+/**
+ * 按条目**就地**刷新「装载失败」徽标：只动命中那一行，**不重渲染整棵名册**。
+ *
+ * 为什么不能整棵重渲染：名册是带展开态 / 选中态 / 滚动位置的树，
+ *   重渲染会把这三样全部丢掉 —— 用户看到的是"点一下模型，列表跳回顶部、节点全折叠"。
+ *
+ * 与「缺纹理」徽标的区分：两者共用 `.tree-variant-warn` 样式类，
+ *   所以失败徽标带了 `data-bundle-failure` 标记；删除时**只认这个标记**，
+ *   绝不误删缺纹理那一个。同理，只有行内再无任何 ⚠ 时才撤 `is-incomplete`
+ *   （否则会让"缺纹理"的残缺行看起来正常）。
+ *
+ * @param {object} model 名册条目（只需 id / name）
+ * @param {{text:string}|null} failure null = 清除（装载成功）；有值 = 标记（装载失败）
+ * @returns {boolean} 命中并处理了返回 true；该条目当前不在名册里（被折叠/搜索过滤）返回 false
+ */
+export function refreshVariantFailure(model, failure) {
+  const id = String((model && (model.id || model.name)) || '');
+  if (!id) return false;
+  // 不用属性选择器：条目 id 里常有空格 / 斜杠 / 引号
+  //   （形如 `bundle-<rootId>-<角色> - <变体>/<文件>`），拼进选择器必须转义，
+  //   而 CSS.escape 不是所有环境都有。名册是数百行量级，直接遍历更稳也更清楚。
+  let row = null;
+  for (const candidate of document.querySelectorAll('.tree-row.tree-variant')) {
+    if (candidate.dataset && candidate.dataset.modelId === id) { row = candidate; break; }
+  }
+  if (!row) return false;
+
+  const badgeTitle = `该资源包无法装载：${(failure && failure.text) || ''}`;
+  const existing = row.querySelector('[data-bundle-failure="1"]');
+  if (failure) {
+    if (existing) {
+      existing.title = badgeTitle;          // 已有徽标：只更新文案（不重复 append）
+    } else {
+      const badge = el('span', 'tree-variant-warn', '⚠');
+      badge.dataset.bundleFailure = '1';
+      badge.title = badgeTitle;
+      row.append(badge);
+    }
+    row.classList.add('is-incomplete');
+  } else {
+    if (existing) existing.remove();
+    if (!row.querySelector('.tree-variant-warn')) row.classList.remove('is-incomplete');
+  }
+
+  // 行级 title 里那一句警告同步增删；其余部分（原名 / 目录 / 缺纹理警告）原样保留
+  const baseTitle = String(row.title || '').replace(/\n⚠ 不支持：[^\n]*$/, '');
+  row.title = failure ? `${baseTitle}\n⚠ 不支持：${(failure && failure.text) || ''}` : baseTitle;
+  return true;
 }

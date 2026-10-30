@@ -25,22 +25,28 @@ import { byKind, knownKinds } from '../render/surfaces.js';
  * 取全量 catalog 条目（跨所有资源根）。
  * 为什么不用名册里的已加载数据：名册按游戏/角色分组且可能未展开，
  *   而这里要"精确匹配任意一条"，直接问服务端最可靠。
- * @returns {Promise<{entries: object[], failures: string[]}>} failures = 取不到清单的根（带原因），
- *   用于在"深链匹配不到"时把"为什么取不到"这层带进提示（否则深链失效零线索）
+ * @returns {Promise<{entries: object[], failures: string[], emptyRoots: string[]}>}
+ *   failures   = 清单**取不到**的根（带原因）—— 查询失败，可能要重试
+ *   emptyRoots = 清单拿到了但**一条都没有**、且服务端有 warnings 的根 —— 查询成功但有话说
+ *   两档分开：前者是"查询失败"，后者是"根配错/根是空的"，处置方向完全不同
  */
 async function fetchAllEntries() {
   const roots = await getJson('/api/roots').catch(() => null);
   const list = (roots && (roots.roots || roots.items)) || [];
   const out = [];
   const failures = [];
+  const emptyRoots = [];
   for (const r of list) {
     const id = r && (r.id || r.name);
     if (!id) continue;
-    const { entries, reason } = await fetchRootEntries(id);
+    const { entries, reason, warnings } = await fetchRootEntries(id);
     if (reason) failures.push(`${id}（${reason}）`);
+    // 只在"一条都没有"时才带 warnings：正常根服务端也会给通用提示（例如"有 2 个插件能解包"），
+    //   塞进正常提示就是纯噪音
+    else if (!entries.length && warnings.length) emptyRoots.push(`${id}（${String(warnings[0]).slice(0, 80)}）`);
     for (const e of entries) out.push({ ...e, rootId: e.rootId || id });
   }
-  return { entries: out, failures };
+  return { entries: out, failures, emptyRoots };
 }
 
 /** 两种写法都认：先 id 全等，再 `rootId/rel` 全等 */
@@ -95,21 +101,26 @@ export async function applyUrlParams() {
     return { runtime: runtimeArg };
   }
 
-  const { entries, failures } = await fetchAllEntries();
+  const { entries, failures, emptyRoots } = await fetchAllEntries();
   const { hit, by, ambiguous } = matchEntry(entries, modelArg);
 
   if (!hit) {
     const sample = entries.slice(0, 5)
       .map((e) => `  · id=${e.id || '(无)'}   或   ${e.rootId || ''}/${e.rel || ''}`)
       .join('\n');
-    // 把"某个根的清单根本没取到"这层带进提示：否则深链失效看起来就像"模型不存在"，
-    //   而真实原因可能是该根路径写错/服务端拒绝（那是完全不同的处置方向）。
+    // 把"为什么匹配不到"分两档带进提示（否则深链失效看起来就像"模型不存在"）：
+    //   ① 某个根的清单**根本没取到**（路径配错/服务端拒绝）—— 该去查配置或服务
+    //   ② 某个根**取到了但一条都没有**、且服务端有话说（典型：path 指到空目录/不存在）
+    //   两档措辞刻意不同：把 ② 说成"取不到"会让"要不要重试"这类判断失准。
     const failed = failures.length
       ? `。另外有 ${failures.length} 个根的清单取不到：${failures.slice(0, 3).join('；')}${failures.length > 3 ? ' …' : ''}`
       : '';
+    const empty = emptyRoots.length
+      ? `。另外有 ${emptyRoots.length} 个根存在但没扫出任何模型：${emptyRoots.slice(0, 2).join('；')}${emptyRoots.length > 2 ? ' …' : ''}`
+      : '';
     report(ambiguous && ambiguous.length
       ? `URL 参数 model=${modelArg} 命中 ${ambiguous.length} 条（按 ${by} 匹配），无法确定用哪一条；请改用更精确的写法`
-      : `URL 参数 model=${modelArg} 没有匹配到任何条目（两种写法都支持：条目 id，或 rootId/rel）${failed}。前 5 个候选：\n${sample}`);
+      : `URL 参数 model=${modelArg} 没有匹配到任何条目（两种写法都支持：条目 id，或 rootId/rel）${failed}${empty}。前 5 个候选：\n${sample}`);
     return { model: modelArg };
   }
 

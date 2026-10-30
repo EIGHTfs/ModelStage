@@ -22,6 +22,11 @@ const FAIL_KEY = 'modelstage-bundle-failures';
 
 // 插件清单走统一 HTTP 层（重试 + 与 plugin-host 的同 URL 去重 + 统一超时/错误归类）
 import { getJson } from '../infra/api.js';
+// 写缓存的同时把名册上那一行的 ⚠ 就地刷新。
+//   为什么数据层可以依赖行刷新：本文件与 rows.js 同在 roster 层、且 rows.js 不回头依赖本文件
+//   （它只依赖 list/dom/surfaces），没有循环。把"通知 UI"收在写入口这一层，
+//   才不会出现"这条失败路径会亮、那条不亮"的随机观感 —— 失败有四个调用点。
+import { refreshVariantFailure } from './rows.js';
 
 /**
  * 失败原因 → 一句人话。
@@ -72,6 +77,15 @@ function readAll() {
   } catch { return { fp: '', items: {} }; }
 }
 
+/**
+ * model → 缓存键。
+ * **写、读、删三处必须用同一套取法**：各写一遍就会漂移（比如某处只认 id、另一处只认 name），
+ * 表现是"记下来了但清不掉"或"删了另一条"。
+ */
+function idOf(model) {
+  return String((model && (model.id || model.name)) || '');
+}
+
 function writeAll(data) {
   try { localStorage.setItem(FAIL_KEY, JSON.stringify(data)); return true; } catch { return false; }
 }
@@ -103,7 +117,7 @@ export async function ensureFingerprint() {
  * @param {string} message 原始 message（reason 为空时作为展示兜底）
  */
 export function recordFailure(model, reason, message) {
-  const id = String((model && (model.id || model.name)) || '');
+  const id = idOf(model);
   if (!id) return false;
   // 只记容器条目：目录型的失败多数是资产问题，已有 missingTextures 那套，不要混进来
   if (!model || !model.container) return false;
@@ -117,7 +131,15 @@ export function recordFailure(model, reason, message) {
     size: Number(model.size) || 0,
     at: Date.now(),
   };
-  return writeAll({ fp, items });
+  const ok = writeAll({ fp, items });
+  // 写完立刻把该行的 ⚠ 刷出来（不等下次渲染名册）。
+  //   只有 getFailure 真的给出记录时才刷：它返回 null 还有第二种含义「指纹未就绪」，
+  //   那时传 null 给 refresh 会把徽标**清掉**——正好是反效果。
+  if (ok) {
+    const rec = getFailure(model);
+    if (rec) refreshVariantFailure(model, rec);
+  }
+  return ok;
 }
 
 /**
@@ -128,7 +150,7 @@ export function recordFailure(model, reason, message) {
 export function getFailure(model) {
   if (!model || !model.container) return null;      // 只对容器条目生效
   if (!currentFp) return null;                      // 指纹未就绪：不显示（避免用过期结论误导）
-  const id = String(model.id || model.name || '');
+  const id = idOf(model);
   if (!id) return null;
   const data = readAll();
   if (data.fp && data.fp !== currentFp) return null; // 过期规则①（ensureFingerprint 通常已清）
@@ -144,6 +166,32 @@ export function getFailure(model) {
 /** 清空缓存（测试/排障用；也让"人工验证指纹失效"有个干净起点） */
 export function clearFailures() {
   return writeAll({ fp: currentFp, items: {} });
+}
+
+/**
+ * 清除**单个条目**的失败记录（装载成功后调用）。
+ *
+ * 为什么需要它：`clearFailures()` 是"全量清空"，只服务于清设置/排障；
+ *   而在"上次打不开、这次打开了"这条最常见的路径上，没有单条清除的入口 ——
+ *   于是成功之后那条记录永远留在缓存里，⚠ 标记再也不消失（必须刷新甚至清设置才掉）。
+ *
+ * 幂等：条目不存在时**什么都不做**直接返回 false（不重写缓存、不产生垃圾条目）。
+ * 键的取法与 recordFailure / getFailure 完全一致（见 idOf），不要另造规则。
+ * @param {{id?:string, name?:string}} model
+ * @returns {boolean} 真的删掉了一条时返回 true
+ */
+export function clearFailure(model) {
+  const id = idOf(model);
+  if (!id) return false;
+  const data = readAll();
+  if (!Object.prototype.hasOwnProperty.call(data.items, id)) return false;
+  const items = { ...data.items };
+  delete items[id];
+  // 指纹原样带回：只是少一条记录，不该顺手把指纹重置（那会让整批缓存失效）
+  const ok = writeAll({ fp: currentFp || data.fp || '', items });
+  // 真的删掉了才刷新（幂等分支提前 return，没有变化就不碰 DOM）
+  if (ok) refreshVariantFailure(model, null);
+  return ok;
 }
 
 /**
