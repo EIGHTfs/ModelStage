@@ -478,8 +478,10 @@ export function applyKeyedControlReplacements(groups, entries) {
   const list = (Array.isArray(entries) ? entries : [])
     .filter((e) => e && /^panel\.control\./.test(String(e.name || '')));
   const out = (Array.isArray(groups) ? groups : []).map((g) => ({ ...g, controls: (g.controls || []).slice() }));
-  if (!list.length) return { groups: out, replaced: 0 };
+  if (!list.length) return { groups: out, replaced: 0, controls: [] };
   let replaced = 0;
+  /** 被替换的控件清单（装配层要拿它登记"控件 id → 插件设置键"的映射与 SPEC 条目） */
+  const controls = [];
   for (const entry of list) {
     const target = String(entry.target || '');
     if (!target) continue;
@@ -490,21 +492,29 @@ export function applyKeyedControlReplacements(groups, entries) {
       if (i < 0) continue;
       const base = g.controls[i];
       // 合并口径：形状取插件的（选项集/类型可不同），身份与能力继承内置的（id / capabilityKey / settingKey）
-      g.controls[i] = {
+      const next = {
         ...base,
         ...desc,
         id: base.id,
+        // **值域与身份绑定**：替换型控件只换形状，存值键改成插件自己的 setting
+        //   （内置控件那条 SPEC 条目原样保留 ⇒ 内置键全程没人写，卸载后连"恢复"都不需要）
+        setting: String(entry.setting || ''),
         label: String(entry.label || base.label || base.id),
         pluginId: String(entry.pluginId || ''),
         replacedBy: String(entry.pluginId || ''),
         // 插件的 onAction 在装配层登记（这里只留一份引用，便于排障）
         onAction: typeof (entry.spec && entry.spec.onAction) === 'function' ? entry.spec.onAction : base.onAction,
       };
+      g.controls[i] = next;
+      // 回报的是**完整描述子**（含 kind/options/values/defaultValue）：
+      //   装配层要拿它给"插件设置键"登记 SPEC 条目 —— 缺了这些字段，工厂会以
+      //   "无法确定默认值"为由拒登（表现：点了没反应、值根本存不进去）
+      controls.push({ ...next });
       replaced += 1;
       break;
     }
   }
-  return { groups: out, replaced };
+  return { groups: out, replaced, controls };
 }
 
 export function mergeSlotControls(baseGroups, entries, opts = {}) {

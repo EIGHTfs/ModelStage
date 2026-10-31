@@ -255,6 +255,9 @@ function scheduleControlRepaint(id) {
  *   · 同一键在途时只发一次（pending 集合），连续 render 不会重复列举
  *   · 列举完成 ⇒ 缓存写入 + 面板重建一次（让插件的 render 拿到真实清单）
  */
+/** 控件 id → 清单里声明的默认值（插件设置键的兜底；替换型控件也走它） */
+const slotDeclaredDefaultById = new Map();
+
 const docFilesCache = new Map();
 const docFilesPending = new Set();
 const docFilesStats = { lists: 0, repaints: 0 };
@@ -267,9 +270,29 @@ function publishDocFilesStats() {
   } catch { /* 无 window 忽略 */ }
 }
 
-/** @param {object} model 当前模型条目 @returns {string} 缓存键 */
+/**
+ * 清单缓存键的 **prefix 段**。
+ *
+ * 为什么必须把 prefix 放进键里：VFS 前缀是按"内容指纹"派生的（换插件、重新解包都会变），
+ *   而 prefix 一变，同一份 rootId/rel 下的**文件清单就完全不同**。
+ *   键里不含 prefix 时，重新解包后仍会命中旧列表 —— 连"重新列举"都不会发生。
+ *
+ * 三种情况用三个互不相同的标记（"本来就没有" 与 "还没就绪" 绝不能混成一种）：
+ *   · 容器条目、前缀已就绪 ⇒ `vfs:<prefix>`
+ *   · 容器条目、前缀未就绪 ⇒ `vfs:`（空前缀仍带前导标记，与 `none` 区分）
+ *   · 非容器条目（目录/单文件）⇒ `none`（这类条目天生没有 VFS 前缀）
+ * @param {object} model 当前模型条目
+ * @returns {string}
+ */
+function docFilesPrefixOf(model) {
+  const isContainer = (model && (model.container === 'unityfs' || model.kind === 'bundle'));
+  if (!isContainer) return 'none';
+  return `vfs:${state.vfsPrefix || ''}`;
+}
+
+/** @param {object} model 当前模型条目 @returns {string} 缓存键 = rootId|rel|kind|id|prefix 段 */
 function docFilesKeyOf(model) {
-  return [model && model.rootId, model && model.rel, model && model.kind, model && (model.id || model.name)]
+  return [model && model.rootId, model && model.rel, model && model.kind, model && (model.id || model.name), docFilesPrefixOf(model)]
     .map((v) => String(v == null ? '' : v)).join('|');
 }
 
@@ -792,13 +815,22 @@ function syncToolbarPlugins(slotEntries) {
 }
 
 function registerSlotStorage(pluginControls) {
-  if (!pluginControls.length) return;
-  // 存值键映射随重建刷新（控件消失后不许还留着旧映射）
+  // **先清再判空**：早期版本把这两句写在 `if (!controls.length) return;` 之后，
+  //   于是"插件全部卸载后"这一轮重建不会清表 ⇒ 残留的 控件id→插件键 映射让内置控件
+  //   继续读插件的旧值（表现：卸载后内置控件没有任何选中项）。清表必须无条件执行。
   slotStoreKeyById.clear();
+  slotDeclaredDefaultById.clear();
+  if (!pluginControls.length) return;
   for (const ctl of pluginControls) {
     const id = String((ctl && ctl.id) || '');
     const setting = String((ctl && ctl.setting) || '');
-    if (id && setting && setting !== id) slotStoreKeyById.set(id, setting);
+    if (!id || !setting || setting === id) continue;
+    slotStoreKeyById.set(id, setting);
+    // 清单里声明的默认值：插件自己换值域导致旧值失效时，显示它（不碰内置键）
+    const decls = state.pluginHost && typeof state.pluginHost.pluginSettings === 'function'
+      ? (state.pluginHost.pluginSettings(ctl.pluginId) || []) : [];
+    const decl = decls.find((d) => String((d && d.key) || '') === setting);
+    if (decl && decl.default !== undefined) slotDeclaredDefaultById.set(id, decl.default);
   }
   // 反向表：设置键 → 绑定它的控件 id（一个键可能被多个控件绑定，所以是数组）
   slotCtlIdsByKey.clear();
@@ -831,7 +863,9 @@ function registerSlotStorage(pluginControls) {
     const id = String((ctl && ctl.id) || '');
     if (!id) continue;
     appliers[id] = {
-      apply: (v) => applyCore(id, v),
+      // 替换型控件的值域是插件自定义的，**不往内置效果上套**（applyCore 会拿它当内置参数用，
+      //   必然被判非法并刷一条无意义警告）；它的语义由插件的 onAction 自己解释
+      apply: (v) => { if (!ctl.replacedBy) applyCore(id, v); },
       render: () => scheduleControlRepaint(id),
     };
   }
@@ -912,8 +946,13 @@ function mountRebuiltPanel(groups, pluginControls) {
     //   否则渲染层会当成"未接线"：按钮不绑 click，点了没反应（实测踩过）。
     wiredIds: [...WIRED_IDS, ...pluginControls.filter((c) => c.disabled !== true && c.id).map((c) => String(c.id))],
     // 首次渲染就显示用户值（契约 R2）：工厂里已经有 loadAll 读回的值
-    // 读存值键：声明了 spec.setting 的控件，值存在清单设置键上（不是 control id）
-    initialValue: (id) => uiState.getValue(storeKeyOf(id)),
+    // 读存值键：声明了 spec.setting 的控件，值存在清单设置键上（不是 control id）；
+    //   **读不到时用清单声明的 default 兜底**（插件换值域后旧值失效的正解，不碰内置键）
+    initialValue: (id) => {
+      const v = uiState.getValue(storeKeyOf(id));
+      if (v !== undefined) return v;
+      return slotDeclaredDefaultById.has(String(id)) ? slotDeclaredDefaultById.get(String(id)) : undefined;
+    },
   });
   restoreExpandedGroups();
   return info;
@@ -930,9 +969,11 @@ function rebuildPanelFor(renderer) {
     }
   }
   syncPluginEffects(host, pluginControls);
-  registerSlotStorage(pluginControls);
   // 键值插槽：替换内置控件（按 target 找既有控件，替换后仍用原 id）
   const replaced = applyKeyedControlReplacements(slotMerged.groups, slotEntries);
+  // 被替换的控件也要登记：它们的**存值键是插件的 setting**，SPEC 里必须有这个键，
+  //   否则 uiState.set(插件键) 会被工厂判成"未登记的键"直接丢弃（表现：点了没反应）
+  registerSlotStorage([...pluginControls, ...replaced.controls]);
   if (replaced.replaced) {
     stageLog('info', `插件替换了 ${replaced.replaced} 个内置控件`, { source: 'plugin-slots' });
   }

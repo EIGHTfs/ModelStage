@@ -222,7 +222,7 @@ export function createSlotRegistry(opts = {}) {
     return true;
   }
 
-  function checkKeyedTarget(pid, slotName, prefix) {
+  function checkKeyedTarget(pid, slotName, prefix, setting) {
     const raw = slotName.slice('panel.control.'.length);
     const tail = raw.startsWith(prefix) ? raw.slice(prefix.length) : raw;
     if (!tail) {
@@ -233,6 +233,14 @@ export function createSlotRegistry(opts = {}) {
     if (!builtinControlIds.has(tail)) {
       reject(pid, slotName, 'unknown-control',
         `目标控件「${tail}」不在内置控件表里（替换只能指向既有控件；新建控件请用分组插槽 panel.group.*）`);
+      return { ok: false };
+    }
+    // 替换型控件**必须**带自己的 setting：值域与身份绑定，绝不与内置改动共用一个存储槽
+    //   （共用会出现"存储旧值不在新值域 ⇒ 替换期间无选中项"，那是根因层面的错配，不是显示小瑕疵）
+    if (!setting) {
+      reject(pid, slotName, 'missing-setting',
+        '替换型控件不得复用原生设置键，请声明自己的 setting（形如 plugin.<pluginId>.<key>，并在清单 settings 里声明）；'
+        + '纯动作按钮请改用 toolbar.actions 或分组插槽新增控件');
       return { ok: false };
     }
     const holder = [...byPlugin.values()].flat().find((r) => String((r && r.target) || '') === tail);
@@ -274,7 +282,7 @@ export function createSlotRegistry(opts = {}) {
     }
     // 键值插槽：解析目标控件 + 抢占检测（细节见 checkKeyedTarget）
     if (isKeyed) {
-      const keyed = checkKeyedTarget(pid, slotName, prefix);
+      const keyed = checkKeyedTarget(pid, slotName, prefix, setting);
       if (!keyed.ok) return { ok: false };
       return { ok: true, id, setting, target: keyed.target };
     }

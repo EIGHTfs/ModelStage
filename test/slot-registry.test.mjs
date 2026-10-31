@@ -30,6 +30,8 @@ function makeReg(opts = {}) {
     groupIds: opts.groupIds || ['motion', 'skin', 'play', 'filter', 'pma', 'runtime', 'theme', 'debug', 'settings'],
     // 内置控件 id：键值插槽（panel.control.*）只能替换它们（不许静默新建）
     builtinControlIds: opts.builtinControlIds || ['sharpness', 'ctl-filter-preset'],
+    // 插件清单里声明的设置键：替换型控件必须声明自己的 setting（本轮新增校验）
+    settingsKeysOf: opts.settingsKeysOf || (() => ['plugin.p1.sharpness', 'plugin.p1.preset', 'plugin.p2.preset']),
     isInLoadWindow: opts.isInLoadWindow || (() => true),
   });
   return { reg, rejects };
@@ -153,7 +155,7 @@ test('键值插槽：spec.id 必须带 plugin.<pluginId>. 前缀（分组插槽�
   const bad = reg.register('p1', 'panel.control.plugin.p1.sharpness', { id: 'sharpness' });
   assert.equal(bad, null);
   assert.equal(rejects.at(-1).code, 'bad-id-prefix');
-  const ok = reg.register('p1', 'panel.control.plugin.p1.sharpness', { id: 'plugin.p1.sharpness' });
+  const ok = reg.register('p1', 'panel.control.plugin.p1.sharpness', { id: 'plugin.p1.sharpness', setting: 'plugin.p1.sharpness' });
   assert.equal(typeof ok, 'function', 'key 含点也必须能匹配上目录里的 panel.control.<key>');
   assert.equal(reg.stats().total, 1);
 });
@@ -171,10 +173,14 @@ test('键值插槽：目标必须是既有内置控件；两个插件抢同一�
   assert.equal(reg.register('p3', 'panel.control.plugin.p3.ctl-not-exist', { id: 'plugin.p3.x' }), null);
   assert.equal(rejects.at(-1).code, 'unknown-control');
   // p1 占位成功；p2 抢同一个内置控件 ⇒ 被拒，原因带双方
-  assert.equal(typeof reg.register('p1', 'panel.control.plugin.p1.ctl-filter-preset', { id: 'plugin.p1.preset' }), 'function');
-  assert.equal(reg.register('p2', 'panel.control.plugin.p2.ctl-filter-preset', { id: 'plugin.p2.preset' }), null);
+  assert.equal(typeof reg.register('p1', 'panel.control.plugin.p1.ctl-filter-preset', { id: 'plugin.p1.preset', setting: 'plugin.p1.preset' }), 'function');
+  assert.equal(reg.register('p2', 'panel.control.plugin.p2.ctl-filter-preset', { id: 'plugin.p2.preset', setting: 'plugin.p2.preset' }), null);
   assert.equal(rejects.at(-1).code, 'control-taken');
   assert.match(rejects.at(-1).why, /p1/, '原因里要有先占位者的 pluginId');
+  // 不带 setting 的替换 ⇒ missing-setting（不许复用原生设置键）
+  assert.equal(reg.register('p2', 'panel.control.plugin.p2.ctl-filter-preset', { id: 'plugin.p2.preset2' }), null);
+  assert.equal(rejects.at(-1).code, 'missing-setting');
+  assert.match(rejects.at(-1).why, /请声明自己的 setting/);
 });
 
 test('stats 明细不含 spec 函数（可被序列化给测试/__SLOT_STATS__）', () => {
