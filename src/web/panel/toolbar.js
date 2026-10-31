@@ -19,6 +19,53 @@ import { PLUGIN_TOOLBAR_MAX, TOOLBAR_ACTIONS, iconBodyOf } from './toolbar-schem
  * @param {{id:string, label:string, title?:string, icon?:string, pressed?:string, pluginId?:string}} item
  * @returns {HTMLButtonElement}
  */
+/**
+ * 求出按钮的按下态。
+ *
+ * 支持两种写法（**getter 优先**，这也是本轮选定的形式）：
+ *   · `spec.pressed` 是函数 ⇒ 渲染时求值（可读 owner props）
+ *   · `spec.pressed` 是布尔   ⇒ 直接当常量用
+ * 选 getter 的理由：与 owner props 的 getter 语义一致——插件不用自己记"什么时候该重绘"，
+ *   宿主每次渲染/重建时重新求值即可；布尔常量仍可用，写起来最省事。
+ * @param {object} item 按钮描述
+ * @param {object} [props] owner props（只有当 pressed 是函数时才会传进去）
+ * @returns {boolean|undefined} undefined 表示"这个按钮没有按下态"
+ */
+function resolvePressed(item, props) {
+  const raw = item && item.pressed;
+  if (typeof raw === 'function') {
+    try { return raw(props || {}) === true; } catch { return undefined; }
+  }
+  if (raw === true || raw === 'true') return true;
+  if (raw === false || raw === 'false') return false;
+  return undefined;
+}
+
+/** 写 aria-pressed（undefined ⇒ 移除属性，不冒充"关"） */
+function applyPressedAttr(btn, pressed) {
+  if (pressed === true || pressed === false) btn.setAttribute('aria-pressed', String(pressed));
+  else btn.removeAttribute('aria-pressed');
+}
+
+/**
+ * 插件按钮的横向滚动容器（幂等：已存在就复用）。
+ *
+ * 为什么单独一个容器：内置按钮必须**固定可见**、插件按钮可以很多 ——
+ *   把两者放进同一个 flex 容器时，插件一多会把内置按钮挤出屏幕。
+ * @param {HTMLElement} nav 顶栏 nav
+ * @returns {HTMLElement}
+ */
+function pluginStrip(nav) {
+  let strip = nav.querySelector(':scope > .header-plugin-actions');
+  if (!strip) {
+    strip = document.createElement('div');
+    strip.className = 'header-plugin-actions';
+    strip.dataset.pluginToolbar = '1';
+    nav.append(strip);
+  }
+  return strip;
+}
+
 function buildButton(item) {
   const btn = document.createElement('button');
   btn.type = 'button';
@@ -27,7 +74,9 @@ function buildButton(item) {
   // 可访问名与 tooltip 分开：tooltip 可以更短（与旧 HTML 的口径一致）
   btn.setAttribute('aria-label', String(item.label || item.id || ''));
   btn.title = String(item.title || item.label || item.id || '');
-  if (item.pressed === 'true' || item.pressed === 'false') btn.setAttribute('aria-pressed', item.pressed);
+  // pressed 语义与内置按钮完全一致：只写 aria-pressed（样式由 .icon-btn[aria-pressed='true'] 负责）。
+  //   undefined ⇒ 不写属性（纯动作按钮，如截图/全屏那种"按一下就走"的）。
+  applyPressedAttr(btn, item.pressed);
   if (item.pluginId) {
     btn.dataset.pluginId = String(item.pluginId);
     btn.dataset.pluginToolbar = '1';   // 重建时按它清理，不影响内置按钮节点
@@ -103,8 +152,9 @@ export function syncBrand(el, entries, opts = {}) {
 export function syncPluginToolbar(nav, entries, opts = {}) {
   const log = typeof opts.log === 'function' ? opts.log : () => {};
   if (!nav) return { added: 0, skipped: 0 };
-  // 先清掉上一轮的插件按钮（内置按钮有 data-toolbar-mounted 保护，不会被误伤）
-  for (const old of [...nav.querySelectorAll('[data-plugin-toolbar="1"]')]) old.remove();
+  // 插件按钮统一进滚动容器；容器整体清空重来（内置按钮不在里面，不会被误伤）
+  const strip = pluginStrip(nav);
+  strip.textContent = '';
   const list = (Array.isArray(entries) ? entries : [])
     .filter((e) => e && String(e.name || '') === 'toolbar.actions')
     .sort((a, b) => (Number(a.order) || 1000) - (Number(b.order) || 1000));
@@ -116,23 +166,29 @@ export function syncPluginToolbar(nav, entries, opts = {}) {
       continue;
     }
     const spec = (entry && entry.spec) || {};
+    const props = typeof opts.buildProps === 'function' ? opts.buildProps(entry) : {};
     const btn = buildButton({
       id: String(entry.id || `plugin-toolbar-${added}`),
       label: String(spec.label || entry.label || entry.id || ''),
       title: String(spec.title || spec.label || entry.label || entry.id || ''),
       icon: String(spec.icon || ''),
       pluginId: entry.pluginId,
+      pressed: resolvePressed(spec, props),
     });
     btn.addEventListener('click', (ev) => {
       try {
         if (typeof opts.onAction === 'function') opts.onAction(entry, ev);
       } catch { /* 插件回调抛错不影响顶栏 */ }
+      // 点完重新求值一次按下态：插件不必自己记"该重绘了"（getter 形式的直接受益点）。
+      //   只重算这一个按钮：整条重建会丢焦点（键盘用户会掉 focus）。
+      try { applyPressedAttr(btn, resolvePressed((entry && entry.spec) || {}, props)); } catch { /* 忽略 */ }
     });
-    nav.append(btn);
+    strip.append(btn);
     added += 1;
   }
   if (skipped) {
-    log('info', `顶栏插件按钮超过上限（${PLUGIN_TOOLBAR_MAX} 个），已跳过 ${skipped} 个：${list
+    // 正常情况下永远不会触发（20 是防失控的安全阀，不是布局上限）；真触发说明有插件在刷按钮
+    log('warn', `顶栏插件按钮超过安全阀（${PLUGIN_TOOLBAR_MAX} 个），已跳过 ${skipped} 个：${list
       .slice(PLUGIN_TOOLBAR_MAX).map((e) => e.id).join(' / ')}`, { source: 'plugin-toolbar' });
   }
   return { added, skipped };

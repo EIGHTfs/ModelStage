@@ -803,6 +803,8 @@ function syncToolbarPlugins(slotEntries) {
   syncPluginToolbar(nav, slotEntries, {
     // 日志能力由这里注入（渲染器不能 import app 层，否则 context.js 会提前快照顶栏节点）
     log: (level, message, detail) => stageLog(level, message, detail),
+    // pressed 是 getter 时用它求值：插件拿到的 owner props 与面板控件完全同一份
+    buildProps: (entry) => slotPropsFor(entry),
     onAction: (entry) => {
       const spec = (entry && entry.spec) || {};
       if (typeof spec.onAction !== 'function') return;

@@ -71,6 +71,64 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  /* 内置 5 个按钮固定可见；插件按钮多时只让滚动区压缩，不挤动内置按钮 */
+  min-width: 0;
+}
+
+/* 插件按钮区：横向滚动、不换行（换行会把顶栏撑高）。
+   为什么给它上限宽度：顶栏是固定高度的一条，插件按钮无限增长必须有个"先滚起来"的边界；
+   取 min(42vw,460px) 是"常见分辨率下能放下 3~5 个、再多就滚"的折中。 */
+.header-plugin-actions {
+  display: flex;
+  /* 顶端对齐：滚动条在内容下方，若居中会把按钮整体抬高 2~3px（与内置按钮错位） */
+  align-items: flex-start;
+  gap: 6px;
+  flex-wrap: nowrap;
+  min-width: 0;
+  /* 上限取 min(30vw,320px)：实测 8 个按钮内容宽约 362px ⇒ 溢出并由容器滚动；
+     常见的 2~4 个按钮（约 80~160px）远小于上限，不会出现滚动条。 */
+  max-width: min(30vw, 320px);
+  /* 高度锁死成按钮高度（30px）：插件按钮与内置按钮必须同一条基线。
+     滚动条会占 6px —— 用 margin-bottom:-6px 把这 6px 抵消掉，
+     否则整条顶栏（nav）会被撑高、按钮也随之向上错位（实测 30px → 40px、错位 5px）。 */
+  /* 30px 按钮区 + 6px 滚动条 = 36px 内容高；只把**下边距**做成 -6px：
+     净高度回到 30px（nav 不被撑高），而顶端仍与内置按钮同一条基线。
+     上下对称的 -3px 会把整块上移 3px（实测插件按钮比内置高 3px）。 */
+  height: 36px;
+  margin-top: 0;
+  margin-bottom: -6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  /* 滚动条：细、默认透明，悬停才显形（与整体克制风格一致） */
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.header-plugin-actions:hover {
+  scrollbar-color: var(--color-border) transparent;
+}
+
+.header-plugin-actions::-webkit-scrollbar {
+  height: 6px;
+}
+
+.header-plugin-actions::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.header-plugin-actions::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 3px;
+}
+
+.header-plugin-actions:hover::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+}
+
+/* 按钮自身不压缩：滚动由容器负责，按钮保持方形/文字宽 */
+.header-plugin-actions > .icon-btn {
+  flex: 0 0 auto;
 }
 
 .icon-btn {

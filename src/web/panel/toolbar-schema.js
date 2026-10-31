@@ -101,7 +101,11 @@ export function iconBodyOf(name) {
 }
 
 /**
- * 插件按钮上限：窄屏下顶栏会被挤爆，超出部分**不渲染**并记一条 info。
- * 溢出菜单留后续（这里只做上限）。
+ * 插件按钮的**安全阀**（不是布局上限）。
+ *
+ * 历史：S3 时这里是 3，超出即丢弃 —— 用户既看不到按钮也不知道被跳过。
+ * 现在布局改成"插件按钮进横向滚动区"，可见性问题由滚动解决；
+ *   保留 20 只是防"某个插件一口气注册上百个按钮"把 DOM 撑爆的安全阀。
+ * @type {number}
  */
-export const PLUGIN_TOOLBAR_MAX = 3;
+export const PLUGIN_TOOLBAR_MAX = 20;
