@@ -341,185 +341,6 @@ const PLUGIN_KIND_TO_VIEW = { segmented: 'segmented', toggle: 'switch', button: 
  * @param {Set<string>} ctx.takenIds 已被占用的控件 id（内置 + 先前插件）
  * @returns {{ok:boolean, reason?:string, title?:string, controls?:Array, rejects?:Array}}
  */
-/**
- * 把"插件写的分组名"解析成内置分组 id。
- *
- * 分组存在性判断已从 **title 集合**改为 **groupId**（设计 §七·一 的前置：分组有稳定 id）。
- * 老接口（registerControls）传的是标题（「设置」），所以这里 id 优先、title 兜底 ——
- *   两种写法都能命中同一个内置组；兼容层会在后续任务里单独收口成只认 id。
- * @param {string} group 插件写的分组名
- * @param {{groupIds?: Set<string>, groupTitles?: Set<string>, titleToId?: Map<string,string>}} ctx
- * @returns {string|null} 命中返回分组 id；不命中返回 null（由调用方给出可读原因）
- */
-function resolveGroupId(group, ctx) {
-  if (ctx && ctx.groupIds && ctx.groupIds.has(group)) return group;
-  if (ctx && ctx.groupTitles && ctx.groupTitles.has(group)) return ctx.titleToId.get(group) || null;
-  return null;
-}
-
-/**
- * 校准单个插件控件声明（老接口 registerControls 的每一节都走这里）。
- * 抽出来的理由：normalizePluginSection 只管"整节"的成败，逐控件规则放一起读着才不累。
- * @param {object} raw 插件给的控件声明
- * @param {{takenIds:Set<string>, registeredEffects:Set<string>}} ctx
- * @param {Array} rejects 逐控件拒绝清单（就地追加）
- * @param {{pluginId?: string}} section 所属节
- * @returns {object|null} 归一后的控件；不合规返回 null
- */
-function normalizePluginControl(raw, ctx, rejects, section) {
-    const id = String((raw && raw.id) || '').trim();
-    const kind = String((raw && raw.kind) || '').trim();
-    if (!id) { rejects.push({ id: '', reason: '控件缺 id' }); return null; }
-    if (!PLUGIN_CONTROL_KINDS.includes(kind)) {
-      rejects.push({ id, reason: `kind「${kind}」不在白名单（${PLUGIN_CONTROL_KINDS.join(' / ')}）` });
-      return null;
-    }
-    if (ctx.takenIds.has(id)) { rejects.push({ id, reason: '控件 id 与已存在控件重名' }); return null; }
-    if (kind === 'segmented' && !(Array.isArray(raw.options) && raw.options.length)) {
-      rejects.push({ id, reason: 'segmented 必须给 options' });
-      return null;
-    }
-    if (kind === 'button' && !String(raw.label || '').trim()) {
-      rejects.push({ id, reason: 'button 必须给 label' });
-      return null;
-    }
-    const registered = ctx.registeredEffects.has(id);
-    const viewKind = PLUGIN_KIND_TO_VIEW[kind] || kind;
-    const optionTexts = kind === 'segmented' ? raw.options.map(String) : null;
-  return ({
-      // 归一成与内置控件同形的声明：渲染层完全按既有 kind 分派，不认"插件控件"这个概念
-      id,
-      kind: viewKind,
-      // button 在渲染层是"动作组"（renderActions 遍历的是 ctl.buttons，不是 actions）
-      //   ⇒ 形状必须补成 buttons[]，否则渲染时读 undefined 抛错、落进 ctl-row-broken 兜底行
-      ...(viewKind === 'actions' ? { buttons: [String(raw.label || id)] } : {}),
-      label: String(raw.label || id),
-      // segmented 必须同时给 options 与 values：渲染层用 `ctl.values[i]` 当按钮的取值
-      //   （契约 §9.2 的插件声明里只有 options，所以"选项文本即取值"这层翻译由宿主补 ——
-      //    缺了它 String(undefined[i]) 会抛错，而一个控件抛错会拖掉**整组**，实测踩过）
-      ...(optionTexts ? { options: optionTexts, values: optionTexts.slice() } : {}),
-      // 默认值权威 = options[0]（第 0 档即"关"）。这是设计裁定：面板档位控件的默认值
-      //   只有一个来源，plugin.json 的 params[].default 只是"设置值缺失时的 uniform 兜底"。
-      //   没有这个字段时工厂拿不到默认值（view.js 只收 defaultValue !== undefined 的控件）
-      //   ⇒「恢复默认」不会重置插件控件。
-      ...(kind === 'segmented' ? { defaultValue: optionTexts[0] } : {}),
-      ...(kind === 'toggle' ? { defaultOn: false } : {}),
-      // 能力键**一律**显式声明为 effect id：
-      //   已注册 ⇒ 宿主把它追加进 capabilities.settings ⇒ 正常可用；
-      //   未注册 ⇒ 不在白名单 ⇒ 走 keepDisabled 分支置灰（并显示下面的原因）。
-      //   若不声明，裸 effect id（没有 ctl- 前缀）推导不出能力键，会被判成"unsupported"
-      //   并显示成"无法确定能力键"—— 用户看不懂，也丢了"哪个效果没注册成功"这个关键信息。
-      capabilityKey: id,
-      // disabled 必须在数据层就标上：panel-settings 用它收集 keepDisabled 白名单，
-      //   漏了这一步控件会被 applyCapabilities 直接丢掉（消失而不是置灰）。
-      ...(registered ? {} : { disabled: true, disabledReason: `效果「${id}」未注册成功（插件脚本可能加载失败或被禁用）` }),
-      pluginId: String(section.pluginId || ''),
-  });
-}
-
-/**
- * @deprecated 旧控件节的逐节校验（registerControls → controlSections 那条链的遗留）。
- * 老接口已改为内部转插槽注册，这条链**不再有输入**；保留只为契约兼容与既有单测。
- * 新代码请用 `slots.register` + `mergeSlotControls`。下一步删除。
- * @param {object} section
- * @param {object} ctx
- * @returns {{ok: boolean, reason?: string, title?: string, controls?: Array, rejects?: Array}}
- */
-export function normalizePluginSection(section, ctx) {
-  const group = String((section && section.group) || '').trim();
-  const controls = Array.isArray(section && section.controls) ? section.controls : null;
-  if (!group || !controls || !controls.length) {
-    return { ok: false, reason: '节缺少 group 或 controls' };
-  }
-  const resolved = resolveGroupId(group, ctx);
-  if (!resolved) {
-    return {
-      ok: false,
-      reason: `分组「${group}」不存在：老接口（registerControls）只能往**既有分组**加控件；`
-        + '新建分组请改用 slots.register("panel.group.plugin.<pluginId>.<name>", …)',
-    };
-  }
-  const out = [];
-  const rejects = [];
-  for (const raw of controls) {
-    const ctl = normalizePluginControl(raw, ctx, rejects, section);
-    if (ctl) { out.push(ctl); ctx.takenIds.add(String(ctl.id)); }
-  }
-  if (!out.length) {
-    return { ok: false, reason: `节内 ${controls.length} 个控件全部不合规`, rejects };
-  }
-  return { ok: true, title: group, controls: out, rejects };
-}
-
-/**
- * 把插件控件节合并进内置分组表（**返回新数组，不改 PANEL_GROUPS 静态表**）。
- *
- * 为什么必须返回新数组：`PANEL_GROUPS` 同时是
- *   ① uiState 派生 SPEC 的依据 ② `test/browser/panel-actions.js` 的"控件分类门禁"遍历对象。
- *   原地改它会把插件控件塞进门禁的检查范围（门禁要求每个控件显式归到三层优先级之一），
- *   等于要求插件也去维护那张表 —— 违反"插件只交声明式数据"的边界。
- *
- * @param {Array} baseGroups 内置分组
- * @param {Array<{pluginId:string, group:string, controls:Array}>} sections 插件提交的节
- * @param {object} [opts]
- * @param {(rej:{pluginId:string, group:string, reason:string, rejects?:Array}) => void} [opts.onReject] 拒绝/丢弃的回报口（写 diag）
- * @returns {{groups:Array, added:number, rejected:number, rejectedControls:number}}
- */
-/**
- * @deprecated 旧控件节合并（`registerControls` 迁移后已无输入，`controlSections` 恒为空）。
- * 新代码请用 `mergeSlotControls`。保留仅为契约兼容与既有单测；下一步会删除。
- * @param {Array} baseGroups 内置分组
- * @param {Array} sections 旧控件节
- * @param {object} [opts]
- * @returns {{groups: Array, added: number, rejected: number, rejectedControls: number}}
- */
-export function mergePluginControls(baseGroups, sections, opts = {}) {
-  const base = Array.isArray(baseGroups) ? baseGroups : [];
-  const report = typeof (opts && opts.onReject) === 'function' ? opts.onReject : () => {};
-  const list = Array.isArray(sections) ? sections : [];
-  if (!list.length) return { groups: base, added: 0, rejected: 0, rejectedControls: 0 };
-
-  const groupTitles = new Set(base.map((g) => String(g.title || '')));
-  const groupIds = new Set(base.map((g) => String(g.id || '')));
-  const titleToId = new Map(base.map((g) => [String(g.title || ''), String(g.id || '')]));
-  const registeredEffects = new Set((opts && opts.registeredEffects) || []);
-  const takenIds = new Set();
-  for (const g of base) {
-    for (const c of (g && g.controls) || []) if (c && c.id) takenIds.add(String(c.id));
-  }
-  const ctx = { groupTitles, groupIds, titleToId, registeredEffects, takenIds };
-
-  // 深拷贝分组与控件数组：只拷一层结构，控件对象本身按需替换，避免动到内置对象
-  const groups = base.map((g) => ({ ...g, controls: (g.controls || []).slice() }));
-  const byTitle = new Map(groups.map((g) => [String(g.title || ''), g]));
-  let added = 0;
-  let rejected = 0;
-  let rejectedControls = 0;
-
-  for (const section of list) {
-    const res = normalizePluginSection(section, ctx);
-    if (!res.ok) {
-      rejected += 1;
-      rejectedControls += (res.rejects || []).length;
-      report({ pluginId: section.pluginId || '', group: section.group || '', reason: res.reason, rejects: res.rejects });
-      continue;
-    }
-    const target = byTitle.get(res.title);
-    if (!target) {   // 双保险：normalize 已检查过标题存在
-      rejected += 1;
-      report({ pluginId: section.pluginId || '', group: res.title, reason: '目标分组在合并时消失' });
-      continue;
-    }
-    target.controls = target.controls.concat(res.controls);
-    added += res.controls.length;
-    if (res.rejects && res.rejects.length) {
-      rejectedControls += res.rejects.length;
-      report({ pluginId: section.pluginId || '', group: res.title, reason: '部分控件不合规', rejects: res.rejects });
-    }
-  }
-  return { groups, added, rejected, rejectedControls };
-}
-
 export function inferCapabilityKey(id) {
   if (typeof id !== 'string') return null;
   const debugMatch = /^ctl-debug-(.+)$/.exec(id);
@@ -645,7 +466,9 @@ export function applyCapabilities(groups, capabilities, options = {}) {
 export function mergeSlotControls(baseGroups, entries, opts = {}) {
   const base = Array.isArray(baseGroups) ? baseGroups : [];
   const list = Array.isArray(entries) ? entries : [];
-  const report = typeof (opts && opts.onReject === 'function') ? opts.onReject : () => {};
+  // 注意括号位置：要判的是"onReject 是不是函数"，不是 `typeof (opts && .... === 'function')`
+  //   ——后者恒为字符串 "boolean"（真值），会把 undefined 赋给 report，调用时抛 "report is not a function"。
+  const report = (opts && typeof opts.onReject === 'function') ? opts.onReject : () => {};
   if (!list.length) return { groups: base, added: 0, rejected: 0, capabilityKeys: [] };
 
   const groups = base.map((g) => ({ ...g, controls: (g.controls || []).slice() }));
@@ -812,26 +635,19 @@ function slotSpecToControl(entry, props) {
   }
   if (!out || typeof out !== 'object') return null;
   const kind = String(out.kind || '');
+  // kind 必须落在**插件契约**的三种之内（segmented / toggle / button）——
+  //   超出就返回 null 由装配期拒绝并给原因，而不是放一个渲染层不认的 kind 出去
+  //   （那种情况会落到 view 的 default 分支，渲染成空 <p class="ctl-note">，用户看到的是"控件消失"）。
+  const viewKind = PLUGIN_KIND_TO_VIEW[kind];
+  if (!viewKind) return null;
   if (kind === 'segmented') {
     const options = Array.isArray(out.options) ? out.options.map(String) : [];
     if (!options.length) return null;
-    return { kind: 'segmented', options, values: options.slice(), defaultValue: options[0] };
+    return { kind: viewKind, options, values: options.slice(), defaultValue: options[0] };
   }
-  if (kind === 'toggle' || kind === 'switch') return { kind: 'switch', defaultOn: !!out.value };
-  if (kind === 'slider') {
-    return { kind: 'slider', min: out.min, max: out.max, step: out.step, unit: out.unit, defaultValue: out.value };
-  }
-  if (kind === 'select') {
-    const options = Array.isArray(out.options) ? out.options.map(String) : [];
-    if (!options.length) return null;
-    return { kind: 'select', options, values: options.slice(), defaultValue: options[0] };
-  }
-  if (kind === 'button') {
-    // 与老接口共用 PLUGIN_KIND_TO_VIEW 的结论（button → actions）；
-    //   形状按渲染层口径给 buttons[]（renderActions 遍历的是它）
-    return { kind: PLUGIN_KIND_TO_VIEW.button, buttons: [String(out.label || entry.label || '执行')] };
-  }
-  return null;
+  if (kind === 'toggle') return { kind: viewKind, defaultOn: !!out.value };
+  // button → actions：形状按渲染层口径给 buttons[]（renderActions 遍历的是它）
+  return { kind: viewKind, buttons: [String(out.label || entry.label || '执行')] };
 }
 
 /**

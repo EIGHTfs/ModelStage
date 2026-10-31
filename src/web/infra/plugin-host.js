@@ -102,13 +102,6 @@ export function createPluginHost(opts = {}) {
   const manifestEffects = new Map();
   // 注册成功的效果（effectId → { pluginId, fragment }）：只有进这里的 id 才进能力键白名单
   const registeredEffects = new Map();
-  // 插件提交的控件节（按提交顺序）：面板侧合并时统一校验，不在这里放行
-  /**
-   * @deprecated 旧控件节通道（registerControls 迁移前的实现）。
-   * 老接口现在内部转成插槽注册，**这里恒为空**；合并链（mergePluginControls / normalizePluginControl）
-   * 随之成为死路径。新代码不要用；下一步会连同 schema 里的那两个函数一起删除。
-   */
-  const controlSections = [];
   /** 当前正在注入脚本的插件 id（register* 靠它认领"这是谁的注册"） */
   let loadingPluginId = '';
   /** 效果表达式长度上限：见 registerEffect 里"超长直接拒"的理由 */
@@ -119,7 +112,7 @@ export function createPluginHost(opts = {}) {
   /**
    * 插件级 effect 容器：pluginId → [{ kind, label, dispose }]（**注册顺序**，回收时逆序执行）。
    *
-   * 为什么要有它：在此之前 register* 只是往宿主表里塞（controlSections 只 push、从不删除），
+   * 为什么要有它：在此之前 register* 只是往宿主表里塞、从不删除，
    *   插件卸载/禁用没有任何可执行的回收动作 —— 插槽一旦能改界面，残留就只能靠人肉排查。
    * 这里给每个插件一份"我注册了什么"的清单，把回收变成一次可验证的批量操作。
    */
@@ -534,11 +527,9 @@ export function createPluginHost(opts = {}) {
     //   asset-provider 必须 register() 交出 canHandle/resolve；
     //   只提供 panel 的插件没有 register() 可言，它交的是 effects/controls ——
     //   拿 register() 当唯一成功标志会把它误判成"加载失败"，进而把它的控件也置灰。
-    // 兼容层迁移后，老接口的控件进的是 slotRegistry（不再进 controlSections）——
-    //   生效判定必须把两者都算上，否则"只交控件的插件"会被判成"未生效"并置灰（S1 就是这么误报的）。
+    // 生效判定：交出过插槽控件、或注册过效果，都算"这个插件在工作"
     const slotCount = slotRegistry ? (slotRegistry.stats().byPlugin[id] || 0) : 0;
     const didPanelWork = slotCount > 0
-      || controlSections.some((sec) => sec.pluginId === id)
       || [...registeredEffects.values()].some((e) => e.pluginId === id);
     const providerOk = providers.has(id);
     const error = st.error || (providerOk || didPanelWork ? null : '脚本已加载但没有调用 register()');
@@ -572,12 +563,6 @@ export function createPluginHost(opts = {}) {
     }
     pluginEffects.delete(id);
 
-    // 兜底清理：没登记 disposer 的残留也一并处理
-    const beforeControls = controlSections.length;
-    for (let i = controlSections.length - 1; i >= 0; i -= 1) {
-      if (controlSections[i].pluginId === id) controlSections.splice(i, 1);
-    }
-    const removedControls = beforeControls - controlSections.length;
     let removedEffects = 0;
     for (const [eid, e] of [...registeredEffects]) {
       if (e && e.pluginId === id) { registeredEffects.delete(eid); removedEffects += 1; }
@@ -596,10 +581,10 @@ export function createPluginHost(opts = {}) {
     loadState.delete(id);
     publishEffectStats();
     say.info(`插件 ${id} 已卸载：执行 ${disposed} 个 disposer${failures.length ? `（${failures.length} 个失败）` : ''}`
-      + `，清掉控件节 ${removedControls} 个、效果 ${removedEffects} 个、插槽 ${slotsRemoved} 个${hadProvider ? '、提供者 1 个' : ''}`);
+      + `，清掉效果 ${removedEffects} 个、插槽 ${slotsRemoved} 个${hadProvider ? '、提供者 1 个' : ''}`);
     // 让面板重建：只清宿主表不改 DOM 的话，控件会继续挂在界面上（等于没卸载）
     try { window.dispatchEvent(new CustomEvent('spineviewer:plugins-loaded', { detail: { unloaded: id } })); } catch { /* 忽略 */ }
-    return { pluginId: id, disposed, failures, removedControls, removedEffects, slotsRemoved, hadProvider: hadProviderBefore };
+    return { pluginId: id, disposed, failures, removedEffects, slotsRemoved, hadProvider: hadProviderBefore };
   }
 
   /** 卸载全部已装载插件（测试收尾 / 热重载前清理用） */
@@ -618,14 +603,14 @@ export function createPluginHost(opts = {}) {
    */
   function effectsReport() {
     const ids = [...new Set([...pluginEffects.keys(), ...loadState.keys(), ...providers.keys(),
-      ...controlSections.map((s) => s.pluginId)])];
+      ...(slotRegistry ? Object.keys(slotRegistry.stats().byPlugin) : [])])];
     const plugins = ids.filter(Boolean).map((id) => {
       const list = pluginEffects.get(id) || [];
       return {
         id,
         effects: list.length,
         kinds: list.map((e) => e.kind),
-        controls: controlSections.filter((s) => s.pluginId === id).length,
+        slots: slotRegistry ? (slotRegistry.stats().byPlugin[id] || 0) : 0,
         effectsRegistered: [...registeredEffects.values()].filter((e) => e.pluginId === id).length,
         provider: providers.has(id),
         loaded: !!(loadState.get(id) || {}).loaded,
@@ -1574,6 +1559,39 @@ const MIME_BY_EXT = {
     return [...loadState.values()].filter((s) => s.loaded).length;
   }
 
+  /**
+   * 按 `/api/plugins` 的响应建插槽注册表（**必须在注入任何插件脚本之前**）。
+   *
+   * 为什么单独成函数：它要读四类信息（目录 / 每插件声明 / 当前阶段 / 每插件 settings 键），
+   *   塞在 doLoadAll 里会把装载流程读断（也过不了"单函数 50 行"的口径）。
+   * @param {object} data /api/plugins 响应
+   * @param {Array} discovered 本次发现的插件清单
+   */
+  function initSlotRegistry(data, discovered) {
+    const declared = {};
+    for (const pl of discovered) {
+      const pid = String(pl && pl.id ? pl.id : '');
+      declared[pid] = Array.isArray(pl && pl.slots) ? pl.slots : [];
+      pluginSettings.set(pid, Array.isArray(pl && pl.settings) ? pl.settings : []);
+    }
+    slotRegistry = createSlotRegistry({
+      catalog: Array.isArray(data && data.slotCatalog) ? data.slotCatalog : [],
+      declaredByPlugin: declared,
+      // 阶段只信服务端（currentStage）；字段缺失时 normalizeStage 回退 'S1'（过渡兜底）
+      openStage: normalizeStage(data && data.currentStage),
+      // 内置组 id：新建分组必须带 plugin.<pluginId>. 前缀（设计 §七·一）
+      groupIds: new Set(PANEL_GROUPS.map((g) => String(g.id || ''))),
+      // spec.setting 校验用：该插件清单里声明过的 settings 键
+      settingsKeysOf: (pid) => (pluginSettings.get(String(pid || '')) || []).map((s) => String(s && s.key || '')),
+      isInLoadWindow: () => !!loadingPluginId,
+      onReject: (rej) => {
+        say.warn(`插槽注册被拒（${rej.code}）：${rej.why}`);
+        emit('plugin.slot-rejected', rej);
+      },
+    });
+    publishSlotStats();
+  }
+
   /** loadAll 的实际执行体（内部使用；失败只记日志不抛） */
   async function doLoadAll() {
     try {
@@ -1583,28 +1601,7 @@ const MIME_BY_EXT = {
       discovered = Array.isArray(data && data.plugins) ? data.plugins : [];
       // 建插槽注册表（**必须在注入任何插件脚本之前**）：目录与"谁声明了什么"都来自这一份响应，
       //   晚一步建就会出现"插件已经能 register、注册表还不存在"的空窗。
-      const declared = {};
-      for (const pl of discovered) {
-        const pid = String(pl && pl.id ? pl.id : '');
-        declared[pid] = Array.isArray(pl && pl.slots) ? pl.slots : [];
-        pluginSettings.set(pid, Array.isArray(pl && pl.settings) ? pl.settings : []);
-      }
-      slotRegistry = createSlotRegistry({
-        catalog: Array.isArray(data && data.slotCatalog) ? data.slotCatalog : [],
-        declaredByPlugin: declared,
-        // 阶段只信服务端（currentStage）；字段缺失时 normalizeStage 回退 'S1'（过渡兜底）
-        openStage: normalizeStage(data && data.currentStage),
-        // 内置组 id：新建分组必须带 plugin.<pluginId>. 前缀（设计 §七·一）
-        groupIds: new Set(PANEL_GROUPS.map((g) => String(g.id || ''))),
-        // spec.setting 校验用：该插件清单里声明过的 settings 键
-        settingsKeysOf: (pid) => (pluginSettings.get(String(pid || '')) || []).map((s) => String(s && s.key || '')),
-        isInLoadWindow: () => !!loadingPluginId,
-        onReject: (rej) => {
-          say.warn(`插槽注册被拒（${rej.code}）：${rej.why}`);
-          emit('plugin.slot-rejected', rej);
-        },
-      });
-      publishSlotStats();
+      initSlotRegistry(data, discovered);
     } catch (e) {
       say.warn(`插件清单获取失败（页面其余功能不受影响）：${(e && e.message) || e}`);
       return { discovered: 0, registered: 0 };
@@ -1650,7 +1647,7 @@ const MIME_BY_EXT = {
     //   不通知就永远看不到插件控件（实测：控件节收到了，但面板不会自己重建）。
     try {
       window.dispatchEvent(new CustomEvent('spineviewer:plugins-loaded', {
-        detail: { discovered: discovered.length, registered: ok, controls: controlSections.length },
+        detail: { discovered: discovered.length, registered: ok, slots: slotRegistry ? slotRegistry.stats().total : 0 },
       }));
     } catch { /* 忽略 */ }
     return { discovered: discovered.length, registered: ok };
@@ -1752,7 +1749,7 @@ const MIME_BY_EXT = {
      * 面板层用：插件提交的控件节（含来源插件 id）。
      * 返回副本，避免面板侧改动污染宿主记录。
      */
-    controlSections: () => controlSections.map((s) => ({ ...s, controls: s.controls.map((c) => ({ ...c })) })),
+
     /**
      * 面板层用：**注册成功**的效果 id 列表 —— 能力键白名单的唯一来源（契约 §9.3）。
      * 只声明但没注册成功的不在列表里 ⇒ 对应控件会置灰。

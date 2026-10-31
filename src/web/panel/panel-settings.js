@@ -12,7 +12,7 @@ import { resetStage, trackElementStage } from '../infra/ready.js';
 import { rendererSupports, setRendererSetting } from '../app/renderer-setting.js';
 import * as uiState from '../app/ui-state.js';
 import { stageLog, stageStatus } from '../app/status.js';
-import { PANEL_GROUPS, applyCapabilities, mergePluginControls, mergeSlotControls, selfCheck, settingKeyOf } from './schema.js';
+import { PANEL_GROUPS, applyCapabilities, mergeSlotControls, selfCheck, settingKeyOf } from './schema.js';
 import { activeChain } from '../engine/effect-chain.js';
 import { mountPanel } from './view.js';
 import { applyDebugLog, applyHangGuard, applyMemoryGuard, applyShowStatus, connectShellControls, runSettingsAction } from './shell-controls.js';
@@ -542,20 +542,10 @@ export function bindPluginPanelRebuild() {
  */
 function aggregatePanelGroups() {
   const host = state.pluginHost;
-  // 插件控件节与已注册效果：**唯一来源是宿主**（插件自己交的声明式数据），面板侧不另存一份
-  const sections = host && typeof host.controlSections === 'function' ? host.controlSections() : [];
   const registeredEffects = host && typeof host.registeredEffectIds === 'function' ? host.registeredEffectIds() : [];
-  // 合并进内置表（返回新数组，不动 PANEL_GROUPS 静态表），拒绝与部分丢弃都写 diag
-  const merged = mergePluginControls(PANEL_GROUPS, sections, {
-    registeredEffects,
-    onReject: (rej) => {
-      const detail = (rej.rejects || []).map((r) => `${r.id || '?'}:${r.reason}`).join('；');
-      stageLog('warn', `插件控件被拒（${rej.pluginId || '未知插件'} · ${rej.group || '未知分组'}）：${rej.reason}${detail ? `（${detail}）` : ''}`, { source: 'plugin-controls' });
-    },
-  });
-  // 插槽登记 → 面板控件：与旧控件节合到同一份 groups 上（渲染层不区分来源）
+  // 内置表 → 插槽登记聚合（唯一通路：老接口 registerControls 已在其内部转成插槽注册）
   const slotEntries = host && typeof host.slotSections === 'function' ? host.slotSections() : [];
-  const slotMerged = mergeSlotControls(merged.groups, slotEntries, {
+  const slotMerged = mergeSlotControls(PANEL_GROUPS, slotEntries, {
     buildProps: (entry) => slotPropsFor(entry),
     // 老接口迁移来的控件靠它判"效果是否注册成功"（置灰 + 原因，契约 §9.3）
     registeredEffects,
@@ -568,6 +558,8 @@ function aggregatePanelGroups() {
     },
   });
   const pluginControls = slotMerged.groups.flatMap((g) => (g.controls || []).filter((c) => c && c.pluginId));
+  // 旧控件节通道已删除：merged 只保留"零"计数以维持 dataset 字段口径（pluginControls 全来自插槽）
+  const merged = { added: 0, rejected: 0, rejectedControls: 0 };
   return { host, merged, slotMerged, registeredEffects, pluginControls };
 }
 
@@ -714,8 +706,8 @@ function rebuildPanelFor(renderer) {
   //   不带 ctl- 前缀、不在 WIRED_IDS 里，按契约 §9.2 由宿主负责接线）。
   const builtIds = [...document.querySelectorAll('#right-panel [data-ctl]')].map((n) => n.dataset.ctl);
   // 已接线的插件控件：必须与"合并进来的那份"同源。
-  //   以前这里只查 host.controlSections()（S1 之前的旧通道）⇒ S2 起插槽控件虽然渲染出来了，
-  //   却不在这份清单里，测试的「可点集合 === 已接线集合」立刻变红（插件控件本就不该免检）。
+  //   接线清单必须与"合并进来的那份"同源：曾经只查旧通道，导致插槽控件渲染出来了却不在这份清单里，
+  //   测试的「可点集合 === 已接线集合」立刻变红（插件控件本就不该免检）。
   const pluginCtlIds = pluginControls
     .map((ctl) => ctl && ctl.id)
     .filter((id) => id && builtIds.includes(id));

@@ -222,7 +222,7 @@ return JSON.stringify({ total: results.length, failed: results.filter((r) => !r.
  *
  * 为什么在测试里重算：面板没把合并结果暴露出来（view.js 的 mountPanel 只回计数与 defaults），
  *   而这条检查必须看见**插件控件**。重算用的是与装配期同一批公开函数、同一批输入
- *   （host.controlSections / host.slotSections / registeredEffectIds），
+ *   （host.slotSections / registeredEffectIds），
  *   并用"DOM 的控件 id 必须都能在合并结果里找到"做漂移护栏。
  * @returns {Promise<{groups: Array, slotCapabilityKeys: string[]}>}
  */
@@ -230,13 +230,10 @@ async function readMergedGroups() {
   const mod = await import('/panel/schema.js');
   const web = window.__WEB__ || {};
   const host = (web.state && web.state.pluginHost) || null;
-  const sections = host && typeof host.controlSections === 'function' ? host.controlSections() : [];
   const slotEntries = host && typeof host.slotSections === 'function' ? host.slotSections() : [];
   const effects = host && typeof host.registeredEffectIds === 'function' ? host.registeredEffectIds() : [];
+  // 唯一通路：内置表 + 插槽登记（旧 registerControls 已在宿主内部转成插槽注册）
   let groups = mod.PANEL_GROUPS || [];
-  if (sections.length) {
-    groups = mod.mergePluginControls(groups, sections, { registeredEffects: effects }).groups;
-  }
   let slotCapabilityKeys = [];
   if (slotEntries.length && typeof mod.mergeSlotControls === 'function') {
     const r = mod.mergeSlotControls(groups, slotEntries, { buildProps: () => ({}) });
