@@ -170,13 +170,57 @@ function pluginSettingsSnapshot(pluginId) {
  * @param {{pluginId?: string}} entry
  * @returns {object}
  */
+/**
+ * 控件 id → **存值键**（`spec.setting` 给定时是清单设置键，否则就是控件 id）。
+ * 每次重建刷新：控件（连同它的 setting）随插件装载/卸载出现或消失。
+ */
+const slotStoreKeyById = new Map();
+
+/** 控件 id → 存值键（没有映射就是它自己） */
+function storeKeyOf(id) {
+  const k = String(id || '');
+  return slotStoreKeyById.get(k) || k;
+}
+
+/**
+ * 构造插槽 owner props（设计 §4.1）—— **全部字段是 getter**，不是快照。
+ *
+ * 为什么必须是 getter：面板只在"插件装载完成 / 换渲染面"时重建，
+ *   resize 与换模型**不会**重建面板（surface.js 有 onResize 但面板没订阅、换模型只刷动作列表）。
+ *   快照会让插件读到过期尺寸与过期文档；getter 每次读都取当前值，且不会把 surface/state 的可变引用交出去。
+ * @param {{pluginId?: string}} entry
+ * @returns {object}
+ */
 function slotPropsFor(entry) {
   const pluginId = String((entry && entry.pluginId) || '');
   return {
-    settings: pluginSettingsSnapshot(pluginId),
-    get geometry() { return null; },
-    get activeSurface() { return null; },
-    get document() { return null; },
+    /** 插件声明设置项的当前值（当前值 ?? 声明默认值），每次读都重新求值 */
+    get settings() { return pluginSettingsSnapshot(pluginId); },
+    /** 舞台几何：{ cssW, cssH, dpr, res } —— 唯一来源是 surface.geometry() */
+    get geometry() {
+      try {
+        const g = state.surface && typeof state.surface.geometry === 'function' ? state.surface.geometry() : null;
+        return g ? { cssW: g.cssW, cssH: g.cssH, dpr: g.dpr } : null;
+      } catch { return null; }
+    },
+    /** 当前渲染面：'spine' | 'live2d' | null */
+    get activeSurface() {
+      try {
+        const r = state.surface && typeof state.surface.activeRenderer === 'function' ? state.surface.activeRenderer() : null;
+        return r && r.id ? String(r.id) : null;
+      } catch { return null; }
+    },
+    /** 当前文档的**只读摘要**（不给插件 model 引用：它持有的是可变对象） */
+    get document() {
+      const m = state.selectedModel;
+      if (!m) return null;
+      return {
+        rootId: m.rootId ? String(m.rootId) : null,
+        rel: m.rel ? String(m.rel) : null,
+        kind: m.kind ? String(m.kind) : (m.container ? 'bundle' : null),
+        files: Array.isArray(m.files) ? m.files.slice() : null,
+      };
+    },
     /** 插件写设置也走面板同一条通道（校验 → 生效 → 落盘） */
     setSetting(key, value) {
       try { applyPanelSetting(key, value); } catch { /* 插件侧写入失败不影响面板 */ }
@@ -196,7 +240,8 @@ function applyPanelSetting(id, value) {
   }
   // 其余一律经工厂：校验 → apply（生效）→ render（显示）→ 去抖落盘。
   //   这样"谁是真相"只有一处（契约 R1），也就不会出现"值对但显示错"。
-  uiState.set(id, value);
+  // 插槽控件若声明了 spec.setting，值要落到**清单设置键**（插件 render/onAction 读的才是它）
+  uiState.set(storeKeyOf(id), value);
   // 插槽控件：值落地后再派发插件的 onAction（先 onSetting 语义、后回调 —— 顺序固定）
   const act = slotActions.get(String(id));
   if (act) {
@@ -488,8 +533,14 @@ export function bindPluginPanelRebuild() {
   return true;
 }
 
-function rebuildPanelFor(renderer) {
-  bindPluginPanelRebuild();   // 幂等：确保"插件交完声明后重建面板"这条链只绑一次
+/**
+ * 装配期聚合：内置表 + 旧控件节（已 deprecated，恒空）+ 插槽登记 → 同一份 groups。
+ *
+ * 抽出来的理由：rebuildPanelFor 还要管挂载、dataset、展开态、applier 等一堆事，
+ *   聚合单独成函数才读得动（也才过得了"单函数 50 行"的口径）。
+ * @returns {{host: object|null, merged: object, slotMerged: object, registeredEffects: string[], pluginControls: Array}}
+ */
+function aggregatePanelGroups() {
   const host = state.pluginHost;
   // 插件控件节与已注册效果：**唯一来源是宿主**（插件自己交的声明式数据），面板侧不另存一份
   const sections = host && typeof host.controlSections === 'function' ? host.controlSections() : [];
@@ -502,9 +553,7 @@ function rebuildPanelFor(renderer) {
       stageLog('warn', `插件控件被拒（${rej.pluginId || '未知插件'} · ${rej.group || '未知分组'}）：${rej.reason}${detail ? `（${detail}）` : ''}`, { source: 'plugin-controls' });
     },
   });
-  // ── 插槽登记 → 面板控件（S2）：与上面的"旧控件节"合并到同一份 groups 上 ──────────
-  //   为什么还要这一步：registerControls 是 S1 之前的旧通道；S2 起插件走 slots.register，
-  //   声明落在 slot-registry 里。两条通道都汇到装配期这一处，渲染层不区分来源。
+  // 插槽登记 → 面板控件：与旧控件节合到同一份 groups 上（渲染层不区分来源）
   const slotEntries = host && typeof host.slotSections === 'function' ? host.slotSections() : [];
   const slotMerged = mergeSlotControls(merged.groups, slotEntries, {
     buildProps: (entry) => slotPropsFor(entry),
@@ -518,61 +567,97 @@ function rebuildPanelFor(renderer) {
         { source: 'plugin-slots', code: rej.code || null });
     },
   });
-  // 插件控件登记进 SPEC：这样它们是走既有的 loadAll/set/flush 通道，不新开存储路径
   const pluginControls = slotMerged.groups.flatMap((g) => (g.controls || []).filter((c) => c && c.pluginId));
-  // 动作表随重建刷新：控件消失（插件卸载）后不许还留着能点的回调
-  slotActions.clear();
+  return { host, merged, slotMerged, registeredEffects, pluginControls };
+}
+
+/**
+ * 把插件控件登记进设置工厂（SPEC）+ 补 applier + 建"控件 id → 存值键"映射。
+ *
+ * 两件事必须一起做：
+ *   · 声明了 spec.setting 的控件，值要落在**清单设置键**上 ⇒ SPEC 里要同时有控件 id 与存值键
+ *     （只登记控件 id 的话，uiState.set(设置键) 会被工厂判成"未登记的键"直接丢弃）
+ *   · appliers 是模块加载时按 SPEC 快照注册的，插件晚于那一刻 ⇒ 不补就"只存值不 render"
+ * @param {Array} pluginControls 合并后的插件控件
+ */
+function registerSlotStorage(pluginControls) {
+  if (!pluginControls.length) return;
+  // 存值键映射随重建刷新（控件消失后不许还留着旧映射）
+  slotStoreKeyById.clear();
   for (const ctl of pluginControls) {
-    if (ctl && ctl.id && typeof ctl.onAction === 'function') {
-      slotActions.set(String(ctl.id), { pluginId: ctl.pluginId, fn: ctl.onAction });
+    const id = String((ctl && ctl.id) || '');
+    const setting = String((ctl && ctl.setting) || '');
+    if (id && setting && setting !== id) slotStoreKeyById.set(id, setting);
+  }
+  const specItems = [...pluginControls];
+  for (const ctl of pluginControls) {
+    const setting = String((ctl && ctl.setting) || '');
+    if (setting && setting !== String(ctl.id || '')) specItems.push({ ...ctl, id: setting });
+  }
+  const reg = uiState.registerSpecItems(specItems);
+  // 拒绝登记的要当场说清楚：否则表现为"控件在面板上、却不被工厂接管（恢复默认跳过它）"
+  if (reg && Array.isArray(reg.skipped) && reg.skipped.length) {
+    for (const s of reg.skipped) {
+      stageLog('warn', `插件控件未进入设置工厂：${s.id}（${s.reason}）`, { source: 'plugin-controls' });
     }
   }
-  // 填充效果元数据（按声明顺序）并把链下发一次：插件晚于首帧加载，不补这一次画面就不对
+  uiState.registerAppliers(Object.fromEntries(pluginControls.map((c) => [String(c.id), {
+    apply: (v) => applyCore(String(c.id), v),
+    render: (v) => renderControl(String(c.id), v),
+  }])));
+}
+
+/**
+ * 把插件效果元数据填进 PLUGIN_EFFECTS 并下发一次效果链（插件晚于首帧加载，不补这一次画面就不对）。
+ * @param {object|null} host 插件宿主
+ * @param {Array} pluginControls 合并后的插件控件（用来取每个效果的选项集）
+ */
+function syncPluginEffects(host, pluginControls) {
   PLUGIN_EFFECTS.clear();
-  if (host && typeof host.effectDeclarations === 'function') {
-    for (const decl of host.effectDeclarations()) {
-      const ctl = pluginControls.find((c) => String(c.id) === decl.id);
-      PLUGIN_EFFECTS.set(decl.id, {
-        fragment: decl.fragment,
-        params: decl.params,
-        options: ctl && Array.isArray(ctl.options) ? ctl.options.map(String) : [],
-      });
-    }
-    if (PLUGIN_EFFECTS.size) applyPluginEffectChain();
+  if (!host || typeof host.effectDeclarations !== 'function') return;
+  for (const decl of host.effectDeclarations()) {
+    const ctl = pluginControls.find((c) => String(c.id) === decl.id);
+    PLUGIN_EFFECTS.set(decl.id, {
+      fragment: decl.fragment,
+      params: decl.params,
+      options: ctl && Array.isArray(ctl.options) ? ctl.options.map(String) : [],
+    });
   }
-  if (pluginControls.length) {
-    const reg = uiState.registerSpecItems(pluginControls);
-    // 拒绝登记的要当场说清楚：否则表现为"控件在面板上、却不被工厂接管（恢复默认跳过它）"
-    if (reg && Array.isArray(reg.skipped) && reg.skipped.length) {
-      for (const s of reg.skipped) {
-        stageLog('warn', `插件控件未进入设置工厂：${s.id}（${s.reason}）`, { source: 'plugin-controls' });
-      }
-    }
-  }
-  // 新增项还要补 applier：工厂的 appliers 是模块加载时按 SPEC **快照**注册的，
-  //   插件控件晚于那一刻才进 SPEC ⇒ 不补的话 set() 只存值、不 render，
-  //   表现为「恢复默认」后存储已变回关、面板选中态却还停在强（实测缺口）。
-  if (pluginControls.length) {
-    uiState.registerAppliers(Object.fromEntries(pluginControls.map((c) => [String(c.id), {
-      apply: (v) => applyCore(String(c.id), v),
-      render: (v) => renderControl(String(c.id), v),
-    }])));
-  }
+  if (PLUGIN_EFFECTS.size) applyPluginEffectChain();
+}
+
+/**
+ * 能力过滤：把"已声明但注册失败"的控件置灰保留（契约 §9.3），其余按渲染器能力裁决。
+ * 白名单 = 渲染器自身声明 + 注册成功的效果 id + 插槽控件的能力键（显式等于控件 id）。
+ * @param {object} renderer 当前渲染器
+ * @param {object} slotMerged mergeSlotControls 的结果
+ * @param {Array} pluginControls 插件控件
+ * @param {string[]} registeredEffects 注册成功的效果 id
+ * @returns {Array} 可渲染的 groups
+ */
+function filterByCapabilities(renderer, slotMerged, pluginControls, registeredEffects) {
   // 已声明但注册失败的那些：置灰而不是消失（契约 §9.3）
   const keepDisabled = new Set(pluginControls.filter((c) => c.disabled === true && c.id).map((c) => String(c.id)));
   PLUGIN_DISABLED_IDS.clear();
   for (const ctlId of keepDisabled) PLUGIN_DISABLED_IDS.add(ctlId);
-  // 白名单并入：注册成功的效果 id + 插槽控件的控件 id（能力键显式等于控件 id，见 mergeSlotControls）
   const pluginCapabilityKeys = [...registeredEffects, ...slotMerged.capabilityKeys];
-  const groups = applyCapabilities(slotMerged.groups, withPluginCapabilities(renderer && renderer.capabilities, pluginCapabilityKeys), {
+  return applyCapabilities(slotMerged.groups, withPluginCapabilities(renderer && renderer.capabilities, pluginCapabilityKeys), {
     onWarn: (message) => stageLog('warn', message, { source: 'panel-selfcheck' }),
     keepDisabled,
   });
-  document.documentElement.dataset.pluginControls = String(merged.added + slotMerged.added);
-  document.documentElement.dataset.pluginControlsRejected = String(merged.rejected + merged.rejectedControls + slotMerged.rejected);
-  document.documentElement.dataset.panelGroups = String(groups.length);
-  // 重建前记住用户手动展开/收起的组：mountPanel 会整块换 DOM，不记就回缺省（实测过的现状缺陷）
-  snapshotExpandedGroups();        // 把"用户现在的选择"并入累积表（在换 DOM 之前）
+}
+
+/**
+ * 挂载重建后的面板，并回填展开态。
+ *
+ * 顺序有讲究：**先**把当前展开态并入累积表（mountPanel 会整块换 DOM），
+ *   再 mountPanel，最后回填 —— 中间不许再插入别的重建。
+ * @param {Array} groups 已按能力过滤、可渲染的分组
+ * @param {Array} pluginControls 插件控件（用于接线清单）
+ * @returns {object} mountPanel 的句柄
+ */
+function mountRebuiltPanel(groups, pluginControls) {
+  snapshotExpandedGroups();
   const info = mountPanel({
     groups,
     headEl: dom.panelHead,
@@ -590,10 +675,31 @@ function rebuildPanelFor(renderer) {
     //   否则渲染层会当成"未接线"：按钮不绑 click，点了没反应（实测踩过）。
     wiredIds: [...WIRED_IDS, ...pluginControls.filter((c) => c.disabled !== true && c.id).map((c) => String(c.id))],
     // 首次渲染就显示用户值（契约 R2）：工厂里已经有 loadAll 读回的值
-    initialValue: (id) => uiState.getValue(id),
+    // 读存值键：声明了 spec.setting 的控件，值存在清单设置键上（不是 control id）
+    initialValue: (id) => uiState.getValue(storeKeyOf(id)),
   });
-  // 回填展开态 + 写 data-group-id（必须紧跟 mountPanel：中间不许再有别的重建）
   restoreExpandedGroups();
+  return info;
+}
+
+function rebuildPanelFor(renderer) {
+  bindPluginPanelRebuild();   // 幂等：确保"插件交完声明后重建面板"这条链只绑一次
+  const { host, merged, slotMerged, registeredEffects, pluginControls } = aggregatePanelGroups();
+  // 动作表随重建刷新：控件消失（插件卸载）后不许还留着能点的回调
+  slotActions.clear();
+  for (const ctl of pluginControls) {
+    if (ctl && ctl.id && typeof ctl.onAction === 'function') {
+      slotActions.set(String(ctl.id), { pluginId: ctl.pluginId, fn: ctl.onAction });
+    }
+  }
+  syncPluginEffects(host, pluginControls);
+  registerSlotStorage(pluginControls);
+  const groups = filterByCapabilities(renderer, slotMerged, pluginControls, registeredEffects);
+  document.documentElement.dataset.pluginControls = String(merged.added + slotMerged.added);
+  document.documentElement.dataset.pluginControlsRejected = String(merged.rejected + merged.rejectedControls + slotMerged.rejected);
+  document.documentElement.dataset.panelGroups = String(groups.length);
+  // 重建前记住用户手动展开/收起的组：mountPanel 会整块换 DOM，不记就回缺省（实测过的现状缺陷）
+  const info = mountRebuiltPanel(groups, pluginControls);
   // 先把句柄补完，再暴露 state.panel。
   //   为什么顺序重要：设置下拉的同步会**触发面板重建**，重建期间若 state.panel 指向
   //   一个"还没挂 refreshAnimations"的半成品，调用方一检查 typeof 就跳过，表现为

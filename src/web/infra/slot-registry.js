@@ -66,6 +66,12 @@ export function createSlotRegistry(opts = {}) {
    * 用途：区分"引用内置组"与"新建插件组"——前者直接放行，后者必须带 plugin.<pluginId>. 前缀。
    */
   const groupIds = opts.groupIds instanceof Set ? opts.groupIds : new Set(opts.groupIds || []);
+  /**
+   * 某插件在清单里声明过的 settings 键（`plugin.json` 的 settings[].key）。
+   * 用途：校验 spec.setting —— 控件声明的存值键必须真的声明过，否则会写出一个
+   *   渲染层永远不认的孤儿键（"改了没反应"类问题的源头）。
+   */
+  const settingsKeysOf = typeof opts.settingsKeysOf === 'function' ? opts.settingsKeysOf : () => [];
 
   /** 目录项 + 编译后的匹配器（构造时算一次，注册期不重复编译） */
   const entries = catalog.map((e) => ({ ...e, matcher: compilePattern(e && e.name) }));
@@ -171,6 +177,23 @@ export function createSlotRegistry(opts = {}) {
    * @returns {{ok: true, id: string, order: number, label: string} | {ok: false}}
    */
   function checkSpec(pid, slotName, spec) {
+    // spec.setting（可选）：统一"控件存值键"与"清单设置键"。
+    //   给了就必须是**该插件已声明**的键；没给则沿用 control id（兼容既有插件）。
+    const setting = String((spec && spec.setting) || '').trim();
+    if (setting) {
+      const declaredKeys = new Set((settingsKeysOf(pid) || []).map(String));
+      const prefix = `plugin.${pid}.`;
+      if (!declaredKeys.has(setting)) {
+        reject(pid, slotName, 'undeclared-setting',
+          `spec.setting「${setting}」不在该插件清单的 settings 里声明过（已声明：${[...declaredKeys].join(' / ') || '无'}）`);
+        return { ok: false };
+      }
+      if (!setting.startsWith(prefix)) {
+        reject(pid, slotName, 'bad-setting-prefix',
+          `spec.setting「${setting}」必须以 plugin.${pid}. 开头（设计 §8.3：插件设置键带插件前缀）`);
+        return { ok: false };
+      }
+    }
     // 分组 id 规则（设计 §七·一）：内置组直接用 id；插件新建分组必须带 plugin.<pluginId>. 前缀。
     //   放在注册期而不是渲染期：渲染期被拒时控件"登记成功却不显示"，插件作者会以为系统坏了。
     const gm = /^panel\.group\.(.+)$/.exec(slotName);
@@ -204,6 +227,7 @@ export function createSlotRegistry(opts = {}) {
       id,
       order: Number.isFinite(Number(spec && spec.order)) ? Number(spec.order) : 1000,
       label: String((spec && spec.label) || id),
+      setting,          // '' = 用 control id 存值（兼容既有插件）
     };
   }
 
@@ -234,6 +258,7 @@ export function createSlotRegistry(opts = {}) {
 
     const record = {
       pluginId: pid, name: slotName, id: shape.id, order: shape.order, label: shape.label,
+      setting: shape.setting || '',
       risk: allowed.catalogRisk, spec: spec || {},
       // 兼容层来的登记留个标记：排查"这个控件哪来的"时能一眼分清
       via: opts.implicitDeclare ? 'legacy-registerControls' : 'slots.register',
@@ -280,7 +305,8 @@ export function createSlotRegistry(opts = {}) {
       byPlugin: plugins,
       // 明细保留必要字段即可：spec 里可能有函数，不能直接序列化给测试
       entries: [...byPlugin].flatMap(([pid, list]) => list.map((r) => ({
-        pluginId: pid, name: r.name, id: r.id, order: r.order, label: r.label, risk: r.risk, via: r.via || 'slots.register',
+        pluginId: pid, name: r.name, id: r.id, order: r.order, label: r.label, risk: r.risk,
+        setting: r.setting || '', via: r.via || 'slots.register',
       }))),
       rejects: rejects.slice(),
     };
@@ -295,7 +321,8 @@ export function createSlotRegistry(opts = {}) {
    */
   function renderEntries() {
     return [...byPlugin].flatMap(([pid, list]) => list.map((r) => ({
-      pluginId: pid, name: r.name, id: r.id, order: r.order, label: r.label, risk: r.risk, spec: r.spec || {},
+      pluginId: pid, name: r.name, id: r.id, order: r.order, label: r.label, risk: r.risk,
+      setting: r.setting || '', spec: r.spec || {},
     })));
   }
 

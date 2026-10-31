@@ -181,6 +181,7 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.5.1 | 2026-10-31 | 插槽 owner props 补齐并改为 getter（settings / geometry / activeSurface / document）；新增 `spec.setting` 统一控件存值键（值直接落在清单声明键上，未声明则注册期拒绝）；`rebuildPanelFor` 拆成 5 个函数（111 行 → 全部 ≤50）；老链标 deprecated |
 | 0.5.0 | 2026-10-31 | 老接口 `registerControls` 迁移到插槽注册（一条通路）：标题→id 派生映射、老控件 id 不强制前缀、`implicitDeclare` 隐式声明（只跳过 undeclared，阶段/前缀/重名/风险仍全查）；`via` 标注控件来源；老控件与 `slots.register` 的控件共用同一合并/渲染/回收链路 |
 | 0.4.9 | 2026-10-31 | 补提交 S3-a 遗漏的接线：`plugin-host.js` 从 schema 取内置分组 id 传给插槽注册表（据此区分"引用内置组"与"插件新建组"，新建组必须带 `plugin.<pluginId>.` 前缀） |
 | 0.4.8 | 2026-10-31 | 修插件控件 kind 两套词汇缺映射（`toggle`/`button` 曾落进 `ctl-note` 空行，表现为"控件消失"，连正常态都不渲染）；新增唯一映射表 `PLUGIN_KIND_TO_VIEW` 并补 kind 映射完备性单测；孤儿能力键检查改合并口径（三源 declared + 跳过 disabled + DOM 漂移护栏 + 判据自检） |

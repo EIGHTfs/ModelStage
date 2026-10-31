@@ -417,6 +417,14 @@ function normalizePluginControl(raw, ctx, rejects, section) {
   });
 }
 
+/**
+ * @deprecated 旧控件节的逐节校验（registerControls → controlSections 那条链的遗留）。
+ * 老接口已改为内部转插槽注册，这条链**不再有输入**；保留只为契约兼容与既有单测。
+ * 新代码请用 `slots.register` + `mergeSlotControls`。下一步删除。
+ * @param {object} section
+ * @param {object} ctx
+ * @returns {{ok: boolean, reason?: string, title?: string, controls?: Array, rejects?: Array}}
+ */
 export function normalizePluginSection(section, ctx) {
   const group = String((section && section.group) || '').trim();
   const controls = Array.isArray(section && section.controls) ? section.controls : null;
@@ -456,6 +464,14 @@ export function normalizePluginSection(section, ctx) {
  * @param {object} [opts]
  * @param {(rej:{pluginId:string, group:string, reason:string, rejects?:Array}) => void} [opts.onReject] 拒绝/丢弃的回报口（写 diag）
  * @returns {{groups:Array, added:number, rejected:number, rejectedControls:number}}
+ */
+/**
+ * @deprecated 旧控件节合并（`registerControls` 迁移后已无输入，`controlSections` 恒为空）。
+ * 新代码请用 `mergeSlotControls`。保留仅为契约兼容与既有单测；下一步会删除。
+ * @param {Array} baseGroups 内置分组
+ * @param {Array} sections 旧控件节
+ * @param {object} [opts]
+ * @returns {{groups: Array, added: number, rejected: number, rejectedControls: number}}
  */
 export function mergePluginControls(baseGroups, sections, opts = {}) {
   const base = Array.isArray(baseGroups) ? baseGroups : [];
@@ -703,6 +719,8 @@ function resolveSlotEntry(entry, taken, byId, acc, report, opts = {}) {
     id,
     label: String((entry && entry.label) || id),
     pluginId: String((entry && entry.pluginId) || ''),
+    // 存值键：给了 spec.setting 就用它（与清单设置键统一），否则沿用 control id（兼容既有插件）
+    setting: String((entry && entry.setting) || ''),
     ...(effectMissing ? {
       disabled: true,
       // reason 与 disabledReason 两个键都要给：

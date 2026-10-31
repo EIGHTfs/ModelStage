@@ -103,6 +103,11 @@ export function createPluginHost(opts = {}) {
   // 注册成功的效果（effectId → { pluginId, fragment }）：只有进这里的 id 才进能力键白名单
   const registeredEffects = new Map();
   // 插件提交的控件节（按提交顺序）：面板侧合并时统一校验，不在这里放行
+  /**
+   * @deprecated 旧控件节通道（registerControls 迁移前的实现）。
+   * 老接口现在内部转成插槽注册，**这里恒为空**；合并链（mergePluginControls / normalizePluginControl）
+   * 随之成为死路径。新代码不要用；下一步会连同 schema 里的那两个函数一起删除。
+   */
   const controlSections = [];
   /** 当前正在注入脚本的插件 id（register* 靠它认领"这是谁的注册"） */
   let loadingPluginId = '';
@@ -1591,6 +1596,8 @@ const MIME_BY_EXT = {
         openStage: normalizeStage(data && data.currentStage),
         // 内置组 id：新建分组必须带 plugin.<pluginId>. 前缀（设计 §七·一）
         groupIds: new Set(PANEL_GROUPS.map((g) => String(g.id || ''))),
+        // spec.setting 校验用：该插件清单里声明过的 settings 键
+        settingsKeysOf: (pid) => (pluginSettings.get(String(pid || '')) || []).map((s) => String(s && s.key || '')),
         isInLoadWindow: () => !!loadingPluginId,
         onReject: (rej) => {
           say.warn(`插槽注册被拒（${rej.code}）：${rej.why}`);
