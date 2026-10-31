@@ -1,6 +1,6 @@
 {
   "name": "modelstage",
-  "version": "0.5.12",
+  "version": "0.5.13",
   "description": "Spine / Live2D 模型查看器：三级名册、两套渲染面共享相机与面板、UnityFS 资源包解包",
   "type": "module",
   "bin": {

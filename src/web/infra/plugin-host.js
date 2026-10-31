@@ -101,29 +101,29 @@ function injectScript(src) {
 //   状态耦合：discovered（读清单找 provider）、providers（读 provider 表）、
 //            say（日志）、emit（进度事件）、pluginEffects（登记解包产物用于回溯）。
 //   函数 | 行 | 代码行 | 职责
-//   fetchFile            | 405 | 133 | 取文件字节（唯一取字节通道，worker/同步两条路 + 诊断）
-//   fileUrlOf            | 395 | 3   | 拼 VFS 取文件地址
-//   prefilterReason      | 769 | 12  | provider 预筛原因（能不能读这个文件）
-//   validateResolved     | 787 | 16  | 校验 provider.resolve 返回值形状（拦半成品）
-//   bytesOf              | 805 | 11  | 求一组文件的字节数
-//   filesOfProvider      | 827 | 4   | 某 provider 声明的文件清单
-//   onWorkerProgress     | 833 | 13  | worker 进度回调 → 派发事件
-//   ensureUnpackWorker   | 853 | 29  | 取/建某 provider 的 worker（失败返回 null）
-//   resolveViaWorker     | 894 | 41  | 用 worker 解包，失败不抛、返回 {ok:false} 由调用方回落
-//   classHistogramOf     | 959 | 13  | 字节量直方图（内存准入判断用）
-//   resolveViaProvider   | 974 | 35  | 按优先级试每个 provider 的 resolve
-//   resolvedUsable       | 1035 | 35  | 判断 resolve 结果是否真能用
-//   registerResolved     | 1072 | 21  | 把解包产物注册进 VFS 并解析入口地址（不碰渲染）
-//   filesCount           | 1106 | 5   | 文件计数
-//   providerFromPrefix   | 1124 | 5   | 前缀 → provider
-//   firstFulfilled       | 1135 | 13  | 取第一个 fulfilled 的结果
-//   resolveFromServer    | 1156 | 43  | 走服务端解包接口（本地没能力时兜底）
-//   fetchCapacity        | 1238 | 25  | 拉服务端内存容量（预热准入依据）
-//   warmup               | 1275 | 17  | 预热主流程（只按内存准入，不看耗时）
-//   scheduleWarmup       | 1322 | 46  | 空闲时排队预热
-//   materialize          | 1388 | 156 | 容器单文件 → 解包 → 校验 → 注册 VFS，返回入口地址与文件清单
-//   providersFor         | 1785 | 6   | 列出能处理某类文件的 provider
-//   findProvider         | 1799 | 23  | 按文件挑 provider（canHandle 必须同步布尔）
+//   fetchFile            | 441 | 133 | 取文件字节（唯一取字节通道，worker/同步两条路 + 诊断）
+//   fileUrlOf            | 431 | 3   | 拼 VFS 取文件地址
+//   prefilterReason      | 805 | 12  | provider 预筛原因（能不能读这个文件）
+//   validateResolved     | 823 | 16  | 校验 provider.resolve 返回值形状（拦半成品）
+//   bytesOf              | 841 | 11  | 求一组文件的字节数
+//   filesOfProvider      | 863 | 4   | 某 provider 声明的文件清单
+//   onWorkerProgress     | 869 | 13  | worker 进度回调 → 派发事件
+//   ensureUnpackWorker   | 889 | 29  | 取/建某 provider 的 worker（失败返回 null）
+//   resolveViaWorker     | 930 | 41  | 用 worker 解包，失败不抛、返回 {ok:false} 由调用方回落
+//   classHistogramOf     | 995 | 13  | 字节量直方图（内存准入判断用）
+//   resolveViaProvider   | 1010 | 35  | 按优先级试每个 provider 的 resolve
+//   resolvedUsable       | 1071 | 35  | 判断 resolve 结果是否真能用
+//   registerResolved     | 1108 | 21  | 把解包产物注册进 VFS 并解析入口地址（不碰渲染）
+//   filesCount           | 1142 | 5   | 文件计数
+//   providerFromPrefix   | 1160 | 5   | 前缀 → provider
+//   firstFulfilled       | 1171 | 13  | 取第一个 fulfilled 的结果
+//   resolveFromServer    | 1192 | 43  | 走服务端解包接口（本地没能力时兜底）
+//   fetchCapacity        | 1274 | 25  | 拉服务端内存容量（预热准入依据）
+//   warmup               | 1311 | 17  | 预热主流程（只按内存准入，不看耗时）
+//   scheduleWarmup       | 1358 | 46  | 空闲时排队预热
+//   materialize          | 1424 | 156 | 容器单文件 → 解包 → 校验 → 注册 VFS，返回入口地址与文件清单
+//   providersFor         | 1821 | 6   | 列出能处理某类文件的 provider
+//   findProvider         | 1835 | 23  | 按文件挑 provider（canHandle 必须同步布尔）
 //
 // ── G2 注册与校验（5 个内部函数 + 4 个 hostApi 方法）───────────────────────
 //   职责：插件脚本装载期能调用的**全部注册入口**，以及它们的拒绝原因。
@@ -131,87 +131,127 @@ function injectScript(src) {
 //   状态耦合：registeredEffects（写）、loadState（写）、providers（写）、slotRegistry（读）、
 //            loadingPluginId（读：判定"是否在装载期窗口内"）、say/emit。
 //   函数 | 行 | 代码行 | 职责
-//   rejectRegistration   | 316 | 13  | 注册拒绝的统一出口（可读原因 + likelyOwner）
-//   groupIdOfTitle       | 339 | 7   | 分组标题 → 内置分组 id（兼容层用，从 PANEL_GROUPS 派生）
-//   legacyControlToSlotSpec | 355 | 18 | 老接口控件声明 → 插槽 spec（包一层 render）
-//   publishSlotStats     | 289 | 7   | 插槽统计挂到 window（__SLOT_STATS__）
-//   initSlotRegistry     | 1696 | 22  | 按 /api/plugins 建插槽注册表（必须在注入脚本之前）
-//   hostApi.register（slots.register） | 430 | 26 | 插件插槽注册入口（转发给 slotRegistry）
-//   hostApi.registerEffect | 472 | 34 | 效果注册（清单校验 + 装载期窗口 + 能力键白名单）
-//   hostApi.registerControls | 535 | 54 | 兼容层：老接口转插槽注册（标题→id、隐式声明）
-//   hostApi.notify       | 613 | 5   | 插件向宿主上报一条通知（进日志/事件）
+//   rejectRegistration   | 354 | 13  | 注册拒绝的统一出口（可读原因 + likelyOwner）
+//   groupIdOfTitle       | 377 | 7   | 分组标题 → 内置分组 id（兼容层用，从 PANEL_GROUPS 派生）
+//   legacyControlToSlotSpec | 393 | 18 | 老接口控件声明 → 插槽 spec（包一层 render）
+//   publishSlotStats     | 327 | 7   | 插槽统计挂到 window（__SLOT_STATS__）
+//   initSlotRegistry     | 1732 | 22  | 按 /api/plugins 建插槽注册表（必须在注入脚本之前）
+//   hostApi.register（slots.register） | 466 | 26 | 插件插槽注册入口（转发给 slotRegistry）
+//   hostApi.registerEffect | 508 | 34 | 效果注册（清单校验 + 装载期窗口 + 能力键白名单）
+//   hostApi.registerControls | 571 | 54 | 兼容层：老接口转插槽注册（标题→id、隐式声明）
+//   hostApi.notify       | 649 | 5   | 插件向宿主上报一条通知（进日志/事件）
 //
 // ── G3 装载与装载期窗口（5 个）─────────────────────────────────────────────
 //   职责：发现清单 → 建注册表 → 注入脚本（窗口内才接受注册）→ 统计装载结果。
 //   状态耦合：discovered / loaded（**唯一写者**都在这组）、loadingPluginId（窗口开关）、
 //            slotRegistry（初始化）、loadState（写）。
 //   函数 | 行 | 代码行 | 职责
-//   normalizeStage       | 280 | 4   | 归一化当前阶段（缺省回退 S1）
-//   loadAll              | 1676 | 6   | 装载入口（去重 + 委派 doLoadAll）
-//   countRegistered      | 1684 | 3   | 统计已装载数
-//   doLoadAll            | 1724 | 40  | 装载执行体（发现 → 注册表 → 注入 → 统计）
-//   loadPlugin           | 624 | 27  | 注入单个插件脚本并登记装载状态
+//   normalizeStage       | 318 | 4   | 归一化当前阶段（缺省回退 S1）
+//   loadAll              | 1712 | 6   | 装载入口（去重 + 委派 doLoadAll）
+//   countRegistered      | 1720 | 3   | 统计已装载数
+//   doLoadAll            | 1760 | 40  | 装载执行体（发现 → 注册表 → 注入 → 统计）
+//   loadPlugin           | 660 | 27  | 注入单个插件脚本并登记装载状态
 //
 // ── G4 卸载与回收（3 个）───────────────────────────────────────────────────
 //   职责：逆序跑 disposer，把插槽/效果/提供者/装载状态从各表摘掉，再派发事件让面板重建。
 //   状态耦合：pluginEffects / registeredEffects / providers / loadState（**都在这里删**）、
 //            loaded（读）、say/emit。
 //   函数 | 行 | 代码行 | 职责
-//   addEffect            | 260 | 9   | 往插件级效果容器加一条（统一回收的入口）
-//   unloadPlugin         | 669 | 31  | 卸载一个插件（逆序 dispose + 清表 + 派发事件）
-//   unloadAll            | 707 | 6   | 全部卸载
+//   addEffect            | 298 | 9   | 往插件级效果容器加一条（统一回收的入口）
+//   unloadPlugin         | 705 | 31  | 卸载一个插件（逆序 dispose + 清表 + 派发事件）
+//   unloadAll            | 743 | 6   | 全部卸载
 //
 // ── G5 效果链（2 个）───────────────────────────────────────────────────────
 //   职责：效果声明的统计与回收报告（"卸载到底发生了没有"靠它读）。
 //   状态耦合：pluginEffects / registeredEffects（只读）、publishEffectStats → window。
 //   函数 | 行 | 代码行 | 职责
-//   publishEffectStats   | 298 | 7   | 效果统计挂到 window
-//   effectsReport        | 720 | 20  | 回收报告（含每个插件的 slots/effects 计数）
+//   publishEffectStats   | 336 | 7   | 效果统计挂到 window
+//   effectsReport        | 756 | 20  | 回收报告（含每个插件的 slots/effects 计数）
 //
 // ── G6 报告（1 个）─────────────────────────────────────────────────────────
 //   职责：把宿主整体状态汇总成一份可序列化报告（排障与自检读它）。
 //   状态耦合：几乎全部只读（loaded/discovered/providers/pluginEffects/registeredEffects/slotRegistry）。
 //   函数 | 行 | 代码行 | 职责
-//   report               | 1826 | 62  | 汇总宿主状态（插件/效果/插槽/失败）供排障
+//   report               | 1862 | 62  | 汇总宿主状态（插件/效果/插槽/失败）供排障
 //
-// ── 9 个高频共享状态（被 5~12 个函数读写；改动前先看这张表）───────────────
-//   变量 | 类型 | 谁写 | 谁读 | 改动时注意
-//   say                     | const 日志器 | 无（初始化后不变） | 12 个函数 | 只加不换：换实现会改变全部日志格式
-//   emit                    | const 派发器 | 无（初始化后不变） | 8 个函数  | 事件名是外部契约（main/panel 监听）
-//   discovered              | let 数组      | doLoadAll           | 9 个函数  | 只在装载期整体替换；运行期读到的可能是旧快照
-//   loaded                  | let Set       | doLoadAll           | 9 个函数  | "已装载"判定依据；卸载要同步删，否则 isLoaded 骗人
-//   providers               | const Map     | register / unloadPlugin | 8 个函数 | 覆盖会被显式拒绝（见 register 注释），删要连 disposer 一起
-//   slotRegistry            | let           | initSlotRegistry（唯一） | 8 个函数 | **惰性初始化**：脚本注入前必须已建好，否则注册静默丢弃
-//   loadState               | const Map     | register / loadPlugin / unloadPlugin | 7 个函数 | 装载状态与错误文案的唯一来源，卸载要删否则残留
-//   registeredEffects       | const Map     | registerEffect / unloadPlugin | 6 个函数 | 能力键白名单的来源；删漏会让控件"未注册成功"
-//   pluginEffects           | const Map     | addEffect / unloadPlugin | 5 个函数 | 插件级 disposer 容器；卸载顺序依赖它（逆序）
+// ── 高频共享状态：已收敛为一个显式 `ctx`（B0 完成）────────────────────────
+//   位置：工厂体开头（搜 `const ctx = {`）。**唯一一份定义**，内部函数一律用 `ctx.xxx` 读写；
+//   不再有同名的工厂作用域变量（有就是漏改，用 grep `\bc<名字>\b` 自查能发现）。
+//   为什么收敛：这 9 个状态被 5~12 个函数跨分区读写，依赖关系原先只能靠通读全文才看得见；
+//     收进一个具名对象后，"谁依赖什么"体现在 `ctx.` 前缀上，也是将来把这些函数搬出本文件的前提
+//     （B1+ 只需传一个 ctx 参数，不必重连一整片闭包）。
+//
+//   字段 | 类型 | 谁写 | 谁读 | 时序约束 / 改动时注意
+//   ctx.say                 | 日志器（初始化后不变） | 无 | 12 个函数 | 只加不换：换实现会改变全部日志格式
+//   ctx.emit                | 派发器（初始化后不变） | 无 | 8 个函数  | 事件名是外部契约（main/panel 订阅）
+//   ctx.discovered          | 数组                   | doLoadAll（唯一） | 9 个函数 | 只在装载期整体替换；运行期读到的是最近一次快照
+//   ctx.loaded              | 布尔                   | doLoadAll（唯一） | 9 个函数 | 是"已装载"的唯一判定（isLoaded 直接返回它）
+//   ctx.providers           | Map                    | register / unloadPlugin | 8 个函数 | 覆盖会被显式拒绝；删要连 disposer 一起
+//   ctx.slotRegistry        | 对象或 null            | initSlotRegistry（唯一） | 8 个函数 | **惰性初始化**：脚本注入前必须已建好，否则注册静默丢弃
+//   ctx.loadState           | Map                    | register / loadPlugin / unloadPlugin | 7 个函数 | 装载状态与错误文案的唯一来源，卸载要删否则残留
+//   ctx.registeredEffects   | Map                    | registerEffect / unloadPlugin | 6 个函数 | 能力键白名单来源；删漏会让控件显示"未注册成功"
+//   ctx.pluginEffects       | Map                    | addEffect / unloadPlugin | 5 个函数 | 插件级 disposer 容器；卸载按**逆序**执行，依赖它
+//
+//   留在闭包（**不**进 ctx，理由：引用数 ≤4，进 ctx 只会把 ctx 变成杂物袋）：
+//     base、manifestProvides、manifestEffects、registrationRejects、loadingPluginId、lastLoadedPluginId、
+//     pluginSettings、loadingPromise、workerPool、capCache/CAP_TTL_MS、warmupInflight、WARMUP_PHASE_TEXT、
+//     ORDINARY_ASSET_EXT、MAX_BUNDLE_BYTES、MAX_FRAGMENT_CHARS、hostApi
 //
 // ── 与"将来拆分"的关系 ────────────────────────────────────────────────────
-//   调研结论（docs/设计/plugin-host拆分调研.md）：**暂不拆文件**。若将来要拆，第一步不是搬代码，
-//   而是先把上面 9 个状态收敛成一个显式 ctx 对象（仍在单文件内），让 43 个函数的依赖变成可见契约。
+//   调研结论（docs/设计/plugin-host拆分调研.md）：**暂不拆文件**。B0（状态收敛）已完成；
+//   若继续 B1，就是把 ctx 作为参数把"资源取用/解包"这组（23 个函数、64% 代码）整体搬出去。
 // ============================================================================
 export function createPluginHost(opts = {}) {
-  const say = makeLogger(opts.log);
+  /**
+   * 高频共享状态容器（B0 收敛）。
+   *
+   * 为什么要有它：这 9 个状态原本是工厂作用域的散装闭包变量，被 5~12 个内部函数直接读写，
+   *   依赖关系只能靠通读全文才看得见。收进一个具名对象后，"谁依赖什么"在函数签名与
+   *   `ctx.` 前缀上一眼可辨 —— 这是将来把这些函数搬出本文件（B1+）的前提：
+   *   届时它们只需要接收一个 ctx 参数，而不是重连一整片闭包。
+   *
+   * 约定（改这个对象之前先读）：
+   *   · 只有**高频**状态进 ctx（引用数 ≥5）；低频状态留在原地，避免 ctx 变成杂物袋
+   *   · 全部读写都必须经过 `ctx.`，不许再把名字解构回局部变量（否则又变回隐式闭包）
+   *   · 三条时序约束见文件头「9 个高频共享状态」表：slotRegistry 惰性初始化、
+   *     loadingPluginId 窗口语义（不在本对象内，仍在闭包）、workerPool 生命周期
+   */
+  const ctx = {
+    /** 日志器（初始化后不变） */
+    say: makeLogger(opts.log),
+    /** diag 事件通道（由 main.js 注入 app/status.js 的 diagEvent；缺省空函数） */
+    emit: typeof opts.diagEvent === 'function' ? opts.diagEvent : () => {},
+    /** id → provider（插件 register 上来的对象）；写者：register / unloadPlugin */
+    providers: new Map(),
+    /** 注册成功的效果（effectId → { pluginId, fragment }）；写者：registerEffect / unloadPlugin */
+    registeredEffects: new Map(),
+    /** id → { loaded, error, files, ms }（装载状态与错误文案的唯一来源） */
+    loadState: new Map(),
+    /** 插件级 effect 容器：pluginId → [{ kind, label, dispose }]（注册顺序，回收时逆序执行） */
+    pluginEffects: new Map(),
+    /** 插槽注册表（**惰性初始化**：必须在注入任何插件脚本之前建好，否则注册会被静默丢弃） */
+    slotRegistry: null,
+    /** 本次发现的插件清单（装载期整体替换，运行期读到的是最近一次快照） */
+    discovered: [],
+    /** 是否已完成一次装载（doLoadAll 是唯一写者；卸载时要同步维护，否则 isLoaded 会骗人） */
+    loaded: false,
+  };
   // diag 事件通道（由 main.js 注入 app/status.js 的 diagEvent）：解包来源是**验收要读**的事实，
   //   不能只写 console —— 页面上层与测试都靠 diag 取证。
-  const emit = typeof opts.diagEvent === 'function' ? opts.diagEvent : () => {};
   const base = String(opts.baseUrl || '').replace(/\/$/, '');
 
   /** id → provider（插件 register 上来的对象） */
-  const providers = new Map();
   /** id → 清单里声明的角色（provides）——插件自己 register 时不一定带，以清单为准 */
   const manifestProvides = new Map();
   // 清单里声明的 effects（pluginId → [{id,label,params}]）：能力键白名单与控件校验的唯一依据。
   //   与 manifestProvides 同一模式 —— 角色/效果都以**清单**为准，注册时不能自说自话。
   const manifestEffects = new Map();
   // 注册成功的效果（effectId → { pluginId, fragment }）：只有进这里的 id 才进能力键白名单
-  const registeredEffects = new Map();
   /** 当前正在注入脚本的插件 id（register* 靠它认领"这是谁的注册"） */
   let loadingPluginId = '';
   /** 效果表达式长度上限：见 registerEffect 里"超长直接拒"的理由 */
   const MAX_FRAGMENT_CHARS = 2000;
   /** id → { loaded, error, files, ms } 装载状态（排障用） */
-  const loadState = new Map();
 
   /**
    * 插件级 effect 容器：pluginId → [{ kind, label, dispose }]（**注册顺序**，回收时逆序执行）。
@@ -220,7 +260,6 @@ export function createPluginHost(opts = {}) {
    *   插件卸载/禁用没有任何可执行的回收动作 —— 插槽一旦能改界面，残留就只能靠人肉排查。
    * 这里给每个插件一份"我注册了什么"的清单，把回收变成一次可验证的批量操作。
    */
-  const pluginEffects = new Map();
 
   /**
    * 窗口外注册的显式拒绝记录（最近 50 条，供排障与验收读取）。
@@ -241,7 +280,6 @@ export function createPluginHost(opts = {}) {
    * 阶段口径 openStage='S1'：本阶段所有插槽都未开放 ⇒ 注册一律被 slot-not-open 拒，
    *   这正是 S1 的语义（只搭基础设施，不动界面）。
    */
-  let slotRegistry = null;
 
   /**
    * 每个插件在清单里声明的设置项（`plugin.json` 的 settings[]）。
@@ -260,9 +298,9 @@ export function createPluginHost(opts = {}) {
   function addEffect(pluginId, effect) {
     const id = String(pluginId || '');
     if (!id || !effect || typeof effect.dispose !== 'function') return false;
-    const list = pluginEffects.get(id) || [];
+    const list = ctx.pluginEffects.get(id) || [];
     list.push(effect);
-    pluginEffects.set(id, list);
+    ctx.pluginEffects.set(id, list);
     publishEffectStats();
     return true;
   }
@@ -289,7 +327,7 @@ export function createPluginHost(opts = {}) {
   function publishSlotStats() {
     try {
       if (typeof window !== 'undefined' && window && typeof window === 'object') {
-        window.__SLOT_STATS__ = slotRegistry ? slotRegistry.stats() : null;
+        window.__SLOT_STATS__ = ctx.slotRegistry ? ctx.slotRegistry.stats() : null;
       }
     } catch { /* 无 window（node 测试）时忽略 */ }
   }
@@ -298,7 +336,7 @@ export function createPluginHost(opts = {}) {
   function publishEffectStats() {
     try {
       let total = 0;
-      for (const list of pluginEffects.values()) total += list.length;
+      for (const list of ctx.pluginEffects.values()) total += list.length;
       document.documentElement.dataset.pluginEffects = String(total);
     } catch { /* 无 DOM（测试环境）时忽略 */ }
   }
@@ -322,8 +360,8 @@ export function createPluginHost(opts = {}) {
     };
     registrationRejects.push(rec);
     if (registrationRejects.length > 50) registrationRejects.shift();
-    say.warn(`插件注册被拒（${kind}）：${why}${rec.likelyOwner ? `（疑似来自最后装载的插件 ${rec.likelyOwner}）` : ''}`);
-    emit('plugin.register-rejected', rec);
+    ctx.say.warn(`插件注册被拒（${kind}）：${why}${rec.likelyOwner ? `（疑似来自最后装载的插件 ${rec.likelyOwner}）` : ''}`);
+    ctx.emit('plugin.register-rejected', rec);
     return false;
   }
 
@@ -372,8 +410,6 @@ export function createPluginHost(opts = {}) {
   }
 
   /** /api/plugins 返回的清单快照 */
-  let discovered = [];
-  let loaded = false;
   /**
    * 进行中的 loadAll（并发去重）。
    * 为什么需要：启动预热与"用户一打开就点资源包"可能同时触发装载，
@@ -414,7 +450,7 @@ export function createPluginHost(opts = {}) {
     // 打点：这是"主线程整包读入"的唯一入口。方向④ 完成后它**只该在回落路径出现**，
     //   正常装载不该再有这条 ⇒ 验收就看它在不在。
     try {
-      emit('unpack.main-read', { rel, bytes: bytes.byteLength, ms: Math.round(now() - t0) });
+      ctx.emit('unpack.main-read', { rel, bytes: bytes.byteLength, ms: Math.round(now() - t0) });
     } catch { /* 打点失败不影响取字节 */ }
     return { bytes, size: bytes.byteLength, url };
   }
@@ -428,32 +464,32 @@ export function createPluginHost(opts = {}) {
     version: 1,
     /** 插件注册自己：只收有 id 的对象；缺 canHandle/resolve 时保留但标注（供排障） */
     register(plugin) {
-      if (!plugin || typeof plugin !== 'object') { say.warn('register 收到非对象，已忽略'); return false; }
+      if (!plugin || typeof plugin !== 'object') { ctx.say.warn('register 收到非对象，已忽略'); return false; }
       const id = String(plugin.id || '').trim();
-      if (!id) { say.warn('register 缺少 id，已忽略'); return false; }
+      if (!id) { ctx.say.warn('register 缺少 id，已忽略'); return false; }
       // 契约 PL2：id 重复必须**拒绝**且不覆盖已注册的那个。
       //   静默 providers.set 覆盖会让"后加载的插件顶掉先加载的"，且排障时看不出发生过覆盖。
       //   保留先注册的实例（先到先得）：它可能已经参与过解析，换掉会留下"半新半旧"的对象。
-      if (providers.has(id)) {
-        say.warn(`插件 ${id} 重复注册，已忽略（保留先注册的实例）`);
+      if (ctx.providers.has(id)) {
+        ctx.say.warn(`插件 ${id} 重复注册，已忽略（保留先注册的实例）`);
         return false;
       }
       // 角色以**清单**为准（契约 插件契约 §二）：register 上来的对象不覆盖它
       const declared = manifestProvides.get(id) || [];
       const rec = { ...plugin, id, provides: declared.slice() };
-      providers.set(id, rec);
+      ctx.providers.set(id, rec);
       // 登记回收动作：卸载时把 provider 从表里摘掉（只摘自己这一份，别误删后来者）
       addEffect(id, {
         kind: 'provider',
         label: id,
-        dispose: () => { if (providers.get(id) === rec) providers.delete(id); },
+        dispose: () => { if (ctx.providers.get(id) === rec) ctx.providers.delete(id); },
       });
-      const st = loadState.get(id) || { files: 0, ms: 0 };
-      loadState.set(id, { ...st, loaded: true, error: null });
+      const st = ctx.loadState.get(id) || { files: 0, ms: 0 };
+      ctx.loadState.set(id, { ...st, loaded: true, error: null });
       const caps = [];
       if (typeof rec.canHandle === 'function') caps.push('canHandle');
       if (typeof rec.resolve === 'function') caps.push('resolve');
-      say.info(`已注册提供者 ${id}（${rec.name || id}）：${caps.join('/') || '无可调用成员'}`);
+      ctx.say.info(`已注册提供者 ${id}（${rec.name || id}）：${caps.join('/') || '无可调用成员'}`);
       try { window.dispatchEvent(new CustomEvent('spineviewer:plugin-registered', { detail: { id } })); } catch { /* 忽略 */ }
       return true;
     },
@@ -475,36 +511,36 @@ export function createPluginHost(opts = {}) {
       if (!pluginId) {
         return rejectRegistration('registerEffect', '不在脚本装载期（异步注册不被支持：registerEffect 必须在脚本顶层同步调用）', { id });
       }
-      if (!id) { say.warn(`registerEffect 缺少 id（插件 ${pluginId}），已忽略`); return false; }
+      if (!id) { ctx.say.warn(`registerEffect 缺少 id（插件 ${pluginId}），已忽略`); return false; }
       const declared = (manifestEffects.get(pluginId) || []).some((e) => String(e.id) === id);
       if (!declared) {
-        say.warn(`registerEffect(${id}) 未在插件 ${pluginId} 的 effects[] 里声明，已拒绝`);
+        ctx.say.warn(`registerEffect(${id}) 未在插件 ${pluginId} 的 effects[] 里声明，已拒绝`);
         return false;
       }
       if (typeof (spec && spec.fragment) !== 'string' || !spec.fragment.trim()) {
-        say.warn(`registerEffect(${id}) 的 fragment 为空，已拒绝`);
+        ctx.say.warn(`registerEffect(${id}) 的 fragment 为空，已拒绝`);
         return false;
       }
       // 超长直接拒：fragment 会被拼进着色器并在挂载时编译，没有长度闸门就等于
       //   允许插件往渲染链路里塞任意大段代码（编译失败还会连带拖慢首帧）
       if (spec.fragment.length > MAX_FRAGMENT_CHARS) {
-        say.warn(`registerEffect(${id}) 的 fragment 过长（${spec.fragment.length} > ${MAX_FRAGMENT_CHARS} 字符），已拒绝`);
+        ctx.say.warn(`registerEffect(${id}) 的 fragment 过长（${spec.fragment.length} > ${MAX_FRAGMENT_CHARS} 字符），已拒绝`);
         return false;
       }
-      if (registeredEffects.has(id)) {
-        say.warn(`registerEffect(${id}) 重复注册（已被 ${registeredEffects.get(id).pluginId} 占用），已忽略`);
+      if (ctx.registeredEffects.has(id)) {
+        ctx.say.warn(`registerEffect(${id}) 重复注册（已被 ${ctx.registeredEffects.get(id).pluginId} 占用），已忽略`);
         return false;
       }
       // uniforms 是插件侧的"参数默认值兜底"（清单 params[].default 的补充口）。
       //   实际每档用哪个值由 effect-chain.uniformsForOption 按档位算，这里只做缺省兜底。
       const uniforms = (spec && spec.uniforms && typeof spec.uniforms === 'object') ? { ...spec.uniforms } : {};
-      registeredEffects.set(id, { pluginId, fragment: spec.fragment, uniforms });
+      ctx.registeredEffects.set(id, { pluginId, fragment: spec.fragment, uniforms });
       addEffect(pluginId, {
         kind: 'effect',
         label: id,
-        dispose: () => registeredEffects.delete(id),
+        dispose: () => ctx.registeredEffects.delete(id),
       });
-      say.info(`已注册效果 ${id}（插件 ${pluginId}）`);
+      ctx.say.info(`已注册效果 ${id}（插件 ${pluginId}）`);
       return true;
     },
     /**
@@ -542,11 +578,11 @@ export function createPluginHost(opts = {}) {
       const groupName = String((section && section.group) || '').trim();
       const controls = Array.isArray(section && section.controls) ? section.controls : null;
       if (!groupName || !controls || !controls.length) {
-        say.warn(`registerControls（插件 ${pluginId}）缺少 group 或 controls，已忽略`);
+        ctx.say.warn(`registerControls（插件 ${pluginId}）缺少 group 或 controls，已忽略`);
         return false;
       }
-      if (!slotRegistry) {
-        say.warn(`registerControls（插件 ${pluginId}）失败：插槽注册表尚未就绪`);
+      if (!ctx.slotRegistry) {
+        ctx.say.warn(`registerControls（插件 ${pluginId}）失败：插槽注册表尚未就绪`);
         return false;
       }
       // ① 标题 → groupId：内置表派生；传进来的本来就是 id 时原样放过
@@ -558,7 +594,7 @@ export function createPluginHost(opts = {}) {
         const spec = legacyControlToSlotSpec(raw);
         if (!spec) { rejects.push({ id: (raw && raw.id) || '', reason: '控件缺 id' }); continue; }
         // ②③ 前缀不强制、隐式声明：都靠 implicitDeclare 分支表达
-        const dispose = slotRegistry.register(pluginId, slotName, spec, { implicitDeclare: true });
+        const dispose = ctx.slotRegistry.register(pluginId, slotName, spec, { implicitDeclare: true });
         if (typeof dispose === 'function') {
           // 与 slots.register 完全同一条回收链：disposer 进同一个 effect 容器
           //   （不挂的话 unloadPlugin 只能靠 disposeAll 兜底，统计上会显示"disposed 少、slotsRemoved 多"）
@@ -568,7 +604,7 @@ export function createPluginHost(opts = {}) {
           rejects.push({ id: spec.id, reason: '插槽注册被拒（见 stats.rejects）' });
         }
       }
-      say.info(`插件 ${pluginId} 提交控件节（兼容层 → 插槽）：分组「${groupName}」→ ${slotName}，成功 ${ok}/${controls.length}`
+      ctx.say.info(`插件 ${pluginId} 提交控件节（兼容层 → 插槽）：分组「${groupName}」→ ${slotName}，成功 ${ok}/${controls.length}`
         + (rejects.length ? `，被拒 ${rejects.length}` : ''));
       publishSlotStats();
       return ok > 0;
@@ -592,11 +628,11 @@ export function createPluginHost(opts = {}) {
      */
     slots: {
       register(name, spec) {
-        if (!slotRegistry) {
-          say.warn('插槽注册失败：注册表尚未就绪（插件清单还没拿到，通常是页面刚启动）');
+        if (!ctx.slotRegistry) {
+          ctx.say.warn('插槽注册失败：注册表尚未就绪（插件清单还没拿到，通常是页面刚启动）');
           return null;
         }
-        const dispose = slotRegistry.register(loadingPluginId, name, spec);
+        const dispose = ctx.slotRegistry.register(loadingPluginId, name, spec);
         if (typeof dispose === 'function') {
           // 挂进 S1-b1 的 effect 容器 ⇒ unloadPlugin 会连插槽登记一起回收
           addEffect(loadingPluginId, { kind: 'slot', label: String(name), dispose });
@@ -605,14 +641,14 @@ export function createPluginHost(opts = {}) {
         return dispose;
       },
       /** 只读快照（同时挂到 window.__SLOT_STATS__ 供测试断言） */
-      stats: () => (slotRegistry ? slotRegistry.stats() : {
+      stats: () => (ctx.slotRegistry ? ctx.slotRegistry.stats() : {
         openStage: 'S1', catalogSize: 0, total: 0, byPlugin: {}, entries: [], rejects: [],
       }),
     },
     /** 提示通道：插件不直接操作 DOM，走这里（同时派发事件给页面其它部分） */
     notify(kind, msg) {
       const level = kind === 'error' ? 'error' : kind === 'warn' ? 'warn' : 'info';
-      say[level](`[插件] ${msg}`);
+      ctx.say[level](`[插件] ${msg}`);
       try { window.dispatchEvent(new CustomEvent('spineviewer:notify', { detail: { kind, msg } })); } catch { /* 忽略 */ }
     },
   };
@@ -625,7 +661,7 @@ export function createPluginHost(opts = {}) {
     const id = String(pl && pl.id ? pl.id : '');
     if (!id) return;
     const t0 = Date.now();
-    loadState.set(id, { loaded: false, error: null, files: 0, ms: 0 });
+    ctx.loadState.set(id, { loaded: false, error: null, files: 0, ms: 0 });
     loadingPluginId = id;   // 让 register* 知道这次注册属于哪个插件
     const files = Array.isArray(pl.files) ? pl.files : [];
     let okCount = 0;
@@ -633,25 +669,25 @@ export function createPluginHost(opts = {}) {
       const ok = await injectScript(`${base}/plugins/${f}`);
       if (ok) okCount += 1;
       else {
-        const st = loadState.get(id);
+        const st = ctx.loadState.get(id);
         if (st && !st.error) st.error = `脚本加载失败: ${f}`;
       }
     }
     loadingPluginId = '';
-    const st = loadState.get(id) || {};
+    const st = ctx.loadState.get(id) || {};
     // 生效判定要分角色（契约 §一 五类角色）：
     //   asset-provider 必须 register() 交出 canHandle/resolve；
     //   只提供 panel 的插件没有 register() 可言，它交的是 effects/controls ——
     //   拿 register() 当唯一成功标志会把它误判成"加载失败"，进而把它的控件也置灰。
     // 生效判定：交出过插槽控件、或注册过效果，都算"这个插件在工作"
-    const slotCount = slotRegistry ? (slotRegistry.stats().byPlugin[id] || 0) : 0;
+    const slotCount = ctx.slotRegistry ? (ctx.slotRegistry.stats().byPlugin[id] || 0) : 0;
     const didPanelWork = slotCount > 0
-      || [...registeredEffects.values()].some((e) => e.pluginId === id);
-    const providerOk = providers.has(id);
+      || [...ctx.registeredEffects.values()].some((e) => e.pluginId === id);
+    const providerOk = ctx.providers.has(id);
     const error = st.error || (providerOk || didPanelWork ? null : '脚本已加载但没有调用 register()');
-    loadState.set(id, { ...st, loaded: providerOk || didPanelWork, error, files: okCount, ms: Date.now() - t0 });
+    ctx.loadState.set(id, { ...st, loaded: providerOk || didPanelWork, error, files: okCount, ms: Date.now() - t0 });
     lastLoadedPluginId = id;
-    if (error) say.warn(`插件 ${id} 未生效：${error}（其余插件与页面不受影响）`);
+    if (error) ctx.say.warn(`插件 ${id} 未生效：${error}（其余插件与页面不受影响）`);
   }
 
   /**
@@ -668,22 +704,22 @@ export function createPluginHost(opts = {}) {
    */
   async function unloadPlugin(pluginId) {
     const id = String(pluginId || '');
-    const list = pluginEffects.get(id) || [];
+    const list = ctx.pluginEffects.get(id) || [];
     // 先记"卸载前有没有"，再回收：disposer 会把 provider 删掉，之后再查就永远是 false（返回值会误导排障）
-    const hadProviderBefore = providers.has(id);
+    const hadProviderBefore = ctx.providers.has(id);
     let disposed = 0;
     const failures = [];
     for (let i = list.length - 1; i >= 0; i -= 1) {      // 逆序：后注册的先撤
       try { list[i].dispose(); disposed += 1; }
       catch (e) { failures.push(`${list[i].kind}:${list[i].label}: ${(e && e.message) || e}`); }
     }
-    pluginEffects.delete(id);
+    ctx.pluginEffects.delete(id);
 
     let removedEffects = 0;
-    for (const [eid, e] of [...registeredEffects]) {
-      if (e && e.pluginId === id) { registeredEffects.delete(eid); removedEffects += 1; }
+    for (const [eid, e] of [...ctx.registeredEffects]) {
+      if (e && e.pluginId === id) { ctx.registeredEffects.delete(eid); removedEffects += 1; }
     }
-    const hadProvider = providers.delete(id);
+    const hadProvider = ctx.providers.delete(id);
     try { manifestEffects.delete(id); } catch { /* 老版本没有这张表 */ }
     const wk = workerPool.get(id);
     if (wk) {
@@ -692,20 +728,20 @@ export function createPluginHost(opts = {}) {
     }
     // 插槽登记也要回收：disposer 虽已挂在 effect 容器里，这里按 pluginId 再兜一次
     //   （历史数据/异常路径可能留下没登记 disposer 的项）
-    const slotsRemoved = slotRegistry ? slotRegistry.disposeAll(id) : 0;
+    const slotsRemoved = ctx.slotRegistry ? ctx.slotRegistry.disposeAll(id) : 0;
     publishSlotStats();
-    loadState.delete(id);
+    ctx.loadState.delete(id);
     publishEffectStats();
-    say.info(`插件 ${id} 已卸载：执行 ${disposed} 个 disposer${failures.length ? `（${failures.length} 个失败）` : ''}`
+    ctx.say.info(`插件 ${id} 已卸载：执行 ${disposed} 个 disposer${failures.length ? `（${failures.length} 个失败）` : ''}`
       + `，清掉效果 ${removedEffects} 个、插槽 ${slotsRemoved} 个${hadProvider ? '、提供者 1 个' : ''}`);
     // 让面板重建：只清宿主表不改 DOM 的话，控件会继续挂在界面上（等于没卸载）
-    try { window.dispatchEvent(new CustomEvent('spineviewer:plugins-loaded', { detail: { unloaded: id } })); } catch { /* 忽略 */ }
+    try { window.dispatchEvent(new CustomEvent('spineviewer:plugins-ctx.loaded', { detail: { unloaded: id } })); } catch { /* 忽略 */ }
     return { pluginId: id, disposed, failures, removedEffects, slotsRemoved, hadProvider: hadProviderBefore };
   }
 
   /** 卸载全部已装载插件（测试收尾 / 热重载前清理用） */
   async function unloadAll() {
-    const ids = [...new Set([...pluginEffects.keys(), ...providers.keys(), ...loadState.keys()])];
+    const ids = [...new Set([...ctx.pluginEffects.keys(), ...ctx.providers.keys(), ...ctx.loadState.keys()])];
     const out = [];
     for (const id of ids) out.push(await unloadPlugin(id));      // 串行：卸载会改宿主表，别并发
     return out;
@@ -718,21 +754,21 @@ export function createPluginHost(opts = {}) {
    * @returns {{totalEffects:number, plugins:Array, rejects:Array}}
    */
   function effectsReport() {
-    const ids = [...new Set([...pluginEffects.keys(), ...loadState.keys(), ...providers.keys(),
-      ...(slotRegistry ? Object.keys(slotRegistry.stats().byPlugin) : [])])];
+    const ids = [...new Set([...ctx.pluginEffects.keys(), ...ctx.loadState.keys(), ...ctx.providers.keys(),
+      ...(ctx.slotRegistry ? Object.keys(ctx.slotRegistry.stats().byPlugin) : [])])];
     const plugins = ids.filter(Boolean).map((id) => {
-      const list = pluginEffects.get(id) || [];
+      const list = ctx.pluginEffects.get(id) || [];
       return {
         id,
         effects: list.length,
         kinds: list.map((e) => e.kind),
-        slots: slotRegistry ? (slotRegistry.stats().byPlugin[id] || 0) : 0,
-        effectsRegistered: [...registeredEffects.values()].filter((e) => e.pluginId === id).length,
-        provider: providers.has(id),
-        loaded: !!(loadState.get(id) || {}).loaded,
+        slots: ctx.slotRegistry ? (ctx.slotRegistry.stats().byPlugin[id] || 0) : 0,
+        effectsRegistered: [...ctx.registeredEffects.values()].filter((e) => e.pluginId === id).length,
+        provider: ctx.providers.has(id),
+        loaded: !!(ctx.loadState.get(id) || {}).loaded,
       };
     });
-    const totalEffects = [...pluginEffects.values()].reduce((n, l) => n + l.length, 0);
+    const totalEffects = [...ctx.pluginEffects.values()].reduce((n, l) => n + l.length, 0);
     return { totalEffects, plugins, rejects: registrationRejects.slice() };
   }
 
@@ -825,7 +861,7 @@ export function createPluginHost(opts = {}) {
 
   /** 从 `discovered` 找该 provider 的 files[]（按 id 动态找，不硬编码插件名） */
   function filesOfProvider(providerId) {
-    const pl = discovered.find((p) => p && p.id === providerId);
+    const pl = ctx.discovered.find((p) => p && p.id === providerId);
     return pl && Array.isArray(pl.files) ? pl.files : null;
   }
 
@@ -834,14 +870,14 @@ export function createPluginHost(opts = {}) {
     const d = m.detail || {};
     if (m.phase === 'probing') {
       // 判定包类型也要解一遍（插件的 canHandle 会完整解析），所以它同样是"会等数秒"的一段
-      say.info('后台解包：正在判定包内容类型…（主线程不阻塞）');
-      emit('unpack.worker', { phase: 'probing' });
+      ctx.say.info('后台解包：正在判定包内容类型…（主线程不阻塞）');
+      ctx.emit('unpack.worker', { phase: 'probing' });
     } else if (m.phase === 'blocks') {
       const est = d.estimateMs ? `，预计约 ${(d.estimateMs / 1000).toFixed(1)} 秒` : '';
-      say.info(`后台解包：${d.algo} / ${d.blocks} 块 / 解压后 ${d.decompressedMB}MB${est}（主线程不阻塞）`);
-      emit('unpack.worker', { phase: 'blocks', ...d });
+      ctx.say.info(`后台解包：${d.algo} / ${d.blocks} 块 / 解压后 ${d.decompressedMB}MB${est}（主线程不阻塞）`);
+      ctx.emit('unpack.worker', { phase: 'blocks', ...d });
     } else if (m.phase === 'unpacking') {
-      emit('unpack.worker', { phase: 'unpacking' });
+      ctx.emit('unpack.worker', { phase: 'unpacking' });
     }
   }
 
@@ -919,7 +955,7 @@ export function createPluginHost(opts = {}) {
     const result = await waitDone;
     // 打点分两个数（别混）：postMs = 投喂；totalMs = 整轮（含 worker 自己拉包 + 解压）
     try {
-      emit('unpack.worker-post', {
+      ctx.emit('unpack.worker-post', {
         rel: file.rel, mode: useUrl ? 'url' : 'bytes', bytes: useUrl ? 0 : (bytes ? bytes.byteLength : 0),
         postMs, totalMs: Math.round(nowMs() - postT0),
       });
@@ -1169,12 +1205,12 @@ const MIME_BY_EXT = {
     } catch (e) {
       // 查询**失败**（超时/网络/连接复用被打断）必须可见：以前这种异常没有 reason，
       //   被 catch 静默当成"未命中"，日志里查不出任何痕迹 —— 这是排查不出来的首因。
-      emit('unpack.lookup', { rootId: file.rootId, rel: file.rel, ok: false, error: String((e && e.message) || e).slice(0, 120), ms: Math.round(performance.now() - tLook) });
-      say.warn(`命中查询失败：${file.rel}（${(e && e.message) || e}）`);
+      ctx.emit('unpack.lookup', { rootId: file.rootId, rel: file.rel, ok: false, error: String((e && e.message) || e).slice(0, 120), ms: Math.round(performance.now() - tLook) });
+      ctx.say.warn(`命中查询失败：${file.rel}（${(e && e.message) || e}）`);
       throw Object.assign(e instanceof Error ? e : new Error(String(e)), { reason: 'lookup-error' });
     }
     if (!j || !j.ok) {
-      emit('unpack.lookup', { rootId: file.rootId, rel: file.rel, ok: false, error: (j && (j.reason || j.message)) || 'bad-response', ms: Math.round(performance.now() - tLook) });
+      ctx.emit('unpack.lookup', { rootId: file.rootId, rel: file.rel, ok: false, error: (j && (j.reason || j.message)) || 'bad-response', ms: Math.round(performance.now() - tLook) });
       throw Object.assign(new Error((j && (j.message || j.reason)) || '服务端查询失败'), { reason: 'lookup-error' });
     }
     if (!j.hit && hitOnly) {
@@ -1182,10 +1218,10 @@ const MIME_BY_EXT = {
       //   hitOnly=false 时服务端是**真解包**：解完后返回 hit:false + 完整产物，这是正常成功路径。
       //   早前这里无条件按 !j.hit 抛 server-miss ⇒「请服务端解包」这条路永远走不通，
       //   于是"本地插件解不了的包（如纹理格式 ASTC/50）在页面上永远打不开"。
-      emit('unpack.lookup', { rootId: file.rootId, rel: file.rel, ok: true, hit: false, missReason: j.missReason || 'no-index', ms: Math.round(performance.now() - tLook) });
+      ctx.emit('unpack.lookup', { rootId: file.rootId, rel: file.rel, ok: true, hit: false, missReason: j.missReason || 'no-index', ms: Math.round(performance.now() - tLook) });
       throw Object.assign(new Error(`未命中（${j.missReason || 'no-index'}）`), { reason: 'server-miss' });
     }
-    emit('unpack.lookup', {
+    ctx.emit('unpack.lookup', {
       rootId: file.rootId, rel: file.rel, ok: true,
       hit: !!j.hit,
       ...(j.hit ? {} : { unpacked: true }),   // 服务端刚解完（server-unpack），验收要看这一次花了多久
@@ -1274,13 +1310,13 @@ const MIME_BY_EXT = {
    */
   function warmup(file) {
     const sizeMb = Number(file && file.size) / 1048576;
-    const emitWarm = (extra) => emit('unpack.warmup', { rootId: file && file.rootId, rel: file && file.rel, sizeMb: +sizeMb.toFixed(1), ...extra });
+    const emitWarm = (extra) => ctx.emit('unpack.warmup', { rootId: file && file.rootId, rel: file && file.rel, sizeMb: +sizeMb.toFixed(1), ...extra });
     if (!file || !file.rootId || !file.rel) return;
     // 上限来自服务端（CPU 维度与内存维度取小）；拿不到则保守 12
     fetchCapacity(file).then((cap) => {
       if (!cap.allowWarmup) {
         emitWarm({ skipped: cap.reason, peakEstMb: cap.peakEstMb, budgetMb: cap.budgetMb, estUnpackSec: cap.estUnpackSec });
-        say.info(`跳过预热：${file.rel} ${sizeMb.toFixed(1)}MB（${cap.reason}；预估峰值 ${cap.peakEstMb}MB / 预算 ${cap.budgetMb}MB / 预估耗时 ${cap.estUnpackSec}s）`);
+        ctx.say.info(`跳过预热：${file.rel} ${sizeMb.toFixed(1)}MB（${cap.reason}；预估峰值 ${cap.peakEstMb}MB / 预算 ${cap.budgetMb}MB / 预估耗时 ${cap.estUnpackSec}s）`);
         return;
       }
       scheduleWarmup(file, emitWarm, cap);
@@ -1341,17 +1377,17 @@ const MIME_BY_EXT = {
             onEvent: (name, data) => {
               events += 1;
               // 进度只进**现有**日志/状态行，不新造 UI 控件；也不给百分比（服务端给不出可信的）
-              if (name === 'queued') say.info(`预热排队中：${file.rel}（前面约 ${Number((data && data.waiting) || 0)} 个）`);
-              else if (name === 'start') say.info(`预热开始解包：${file.rel}`);
+              if (name === 'queued') ctx.say.info(`预热排队中：${file.rel}（前面约 ${Number((data && data.waiting) || 0)} 个）`);
+              else if (name === 'start') ctx.say.info(`预热开始解包：${file.rel}`);
               else if (name === 'phase') {
                 const ph = (data && data.name) || '';
-                say.info(`预热${WARMUP_PHASE_TEXT[ph] || `${ph || '进行'}中`}：${file.rel}（${Number((data && data.ms) || 0)}ms）`);
+                ctx.say.info(`预热${WARMUP_PHASE_TEXT[ph] || `${ph || '进行'}中`}：${file.rel}（${Number((data && data.ms) || 0)}ms）`);
               }
               // ping 不显示：它只用于维持停摆计时（postStream 内部每帧都会重置计时器）
             },
             onStall: () => {
               // 措辞铁律（契约 §四）：这里是"停摆"，不是"超时"
-              say.info(`预热停摆（15s 无事件），已放弃等待；服务端仍会解完并写缓存：${file.rel}`);
+              ctx.say.info(`预热停摆（15s 无事件），已放弃等待；服务端仍会解完并写缓存：${file.rel}`);
             },
           });
         emitWarm({
@@ -1364,17 +1400,17 @@ const MIME_BY_EXT = {
         });
         if (j && j.ok) {
           // done 即完成：hit:true（已有缓存）与 hit:false（本次已落盘）都算成功
-          say.info(`预热完成：${file.rel}（${j.hit ? '已有缓存' : '已落盘'}，${Math.round(performance.now() - t0)}ms）`);
+          ctx.say.info(`预热完成：${file.rel}（${j.hit ? '已有缓存' : '已落盘'}，${Math.round(performance.now() - t0)}ms）`);
         } else {
           // 流内 error / 停摆：都只记 info —— 预热失败不是错误，前台装载有自己的路径
-          say.info(`后台预热未完成：${file.rel}（${(j && j.message) || (j && j.reason) || '未知原因'}）—— 服务端仍会解完并写缓存，下次命中即可`);
+          ctx.say.info(`后台预热未完成：${file.rel}（${(j && j.message) || (j && j.reason) || '未知原因'}）—— 服务端仍会解完并写缓存，下次命中即可`);
         }
       } catch (e) {
         const why = String((e && e.message) || e).slice(0, 120);
         emitWarm({ ok: false, error: why, events });
         // 预热失败**不是错误**：前台装载有自己的路径（本地解包 / 服务端命中），预热只是"下次更快"。
         //   记 info 不记 error/warn —— 否则每次装载都在日志里刷一条红，把真问题淹掉。
-        say.info(`后台预热未完成：${file.rel}（${why}）—— 服务端仍会解完并写缓存，下次命中即可`);
+        ctx.say.info(`后台预热未完成：${file.rel}（${why}）—— 服务端仍会解完并写缓存，下次命中即可`);
       } finally {
         // 成功/失败/超时都要移除，否则一次失败会让这个 rel 永远不再预热
         warmupInflight.delete(key);
@@ -1403,8 +1439,8 @@ const MIME_BY_EXT = {
     //   而同一台机器的浏览器解同一个包 4.3s 且渲染正常。
     const pre = await memoryGuard.preflightLoad(file.rel);
     if (!pre.ok) {
-      say.warn(pre.message);
-      emit('memguard.preflight', { rel: file.rel, usedMB: pre.usedMB, limitMB: pre.limitMB, pct: pre.pct });
+      ctx.say.warn(pre.message);
+      ctx.emit('memguard.preflight', { rel: file.rel, usedMB: pre.usedMB, limitMB: pre.limitMB, pct: pre.pct });
       return { ok: false, reason: 'memory-guard', message: pre.message };
     }
 
@@ -1418,7 +1454,7 @@ const MIME_BY_EXT = {
     const unpackOn = (() => {
       try { return new URLSearchParams(location.search).get('unpack') !== '0'; } catch { return true; }
     })();
-    if (!unpackOn) emit('unpack.race', { enabled: false, reason: 'URL 参数 unpack=0' });
+    if (!unpackOn) ctx.emit('unpack.race', { enabled: false, reason: 'URL 参数 unpack=0' });
 
     // 本地通道：原逻辑一字未改（readFile → 插件 resolve）
     const localPath = async () => {
@@ -1466,8 +1502,8 @@ const MIME_BY_EXT = {
       //   主线程一旦进解压就再没机会渲染这条提示（DOM 已改、但浏览器不会给你帧）。
       //   让帧代价约 16ms，换来"用户知道在解压、不是卡死"。非 LZMA 包几乎不受影响（多一帧）。
       // 体积取自条目元信息（解包前主线程不读包，拿不到就得等读完才知道大小）
-      say.info(`本地解包中：${file.rel}（压缩约 ${(sizeHint / 1048576).toFixed(2)}MB，大包可能要数秒）`);
-      emit('unpack.local-start', { rootId: file.rootId, rel: file.rel, bytes: sizeHint });
+      ctx.say.info(`本地解包中：${file.rel}（压缩约 ${(sizeHint / 1048576).toFixed(2)}MB，大包可能要数秒）`);
+      ctx.emit('unpack.local-start', { rootId: file.rootId, rel: file.rel, bytes: sizeHint });
       // **所有压缩类型**都先试 worker：resolve 的成本只看包有多大，与压缩类型无关。
       //   为什么从"只看 canHandle"改成"看 resolve 成本"：
       //     · 旧门禁只看 canHandle 贵不贵（LZMA 的 canHandle 要 5.7s、LZ4 只要毫秒级），
@@ -1497,8 +1533,8 @@ const MIME_BY_EXT = {
             const usable = await resolvedUsable(w.res);
             if (!usable.ok) {
               anyProbed = true;
-              say.warn(`候选 ${cand.id} 的产物不可用（${usable.why}）—— 换下一个候选`);
-              emit('unpack.candidate-reject', { rootId: file.rootId, rel: file.rel, provider: cand.id, why: usable.why });
+              ctx.say.warn(`候选 ${cand.id} 的产物不可用（${usable.why}）—— 换下一个候选`);
+              ctx.emit('unpack.candidate-reject', { rootId: file.rootId, rel: file.rel, provider: cand.id, why: usable.why });
               continue;
             }
             return { ...w.res, provider: cand.id, src: 'local-worker' };
@@ -1517,8 +1553,8 @@ const MIME_BY_EXT = {
         if (!fellBack && !anyProbed) fellBack = '所有候选插件的 worker 都不可用';
         if (fellBack) {
           // 降级**不静默**：明确告诉用户"后台解包用不了，接下来会卡数秒"
-          say.warn(`后台解包不可用（${fellBack}）—— 回落主线程解包，期间界面会卡住数秒`);
-          emit('unpack.worker-fallback', { rootId: file.rootId, rel: file.rel, error: fellBack });
+          ctx.say.warn(`后台解包不可用（${fellBack}）—— 回落主线程解包，期间界面会卡住数秒`);
+          ctx.emit('unpack.worker-fallback', { rootId: file.rootId, rel: file.rel, error: fellBack });
         }
       }
       // 同步解压前让出一帧：DOM 改了但主线程随即冻住，浏览器不会给你渲染机会。
@@ -1595,8 +1631,8 @@ const MIME_BY_EXT = {
         //   （见 localPath 里 `Object.assign(..., { passthrough: got })`），
         //   先处理它就会直接 return，兜底永远走不到（实测就是这个原因）。
         if (unpackOn && !file.bytes && file.rootId && file.rel) {
-          say.warn(`本地解包失败，改请服务端解包：${file.rel}（${(e && e.message) || e}）`);
-          emit('unpack.fallback', { rootId: file.rootId, rel: file.rel, localReason: (e && e.reason) || 'local-failed' });
+          ctx.say.warn(`本地解包失败，改请服务端解包：${file.rel}（${(e && e.message) || e}）`);
+          ctx.emit('unpack.fallback', { rootId: file.rootId, rel: file.rel, localReason: (e && e.reason) || 'local-failed' });
           try {
             won = await resolveFromServer(file, { hitOnly: false, mon });
           } catch (e2) {
@@ -1613,7 +1649,7 @@ const MIME_BY_EXT = {
           return { ok: false, reason: (e && e.reason) || 'unpack-failed', message: String((e && e.message) || e) };
         }
       }
-      emit('unpack.race', {
+      ctx.emit('unpack.race', {
         rootId: file.rootId, rel: file.rel,
         winner: won && won.src,          // server-hit | local-worker | local
         serverMiss: serverSaidNo || null,
@@ -1643,8 +1679,8 @@ const MIME_BY_EXT = {
         : won.src === 'local-worker' ? '后台解包（Worker，主线程不阻塞）'
           : '回落前端解包';
     const detail = { rootId: file.rootId, rel: file.rel, source, files: filesCount(won.files), ms: Math.round(performance.now() - tMat), ...(serverSaidNo ? { miss: serverSaidNo } : {}) };
-    say.info(`${source}：${file.rootId}/${file.rel}（${detail.files} 个文件，${detail.ms}ms）`);
-    emit('unpack.source', detail);
+    ctx.say.info(`${source}：${file.rootId}/${file.rel}（${detail.files} 个文件，${detail.ms}ms）`);
+    ctx.emit('unpack.source', detail);
     return {
       ok: true,
       provider: won.provider,
@@ -1674,7 +1710,7 @@ const MIME_BY_EXT = {
   // loadAll→doLoadAll 的实现拆分、插槽注册表初始化、provider 查询、report 汇总。
   // 状态耦合：discovered/loaded（**唯一写者** doLoadAll）、slotRegistry（唯一写者 initSlotRegistry）。
   async function loadAll() {
-    if (loaded) return { discovered: discovered.length, registered: countRegistered() };
+    if (ctx.loaded) return { discovered: ctx.discovered.length, registered: countRegistered() };
     if (loadingPromise) return loadingPromise;
     loadingPromise = doLoadAll().finally(() => { loadingPromise = null; });
     return loadingPromise;
@@ -1682,7 +1718,7 @@ const MIME_BY_EXT = {
 
   /** 已成功装载（注册提供者）的插件数 */
   function countRegistered() {
-    return [...loadState.values()].filter((s) => s.loaded).length;
+    return [...ctx.loadState.values()].filter((s) => s.loaded).length;
   }
 
   /**
@@ -1693,14 +1729,14 @@ const MIME_BY_EXT = {
    * @param {object} data /api/plugins 响应
    * @param {Array} discovered 本次发现的插件清单
    */
-  function initSlotRegistry(data, discovered) {
+  function initSlotRegistry(data, discoveredList) {
     const declared = {};
-    for (const pl of discovered) {
+    for (const pl of discoveredList) {
       const pid = String(pl && pl.id ? pl.id : '');
       declared[pid] = Array.isArray(pl && pl.slots) ? pl.slots : [];
       pluginSettings.set(pid, Array.isArray(pl && pl.settings) ? pl.settings : []);
     }
-    slotRegistry = createSlotRegistry({
+    ctx.slotRegistry = createSlotRegistry({
       catalog: Array.isArray(data && data.slotCatalog) ? data.slotCatalog : [],
       declaredByPlugin: declared,
       // 阶段只信服务端（currentStage）；字段缺失时 normalizeStage 回退 'S1'（过渡兜底）
@@ -1713,8 +1749,8 @@ const MIME_BY_EXT = {
       settingsKeysOf: (pid) => (pluginSettings.get(String(pid || '')) || []).map((s) => String(s && s.key || '')),
       isInLoadWindow: () => !!loadingPluginId,
       onReject: (rej) => {
-        say.warn(`插槽注册被拒（${rej.code}）：${rej.why}`);
-        emit('plugin.slot-rejected', rej);
+        ctx.say.warn(`插槽注册被拒（${rej.code}）：${rej.why}`);
+        ctx.emit('plugin.slot-rejected', rej);
       },
     });
     publishSlotStats();
@@ -1726,17 +1762,17 @@ const MIME_BY_EXT = {
       // 幂等 GET ⇒ 走统一层（保留 no-store：改完插件要立刻看到，不能读缓存）。
       //   bundle-failures.js 拉的是同一个 URL，两处并发时会被 api.js 合并成一次真实请求。
       const data = await getJson(`${base}/api/plugins`, { cache: 'no-store' });
-      discovered = Array.isArray(data && data.plugins) ? data.plugins : [];
+      ctx.discovered = Array.isArray(data && data.plugins) ? data.plugins : [];
       // 建插槽注册表（**必须在注入任何插件脚本之前**）：目录与"谁声明了什么"都来自这一份响应，
       //   晚一步建就会出现"插件已经能 register、注册表还不存在"的空窗。
-      initSlotRegistry(data, discovered);
+      initSlotRegistry(data, ctx.discovered);
     } catch (e) {
-      say.warn(`插件清单获取失败（页面其余功能不受影响）：${(e && e.message) || e}`);
+      ctx.say.warn(`插件清单获取失败（页面其余功能不受影响）：${(e && e.message) || e}`);
       return { discovered: 0, registered: 0 };
     }
-    if (!discovered.length) {
-      say.info('没有启用任何插件（config/plugins.json 可开关）');
-      loaded = true;
+    if (!ctx.discovered.length) {
+      ctx.say.info('没有启用任何插件（config/plugins.json 可开关）');
+      ctx.loaded = true;
       return { discovered: 0, registered: 0 };
     }
     // 内置装载器（builtin:true）是**纯声明条目**：它没有 plugin.json 那样的代码文件可注入，
@@ -1748,10 +1784,10 @@ const MIME_BY_EXT = {
     //   浏览器里没有脚本可注入 —— 前端只消费它解包结果（`/api/unpack/resolve` 那一路）。
     //   files[] 本来就是空的，混进"需要注入脚本"的名单 ⇒ 必然报同样的假告警
     //   （实测 8804：「插件 unitypy-bundle 未生效：脚本已加载但没有调用 register()」）。
-    const scripts = discovered.filter((p) => p && p.builtin !== true && p.runtime !== 'exec');
-    const builtinDecls = discovered.filter((p) => p && p.builtin === true);
-    const execDecls = discovered.filter((p) => p && p.runtime === 'exec');
-    say.info(`发现 ${discovered.length} 个启用插件：${discovered.map((p) => p.id).join(', ')}`
+    const scripts = ctx.discovered.filter((p) => p && p.builtin !== true && p.runtime !== 'exec');
+    const builtinDecls = ctx.discovered.filter((p) => p && p.builtin === true);
+    const execDecls = ctx.discovered.filter((p) => p && p.runtime === 'exec');
+    ctx.say.info(`发现 ${ctx.discovered.length} 个启用插件：${ctx.discovered.map((p) => p.id).join(', ')}`
       + (builtinDecls.length ? `（其中 ${builtinDecls.length} 个为内置装载器声明，无代码需注入）` : '')
       + (execDecls.length ? `（${execDecls.length} 个为 exec 运行时，代码在服务端进程里跑，前端只登记声明）` : ''));
     // 声明登记对所有提供者都要做（含 exec / 内置）：归属着色与候选名单靠这张表，
@@ -1764,26 +1800,26 @@ const MIME_BY_EXT = {
       }
     }
     for (const pl of scripts) {
-      try { await loadPlugin(pl); } catch (e) { say.warn(`插件 ${pl && pl.id} 装载异常：${(e && e.message) || e}`); }
+      try { await loadPlugin(pl); } catch (e) { ctx.say.warn(`插件 ${pl && pl.id} 装载异常：${(e && e.message) || e}`); }
     }
-    loaded = true;
+    ctx.loaded = true;
     const ok = countRegistered();
     // "未生效"只对账**需要装载代码的**那些：内置声明不参与 register()，算进分母就又造假告警
-    say.info(`插件装载完成：需装载 ${scripts.length} 个、注册 ${ok} 个提供者`
+    ctx.say.info(`插件装载完成：需装载 ${scripts.length} 个、注册 ${ok} 个提供者`
       + (ok < scripts.length ? `（${scripts.length - ok} 个未生效，见上方警告）` : ''));
     // 面板侧要知道"插件已经交完声明了" —— 它启动时先建面板，插件是之后异步注入的，
     //   不通知就永远看不到插件控件（实测：控件节收到了，但面板不会自己重建）。
     try {
-      window.dispatchEvent(new CustomEvent('spineviewer:plugins-loaded', {
-        detail: { discovered: discovered.length, registered: ok, slots: slotRegistry ? slotRegistry.stats().total : 0 },
+      window.dispatchEvent(new CustomEvent('spineviewer:plugins-ctx.loaded', {
+        detail: { discovered: ctx.discovered.length, registered: ok, slots: ctx.slotRegistry ? ctx.slotRegistry.stats().total : 0 },
       }));
     } catch { /* 忽略 */ }
-    return { discovered: discovered.length, registered: ok };
+    return { discovered: ctx.discovered.length, registered: ok };
   }
 
   /** 已注册的提供者（可按 fileKinds 过滤，如 ['bundle']） */
   function providersFor(fileKinds) {
-    const list = [...providers.values()];
+    const list = [...ctx.providers.values()];
     if (!fileKinds || !fileKinds.length) return list;
     const want = new Set(fileKinds);
     return list.filter((p) => Array.isArray(p.fileKinds) && p.fileKinds.some((k) => want.has(k)));
@@ -1802,10 +1838,10 @@ const MIME_BY_EXT = {
     if (file.bytes !== undefined && file.bytes !== null) {
       const normalized = toUint8Array(file.bytes);
       if (normalized) probe.bytes = normalized;
-      else say.warn(`findProvider 收到无法识别的 bytes 类型（${describeType(file.bytes)}）：`
+      else ctx.say.warn(`findProvider 收到无法识别的 bytes 类型（${describeType(file.bytes)}）：`
         + '契约 §1.1 要求 Uint8Array；插件可能因此判不出容器（表现为"没有提供者"）');
     }
-    for (const p of providers.values()) {
+    for (const p of ctx.providers.values()) {
       // 只有声明了 asset-provider 角色的插件才参与"这个文件归谁解"（契约 §一/§二）。
       //   其它角色（renderer/editor/exporter/panel）不该在这里被问到。
       if (!Array.isArray(p.provides) || !p.provides.includes('asset-provider')) continue;
@@ -1814,7 +1850,7 @@ const MIME_BY_EXT = {
       try {
         hit = p.canHandle(probe) === true;
       } catch (e) {
-        say.warn(`提供者 ${p.id} 的 canHandle 抛错（按不处理该文件处理）：${(e && e.message) || e}`);
+        ctx.say.warn(`提供者 ${p.id} 的 canHandle 抛错（按不处理该文件处理）：${(e && e.message) || e}`);
         hit = false;
       }
       if (hit) return p;
@@ -1825,9 +1861,9 @@ const MIME_BY_EXT = {
   /** 排障快照：装载状态 + 已注册提供者 */
   function report() {
     return {
-      loaded,
-      discovered: discovered.map((p) => p.id),
-      providers: [...providers.values()].map((p) => ({
+      loaded: ctx.loaded,
+      discovered: ctx.discovered.map((p) => p.id),
+      providers: [...ctx.providers.values()].map((p) => ({
         id: p.id,
         provides: Array.isArray(p.provides) ? p.provides.slice() : [],
         kind: p.kind || null,
@@ -1835,7 +1871,7 @@ const MIME_BY_EXT = {
         hasCanHandle: typeof p.canHandle === 'function',
         hasResolve: typeof p.resolve === 'function',
       })),
-      loadState: [...loadState.entries()].map(([id, s]) => ({ id, ...s })),
+      loadState: [...ctx.loadState.entries()].map(([id, s]) => ({ id, ...s })),
     };
   }
 
@@ -1859,7 +1895,7 @@ const MIME_BY_EXT = {
      * 插槽登记明细（含 spec.render）：装配期拿它把"插件声明的控件"合进面板。
      * 返回副本，面板侧改动不会污染注册表。
      */
-    slotSections: () => (slotRegistry ? slotRegistry.renderEntries() : []),
+    slotSections: () => (ctx.slotRegistry ? ctx.slotRegistry.renderEntries() : []),
     /** 某插件在清单里声明的 settings[]（面板侧构造 props.settings 用） */
     pluginSettings: (pluginId) => (pluginSettings.get(String(pluginId || '')) || []).map((s) => ({ ...s })),
     providersFor,
@@ -1871,7 +1907,7 @@ const MIME_BY_EXT = {
     /** 预筛判定（排障用：为什么某个文件没被当成资源包） */
     prefilterReason,
     report,
-    isLoaded: () => loaded,
+    isLoaded: () => ctx.loaded,
     host: hostApi,
     /**
      * 面板层用：插件提交的控件节（含来源插件 id）。
@@ -1882,7 +1918,7 @@ const MIME_BY_EXT = {
      * 面板层用：**注册成功**的效果 id 列表 —— 能力键白名单的唯一来源（契约 §9.3）。
      * 只声明但没注册成功的不在列表里 ⇒ 对应控件会置灰。
      */
-    registeredEffectIds: () => [...registeredEffects.keys()],
+    registeredEffectIds: () => [...ctx.registeredEffects.keys()],
     /**
      * 面板层用：已注册效果的完整声明（按**清单 effects[] 声明顺序** = 效果链的叠加顺序）。
      * fragment 给渲染层拼着色器，params 给"档位 → uniform"换算。
@@ -1892,7 +1928,7 @@ const MIME_BY_EXT = {
       const out = [];
       for (const [pluginId, list] of manifestEffects.entries()) {
         for (const eff of list || []) {
-          const reg = registeredEffects.get(String(eff.id));
+          const reg = ctx.registeredEffects.get(String(eff.id));
           if (!reg || reg.pluginId !== pluginId) continue;   // 只报注册成功的
           out.push({
             id: String(eff.id),
@@ -1907,11 +1943,11 @@ const MIME_BY_EXT = {
     },
     /** 面板层用：某个 effect id 属于哪个插件（置灰时写原因） */
     effectOwner: (effectId) => {
-      const hit = registeredEffects.get(String(effectId));
+      const hit = ctx.registeredEffects.get(String(effectId));
       return hit ? hit.pluginId : '';
     },
     /** 面板层用：插件装载失败清单（id → error），控件置灰时给出"为什么" */
-    pluginFailures: () => [...loadState.entries()]
+    pluginFailures: () => [...ctx.loadState.entries()]
       .filter(([, st]) => st && st.error)
       .map(([id, st]) => ({ id, error: String(st.error) })),
   };
