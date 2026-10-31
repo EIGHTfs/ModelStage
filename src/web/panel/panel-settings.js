@@ -14,6 +14,7 @@ import * as uiState from '../app/ui-state.js';
 import { stageLog, stageStatus } from '../app/status.js';
 import { PANEL_GROUPS, applyCapabilities, applyKeyedControlReplacements, mergeSlotControls, selfCheck, settingKeyOf } from './schema.js';
 import { activeChain } from '../engine/effect-chain.js';
+import { getSharedVirtualFS } from '../infra/vfs.js';
 import { mountPanel } from './view.js';
 import { syncBrand, syncPluginToolbar } from './toolbar.js';
 import { applyDebugLog, applyHangGuard, applyMemoryGuard, applyShowStatus, connectShellControls, runSettingsAction } from './shell-controls.js';
@@ -242,6 +243,120 @@ function scheduleControlRepaint(id) {
   else setTimeout(flush, 0);
 }
 
+/**
+ * 当前文档的**文件清单**缓存（document.files 的唯一来源）。
+ *
+ * 就绪语义（明确选定）：**未就绪返回 null**，不是 []。
+ *   理由：[] 会被插件读成"这个文档没有文件"，而真实情况往往是"还没列举完/还没解包"——
+ *   把两者混为一谈会让插件写出错误的降级逻辑。空目录照实返回 []（真的是空）。
+ *
+ * 刷新策略：
+ *   · 键 = rootId|rel|kind|id，**只在"当前文档变了"或"缓存缺失"时刷新**
+ *   · 同一键在途时只发一次（pending 集合），连续 render 不会重复列举
+ *   · 列举完成 ⇒ 缓存写入 + 面板重建一次（让插件的 render 拿到真实清单）
+ */
+const docFilesCache = new Map();
+const docFilesPending = new Set();
+const docFilesStats = { lists: 0, repaints: 0 };
+
+/** 把列举计数挂到 window（验收/排障可读；不写 dataset 以免污染快照） */
+function publishDocFilesStats() {
+  try {
+    if (typeof window === 'undefined') return;
+    window.__DOC_FILES__ = { lists: docFilesStats.lists, repaints: docFilesStats.repaints, cached: docFilesCache.size };
+  } catch { /* 无 window 忽略 */ }
+}
+
+/** @param {object} model 当前模型条目 @returns {string} 缓存键 */
+function docFilesKeyOf(model) {
+  return [model && model.rootId, model && model.rel, model && model.kind, model && (model.id || model.name)]
+    .map((v) => String(v == null ? '' : v)).join('|');
+}
+
+/**
+ * 取当前文档的文件名清单。
+ *
+ * 快路径（同步、不耗网络）：
+ *   · 容器条目且 VFS 前缀已注册 ⇒ vfs.list(prefix)（解包产物名，升序）
+ *   · 条目自带 files 数组 ⇒ 直接用它
+ * 慢路径（异步）：其它条目走 /api/catalog 找到本条目，取 entry.name + assets[].name
+ * @param {object} model 当前模型条目
+ * @returns {string[]|null} 未就绪返回 null
+ */
+function docFilesOf(model) {
+  if (!model) return null;
+  const key = docFilesKeyOf(model);
+  if (docFilesCache.has(key)) return docFilesCache.get(key).slice();
+  // 快路径 1：容器条目 → VFS 前缀（同步；前缀未注册时返回 null 表示"还没解包完"）
+  if (model.container === 'unityfs' || model.kind === 'bundle') {
+    const prefix = state.vfsPrefix;
+    const listed = prefix ? safeVfsList(prefix) : null;
+    if (listed) {
+      docFilesStats.lists += 1;
+      docFilesCache.set(key, listed);
+      publishDocFilesStats();
+      return listed.slice();
+    }
+    requestDocFiles(model, key);
+    return null;
+  }
+  // 快路径 2：条目自己带清单
+  if (Array.isArray(model.files)) {
+    docFilesCache.set(key, model.files.map(String));
+    return model.files.map(String);
+  }
+  requestDocFiles(model, key);
+  return null;
+}
+
+/** 调 VFS 列举（模块级细节隔离，便于测试替换/失败兜底） */
+function safeVfsList(prefix) {
+  try {
+    const vfs = getSharedVirtualFS();
+    return typeof vfs.list === 'function' ? vfs.list(prefix) : null;
+  } catch { return null; }
+}
+
+/**
+ * 异步补清单（同一键在途时只发一次）。
+ *
+ * 为什么要异步：目录型条目的文件列表**只有服务端知道**（catalog 的 entry + assets），
+ *   而 document 是 getter、必须同步出值 —— 所以这里"先记 pending、拿到再回填 + 重建一次"。
+ * @param {object} model 条目 @param {string} key 缓存键
+ */
+function requestDocFiles(model, key) {
+  if (docFilesPending.has(key)) return;
+  docFilesPending.add(key);
+  const rootId = encodeURIComponent(String(model.rootId || ''));
+  const url = `/api/catalog?root=${rootId}`;
+  Promise.resolve()
+    .then(() => fetch(url, { headers: { accept: 'application/json' } }))
+    .then((r) => (r.ok ? r.json() : null))
+    .then((data) => {
+      const list = Array.isArray(data && data.entries) ? data.entries : [];
+      const hit = list.find((e) => String(e && (e.id || e.name)) === String(model.id || model.name));
+      if (!hit) return null;
+      const names = [];
+      if (hit.entry && hit.entry.name) names.push(String(hit.entry.name));
+      for (const a of Array.isArray(hit.assets) ? hit.assets : []) if (a && a.name) names.push(String(a.name));
+      return names;
+    })
+    .then((names) => {
+      docFilesPending.delete(key);
+      if (!names) return;
+      docFilesStats.lists += 1;
+      docFilesCache.set(key, names);
+      publishDocFilesStats();
+      // 清单就绪 ⇒ 面板重建一次，让插件的 render 拿到真实清单（与插件装载走同一条重建链）
+      if (state.panel) {
+        docFilesStats.repaints += 1;
+        publishDocFilesStats();
+        document.dispatchEvent(new CustomEvent('spineviewer:plugins-loaded', { detail: { reason: 'document-files' } }));
+      }
+    })
+    .catch(() => { docFilesPending.delete(key); });
+}
+
 /** 控件 id → 存值键（没有映射就是它自己） */
 function storeKeyOf(id) {
   const k = String(id || '');
@@ -284,7 +399,7 @@ function slotPropsFor(entry) {
         rootId: m.rootId ? String(m.rootId) : null,
         rel: m.rel ? String(m.rel) : null,
         kind: m.kind ? String(m.kind) : (m.container ? 'bundle' : null),
-        files: Array.isArray(m.files) ? m.files.slice() : null,
+        files: docFilesOf(m),
       };
     },
     /** 插件写设置也走面板同一条通道（校验 → 生效 → 落盘） */

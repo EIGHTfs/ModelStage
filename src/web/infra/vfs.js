@@ -197,7 +197,24 @@ export function createVirtualFS(options = {}) {
     return { prefixes: entries.size, files, bytes, hits, misses, urls: createdUrls };
   }
 
-  return { register, resolve, revoke, stats, prefixFileCount };
+  /**
+   * 列出某个前缀下已注册的**相对路径**（升序）。
+   *
+   * 与 resolve 的区别：resolve 按完整 VFS 地址取**内容**，这里只要**名字**——
+   *   面板 owner props 的 document.files 就是它（插件拿名字做判断，不需要字节）。
+   * 返回 null 表示"这个前缀还没注册"（≠ 已注册但为空数组）：
+   *   调用方要能区分"还没解包完"与"确实没有文件"，否则会给出误导性的空清单。
+   * @param {string} prefix 前缀（如 `vfs://xxx/`）
+   * @returns {string[]|null}
+   */
+  function list(prefix) {
+    const key = normalizePath(prefix);
+    const entry = key ? entries.get(key) : null;
+    if (!entry) return null;
+    return [...entry.files.keys()].sort();
+  }
+
+  return { register, resolve, revoke, stats, prefixFileCount, list };
 }
 
 /**
