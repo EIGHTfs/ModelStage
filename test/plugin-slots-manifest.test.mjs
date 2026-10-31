@@ -54,10 +54,17 @@ test('目录匹配：精确名优先；占位符只吃一段非空名字（不�
   assert.equal(matchSlot('nope.slot'), null);
 });
 
-test('阶段：S2 在当前阶段（S1）未开放；注入 S5 后开放', () => {
+test('阶段：S2 的插槽在 S1 视角下未开放、在 S2（当前阶段）下开放', () => {
   const groupSlot = matchSlot('panel.group.x');
-  assert.equal(isSlotOpen(groupSlot), false, `${CURRENT_STAGE} 阶段下 panel.group 应未开放`);
-  assert.equal(isSlotOpen(groupSlot, 'S5'), true);
+  // **每个断言都显式注入阶段**，不依赖 CURRENT_STAGE ——
+  //   否则"抬阶段"（S1→S2）会把这条用例变成假红/假绿，而那正是阶段推进时唯一该看的东西。
+  assert.equal(isSlotOpen(groupSlot, 'S1'), false, 'S1 阶段下 panel.group 应未开放');
+  assert.equal(isSlotOpen(groupSlot, 'S2'), true, 'S2 阶段下 panel.group 应开放');
+  // 当前阶段就是 S2（这条断言 CURRENT_STAGE 本身，抬阶段时它会明确提醒要一起改测试）
+  assert.equal(CURRENT_STAGE, 'S2');
+  assert.equal(isSlotOpen(groupSlot), true);
+  // S5 的插槽在 S4 仍未开放、S5 才开放
+  assert.equal(isSlotOpen(matchSlot('panel.brand'), 'S4'), false);
   assert.equal(isSlotOpen(matchSlot('panel.brand'), 'S5'), true);
   // 写错的 stage 按"未开放"处理（保守）
   assert.equal(isSlotOpen({ stage: 'S9' }, 'S5'), false);
