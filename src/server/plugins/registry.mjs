@@ -200,12 +200,6 @@ export function readPluginManifest(pluginsDir, dirName, isFile, disabled, seenEf
     return null;
   }
   const runtime = normalizeRuntime(m.runtime);
-  // 插槽与设置的声明校验（S1-a）：**逐项降级**——非法项只记日志并进 errors，
-  //   绝不 return null（插件因为一个拼错的插槽名就从 /api/plugins 消失，用户只会看到"插件没了"）
-  const slotCheck = validateDeclaredSlots(m.slots);
-  const settingsCheck = validateDeclaredSettings(m.settings, pid);
-  if (slotCheck.errors.length) log.warn('插槽声明有非法项（已逐项忽略，插件仍注册）', { plugin: dirName, errors: slotCheck.errors });
-  if (settingsCheck.errors.length) log.warn('设置声明有非法项（已逐项忽略，插件仍注册）', { plugin: dirName, errors: settingsCheck.errors });
   // 按 runtime 决定"要加载哪些 js"（exec 插件不加载任何 js），并做对应的存在性校验
   const filesResult = resolveLoadFiles({ m, runtime, dirName, isFile });
   if (!filesResult.ok) {
@@ -214,6 +208,13 @@ export function readPluginManifest(pluginsDir, dirName, isFile, disabled, seenEf
   }
   const files = filesResult.files;
   const pid = String(m.id || dirName);
+  // 插槽与设置的声明校验（S1-a）：**逐项降级**——非法项只记日志并进 errors，
+  //   绝不 return null（插件因为一个拼错的插槽名就从 /api/plugins 消失，用户只会看到"插件没了"）。
+  //   位置必须在 pid 之后：settings 的 key 前缀校验要拿 pluginId（`plugin.<id>.`）。
+  const slotCheck = validateDeclaredSlots(m.slots);
+  const settingsCheck = validateDeclaredSettings(m.settings, pid);
+  if (slotCheck.errors.length) log.warn('插槽声明有非法项（已逐项忽略，插件仍注册）', { plugin: pid, errors: slotCheck.errors });
+  if (settingsCheck.errors.length) log.warn('设置声明有非法项（已逐项忽略，插件仍注册）', { plugin: pid, errors: settingsCheck.errors });
   if (isPluginDisabled(disabled, pid, dirName)) {
     log.info(LOG_DISABLED, { plugin: pid });
     return null;

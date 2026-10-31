@@ -181,6 +181,7 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.4.1 | 2026-10-31 | 插件设置键强制 `plugin.<pluginId>.<key>` 前缀（能力键白名单全局合并，同名键会撞车；别的插件 id 同样不合法）+ 修 registry 里校验块早于 `const pid` 的 TDZ 缺陷 |
 | 0.4.0 | 2026-10-31 | 插件插槽 S1-b1（前端）：插件级 effect 容器与 `unloadPlugin`（逆序回收 + 兜底清理 + `effectsReport`）；窗口外注册由静默丢弃改为显式拒绝（带可读原因与 likelyOwner）；面板重建保留手风琴展开态（累积表，覆盖换渲染面路径）；渲染写 `data-group-id` |
 | 0.3.9 | 2026-10-31 | 插件插槽 S1-a（服务端）：插槽目录常量表 + 清单校验（unknown-slot / slot-not-open / undeclared-slot / risk-mismatch 四类，逐项降级不整体拒绝）+ `/api/plugins` 下发 `slotCatalog` 与每插件 `slots`/`slotErrors`/`settings`/`settingsErrors`；老插件零改动可用 |
 | 0.3.8 | 2026-10-31 | SSE 补发档名改由 `PROGRESS_PHASES` 派生（消除第三处档名字面量，缺 msField 测试期即失败）；准入系数与 cgroup 限额全部 env 可覆盖（`MODELSTAGE_ADMIT_HEAP_RATIO` / `_CAPACITY_RATIO` / `MODELSTAGE_CGROUP_MEMORY_MAX_PATH`），cgroup v2 优先、缺失回落 `/proc/meminfo`，非法值回落缺省并告警一次 |

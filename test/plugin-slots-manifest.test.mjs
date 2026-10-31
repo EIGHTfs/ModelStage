@@ -184,6 +184,30 @@ test('settings：非法声明逐项降级（bad-type / bad-options / bad-default
   assert.deepEqual(whys, ['bad-default', 'bad-default', 'bad-options', 'bad-shape', 'bad-type', 'duplicate-key']);
 });
 
+test('settings：key 必须以 plugin.<pluginId>. 开头（why=key-prefix）', () => {
+  // 不带前缀 ⇒ 拒绝（能力键白名单是全局合并的，撞名不可调试）
+  const bad = validateDeclaredSettings([{ key: 'sharpness', type: 'boolean' }], 'demo');
+  assert.deepEqual(bad.settings, []);
+  assert.equal(bad.errors.length, 1);
+  assert.equal(bad.errors[0].why, 'key-prefix');
+  assert.equal(bad.errors[0].key, 'sharpness');
+  assert.match(bad.errors[0].hint, /plugin\.demo\./);
+
+  // 前缀是**别的**插件 id ⇒ 也算不合法（防止 A 插件占 B 的键）
+  const other = validateDeclaredSettings([{ key: 'plugin.other.x', type: 'boolean' }], 'demo');
+  assert.equal(other.errors[0].why, 'key-prefix');
+
+  // 正确前缀 ⇒ 通过
+  const ok = validateDeclaredSettings([{ key: 'plugin.demo.sharpness', type: 'boolean' }], 'demo');
+  assert.deepEqual(ok.errors, []);
+  assert.equal(ok.settings[0].key, 'plugin.demo.sharpness');
+
+  // 不传 pluginId ⇒ **不校验前缀**（向后兼容：老调用点与老插件都不受影响）
+  const legacy = validateDeclaredSettings([{ key: 'sharpness', type: 'boolean' }]);
+  assert.deepEqual(legacy.errors, []);
+  assert.equal(legacy.settings[0].key, 'sharpness');
+});
+
 test('settings：非数组 ⇒ bad-shape，不抛异常', () => {
   const r = validateDeclaredSettings({ key: 'x' });
   assert.deepEqual(r.settings, []);
