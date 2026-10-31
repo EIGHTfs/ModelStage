@@ -67,107 +67,43 @@ function injectScript(src) {
  * @returns {object} 宿主查询面（见文件末尾 return）
  */
 // ============================================================================
-// 【函数索引】—— 只为人肉定位服务，不含逻辑。行号与下面的分区注释一起维护。
+// 【模块地图】—— 想知道"某个功能在哪个文件"，看这一张表即可（不含行号，因此不用维护）
 //
-// 维护方式：改完函数后，若某个函数**起始行**变了，回到本表按名字找到那一行改数字；
-//   加新函数时补一行（名字 / 行 / 代码行 / 职责）。表里行号以"该函数声明所在行"为准。
+//   plugin-host.js                本体：装配各模块 + 对外 API（hostApi / 返回面）+ 装载编排与插槽表初始化
+//   plugin-host-registration.mjs  注册与校验：provider / 效果 / 老接口控件 / 通知（全部拒绝码与校验顺序在这里）
+//   plugin-host-unpack.mjs        资源取用与解包：预筛 → 读字节 → worker / 服务端解包 → 注册 VFS（自持 workerPool）
+//   plugin-host-unload.mjs        卸载与回收：逆序跑 disposer → 清四张表 → 终止 worker → 派发重建事件
+//   plugin-host-warmup.mjs        预热：容量探测 + 在途去重 + 服务端事件流（自持 capCache / warmupInflight）
+//   plugin-host-report.mjs        状态报告：只读快照（discovered / providers / loadState）
+//   events.mjs                    事件名常量（唯一来源；单测禁止其它前端文件再写字面量）
 //
-// ── 模块拆分现状（B1）─────────────────────────────────────────────────────
-//   三块已搬出本文件（工厂函数式，接收依赖、返回函数；不导出裸单例）：
-//     · plugin-host-report.mjs  createReport({ ctx }) ⇒ report()
-//     · plugin-host-unload.mjs  createUnload({ ctx, manifestEffects, workerPool, publishSlotStats, publishEffectStats })
-//                               ⇒ { unloadPlugin, unloadAll }
-//     · plugin-host-warmup.mjs  createWarmup({ ctx }) ⇒ warmup()
-//     · plugin-host-unpack.mjs  createUnpack({ io, state, limits })
-//         ⇒ { materialize, fetchFile, providersFor, findProvider, pool }（解包区 R4；workerPool 由它创建并持有）
-//     · plugin-host-registration.mjs
-//         createRegistration({ io, tables, decls, probe, sinks }) ⇒ { registerProvider, registerEffect,
-//                               registerControls, slots, notify }（对外公开面，错误码/文案/校验顺序逐字保留）
-//         （模块自持 capCache / CAP_TTL_MS / warmupInflight / WARMUP_PHASE_TEXT，自己 import postStream / memoryGuard）
-//   本文件里搜这些名字只能找到"装配那一行"，实现请去对应模块。
+//   下面各区只说明"这一段负责什么、和哪些状态耦合"，不再记录函数行号——
+//   要定位具体函数，进对应模块后按名字搜。
 //
-// 为什么按职责分组而不是按文件顺序：文件顺序是历史演进的结果（资源取用和解包占了 64%），
-//   按职责查才是日常改动的真实入口（"我要改插槽注册" → 直奔 G2）。
+// ── 分区 R1：基础工具与统计发布 ─────────────────────────────────────────────
+//   职责：日志适配、类型转换、事件派发封装、把插槽/效果统计挂到 window（面板与测试读这些数据集）。
+//   状态耦合：say / emit（依赖）、slotRegistry / pluginEffects（只读汇总）。
 //
-// ── G1 资源取用与解包（23 个，占工厂代码 64%）──────────────────────────────
-//   职责：把"资源根里的文件"变成"可用的字节 / 解包产物 / VFS 前缀"，含 worker 解包、
-//        服务端兜底解包、内存准入预热。这一组**不碰 DOM、不碰面板**。
-//   状态耦合：discovered（读清单找 provider）、providers（读 provider 表）、
-//            say（日志）、emit（进度事件）、pluginEffects（登记解包产物用于回溯）。
-//   函数 | 行 | 代码行 | 职责
-//   fetchFile            | → plugin-host-unpack.mjs | —   | 已搬出（解包区 R4）
-//   fileUrlOf            | → plugin-host-unpack.mjs | —   | 已搬出（解包区 R4）
-//   prefilterReason      | → plugin-host-unpack.mjs | —   | 已搬出（解包区 R4）
-//   validateResolved     | → plugin-host-unpack.mjs | —   | 已搬出（解包区 R4）
-//   bytesOf              | → plugin-host-unpack.mjs | —   | 已搬出（解包区 R4）
-//   filesOfProvider      | → plugin-host-unpack.mjs | —   | 已搬出（解包区 R4）
-//   onWorkerProgress     | → plugin-host-unpack.mjs | —   | 已搬出（解包区 R4）
-//   ensureUnpackWorker   | → plugin-host-unpack.mjs | —   | 已搬出（解包区 R4）
-//   resolveViaWorker     | → plugin-host-unpack.mjs | —   | 已搬出（解包区 R4）
-//   classHistogramOf     | → plugin-host-unpack.mjs | —   | 已搬出（解包区 R4）
-//   resolveViaProvider   | → plugin-host-unpack.mjs | —   | 已搬出（解包区 R4）
-//   resolvedUsable       | → plugin-host-unpack.mjs | —   | 已搬出（解包区 R4）
-//   registerResolved     | → plugin-host-unpack.mjs | —   | 已搬出（解包区 R4）
-//   filesCount           | → plugin-host-unpack.mjs | —   | 已搬出（解包区 R4）
-//   providerFromPrefix   | → plugin-host-unpack.mjs | —   | 已搬出（解包区 R4）
-//   firstFulfilled       | → plugin-host-unpack.mjs | —   | 已搬出（解包区 R4）
-//   resolveFromServer    | → plugin-host-unpack.mjs | —   | 已搬出（解包区 R4）
-//   fetchCapacity        | → plugin-host-warmup.mjs | —   | 容量探测（已搬出）
-//   warmup               | → plugin-host-warmup.mjs | —   | 预热入口（已搬出，见该模块）
-//   scheduleWarmup       | → plugin-host-warmup.mjs | —   | 预热执行（已搬出）
-//   materialize          | → plugin-host-unpack.mjs | —   | 已搬出（解包区 R4）
-//   providersFor         | → plugin-host-unpack.mjs | —   | 已搬出（解包区 R4）
-//   findProvider         | → plugin-host-unpack.mjs | —   | 已搬出（解包区 R4）
+// ── 分区 R2：注册入口 hostApi（只剩组装；实现在 plugin-host-registration.mjs）──
+//   职责：把 ctx 与各表以"窄视图"注入注册模块，再把返回的方法拼成 hostApi。
+//   状态耦合：providers / loadState / registeredEffects（经注册模块写）、slotRegistry（读）、loadingPluginId（读）。
 //
-// ── G2 注册与校验（**已整体搬到 plugin-host-registration.mjs**，B2）────────
-//   职责：插件脚本装载期能调用的**全部注册入口**，以及它们的拒绝原因。
-//        三条通道：效果注册、插槽注册、老接口控件（兼容层，内部转插槽）。
-//   状态耦合：registeredEffects（写）、loadState（写）、providers（写）、slotRegistry（读）、
-//            loadingPluginId（读：判定"是否在装载期窗口内"）、say/emit。
-//   函数 | 行 | 代码行 | 职责
-//   rejectRegistration     | → plugin-host-registration.mjs | —   | 注册拒绝统一出口（已搬出）
-//   groupIdOfTitle         | → plugin-host-registration.mjs | —   | 标题→内置组 id（已搬出）
-//   legacyControlToSlotSpec | → plugin-host-registration.mjs | — | 老控件→插槽 spec（已搬出）
-//   publishSlotStats       | 
-//   initSlotRegistry     | 1332 | 22  | 按 /api/plugins 建插槽注册表（必须在注入脚本之前）
-//   slots.register（原 hostApi.register）  | → plugin-host-registration.mjs | — | 插槽注册入口（已搬出）
-//   registerEffect         | → plugin-host-registration.mjs | —   | 效果注册（已搬出）
-//   registerControls     | → plugin-host-registration.mjs | —   | 老接口兼容层（已搬出）
-//   notify                 | → plugin-host-registration.mjs | —   | 插件通知通道（已搬出）
-//
-// ── G3 装载与装载期窗口（5 个）─────────────────────────────────────────────
-//   职责：发现清单 → 建注册表 → 注入脚本（窗口内才接受注册）→ 统计装载结果。
-//   状态耦合：discovered / loaded（**唯一写者**都在这组）、loadingPluginId（窗口开关）、
+// ── 分区 R3：装载与卸载回收（loadPlugin / effectsReport；卸载在 -unload.mjs）────
+//   职责：注入脚本 → 登记 loadState；卸载由 -unload.mjs 负责（逆序 dispose → 清表 → 派发事件）。
+//   状态耦合：discovered / loaded（**唯一写者**都在这段）、loadingPluginId（窗口开关）、
 //            slotRegistry（初始化）、loadState（写）。
-//   函数 | 行 | 代码行 | 职责
-//   normalizeStage       | 338 | 4   | 归一化当前阶段（缺省回退 S1）
-//   loadAll              | 1312 | 6   | 装载入口（去重 + 委派 doLoadAll）
-//   countRegistered      | 1320 | 3   | 统计已装载数
-//   doLoadAll            | 1360 | 40  | 装载执行体（发现 → 注册表 → 注入 → 统计）
-//   loadPlugin           | 461 | 27  | 注入单个插件脚本并登记装载状态
 //
-// ── G4 卸载与回收（3 个）───────────────────────────────────────────────────
-//   职责：逆序跑 disposer，把插槽/效果/提供者/装载状态从各表摘掉，再派发事件让面板重建。
-//   状态耦合：pluginEffects / registeredEffects / providers / loadState（**都在这里删**）、
-//            loaded（读）、say/emit。
-//   函数 | 行 | 代码行 | 职责
-//   addEffect            | 318 | 9   | 往插件级效果容器加一条（统一回收的入口）
-//   unloadPlugin         | → plugin-host-unload.mjs | —   | 卸载单个插件（已搬出）
-//   unloadAll            | → plugin-host-unload.mjs | —   | 全部卸载（已搬出）
+// ── 分区 R4/R5：资源取用与解包（整体在 plugin-host-unpack.mjs）──────────────
+//   职责：把"资源根里的文件"变成"可用字节 / 解包产物 / VFS 前缀"，**不碰 DOM、不碰面板**。
+//   状态耦合：discovered（读清单找 provider）、providers（读 provider 表）、say / emit；
+//            workerPool 与该区常量由解包模块自持，宿主只拿引用做卸载清理。
 //
-// ── G5 效果链（2 个）───────────────────────────────────────────────────────
-//   职责：效果声明的统计与回收报告（"卸载到底发生了没有"靠它读）。
-//   状态耦合：pluginEffects / registeredEffects（只读）、publishEffectStats → window。
-//   函数 | 行 | 代码行 | 职责
-//   publishEffectStats   | 356 | 7   | 效果统计挂到 window
-//   effectsReport        | 501 | 20  | 回收报告（含每个插件的 slots/effects 计数）
+// ── 分区 R6：装载编排 / provider 查询（report 在 -report.mjs）────────────────
+//   职责：发现清单 → 建注册表 → 注入脚本 → 统计结果；以及 provider 查询与回收报告。
+//   状态耦合：几乎全部只读（loaded / discovered / providers / pluginEffects /
+//            registeredEffects / slotRegistry）。
 //
-// ── G6 报告（1 个）─────────────────────────────────────────────────────────
-//   职责：把宿主整体状态汇总成一份可序列化报告（排障与自检读它）。
-//   状态耦合：几乎全部只读（loaded/discovered/providers/pluginEffects/registeredEffects/slotRegistry）。
-//   函数 | 行 | 代码行 | 职责
-//   report               | → plugin-host-report.mjs | —   | 宿主状态报告（已搬出）
-//
+
 // ── 高频共享状态：已收敛为一个显式 `ctx`（B0 完成）────────────────────────
 //   位置：工厂体开头（搜 `const ctx = {`）。**唯一一份定义**，内部函数一律用 `ctx.xxx` 读写；
 //   不再有同名的工厂作用域变量（有就是漏改，用 grep `\bc<名字>\b` 自查能发现）。
@@ -302,11 +238,10 @@ export function createPluginHost(opts = {}) {
   const pluginSettings = new Map();
 
   /** 登记一个可回收 effect（同一插件按注册顺序追加） */
-  // ── 分区 R1：基础工具与统计发布（addEffect ~ fileUrlOf）─────────────────────
-  // 本区提供"其它区都要用的小工具"：效果容器入口、阶段归一、两处 window 统计发布、
-  //   注册拒绝出口、标题→分组 id、老控件→插槽 spec 包装、VFS 地址拼接。
-  // 状态耦合：addEffect/publishEffectStats 写 pluginEffects；publishSlotStats 读 slotRegistry；
-  //   rejectRegistration 读 registrationRejects 与 loadingPluginId。
+  // ── 分区 R1：基础工具与统计发布 ─────────────────────────────────────────────
+  // 本区放"其它区都要用的小工具"：效果容器入口（addEffect）、阶段归一（normalizeStage）、
+  //   两处 window 统计发布（插槽/效果）。注册拒绝出口与老控件包装已随注册模块搬走。
+  // 状态耦合：addEffect / publishEffectStats 写 pluginEffects；publishSlotStats 读 slotRegistry。
   function addEffect(pluginId, effect) {
     const id = String(pluginId || '');
     if (!id || !effect || typeof effect.dispose !== 'function') return false;
@@ -367,12 +302,12 @@ export function createPluginHost(opts = {}) {
 
 
   /** 插件侧可见的宿主面（插件脚本顶层会读 window.SpineViewerPlugins） */
-  // ── 分区 R2：注册入口 hostApi（**只剩组装**；实现在 plugin-host-registration.mjs）──
-  // B2 之后本区只做两件事：把 ctx/状态以"窄视图"注入注册模块、把返回的方法拼成 hostApi。
-  // 四个方法：slots.register（插槽）/ registerEffect（效果）/ registerControls（老接口兼容层）/ notify。
-  // 共同约束：**只接受装载期同步调用**（loadingPluginId 非空），异步注册一律拒绝并给原因。
-  // 状态耦合：registeredEffects、loadState、providers（写）；slotRegistry、manifestEffects（读）。
-  // 注册与校验（G2）：搬到 plugin-host-registration.mjs（B2）
+  // ── 分区 R2：注册入口 hostApi（只剩组装；实现在 plugin-host-registration.mjs）──
+  // 本区只做两件事：把 ctx 与各表以"窄视图"注入注册模块，再把返回的方法拼成 hostApi。
+  // 共同约束（仍在注册模块里执行）：**只接受装载期同步调用**（loadingPluginId 非空），
+  //   异步注册一律显式拒绝并给原因。
+  // 状态耦合：providers / loadState / registeredEffects（经注册模块写）；
+  //   slotRegistry、manifestEffects、loadingPluginId（读）。
   //   参数刻意用"窄视图"而不是整块 ctx：io（日志/事件）/ tables（它读写的三张表 + 插槽表 getter）/
   //   decls（清单声明与拒绝记录）/ probe（装载期窗口与最后装载者，必须现读）/ sinks（回收登记与统计发布）
   const registration = createRegistration({
@@ -410,9 +345,8 @@ export function createPluginHost(opts = {}) {
   };
 
   /** 按清单串行注入某插件的全部脚本（顺序即 plugin.json 的 files[] 顺序：lib/* 先、index.js 后） */
-  // ── 分区 R3：装载与卸载回收（loadPlugin / effectsReport）──────────────────────────
-  // 注意：unloadPlugin / unloadAll 已搬到 plugin-host-unload.mjs（B1），本区只留装配与 effectsReport。
-  // 装载：注入脚本 → 登记 loadState；卸载：逆序 dispose → 清四张表 → 派发事件让面板重建。
+  // ── 分区 R3：装载与卸载回收（装配 + effectsReport）──────────────────────────
+  // 装载：注入脚本 → 登记 loadState；卸载与回收在 plugin-host-unload.mjs（逆序 dispose → 清表 → 派发事件）。
   // 状态耦合：loadState（写）、loaded（读）、providers/registeredEffects/pluginEffects（卸载时删）。
   async function loadPlugin(pl) {
     const id = String(pl && pl.id ? pl.id : '');
@@ -488,9 +422,9 @@ export function createPluginHost(opts = {}) {
   // 预热：搬到 plugin-host-warmup.mjs（B1）—— 只依赖 ctx.say / ctx.emit + 服务端事件流
   const warmup = createWarmup({ ctx });
 
-  // ── 分区 R5：容器解包主流程（materialize，已随 R4 搬到 plugin-host-unpack.mjs）──
-  // 唯一对外暴露的"解包"入口：缓存命中 → provider 解析 → 产物校验 → 注册 VFS → 返回入口与清单。
-  // 状态耦合：providers/discovered（选 provider）、pluginEffects（登记回收）、say/emit。
+  // ── 分区 R4/R5：资源取用与解包（整体在 plugin-host-unpack.mjs）──────────────
+  // 解包主流程（缓存命中 → provider 解析 → 产物校验 → 注册 VFS）与预热都在搬出去的模块里，
+  //   本区只剩装配那一行。状态耦合（在模块内）：providers / discovered（读）、say / emit。
 
   /**
    * 读启用清单并逐个加载。**任何失败都不抛**：宿主是增强项，不能拖垮页面。
@@ -501,10 +435,10 @@ export function createPluginHost(opts = {}) {
    * 这解决了"页面刚起、插件脚本还在注入时就发起装载"的时序竞争。
    * @returns {Promise<{discovered: number, registered: number}>}
    */
-  // ── 分区 R6：装载编排 / provider 查询（loadAll ~ findProvider）──────────────
-  // 注意：report 已搬到 plugin-host-report.mjs（B1）。
-  // loadAll→doLoadAll 的实现拆分、插槽注册表初始化、provider 查询、report 汇总。
-  // 状态耦合：discovered/loaded（**唯一写者** doLoadAll）、slotRegistry（唯一写者 initSlotRegistry）。
+  // ── 分区 R6：装载编排（loadAll / doLoadAll / initSlotRegistry）──────────────
+  // 装载编排与插槽注册表初始化留在这里（它们要驱动脚本注入与窗口开关）；
+  //   provider 查询与状态报告分别在 -unpack.mjs / -report.mjs。
+  // 状态耦合：discovered / loaded（**唯一写者** doLoadAll）、slotRegistry（唯一写者 initSlotRegistry）。
   async function loadAll() {
     if (ctx.loaded) return { discovered: ctx.discovered.length, registered: countRegistered() };
     if (loadingPromise) return loadingPromise;
