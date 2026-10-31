@@ -86,6 +86,110 @@ function injectScript(src) {
  * @param {{log?: Function, baseUrl?: string}} [opts]
  * @returns {object} 宿主查询面（见文件末尾 return）
  */
+// ============================================================================
+// 【函数索引】—— 只为人肉定位服务，不含逻辑。行号与下面的分区注释一起维护。
+//
+// 维护方式：改完函数后，若某个函数**起始行**变了，回到本表按名字找到那一行改数字；
+//   加新函数时补一行（名字 / 行 / 代码行 / 职责）。表里行号以"该函数声明所在行"为准。
+//
+// 为什么按职责分组而不是按文件顺序：文件顺序是历史演进的结果（资源取用和解包占了 64%），
+//   按职责查才是日常改动的真实入口（"我要改插槽注册" → 直奔 G2）。
+//
+// ── G1 资源取用与解包（23 个，占工厂代码 64%）──────────────────────────────
+//   职责：把"资源根里的文件"变成"可用的字节 / 解包产物 / VFS 前缀"，含 worker 解包、
+//        服务端兜底解包、内存准入预热。这一组**不碰 DOM、不碰面板**。
+//   状态耦合：discovered（读清单找 provider）、providers（读 provider 表）、
+//            say（日志）、emit（进度事件）、pluginEffects（登记解包产物用于回溯）。
+//   函数 | 行 | 代码行 | 职责
+//   fetchFile            | 405 | 133 | 取文件字节（唯一取字节通道，worker/同步两条路 + 诊断）
+//   fileUrlOf            | 395 | 3   | 拼 VFS 取文件地址
+//   prefilterReason      | 769 | 12  | provider 预筛原因（能不能读这个文件）
+//   validateResolved     | 787 | 16  | 校验 provider.resolve 返回值形状（拦半成品）
+//   bytesOf              | 805 | 11  | 求一组文件的字节数
+//   filesOfProvider      | 827 | 4   | 某 provider 声明的文件清单
+//   onWorkerProgress     | 833 | 13  | worker 进度回调 → 派发事件
+//   ensureUnpackWorker   | 853 | 29  | 取/建某 provider 的 worker（失败返回 null）
+//   resolveViaWorker     | 894 | 41  | 用 worker 解包，失败不抛、返回 {ok:false} 由调用方回落
+//   classHistogramOf     | 959 | 13  | 字节量直方图（内存准入判断用）
+//   resolveViaProvider   | 974 | 35  | 按优先级试每个 provider 的 resolve
+//   resolvedUsable       | 1035 | 35  | 判断 resolve 结果是否真能用
+//   registerResolved     | 1072 | 21  | 把解包产物注册进 VFS 并解析入口地址（不碰渲染）
+//   filesCount           | 1106 | 5   | 文件计数
+//   providerFromPrefix   | 1124 | 5   | 前缀 → provider
+//   firstFulfilled       | 1135 | 13  | 取第一个 fulfilled 的结果
+//   resolveFromServer    | 1156 | 43  | 走服务端解包接口（本地没能力时兜底）
+//   fetchCapacity        | 1238 | 25  | 拉服务端内存容量（预热准入依据）
+//   warmup               | 1275 | 17  | 预热主流程（只按内存准入，不看耗时）
+//   scheduleWarmup       | 1322 | 46  | 空闲时排队预热
+//   materialize          | 1388 | 156 | 容器单文件 → 解包 → 校验 → 注册 VFS，返回入口地址与文件清单
+//   providersFor         | 1785 | 6   | 列出能处理某类文件的 provider
+//   findProvider         | 1799 | 23  | 按文件挑 provider（canHandle 必须同步布尔）
+//
+// ── G2 注册与校验（5 个内部函数 + 4 个 hostApi 方法）───────────────────────
+//   职责：插件脚本装载期能调用的**全部注册入口**，以及它们的拒绝原因。
+//        三条通道：效果注册、插槽注册、老接口控件（兼容层，内部转插槽）。
+//   状态耦合：registeredEffects（写）、loadState（写）、providers（写）、slotRegistry（读）、
+//            loadingPluginId（读：判定"是否在装载期窗口内"）、say/emit。
+//   函数 | 行 | 代码行 | 职责
+//   rejectRegistration   | 316 | 13  | 注册拒绝的统一出口（可读原因 + likelyOwner）
+//   groupIdOfTitle       | 339 | 7   | 分组标题 → 内置分组 id（兼容层用，从 PANEL_GROUPS 派生）
+//   legacyControlToSlotSpec | 355 | 18 | 老接口控件声明 → 插槽 spec（包一层 render）
+//   publishSlotStats     | 289 | 7   | 插槽统计挂到 window（__SLOT_STATS__）
+//   initSlotRegistry     | 1696 | 22  | 按 /api/plugins 建插槽注册表（必须在注入脚本之前）
+//   hostApi.register（slots.register） | 430 | 26 | 插件插槽注册入口（转发给 slotRegistry）
+//   hostApi.registerEffect | 472 | 34 | 效果注册（清单校验 + 装载期窗口 + 能力键白名单）
+//   hostApi.registerControls | 535 | 54 | 兼容层：老接口转插槽注册（标题→id、隐式声明）
+//   hostApi.notify       | 613 | 5   | 插件向宿主上报一条通知（进日志/事件）
+//
+// ── G3 装载与装载期窗口（5 个）─────────────────────────────────────────────
+//   职责：发现清单 → 建注册表 → 注入脚本（窗口内才接受注册）→ 统计装载结果。
+//   状态耦合：discovered / loaded（**唯一写者**都在这组）、loadingPluginId（窗口开关）、
+//            slotRegistry（初始化）、loadState（写）。
+//   函数 | 行 | 代码行 | 职责
+//   normalizeStage       | 280 | 4   | 归一化当前阶段（缺省回退 S1）
+//   loadAll              | 1676 | 6   | 装载入口（去重 + 委派 doLoadAll）
+//   countRegistered      | 1684 | 3   | 统计已装载数
+//   doLoadAll            | 1724 | 40  | 装载执行体（发现 → 注册表 → 注入 → 统计）
+//   loadPlugin           | 624 | 27  | 注入单个插件脚本并登记装载状态
+//
+// ── G4 卸载与回收（3 个）───────────────────────────────────────────────────
+//   职责：逆序跑 disposer，把插槽/效果/提供者/装载状态从各表摘掉，再派发事件让面板重建。
+//   状态耦合：pluginEffects / registeredEffects / providers / loadState（**都在这里删**）、
+//            loaded（读）、say/emit。
+//   函数 | 行 | 代码行 | 职责
+//   addEffect            | 260 | 9   | 往插件级效果容器加一条（统一回收的入口）
+//   unloadPlugin         | 669 | 31  | 卸载一个插件（逆序 dispose + 清表 + 派发事件）
+//   unloadAll            | 707 | 6   | 全部卸载
+//
+// ── G5 效果链（2 个）───────────────────────────────────────────────────────
+//   职责：效果声明的统计与回收报告（"卸载到底发生了没有"靠它读）。
+//   状态耦合：pluginEffects / registeredEffects（只读）、publishEffectStats → window。
+//   函数 | 行 | 代码行 | 职责
+//   publishEffectStats   | 298 | 7   | 效果统计挂到 window
+//   effectsReport        | 720 | 20  | 回收报告（含每个插件的 slots/effects 计数）
+//
+// ── G6 报告（1 个）─────────────────────────────────────────────────────────
+//   职责：把宿主整体状态汇总成一份可序列化报告（排障与自检读它）。
+//   状态耦合：几乎全部只读（loaded/discovered/providers/pluginEffects/registeredEffects/slotRegistry）。
+//   函数 | 行 | 代码行 | 职责
+//   report               | 1826 | 62  | 汇总宿主状态（插件/效果/插槽/失败）供排障
+//
+// ── 9 个高频共享状态（被 5~12 个函数读写；改动前先看这张表）───────────────
+//   变量 | 类型 | 谁写 | 谁读 | 改动时注意
+//   say                     | const 日志器 | 无（初始化后不变） | 12 个函数 | 只加不换：换实现会改变全部日志格式
+//   emit                    | const 派发器 | 无（初始化后不变） | 8 个函数  | 事件名是外部契约（main/panel 监听）
+//   discovered              | let 数组      | doLoadAll           | 9 个函数  | 只在装载期整体替换；运行期读到的可能是旧快照
+//   loaded                  | let Set       | doLoadAll           | 9 个函数  | "已装载"判定依据；卸载要同步删，否则 isLoaded 骗人
+//   providers               | const Map     | register / unloadPlugin | 8 个函数 | 覆盖会被显式拒绝（见 register 注释），删要连 disposer 一起
+//   slotRegistry            | let           | initSlotRegistry（唯一） | 8 个函数 | **惰性初始化**：脚本注入前必须已建好，否则注册静默丢弃
+//   loadState               | const Map     | register / loadPlugin / unloadPlugin | 7 个函数 | 装载状态与错误文案的唯一来源，卸载要删否则残留
+//   registeredEffects       | const Map     | registerEffect / unloadPlugin | 6 个函数 | 能力键白名单的来源；删漏会让控件"未注册成功"
+//   pluginEffects           | const Map     | addEffect / unloadPlugin | 5 个函数 | 插件级 disposer 容器；卸载顺序依赖它（逆序）
+//
+// ── 与"将来拆分"的关系 ────────────────────────────────────────────────────
+//   调研结论（docs/设计/plugin-host拆分调研.md）：**暂不拆文件**。若将来要拆，第一步不是搬代码，
+//   而是先把上面 9 个状态收敛成一个显式 ctx 对象（仍在单文件内），让 43 个函数的依赖变成可见契约。
+// ============================================================================
 export function createPluginHost(opts = {}) {
   const say = makeLogger(opts.log);
   // diag 事件通道（由 main.js 注入 app/status.js 的 diagEvent）：解包来源是**验收要读**的事实，
@@ -148,6 +252,11 @@ export function createPluginHost(opts = {}) {
   const pluginSettings = new Map();
 
   /** 登记一个可回收 effect（同一插件按注册顺序追加） */
+  // ── 分区 R1：基础工具与统计发布（addEffect ~ fileUrlOf）─────────────────────
+  // 本区提供"其它区都要用的小工具"：效果容器入口、阶段归一、两处 window 统计发布、
+  //   注册拒绝出口、标题→分组 id、老控件→插槽 spec 包装、VFS 地址拼接。
+  // 状态耦合：addEffect/publishEffectStats 写 pluginEffects；publishSlotStats 读 slotRegistry；
+  //   rejectRegistration 读 registrationRejects 与 loadingPluginId。
   function addEffect(pluginId, effect) {
     const id = String(pluginId || '');
     if (!id || !effect || typeof effect.dispose !== 'function') return false;
@@ -311,6 +420,10 @@ export function createPluginHost(opts = {}) {
   }
 
   /** 插件侧可见的宿主面（插件脚本顶层会读 window.SpineViewerPlugins） */
+  // ── 分区 R2：注册入口 hostApi（插件脚本装载期唯一能碰的一面）──────────────
+  // 四个方法：slots.register（插槽）/ registerEffect（效果）/ registerControls（老接口兼容层）/ notify。
+  // 共同约束：**只接受装载期同步调用**（loadingPluginId 非空），异步注册一律拒绝并给原因。
+  // 状态耦合：registeredEffects、loadState、providers（写）；slotRegistry、manifestEffects（读）。
   const hostApi = {
     version: 1,
     /** 插件注册自己：只收有 id 的对象；缺 canHandle/resolve 时保留但标注（供排障） */
@@ -505,6 +618,9 @@ export function createPluginHost(opts = {}) {
   };
 
   /** 按清单串行注入某插件的全部脚本（顺序即 plugin.json 的 files[] 顺序：lib/* 先、index.js 后） */
+  // ── 分区 R3：装载与卸载回收（loadPlugin / unloadPlugin / unloadAll / effectsReport）──
+  // 装载：注入脚本 → 登记 loadState；卸载：逆序 dispose → 清四张表 → 派发事件让面板重建。
+  // 状态耦合：loadState（写）、loaded（读）、providers/registeredEffects/pluginEffects（卸载时删）。
   async function loadPlugin(pl) {
     const id = String(pl && pl.id ? pl.id : '');
     if (!id) return;
@@ -646,6 +762,10 @@ export function createPluginHost(opts = {}) {
    * 预筛：返回 null 表示"可能是资源包，值得读全量"，否则返回跳过原因。
    * @param {{rootId?:string, rel?:string, name?:string, size?:number, rootKind?:string}} file
    */
+  // ── 分区 R4：资源取用与解包（主体，占工厂代码 64%）────────────────────────
+  // 从"文件能不能读"（prefilterReason/validateResolved）到"worker 解包→失败回落服务端"，
+  //   再到"内存准入驱动的预热"（fetchCapacity/warmup/scheduleWarmup）。**不碰 DOM**。
+  // 状态耦合：discovered（读清单）、providers、say、emit、workerPool/warmupInflight/capCache。
   function prefilterReason(file) {
     if (!file || !file.rootId || !file.rel) return '缺少 rootId/rel';
     if (file.rootKind && file.rootKind !== 'bundle') return `资源根类型是 ${file.rootKind}，不是 bundle`;
@@ -1262,6 +1382,9 @@ const MIME_BY_EXT = {
     })();
   }
 
+  // ── 分区 R5：容器解包主流程（materialize）─────────────────────────────────
+  // 唯一对外暴露的"解包"入口：缓存命中 → provider 解析 → 产物校验 → 注册 VFS → 返回入口与清单。
+  // 状态耦合：providers/discovered（选 provider）、pluginEffects（登记回收）、say/emit。
   async function materialize(file, opts = {}) {
     const vfs = opts.vfs || getSharedVirtualFS();
     const skip = prefilterReason(file);
@@ -1547,6 +1670,9 @@ const MIME_BY_EXT = {
    * 这解决了"页面刚起、插件脚本还在注入时就发起装载"的时序竞争。
    * @returns {Promise<{discovered: number, registered: number}>}
    */
+  // ── 分区 R6：装载编排 / provider 查询 / 宿主报告（loadAll ~ report）────────
+  // loadAll→doLoadAll 的实现拆分、插槽注册表初始化、provider 查询、report 汇总。
+  // 状态耦合：discovered/loaded（**唯一写者** doLoadAll）、slotRegistry（唯一写者 initSlotRegistry）。
   async function loadAll() {
     if (loaded) return { discovered: discovered.length, registered: countRegistered() };
     if (loadingPromise) return loadingPromise;
