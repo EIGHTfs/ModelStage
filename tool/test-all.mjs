@@ -181,6 +181,10 @@ const SUITES = [
   //   为什么必须单独一套：上一版 13 个 entry-states 单测全绿，而三处调用只有一处传指纹 ——
   //   纯函数单测永远测不出"调用方没接上"，只有这层能红
   { name: 'entry-states-wiring', runner: 'node-test', file: 'test/entry-states-wiring.test.mjs' },
+  // 插槽与设置声明的清单校验（S1-a 服务端）：纯函数、无 IO ——
+  //   钉住判定顺序（slot-not-open 必须先于 risk-mismatch）、risk 以目录为准、
+  //   逐项降级（插件不因一个拼错的插槽名整体消失）
+  { name: 'plugin-slots-manifest', runner: 'node-test', file: 'test/plugin-slots-manifest.test.mjs' },
   // 运行时适配器（node vm 沙盒 / exec 子进程 + 帧协议）：
   //   钉住清单校验、真 spawn 往返、**超时必须真杀**、崩溃传播、僵尸检查 ——
   //   exec 通道的风险全在进程边界上，纯函数测不出来，必须由这套兜住。

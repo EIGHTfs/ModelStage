@@ -15,6 +15,8 @@
 //   否则两处各说各话（一个说去官网下、另一个只说文件名），用户被堵在门口。
 import { live2dGuide } from '../../../tool/lib/runtime-guides.mjs';
 import { readRatioEnv } from '../core/env-num.mjs';
+// 插槽目录（S1-a）：与校验同源，见 plugins/slot-catalog.mjs
+import { SLOT_CATALOG } from '../plugins/slot-catalog.mjs';
 
 /** 资源根 / 插件 / 品牌 / 前端配置 */
 function apiBasics(ctx, res, p) {
@@ -28,6 +30,9 @@ function apiBasics(ctx, res, p) {
     return sendJson(res, 200, {
       ok: true,
       dir: 'plugins',
+      // 插槽目录全表（S1-a）：前端要在**装之前**知道"有哪些插槽、各自什么风险、开到哪一阶段"，
+      //   否则只能等注册失败才知道。与校验同源（都来自 plugins/slot-catalog.mjs），不会漂移。
+      slotCatalog: SLOT_CATALOG,
       plugins: data.plugins.readPlugins(),
       // 角色注册表（角色 → 插件 id）：前端按 provides 决定把插件挂到哪个注册表；
       //   排障时也能一眼看出"某角色有没有插件认领"

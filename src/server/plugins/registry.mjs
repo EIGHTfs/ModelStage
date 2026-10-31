@@ -8,6 +8,8 @@ import { createLogger } from '../core/log.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseJsonc } from '../../../tool/parse-jsonc.mjs';
+// 插槽目录与校验（S1-a）：目录是契约事实，放代码常量表；校验与 /api/plugins 下发读同一份
+import { validateDeclaredSlots, validateDeclaredSettings } from './slot-catalog.mjs';
 
 /**
  * 插件角色集合（契约 插件契约 §一）：五类角色，**别处不得自创角色名**。
@@ -198,6 +200,12 @@ export function readPluginManifest(pluginsDir, dirName, isFile, disabled, seenEf
     return null;
   }
   const runtime = normalizeRuntime(m.runtime);
+  // 插槽与设置的声明校验（S1-a）：**逐项降级**——非法项只记日志并进 errors，
+  //   绝不 return null（插件因为一个拼错的插槽名就从 /api/plugins 消失，用户只会看到"插件没了"）
+  const slotCheck = validateDeclaredSlots(m.slots);
+  const settingsCheck = validateDeclaredSettings(m.settings, pid);
+  if (slotCheck.errors.length) log.warn('插槽声明有非法项（已逐项忽略，插件仍注册）', { plugin: dirName, errors: slotCheck.errors });
+  if (settingsCheck.errors.length) log.warn('设置声明有非法项（已逐项忽略，插件仍注册）', { plugin: dirName, errors: settingsCheck.errors });
   // 按 runtime 决定"要加载哪些 js"（exec 插件不加载任何 js），并做对应的存在性校验
   const filesResult = resolveLoadFiles({ m, runtime, dirName, isFile });
   if (!filesResult.ok) {
@@ -241,6 +249,18 @@ export function readPluginManifest(pluginsDir, dirName, isFile, disabled, seenEf
     version: m.version === undefined ? null : m.version,
     assets: Array.isArray(m.assets) ? m.assets.map(String) : [],
     fileKinds: Array.isArray(m.fileKinds) ? m.fileKinds.map(String) : [],
+    /**
+     * 插槽声明（S1-a）：只放**已通过校验**的那几项（名字在目录里、阶段已开放、risk 与目录一致）。
+     * 非法项不进这里、也不会让插件消失 —— 而是进 slotErrors。
+     * 老插件没有 slots 字段 ⇒ 空数组，行为零变化。
+     */
+    slots: slotCheck.slots,
+    /** 插槽声明的问题项（why: unknown-slot / slot-not-open / bad-shape） */
+    slotErrors: slotCheck.errors,
+    /** 声明式设置键（S1-a，只 enum / boolean）：只放通过校验的，字段已归一 */
+    settings: settingsCheck.settings,
+    /** 设置声明的问题项（why: bad-shape / bad-type / bad-options / bad-default / duplicate-key） */
+    settingsErrors: settingsCheck.errors,
     /**
      * 展示色（插件自声明，如 "#2b6cb0"）：列表徽标用它上色，前端不再按 kind 硬编码。
      * 只接受 #rgb / #rrggbb / #rrggbbaa，非法值一律按"未声明"处理（给 null ⇒ 前端走中性色），
@@ -615,6 +635,11 @@ export function readBuiltinProviders(root = REGISTRY_ROOT) {
       entry: null,
       frameProtocol: null,
       effects: [],
+      // 内置装载器不渲染面板 ⇒ 四个字段恒为空数组；但**必须有**（缺字段会迫使消费方写特例）
+      slots: [],
+      slotErrors: [],
+      settings: [],
+      settingsErrors: [],
       manifest: false,
       /** 唯一用于区分来源的标记（诊断展示用；判定与聚合一律不读它，避免变成第二套分支） */
       builtin: true,
