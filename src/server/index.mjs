@@ -77,7 +77,9 @@ export function createServerData({ root, dataRoot, avatarRoot, log }) {
     readConfig: () => config.readConfig(),
     log: logFn,
   });
-  catalog.setProbeNotifier((rootId) => { shapeProbe.kick(rootId); });
+  // 触发来源（catalog = 清单重建 / fingerprint = 旧结论作废）由 catalog 判定后一起传进来：
+  //   日志里必须能分清"谁让它跑的"，否则排查时只能看到"又探测了"却不知道为什么。
+  catalog.setProbeNotifier((rootId, trigger) => { shapeProbe.kick(rootId, trigger); });
   return {
     paths, env, config, plugins, probe, spine, live2d, names, tree, modelMeta, bundleProbe,
     catalog, entryStates, shapeProbe,

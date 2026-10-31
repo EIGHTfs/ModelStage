@@ -130,9 +130,10 @@ function handleProbeRoute(req, res, url, ctx) {
     return true;
   }
   if (req.method === 'POST') {
-    // 手动重探（调试入口）：不 await —— 探测按根串行、跑完即停，调用方拿到受理回执即可
+    // 手动重探（调试入口）：不 await —— 探测按根串行、跑完即停，调用方拿到受理回执即可。
+    //   触发来源标 manual：日志里要能与 catalog/fingerprint 区分（三者混成一条就查不出谁触发的）
     const rootId = (url.searchParams.get('root') || '').trim() || undefined;
-    const running = shapeProbe ? shapeProbe.kick(rootId) : null;
+    const running = shapeProbe ? shapeProbe.kick(rootId, 'manual') : null;
     sendJson(res, 200, { ok: true, accepted: !!running, stats });
     return true;
   }

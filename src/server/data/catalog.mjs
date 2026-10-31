@@ -809,8 +809,13 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
       return { status: 404, body: { error: `未找到资源根: ${rootId}` } };
     }
     const { entries, warnings, scanErrors, cachedAll, pathProblem, skipped } = scanRootEntries(cfg);
-    assembleEntryStates(cfg, entries);
-    return buildCatalogResponse({ cfg, t0, entries, warnings, scanErrors, cachedAll, pathProblem, skipped });
+    const { sawStale } = assembleEntryStates(cfg, entries);
+    // §八 触发来源（三选一，别混成一条）：这一根里只要有一条是"旧结论作废"排进来的，
+    //   就说明这轮探测是**能力变化**引起的（fingerprint）；否则是清单重建引起的（catalog）。
+    const probeTrigger = sawStale ? 'fingerprint' : 'catalog';
+    return buildCatalogResponse({
+      cfg, t0, entries, warnings, scanErrors, cachedAll, pathProblem, skipped, probeTrigger,
+    });
   }
 
   /**
@@ -835,7 +840,13 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
     //   插件升级后旧的"不支持"结论永远挂着（这正是本次要修的断链）。
     const providerFp = providerFingerprintOf(providers);
     const byFileKind = buildFileKindIndex(providers);
-    for (const e of entries) applyEntryStateTo(cfg, e, { providers, providerFp, byFileKind });
+    // sawStale = 这一根里是否有条目因"旧结论作废"而进了待探测队列（决定 §八 的触发来源）
+    let sawStale = false;
+    for (const e of entries) {
+      const computed = applyEntryStateTo(cfg, e, { providers, providerFp, byFileKind });
+      if (computed && computed.pendingProbe) sawStale = true;
+    }
+    return { sawStale };
   }
 
   /**
@@ -879,6 +890,8 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
     e.support = computed.support;
     e.loadResult = computed.loadResult;
     applyOwnerFallback(e, common.providers);
+    // 回报给调用方：assembleEntryStates 要靠 pendingProbe 判断"这轮探测是不是能力变化引起的"
+    return computed;
   }
 
   /**
@@ -956,10 +969,11 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
    * 第③段·包装响应：根级诊断（rootWarning / rootIssues / capabilityNotes）+ 耗时记账 + 返回体。
    * 只做"把前两段的产物翻译成 HTTP 响应"，不再碰条目本身（想知道字段怎么来的看第②段）。
    * @param {{cfg: object, t0: number, entries: Array, warnings: string[],
-   *          scanErrors: Error[], cachedAll: boolean, pathProblem: string|null, skipped?: number}} p
+   *          scanErrors: Error[], cachedAll: boolean, pathProblem: string|null, skipped?: number,
+   *          probeTrigger?: 'catalog'|'fingerprint'|'manual'}} p
    * @returns {{status: number, body: object}}
    */
-  function buildCatalogResponse({ cfg, t0, entries, warnings, scanErrors, cachedAll, pathProblem, skipped }) {
+  function buildCatalogResponse({ cfg, t0, entries, warnings, scanErrors, cachedAll, pathProblem, skipped, probeTrigger }) {
     const rootWarning = computeRootWarning({ cfg, pathProblem, scanErrors, entries });
 
     // 记账（只此一处写）：耗时口径 = 本次 listCatalog 从入口到末尾的墙钟时间，
@@ -976,10 +990,16 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
 
     const { rootIssues, capabilityNotes } = splitWarnings(warnings, rootWarning, cfg.id);
 
+    // "还剩多少容器没探" —— **纯附加字段**，只读快照，不触发任何扫描/解析。
+    //   为什么要它：将来面板要显示探测进度时，不必再改服务端（前端拿这一次请求就够了）。
+    //   口径：此刻**排队中**的条目数；不含本轮即将被取走的那一批（触发在下面，取值在之前）。
+    const probeRemaining = probeQueue.size;
+
     // 喊一声"这一根扫完了"（§八 触发判据 a）：同步路径只负责触发，不等待、不读包。
     //   没有待探测项时探测器内部会立刻返回，等于零开销（S10）。
+    //   触发来源一起传下去：catalog（清单重建）/ fingerprint（旧结论作废）/ manual（手动 POST）
     if (probeNotifier) {
-      try { probeNotifier(cfg.id); } catch { /* 触发失败不影响列表本身 */ }
+      try { probeNotifier(cfg.id, probeTrigger || 'catalog'); } catch { /* 触发失败不影响列表本身 */ }
     }
 
     return {
@@ -995,6 +1015,8 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
         rootWarning,
         rootIssues,
         capabilityNotes,
+        // 后台探测进度（本次不做 UI，数据先就绪）：剩多少条待探。旧字段一个没动。
+        probeRemaining,
         ...(skipped ? { skipped } : {}),
         ...(warnings.length ? { warnings } : {}),
       },

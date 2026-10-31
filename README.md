@@ -163,6 +163,7 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.2.2 | 2026-10-31 | 后台探测可观测：启动/完成/暂停三条日志与触发来源（catalog/fingerprint/manual）可辨；`GET /api/entries/probe` 新增 lastTrigger/lastBatchMs/lastQueueAfter，catalog 响应附加 `probeRemaining`（只增不改）；前端 `state.probe` 数据面就绪（UI 未实现） |
 | 0.2.1 | 2026-10-31 | 条目状态落地：`entry-states` 存储与 `/api/entries/result` 写读一体、catalog 三字段（display/support/loadResult）收口、前端只渲染字段并删除 localStorage 失败缓存；新增后台形态探测（事件驱动、按根串行限速、`POST /api/entries/probe`）与 S6 指纹接线三处补齐；`listCatalog` 拆分为 12 个函数（原 123 行） |
 | 0.2.0 | 2026-10-31 | 条目状态契约定稿：展示归属/可装载预判/最近装载结果三项收归服务端唯一权威，内置 spine/live2d 装载器与插件同表登记（builtin-*）；ETC2_RGBA1 纹理解码补齐、美术依赖包可读判定、徽标配色改由插件自声明；名册加载计时与 `/api/catalog/stats` |
 | 0.1.0 | 2026-10-28 | 首个可用版本：三级名册、Spine / Live2D 双渲染面、UnityFS 资源包解包、插件能力过滤面板 |

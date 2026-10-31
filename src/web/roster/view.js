@@ -52,6 +52,19 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     keyword: '',
     selected: null,
     activeGame: null,
+    /**
+     * 后台形态探测的进度快照（**本次不做 UI，数据先就绪**）。
+     *
+     * 将来要加面板/进度条时，**直接读这里，不用再改服务端**：
+     *   state.probe = { remaining, at, rootId }
+     *     remaining 剩余待探条目数（服务端 probeRemaining 原值；null = 老服务端没这字段）
+     *     at        这次取到它的时间戳（性能无关，只用于判断"多久没更新了"）
+     *     rootId    最近一次刷新它的资源根（每列一个根都会刷新，值是**全局**队列深度）
+     * 读法示例：`window.__WEB__.state.roster.state.probe.remaining`
+     * 更细的计数（runs/probed/unsupported/unknown/skipped/lastBatchMs/lastTrigger）
+     *   走 `GET /api/entries/probe`，那才是权威，这里只是"最近一次 catalog 响应顺带回来的"。
+     */
+    probe: { remaining: null, at: null, rootId: null },
   };
   // 定位控制器：把"选中后滚到可见"的策略外置（见 roster/reveal.js）
   /**
@@ -146,6 +159,28 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
 
   // ------------------------------------------------------------ 数据加载
 
+  /** 上一次写进调试日志的"剩余待探"数（只用来去重：数值没变就不再记一行） */
+  let lastLoggedProbeRemaining = null;
+
+  /**
+   * 记录后台形态探测的进度：写进 state.probe（**给将来 UI 读**），并在数值变化时记一行日志。
+   *
+   * 为什么只在变化时记：一次启动会按根拉九次 catalog，每根都记一行会把调试面板刷满同类信息；
+   *   真正有用的是"剩余数发生变化"这个事件。
+   * 为什么不做 UI：本轮只要求可见性 + 数据面预留，展示位留待后续。
+   * @param {string} rootId 本次刷新它的根（值是全局队列深度，与根无关，只作溯源）
+   * @param {number|null} remaining 服务端 probeRemaining 原值；null = 老服务端没该字段
+   */
+  function noteProbeProgress(rootId, remaining) {
+    if (!Number.isFinite(remaining)) return;      // 没这个字段 ⇒ 不更新、不记录（不把未知当 0）
+    state.probe = { remaining: Number(remaining), at: Date.now(), rootId };
+    if (remaining === lastLoggedProbeRemaining) return;
+    lastLoggedProbeRemaining = remaining;
+    stageLog('info', `后台形态探测：还剩 ${remaining} 个容器待探（UI 未实现，数据已挂 state.probe）`, {
+      root: rootId, remaining,
+    });
+  }
+
   /**
    * 确保某个资源根的模型已加载。
    * 并发要点：正在加载中的根必须**可等待**（entry.promise），否则后到的调用方会拿到空数据
@@ -171,7 +206,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
           const table = await loadRootNames(root.id);
           if (table) mergeNameTable(nameIndex, table);
         }
-        const { models, source, serverSource } = await loadRootModels(root);
+        const { models, source, serverSource, probeRemaining } = await loadRootModels(root);
         for (const m of models) {
         // 名册持有的就是这个对象本身（buildChars 的 variants[].model 也是它），
         //   所以"写回三字段"必须落在这里 —— 只改 DOM 的话，下一次 render 读的还是旧对象，
@@ -181,6 +216,8 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
         entry.status = 'ready';
         entry.models = models;
         entry.source = source;
+        // 探测进度：顺带记进 state.probe 与调试日志（只在数值变化时记一行，避免刷屏）
+        noteProbeProgress(root.id, probeRemaining);
         recordRootLoad(root.id, rootT0, models.length, serverSource || 'built', null);
       } catch (err) {
         entry.status = 'error';
