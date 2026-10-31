@@ -509,7 +509,11 @@ function rebuildPanelFor(renderer) {
   const slotMerged = mergeSlotControls(merged.groups, slotEntries, {
     buildProps: (entry) => slotPropsFor(entry),
     onReject: (rej) => {
-      stageLog('warn', `插件插槽控件被拒（${rej.pluginId || '未知插件'} · ${rej.slot || '未知插槽'}）：${rej.reason}`, { source: 'plugin-slots' });
+      // title-collision 是**提示**不是拒绝（设计 §七·一 明确允许与内置组同名）
+      const advisory = rej.code === 'title-collision';
+      stageLog(advisory ? 'info' : 'warn',
+        `插件插槽${advisory ? '提示' : '控件被拒'}（${rej.pluginId || '未知插件'} · ${rej.slot || '未知插槽'}）：${rej.reason}`,
+        { source: 'plugin-slots', code: rej.code || null });
     },
   });
   // 插件控件登记进 SPEC：这样它们是走既有的 loadAll/set/flush 通道，不新开存储路径

@@ -217,6 +217,56 @@ return JSON.stringify({ total: results.length, failed: results.filter((r) => !r.
 })();
 
 
+/**
+ * 取出"实际用于渲染的控件声明"（合并结果），供孤儿能力键检查使用。
+ *
+ * 为什么在测试里重算：面板没把合并结果暴露出来（view.js 的 mountPanel 只回计数与 defaults），
+ *   而这条检查必须看见**插件控件**。重算用的是与装配期同一批公开函数、同一批输入
+ *   （host.controlSections / host.slotSections / registeredEffectIds），
+ *   并用"DOM 的控件 id 必须都能在合并结果里找到"做漂移护栏。
+ * @returns {Promise<{groups: Array, slotCapabilityKeys: string[]}>}
+ */
+async function readMergedGroups() {
+  const mod = await import('/panel/schema.js');
+  const web = window.__WEB__ || {};
+  const host = (web.state && web.state.pluginHost) || null;
+  const sections = host && typeof host.controlSections === 'function' ? host.controlSections() : [];
+  const slotEntries = host && typeof host.slotSections === 'function' ? host.slotSections() : [];
+  const effects = host && typeof host.registeredEffectIds === 'function' ? host.registeredEffectIds() : [];
+  let groups = mod.PANEL_GROUPS || [];
+  if (sections.length) {
+    groups = mod.mergePluginControls(groups, sections, { registeredEffects: effects }).groups;
+  }
+  let slotCapabilityKeys = [];
+  if (slotEntries.length && typeof mod.mergeSlotControls === 'function') {
+    const r = mod.mergeSlotControls(groups, slotEntries, { buildProps: () => ({}) });
+    groups = r.groups;
+    slotCapabilityKeys = Array.isArray(r.capabilityKeys) ? r.capabilityKeys.slice() : [];
+  }
+  return { groups, slotCapabilityKeys };
+}
+
+/**
+ * 孤儿能力键判据（纯函数，便于自检）：
+ *   控件带 capabilityKey、该键不在 declared、且**不是 disabled**（契约 §9.3 要求"已声明未注册"的控件
+ *   置灰保留，那是合法状态而不是孤儿）。
+ * @param {Array<{controls?: Array}>} groups 合并后的分组
+ * @param {Set<string>} declared 当前生效的能力键集合
+ * @returns {string[]} `id:capabilityKey` 列表（空 = 无孤儿）
+ */
+function findOrphanKeys(groups, declared) {
+  const out = [];
+  for (const g of groups || []) {
+    for (const c of g.controls || []) {
+      if (!c || !c.id) continue;
+      if (c.disabled === true) continue;
+      if (typeof c.capabilityKey !== 'string' || !c.capabilityKey) continue;
+      if (!declared.has(c.capabilityKey)) out.push(`${c.id}:${c.capabilityKey}`);
+    }
+  }
+  return out;
+}
+
 /** 枚举 + 控件分类门禁（静态检查） */
 async function runControlInventory(C) {
   const { qa, rec } = C;
@@ -440,9 +490,19 @@ async function runDisabledStyle(C, I) {
 /** 分组标题与声明口径对照 */
 async function runGroupTitles(C, J) {
   const { titles, expectTitles } = J;
-  const { rec } = C;
-  rec('分组标题对照', '#right-panel .acc-trigger', '枚举', '与声明口径 9 组逐字一致',
-    titles.join(' / '), JSON.stringify(titles) === JSON.stringify(expectTitles));
+  const { rec, qa } = C;
+  // S3 起允许插件新建分组 ⇒ 断言改为「内置 9 组必须都在且顺序一致 + 允许尾部额外组」。
+  //   仍然严格的部分：内置组的数量/文字/顺序一位不许错（否则内置表被人改了也发现不了）；
+  //   额外组必须带 plugin. 前缀（data-group-id），这是设计 §七·一 对插件分组的唯一硬约束。
+  const ids = qa('#right-panel .acc').map((s) => s.dataset.groupId || s.dataset.group || '');
+  const builtinOk = expectTitles.every((t, i) => titles[i] === t);
+  const extras = titles.slice(expectTitles.length);
+  const extraIds = ids.slice(expectTitles.length);
+  const extrasOk = extras.every((_, i) => String(extraIds[i] || '').startsWith('plugin.'));
+  rec('分组标题对照', '#right-panel .acc-trigger', '枚举',
+    `内置 ${expectTitles.length} 组逐字一致（顺序不变）+ 额外组必须带 plugin. 前缀`,
+    `${titles.join(' / ')}（额外 ${extras.length} 组：${extraIds.join(',') || '无'}）`,
+    titles.length >= expectTitles.length && builtinOk && extrasOk);
 }
 
 

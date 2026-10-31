@@ -26,6 +26,8 @@ function makeReg(opts = {}) {
     declaredByPlugin: opts.declaredByPlugin || {},
     onReject: (r) => rejects.push(r),
     openStage: opts.openStage || 'S2',
+    // 内置分组 id：注册表用它区分"引用内置组"与"插件新建组"（设计 §七·一）
+    groupIds: opts.groupIds || ['motion', 'skin', 'play', 'filter', 'pma', 'runtime', 'theme', 'debug', 'settings'],
     isInLoadWindow: opts.isInLoadWindow || (() => true),
   });
   return { reg, rejects };
@@ -93,6 +95,27 @@ test('分组插槽：id 不强制前缀，但同插槽内不许重名', () => {
   assert.equal(reg.register('p1', 'panel.group.settings', { id: 'plugin.p1.sharpness' }), null);
   assert.equal(rejects.at(-1).code, 'duplicate-id');
   assert.equal(reg.stats().total, 2, '两条不同 id 都应登记成功，重复的那条被拒');
+});
+
+test('分组 id 规则：内置组放行；插件新建组必须带 plugin.<pluginId>. 前缀', () => {
+  const { reg, rejects } = makeReg({
+    openStage: 'S2',
+    declaredByPlugin: {
+      // 注意：冒用他人前缀那条也要先声明，否则会先命中 undeclared-slot（顺序：声明早于形状判断）
+      p1: ['panel.group.settings', 'panel.group.plugin.p1.extra', 'panel.group.notprefixed', 'panel.group.plugin.p2.extra'],
+    },
+  });
+  // ① 引用内置组：放行
+  assert.equal(typeof reg.register('p1', 'panel.group.settings', { id: 'a1' }), 'function');
+  // ② 插件自己的新分组：放行
+  assert.equal(typeof reg.register('p1', 'panel.group.plugin.p1.extra', { id: 'a2' }), 'function');
+  // ③ 无前缀的新分组：拒绝 + 可读原因
+  assert.equal(reg.register('p1', 'panel.group.notprefixed', { id: 'a3' }), null);
+  assert.equal(rejects.at(-1).code, 'bad-group-id');
+  assert.match(rejects.at(-1).why, /必须写成 plugin\.<pluginId>\.<name>/);
+  // ④ 冒用别的插件前缀：也算不合规（前缀必须是自己）
+  assert.equal(reg.register('p1', 'panel.group.plugin.p2.extra', { id: 'a4' }), null);
+  assert.equal(rejects.at(-1).code, 'bad-group-id');
 });
 
 test('disposer 幂等 + disposeAll 后 stats 归零', () => {

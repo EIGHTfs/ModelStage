@@ -61,6 +61,11 @@ export function createSlotRegistry(opts = {}) {
   const onReject = typeof opts.onReject === 'function' ? opts.onReject : () => {};
   const openStage = String(opts.openStage || 'S1');
   const isInLoadWindow = typeof opts.isInLoadWindow === 'function' ? opts.isInLoadWindow : () => true;
+  /**
+   * 已知的内置分组 id 集合（由装配层传入 PANEL_GROUPS 的 id）。
+   * 用途：区分"引用内置组"与"新建插件组"——前者直接放行，后者必须带 plugin.<pluginId>. 前缀。
+   */
+  const groupIds = opts.groupIds instanceof Set ? opts.groupIds : new Set(opts.groupIds || []);
 
   /** 目录项 + 编译后的匹配器（构造时算一次，注册期不重复编译） */
   const entries = catalog.map((e) => ({ ...e, matcher: compilePattern(e && e.name) }));
@@ -161,6 +166,19 @@ export function createSlotRegistry(opts = {}) {
    * @returns {{ok: true, id: string, order: number, label: string} | {ok: false}}
    */
   function checkSpec(pid, slotName, spec) {
+    // 分组 id 规则（设计 §七·一）：内置组直接用 id；插件新建分组必须带 plugin.<pluginId>. 前缀。
+    //   放在注册期而不是渲染期：渲染期被拒时控件"登记成功却不显示"，插件作者会以为系统坏了。
+    const gm = /^panel\.group\.(.+)$/.exec(slotName);
+    if (gm) {
+      const gid = gm[1];
+      const isKnown = groupIds.has(gid);
+      const isPluginOwned = gid.startsWith(`plugin.${pid}.`) && gid.length > `plugin.${pid}.`.length;
+      if (!isKnown && !isPluginOwned) {
+        reject(pid, slotName, 'bad-group-id',
+          `分组「${gid}」不存在；新建分组的 id 必须写成 plugin.<pluginId>.<name>（当前插件 ${pid}，应形如 plugin.${pid}.<name>）`);
+        return { ok: false };
+      }
+    }
     const id = String((spec && spec.id) || '').trim();
     if (!id) { reject(pid, slotName, 'missing-id', 'spec.id 必填（同插槽内唯一，用于回收与冲突提示）'); return { ok: false }; }
     // 前缀强制只适用于**键值插槽**（设计 §8.2：panel.control.<key> 的 key 必须写成 plugin.<pluginId>.<key>）。

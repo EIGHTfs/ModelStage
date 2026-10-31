@@ -329,37 +329,51 @@ export const PLUGIN_CONTROL_KINDS = ['segmented', 'toggle', 'button'];
  * @param {Set<string>} ctx.takenIds 已被占用的控件 id（内置 + 先前插件）
  * @returns {{ok:boolean, reason?:string, title?:string, controls?:Array, rejects?:Array}}
  */
-export function normalizePluginSection(section, ctx) {
-  const group = String((section && section.group) || '').trim();
-  const controls = Array.isArray(section && section.controls) ? section.controls : null;
-  if (!group || !controls || !controls.length) {
-    return { ok: false, reason: '节缺少 group 或 controls' };
-  }
-  if (!ctx.groupTitles.has(group)) {
-    return { ok: false, reason: `分组「${group}」不存在（插件不许新建分组）` };
-  }
-  const out = [];
-  const rejects = [];
-  for (const raw of controls) {
+/**
+ * 把"插件写的分组名"解析成内置分组 id。
+ *
+ * 分组存在性判断已从 **title 集合**改为 **groupId**（设计 §七·一 的前置：分组有稳定 id）。
+ * 老接口（registerControls）传的是标题（「设置」），所以这里 id 优先、title 兜底 ——
+ *   两种写法都能命中同一个内置组；兼容层会在后续任务里单独收口成只认 id。
+ * @param {string} group 插件写的分组名
+ * @param {{groupIds?: Set<string>, groupTitles?: Set<string>, titleToId?: Map<string,string>}} ctx
+ * @returns {string|null} 命中返回分组 id；不命中返回 null（由调用方给出可读原因）
+ */
+function resolveGroupId(group, ctx) {
+  if (ctx && ctx.groupIds && ctx.groupIds.has(group)) return group;
+  if (ctx && ctx.groupTitles && ctx.groupTitles.has(group)) return ctx.titleToId.get(group) || null;
+  return null;
+}
+
+/**
+ * 校准单个插件控件声明（老接口 registerControls 的每一节都走这里）。
+ * 抽出来的理由：normalizePluginSection 只管"整节"的成败，逐控件规则放一起读着才不累。
+ * @param {object} raw 插件给的控件声明
+ * @param {{takenIds:Set<string>, registeredEffects:Set<string>}} ctx
+ * @param {Array} rejects 逐控件拒绝清单（就地追加）
+ * @param {{pluginId?: string}} section 所属节
+ * @returns {object|null} 归一后的控件；不合规返回 null
+ */
+function normalizePluginControl(raw, ctx, rejects, section) {
     const id = String((raw && raw.id) || '').trim();
     const kind = String((raw && raw.kind) || '').trim();
-    if (!id) { rejects.push({ id: '', reason: '控件缺 id' }); continue; }
+    if (!id) { rejects.push({ id: '', reason: '控件缺 id' }); return null; }
     if (!PLUGIN_CONTROL_KINDS.includes(kind)) {
       rejects.push({ id, reason: `kind「${kind}」不在白名单（${PLUGIN_CONTROL_KINDS.join(' / ')}）` });
-      continue;
+      return null;
     }
-    if (ctx.takenIds.has(id)) { rejects.push({ id, reason: '控件 id 与已存在控件重名' }); continue; }
+    if (ctx.takenIds.has(id)) { rejects.push({ id, reason: '控件 id 与已存在控件重名' }); return null; }
     if (kind === 'segmented' && !(Array.isArray(raw.options) && raw.options.length)) {
       rejects.push({ id, reason: 'segmented 必须给 options' });
-      continue;
+      return null;
     }
     if (kind === 'button' && !String(raw.label || '').trim()) {
       rejects.push({ id, reason: 'button 必须给 label' });
-      continue;
+      return null;
     }
     const registered = ctx.registeredEffects.has(id);
     const optionTexts = kind === 'segmented' ? raw.options.map(String) : null;
-    out.push({
+  return ({
       // 归一成与内置控件同形的声明：渲染层完全按既有 kind 分派，不认"插件控件"这个概念
       id,
       kind,
@@ -384,8 +398,28 @@ export function normalizePluginSection(section, ctx) {
       //   漏了这一步控件会被 applyCapabilities 直接丢掉（消失而不是置灰）。
       ...(registered ? {} : { disabled: true, disabledReason: `效果「${id}」未注册成功（插件脚本可能加载失败或被禁用）` }),
       pluginId: String(section.pluginId || ''),
-    });
-    ctx.takenIds.add(id);   // 同一份 ctx 在多个节之间复用 ⇒ 插件之间也不能抢同一个 id
+  });
+}
+
+export function normalizePluginSection(section, ctx) {
+  const group = String((section && section.group) || '').trim();
+  const controls = Array.isArray(section && section.controls) ? section.controls : null;
+  if (!group || !controls || !controls.length) {
+    return { ok: false, reason: '节缺少 group 或 controls' };
+  }
+  const resolved = resolveGroupId(group, ctx);
+  if (!resolved) {
+    return {
+      ok: false,
+      reason: `分组「${group}」不存在：老接口（registerControls）只能往**既有分组**加控件；`
+        + '新建分组请改用 slots.register("panel.group.plugin.<pluginId>.<name>", …)',
+    };
+  }
+  const out = [];
+  const rejects = [];
+  for (const raw of controls) {
+    const ctl = normalizePluginControl(raw, ctx, rejects, section);
+    if (ctl) { out.push(ctl); ctx.takenIds.add(String(ctl.id)); }
   }
   if (!out.length) {
     return { ok: false, reason: `节内 ${controls.length} 个控件全部不合规`, rejects };
@@ -414,12 +448,14 @@ export function mergePluginControls(baseGroups, sections, opts = {}) {
   if (!list.length) return { groups: base, added: 0, rejected: 0, rejectedControls: 0 };
 
   const groupTitles = new Set(base.map((g) => String(g.title || '')));
+  const groupIds = new Set(base.map((g) => String(g.id || '')));
+  const titleToId = new Map(base.map((g) => [String(g.title || ''), String(g.id || '')]));
   const registeredEffects = new Set((opts && opts.registeredEffects) || []);
   const takenIds = new Set();
   for (const g of base) {
     for (const c of (g && g.controls) || []) if (c && c.id) takenIds.add(String(c.id));
   }
-  const ctx = { groupTitles, registeredEffects, takenIds };
+  const ctx = { groupTitles, groupIds, titleToId, registeredEffects, takenIds };
 
   // 深拷贝分组与控件数组：只拷一层结构，控件对象本身按需替换，避免动到内置对象
   const groups = base.map((g) => ({ ...g, controls: (g.controls || []).slice() }));
@@ -585,7 +621,13 @@ export function mergeSlotControls(baseGroups, entries, opts = {}) {
   const taken = new Set();
   for (const g of groups) for (const c of g.controls || []) if (c && c.id) taken.add(String(c.id));
 
-  const acc = { added: 0, rejected: 0, capabilityKeys: [], byGroup: new Map() };
+  const acc = {
+    added: 0, rejected: 0, capabilityKeys: [], byGroup: new Map(),
+    // 内置组标题：新建分组允许与之同名，但要在诊断里提示（设计 §七·一）
+    builtinTitles: new Set(groups.map((g) => String(g.title || ''))),
+    // 新建的插件分组（最后统一追加到所有内置组之后）
+    newGroups: [], seq: 0,
+  };
   for (const entry of list) resolveSlotEntry(entry, taken, byId, acc, report, opts);
 
   for (const [groupId, bucket] of acc.byGroup) {
@@ -594,6 +636,9 @@ export function mergeSlotControls(baseGroups, entries, opts = {}) {
     bucket.sort((a, b) => a.order - b.order);          // order 小在前；相同 order 按注册先后（sort 稳定）
     group.controls = [...group.controls, ...bucket.map((b) => b.ctl)];
   }
+  // 内置组 order 0~99 保持在原位；插件组缺省 1000，按 order 再按注册先后追加在最后
+  acc.newGroups.sort((a, b) => a.order - b.order || a.seq - b.seq);
+  for (const ng of acc.newGroups) groups.push(ng.group);
   return { groups, added: acc.added, rejected: acc.rejected, capabilityKeys: acc.capabilityKeys };
 }
 
@@ -614,10 +659,10 @@ function resolveSlotEntry(entry, taken, byId, acc, report, opts = {}) {
     return;
   }
   const groupId = m[1];
-  if (!byId.get(groupId)) {
-    acc.rejected += 1;
-    report({ pluginId: entry && entry.pluginId, slot: entry && entry.name, reason: `分组「${groupId}」不存在（插件新建分组属 S3）` });
-    return;
+  let group = byId.get(groupId);
+  if (!group) {
+    group = createPluginGroup(entry, groupId, byId, acc, report);
+    if (!group) return;
   }
   const id = String((entry && entry.id) || '');
   if (!id || taken.has(id)) {
@@ -649,6 +694,55 @@ function resolveSlotEntry(entry, taken, byId, acc, report, opts = {}) {
   const bucket = acc.byGroup.get(groupId) || [];
   bucket.push({ ctl, order: Number.isFinite(Number(entry.order)) ? Number(entry.order) : 1000 });
   acc.byGroup.set(groupId, bucket);
+}
+
+/**
+ * 插件新建分组（设计 §七·一）：id 必须带 `plugin.<pluginId>.` 前缀，标题由插件给。
+ *
+ * 规则与理由：
+ *   · 前缀强制 —— 两个插件撞同一个分组 id 时，光看 id 就能判归属；不要求前缀的话
+ *     "pluginA 建了 settings2、pluginB 也想建 settings2"只能靠注册顺序决定谁赢，排查时无从下手。
+ *   · 允许与内置组**同名**（title 相同、id 不同）—— 标题是给人看的，插件想叫「设置」不算错；
+ *     但要在诊断里提示一句，避免"我以为在改内置组"这种误会。
+ *   · 缺省 order 1000（内置组 0~99）⇒ 永远排在内置组之后；同 order 按注册先后。
+ * @returns {object|null} 建好的分组；被拒返回 null（原因已 report）
+ */
+function createPluginGroup(entry, groupId, byId, acc, report) {
+  const pid = String((entry && entry.pluginId) || '');
+  const prefix = `plugin.${pid}.`;
+  if (!pid || !groupId.startsWith(prefix) || groupId.length <= prefix.length) {
+    acc.rejected += 1;
+    report({
+      pluginId: pid || '未知插件', slot: entry && entry.name, code: 'bad-group-id',
+      reason: `分组「${groupId}」不存在；新建分组的 id 必须写成 plugin.<pluginId>.<name>`
+        + `（当前插件 ${pid || '未知'}，应形如 ${pid ? prefix + '<name>' : 'plugin.<pluginId>.<name>'}）`,
+    });
+    return null;
+  }
+  const spec = (entry && entry.spec) || {};
+  const title = String(spec.groupLabel || spec.title || groupId.slice(prefix.length));
+  if (acc.builtinTitles.has(title)) {
+    // 允许，但要留痕：这条提示是给排障与插件作者看的
+    report({
+      pluginId: pid, slot: entry && entry.name, code: 'title-collision',
+      reason: `新建分组「${groupId}」的标题「${title}」与内置组同名（允许；请确认你不是想往内置组加控件）`,
+    });
+  }
+  const group = {
+    id: groupId,
+    title,
+    pluginId: pid,
+    // 缺省收起：插件分组的内容用户未必关心，别一进来就把面板撑长
+    defaultOpen: !!spec.groupDefaultOpen,
+    controls: [],
+  };
+  byId.set(groupId, group);
+  acc.newGroups.push({
+    group,
+    order: Number.isFinite(Number(spec.groupOrder)) ? Number(spec.groupOrder) : 1000,
+    seq: acc.seq++,
+  });
+  return group;
 }
 
 /**
