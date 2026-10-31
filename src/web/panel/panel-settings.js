@@ -176,6 +176,71 @@ function pluginSettingsSnapshot(pluginId) {
  */
 const slotStoreKeyById = new Map();
 
+/**
+ * **反向表**：设置键 → 绑定它的控件 id 数组。
+ *
+ * 为什么需要：一个设置键可能被**多个控件**绑定（同一个值用两种形态展示），
+ *   也可能被程序化写入（另一个控件、setSetting、恢复预设）。
+ *   只维护 ctl→key 的话，"外部改了这个键"没有任何控件会重绘，界面停在旧值。
+ * 为什么是数组：不做一对一假设（实测夹具里就挂了两个控件）。
+ */
+const slotCtlIdsByKey = new Map();
+
+/** 本 tick 待重绘的控件 id（同一控件被 ctl id 与 key 两条路径同时命中时只重绘一次） */
+const repaintPending = new Set();
+let repaintScheduled = false;
+/** 重绘计数（验收可读：每个控件实际重绘了几次） */
+const repaintStats = { total: 0, byId: new Map() };
+
+/** 把重绘计数挂到 window，供验收/排障读取（不写 dataset，避免污染 outerHTML 快照） */
+function publishRepaintStats() {
+  try {
+    if (typeof window === 'undefined') return;
+    window.__PANEL_REPAINT__ = {
+      total: repaintStats.total,
+      byId: Object.fromEntries(repaintStats.byId),
+    };
+  } catch { /* 无 window 忽略 */ }
+}
+
+/**
+ * 安排一次控件重绘（**按 tick 合并**）。
+ *
+ * 去重方式：同一 microtask 内对同一个控件只重绘一次 —— 这样
+ *   "外部改设置键" 与 "控件自己的 id 也被写" 两条路径同时命中时不会闪两下、计数也是 1。
+ * @param {string} id 控件 id
+ */
+function scheduleControlRepaint(id) {
+  const key = String(id || '');
+  if (!key) return;
+  repaintPending.add(key);
+  if (repaintScheduled) return;
+  repaintScheduled = true;
+  const flush = () => {
+    repaintScheduled = false;
+    const ids = [...repaintPending];
+    repaintPending.clear();
+    for (const ctlId of ids) {
+      try {
+        const value = uiState.getValue(storeKeyOf(ctlId));
+        const row = typeof document !== 'undefined'
+          ? document.querySelector(`#right-panel [data-ctl="${ctlId}"]`) : null;
+        // 节点已经不在了（插件卸载后重建过面板）⇒ 跳过：
+        //   applier 注册在 uiState 里撤不掉，靠这条守卫让"已消失的控件"不产生悬空重绘与计数。
+        if (!row) continue;
+        // 开关按 aria-checked 回填，其余按"选中项"回填（renderControl 用静态表判 kind，插件控件不在表里）
+        if (row.querySelector('[role="switch"]')) state.panel.setChecked(ctlId, value === true);
+        else state.panel.setValue(ctlId, value);
+        repaintStats.total += 1;
+        repaintStats.byId.set(ctlId, (repaintStats.byId.get(ctlId) || 0) + 1);
+      } catch { /* 单个控件重绘失败不影响其它控件 */ }
+    }
+    publishRepaintStats();
+  };
+  if (typeof queueMicrotask === 'function') queueMicrotask(flush);
+  else setTimeout(flush, 0);
+}
+
 /** 控件 id → 存值键（没有映射就是它自己） */
 function storeKeyOf(id) {
   const k = String(id || '');
@@ -581,6 +646,16 @@ function registerSlotStorage(pluginControls) {
     const setting = String((ctl && ctl.setting) || '');
     if (id && setting && setting !== id) slotStoreKeyById.set(id, setting);
   }
+  // 反向表：设置键 → 绑定它的控件 id（一个键可能被多个控件绑定，所以是数组）
+  slotCtlIdsByKey.clear();
+  for (const ctl of pluginControls) {
+    const id = String((ctl && ctl.id) || '');
+    const setting = String((ctl && ctl.setting) || '');
+    if (!id || !setting || setting === id) continue;
+    const list = slotCtlIdsByKey.get(setting) || [];
+    list.push(id);
+    slotCtlIdsByKey.set(setting, list);
+  }
   const specItems = [...pluginControls];
   for (const ctl of pluginControls) {
     const setting = String((ctl && ctl.setting) || '');
@@ -593,10 +668,26 @@ function registerSlotStorage(pluginControls) {
       stageLog('warn', `插件控件未进入设置工厂：${s.id}（${s.reason}）`, { source: 'plugin-controls' });
     }
   }
-  uiState.registerAppliers(Object.fromEntries(pluginControls.map((c) => [String(c.id), {
-    apply: (v) => applyCore(String(c.id), v),
-    render: (v) => renderControl(String(c.id), v),
-  }])));
+  // applier 两类：
+  //   ① 按控件 id：老路径（外部写 control id）
+  //   ② 按**设置键**：外部写清单设置键时，把它绑定的控件全部重绘（含被多个控件共享的情况）
+  //   两条路径都走 scheduleControlRepaint ⇒ 同一 tick 内只重绘一次（不闪、计数也是 1）
+  const appliers = {};
+  for (const ctl of pluginControls) {
+    const id = String((ctl && ctl.id) || '');
+    if (!id) continue;
+    appliers[id] = {
+      apply: (v) => applyCore(id, v),
+      render: () => scheduleControlRepaint(id),
+    };
+  }
+  for (const [key, ids] of slotCtlIdsByKey) {
+    appliers[key] = {
+      apply: (v) => { for (const ctlId of ids) { try { applyCore(ctlId, v); } catch { /* 单个失败不影响其余 */ } } },
+      render: () => { for (const ctlId of ids) scheduleControlRepaint(ctlId); },
+    };
+  }
+  uiState.registerAppliers(appliers);
 }
 
 /**
