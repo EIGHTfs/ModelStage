@@ -84,15 +84,15 @@ test('同步约束：不在装载期 ⇒ not-in-load-window（原因写清"必�
   assert.match(rejects.at(-1).why, /脚本顶层同步调用/);
 });
 
-test('spec 形状：id 必须带 plugin.<pluginId>. 前缀，且同插槽内不许重名', () => {
+test('分组插槽：id 不强制前缀，但同插槽内不许重名', () => {
   const { reg, rejects } = makeReg({ openStage: 'S2', declaredByPlugin: { p1: [{ name: 'panel.group.settings', risk: 'append' }] } });
-  assert.equal(reg.register('p1', 'panel.group.settings', { id: 'sharpness' }), null);
-  assert.equal(rejects.at(-1).code, 'bad-id-prefix');
+  // 分组插槽不强制前缀（设计 §8.2 的前缀规则只针对键值插槽）
+  assert.equal(typeof reg.register('p1', 'panel.group.settings', { id: 'sharpness' }), 'function');
   const ok = reg.register('p1', 'panel.group.settings', { id: 'plugin.p1.sharpness', label: '清晰度', order: 100 });
   assert.equal(typeof ok, 'function', '合法注册应返回 disposer');
   assert.equal(reg.register('p1', 'panel.group.settings', { id: 'plugin.p1.sharpness' }), null);
   assert.equal(rejects.at(-1).code, 'duplicate-id');
-  assert.equal(reg.stats().total, 1);
+  assert.equal(reg.stats().total, 2, '两条不同 id 都应登记成功，重复的那条被拒');
 });
 
 test('disposer 幂等 + disposeAll 后 stats 归零', () => {
@@ -120,13 +120,16 @@ test('disposer 幂等 + disposeAll 后 stats 归零', () => {
   assert.equal(reg.stats().total, 0);
 });
 
-test('占位符匹配允许带点（panel.control.<key> 的 key 本身含点，设计 §8.2）', () => {
-  const { reg } = makeReg({
+test('键值插槽：spec.id 必须带 plugin.<pluginId>. 前缀（分组插槽不要求）', () => {
+  const { reg, rejects } = makeReg({
     openStage: 'S5',
     declaredByPlugin: { p1: ['panel.control.plugin.p1.sharpness'] },   // 字符串数组形状（服务端实际下发形状）
   });
-  const d = reg.register('p1', 'panel.control.plugin.p1.sharpness', { id: 'plugin.p1.sharpness' });
-  assert.equal(typeof d, 'function', 'key 含点也必须能匹配上目录里的 panel.control.<key>');
+  const bad = reg.register('p1', 'panel.control.plugin.p1.sharpness', { id: 'sharpness' });
+  assert.equal(bad, null);
+  assert.equal(rejects.at(-1).code, 'bad-id-prefix');
+  const ok = reg.register('p1', 'panel.control.plugin.p1.sharpness', { id: 'plugin.p1.sharpness' });
+  assert.equal(typeof ok, 'function', 'key 含点也必须能匹配上目录里的 panel.control.<key>');
   assert.equal(reg.stats().total, 1);
 });
 

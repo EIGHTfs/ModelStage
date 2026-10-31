@@ -163,9 +163,13 @@ export function createSlotRegistry(opts = {}) {
   function checkSpec(pid, slotName, spec) {
     const id = String((spec && spec.id) || '').trim();
     if (!id) { reject(pid, slotName, 'missing-id', 'spec.id 必填（同插槽内唯一，用于回收与冲突提示）'); return { ok: false }; }
+    // 前缀强制只适用于**键值插槽**（设计 §8.2：panel.control.<key> 的 key 必须写成 plugin.<pluginId>.<key>）。
+    //   分组插槽（panel.group.*）里的控件 id 只需全局唯一 —— 它的归属已经由 pluginId 记录，
+    //   强行加前缀会把插件自己习惯的命名一脚踢开（验收夹具 zzfixture.amount 就是这么被误拒的）。
+    const isKeyed = /^panel\.control\./.test(slotName);
     const prefix = `plugin.${pid}.`;
-    if (!id.startsWith(prefix)) {
-      reject(pid, slotName, 'bad-id-prefix', `spec.id「${id}」必须带插件前缀 ${prefix}（设计 §8.2）`);
+    if (isKeyed && !id.startsWith(prefix)) {
+      reject(pid, slotName, 'bad-id-prefix', `键值插槽的 spec.id「${id}」必须带插件前缀 ${prefix}（设计 §8.2）`);
       return { ok: false };
     }
     if (listOf(pid).some((r) => r.name === slotName && r.id === id)) {
@@ -257,5 +261,18 @@ export function createSlotRegistry(opts = {}) {
     };
   }
 
-  return { register, disposeAll, stats };
+  /**
+   * 供**渲染层**读取的登记明细（含 spec，能拿到 render 函数）。
+   *
+   * 与 stats() 的区别：stats() 是给测试/__SLOT_STATS__ 的可序列化快照（不含函数），
+   *   这里是装配期真正要拿去渲染的对象；两者共用一个真相（byPlugin），只是视图不同。
+   * @returns {Array<{pluginId:string,name:string,id:string,order:number,label:string,risk:string,spec:object}>}
+   */
+  function renderEntries() {
+    return [...byPlugin].flatMap(([pid, list]) => list.map((r) => ({
+      pluginId: pid, name: r.name, id: r.id, order: r.order, label: r.label, risk: r.risk, spec: r.spec || {},
+    })));
+  }
+
+  return { register, disposeAll, stats, renderEntries };
 }

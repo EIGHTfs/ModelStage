@@ -558,6 +558,137 @@ export function applyCapabilities(groups, capabilities, options = {}) {
 }
 
 /**
+ * 把插槽登记（`panel.group.<groupId>`）合进面板分组表 —— **纯函数，返回新数组**。
+ *
+ * 为什么在装配期（panel-settings.js 调用）而不是渲染期：
+ *   · 渲染层（view.js）只认"拿到什么画什么"，它不该知道"控件是插件来的"；
+ *   · 审批（拒绝/warn）、能力白名单并入、SPEC 登记都发生在装配期，聚合放这里才同源；
+ *   · 结果**绝不写回** `PANEL_GROUPS` 静态导出 —— 那份同时被 uiState SPEC 派生与浏览器测试的
+ *     控件分类门禁遍历，写回会让插件控件被当成"必须显式归类"的内置控件（误报孤儿能力键）。
+ *
+ * 排序：组内先内置（保持原序），插件控件按 order 升序追加在后（缺省 1000）。
+ * 冲突：同一组内 id 重名 ⇒ 后者被拒 + onReject 回报（不静默覆盖）。
+ *
+ * @param {Array} baseGroups 内置分组（或用别的聚合结果做底）
+ * @param {Array<{pluginId:string,name:string,id:string,order:number,label:string,spec:object}>} entries 插槽登记
+ * @param {{onReject?: (rej: object) => void}} [opts]
+ * @returns {{groups: Array, added: number, rejected: number, capabilityKeys: string[]}}
+ */
+export function mergeSlotControls(baseGroups, entries, opts = {}) {
+  const base = Array.isArray(baseGroups) ? baseGroups : [];
+  const list = Array.isArray(entries) ? entries : [];
+  const report = typeof (opts && opts.onReject === 'function') ? opts.onReject : () => {};
+  if (!list.length) return { groups: base, added: 0, rejected: 0, capabilityKeys: [] };
+
+  const groups = base.map((g) => ({ ...g, controls: (g.controls || []).slice() }));
+  const byId = new Map(groups.map((g) => [String(g.id || ''), g]));
+  const taken = new Set();
+  for (const g of groups) for (const c of g.controls || []) if (c && c.id) taken.add(String(c.id));
+
+  const acc = { added: 0, rejected: 0, capabilityKeys: [], byGroup: new Map() };
+  for (const entry of list) resolveSlotEntry(entry, taken, byId, acc, report);
+
+  for (const [groupId, bucket] of acc.byGroup) {
+    const group = byId.get(groupId);
+    if (!group) continue;
+    bucket.sort((a, b) => a.order - b.order);          // order 小在前；相同 order 按注册先后（sort 稳定）
+    group.controls = [...group.controls, ...bucket.map((b) => b.ctl)];
+  }
+  return { groups, added: acc.added, rejected: acc.rejected, capabilityKeys: acc.capabilityKeys };
+}
+
+/**
+ * 处理单条插槽登记：校验分组/重名/render 形状，合格就按组分桶（排序交给调用方）。
+ * 抽出来的理由：mergeSlotControls 主体要读得动，且"哪条为什么被拒"集中在这一处。
+ * @param {object} entry 插槽登记
+ * @param {Set<string>} taken 已被占用的控件 id（含内置与本轮已加的）
+ * @param {Map<string, object>} byId groupId → 分组
+ * @param {{added:number, rejected:number, capabilityKeys:string[], byGroup:Map}} acc 累加器
+ * @param {(rej: object) => void} report 拒绝回报
+ */
+function resolveSlotEntry(entry, taken, byId, acc, report) {
+  const m = /^panel\.group\.(.+)$/.exec(String((entry && entry.name) || ''));
+  if (!m) {
+    acc.rejected += 1;
+    report({ pluginId: entry && entry.pluginId, slot: entry && entry.name, reason: '该插槽类型暂不参与渲染（只有 panel.group.* 进面板）' });
+    return;
+  }
+  const groupId = m[1];
+  if (!byId.get(groupId)) {
+    acc.rejected += 1;
+    report({ pluginId: entry && entry.pluginId, slot: entry && entry.name, reason: `分组「${groupId}」不存在（插件新建分组属 S3）` });
+    return;
+  }
+  const id = String((entry && entry.id) || '');
+  if (!id || taken.has(id)) {
+    acc.rejected += 1;
+    report({ pluginId: entry && entry.pluginId, slot: entry && entry.name, id, reason: taken.has(id) ? `控件 id「${id}」与已有控件重名` : '控件缺 id' });
+    return;
+  }
+  const desc = slotSpecToControl(entry);
+  if (!desc) {
+    acc.rejected += 1;
+    report({ pluginId: entry && entry.pluginId, slot: entry && entry.name, id, reason: 'render() 没有返回可用的控件描述（kind 必须是已知类型）' });
+    return;
+  }
+  const ctl = {
+    ...desc,
+    id,
+    label: String((entry && entry.label) || id),
+    pluginId: String((entry && entry.pluginId) || ''),
+    // 能力键显式声明为该控件 id：装配期把 id 并进 capabilities.settings，渲染层据此认它
+    capabilityKey: id,
+  };
+  taken.add(id);
+  acc.capabilityKeys.push(id);
+  acc.added += 1;
+  const bucket = acc.byGroup.get(groupId) || [];
+  bucket.push({ ctl, order: Number.isFinite(Number(entry.order)) ? Number(entry.order) : 1000 });
+  acc.byGroup.set(groupId, bucket);
+}
+
+/**
+ * 插槽声明的 `render(props)` 结果 → 面板控件描述（view.js 已有的 kind）。
+ *
+ * 为什么在这里翻译：render() 是**插件侧**的形状（{kind:'segmented', options}），
+ *   而面板控件需要宿主口径（segmented 要 values、开关要 defaultOn）。
+ *   翻译集中在装配期一处，渲染层就不用认识"插件控件"这个概念。
+ * @param {{id:string,label:string,spec:object}} entry
+ * @returns {object|null}
+ */
+function slotSpecToControl(entry) {
+  const spec = (entry && entry.spec) || {};
+  if (typeof spec.render !== 'function') return null;
+  let out = null;
+  try {
+    // props 目前只给只读骨架（S4 补 geometry/activeSurface/document）；插件不得依赖其可变引用
+    out = spec.render({ settings: {}, document: null, geometry: null, activeSurface: null });
+  } catch {
+    return null;
+  }
+  if (!out || typeof out !== 'object') return null;
+  const kind = String(out.kind || '');
+  if (kind === 'segmented') {
+    const options = Array.isArray(out.options) ? out.options.map(String) : [];
+    if (!options.length) return null;
+    return { kind: 'segmented', options, values: options.slice(), defaultValue: options[0] };
+  }
+  if (kind === 'toggle' || kind === 'switch') return { kind: 'switch', defaultOn: !!out.value };
+  if (kind === 'slider') {
+    return { kind: 'slider', min: out.min, max: out.max, step: out.step, unit: out.unit, defaultValue: out.value };
+  }
+  if (kind === 'select') {
+    const options = Array.isArray(out.options) ? out.options.map(String) : [];
+    if (!options.length) return null;
+    return { kind: 'select', options, values: options.slice(), defaultValue: options[0] };
+  }
+  if (kind === 'button') {
+    return { kind: 'actions', actions: [{ text: String(out.label || entry.label || '执行'), value: String(entry.id) }] };
+  }
+  return null;
+}
+
+/**
  * 由控件 id 反查它需要的能力键与"该能力对应哪个设置键"。
  * 面板只按 capabilityKey 判定可用性，按 settingKey 下发值给渲染器（二者一般同名，
  *   例外是 debug 类：能力键是 debugDraw 的一项，没有 settingKey）。

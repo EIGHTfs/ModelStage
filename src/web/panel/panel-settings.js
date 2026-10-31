@@ -12,7 +12,7 @@ import { resetStage, trackElementStage } from '../infra/ready.js';
 import { rendererSupports, setRendererSetting } from '../app/renderer-setting.js';
 import * as uiState from '../app/ui-state.js';
 import { stageLog, stageStatus } from '../app/status.js';
-import { PANEL_GROUPS, applyCapabilities, mergePluginControls, selfCheck, settingKeyOf } from './schema.js';
+import { PANEL_GROUPS, applyCapabilities, mergePluginControls, mergeSlotControls, selfCheck, settingKeyOf } from './schema.js';
 import { activeChain } from '../engine/effect-chain.js';
 import { mountPanel } from './view.js';
 import { applyDebugLog, applyHangGuard, applyMemoryGuard, applyShowStatus, connectShellControls, runSettingsAction } from './shell-controls.js';
@@ -446,8 +446,17 @@ function rebuildPanelFor(renderer) {
       stageLog('warn', `插件控件被拒（${rej.pluginId || '未知插件'} · ${rej.group || '未知分组'}）：${rej.reason}${detail ? `（${detail}）` : ''}`, { source: 'plugin-controls' });
     },
   });
+  // ── 插槽登记 → 面板控件（S2）：与上面的"旧控件节"合并到同一份 groups 上 ──────────
+  //   为什么还要这一步：registerControls 是 S1 之前的旧通道；S2 起插件走 slots.register，
+  //   声明落在 slot-registry 里。两条通道都汇到装配期这一处，渲染层不区分来源。
+  const slotEntries = host && typeof host.slotSections === 'function' ? host.slotSections() : [];
+  const slotMerged = mergeSlotControls(merged.groups, slotEntries, {
+    onReject: (rej) => {
+      stageLog('warn', `插件插槽控件被拒（${rej.pluginId || '未知插件'} · ${rej.slot || '未知插槽'}）：${rej.reason}`, { source: 'plugin-slots' });
+    },
+  });
   // 插件控件登记进 SPEC：这样它们是走既有的 loadAll/set/flush 通道，不新开存储路径
-  const pluginControls = merged.groups.flatMap((g) => (g.controls || []).filter((c) => c && c.pluginId));
+  const pluginControls = slotMerged.groups.flatMap((g) => (g.controls || []).filter((c) => c && c.pluginId));
   // 填充效果元数据（按声明顺序）并把链下发一次：插件晚于首帧加载，不补这一次画面就不对
   PLUGIN_EFFECTS.clear();
   if (host && typeof host.effectDeclarations === 'function') {
@@ -483,12 +492,14 @@ function rebuildPanelFor(renderer) {
   const keepDisabled = new Set(pluginControls.filter((c) => c.disabled === true && c.id).map((c) => String(c.id)));
   PLUGIN_DISABLED_IDS.clear();
   for (const ctlId of keepDisabled) PLUGIN_DISABLED_IDS.add(ctlId);
-  const groups = applyCapabilities(merged.groups, withPluginCapabilities(renderer && renderer.capabilities, registeredEffects), {
+  // 白名单并入：注册成功的效果 id + 插槽控件的控件 id（能力键显式等于控件 id，见 mergeSlotControls）
+  const pluginCapabilityKeys = [...registeredEffects, ...slotMerged.capabilityKeys];
+  const groups = applyCapabilities(slotMerged.groups, withPluginCapabilities(renderer && renderer.capabilities, pluginCapabilityKeys), {
     onWarn: (message) => stageLog('warn', message, { source: 'panel-selfcheck' }),
     keepDisabled,
   });
-  document.documentElement.dataset.pluginControls = String(merged.added);
-  document.documentElement.dataset.pluginControlsRejected = String(merged.rejected + merged.rejectedControls);
+  document.documentElement.dataset.pluginControls = String(merged.added + slotMerged.added);
+  document.documentElement.dataset.pluginControlsRejected = String(merged.rejected + merged.rejectedControls + slotMerged.rejected);
   document.documentElement.dataset.panelGroups = String(groups.length);
   // 重建前记住用户手动展开/收起的组：mountPanel 会整块换 DOM，不记就回缺省（实测过的现状缺陷）
   snapshotExpandedGroups();        // 把"用户现在的选择"并入累积表（在换 DOM 之前）
@@ -526,9 +537,11 @@ function rebuildPanelFor(renderer) {
   //   正确口径 = 静态白名单里真正建出来的 + **插件控件**（插件控件 id 是裸 effect id，
   //   不带 ctl- 前缀、不在 WIRED_IDS 里，按契约 §9.2 由宿主负责接线）。
   const builtIds = [...document.querySelectorAll('#right-panel [data-ctl]')].map((n) => n.dataset.ctl);
-  const pluginHost = state.pluginHost;
-  const pluginCtlIds = (pluginHost && typeof pluginHost.controlSections === 'function' ? pluginHost.controlSections() : [])
-    .flatMap((section) => (section.controls || []).map((ctl) => ctl && ctl.id))
+  // 已接线的插件控件：必须与"合并进来的那份"同源。
+  //   以前这里只查 host.controlSections()（S1 之前的旧通道）⇒ S2 起插槽控件虽然渲染出来了，
+  //   却不在这份清单里，测试的「可点集合 === 已接线集合」立刻变红（插件控件本就不该免检）。
+  const pluginCtlIds = pluginControls
+    .map((ctl) => ctl && ctl.id)
     .filter((id) => id && builtIds.includes(id));
   state.panelWired = [...new Set([
     ...WIRED_IDS.filter((id) => builtIds.includes(id)),

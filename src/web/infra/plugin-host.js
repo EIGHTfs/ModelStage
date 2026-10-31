@@ -18,6 +18,16 @@
 import { getSharedVirtualFS } from './vfs.js';
 // 插槽注册表（DOM-free、可 node 直测）：只登记不渲染，S2 才接渲染
 import { createSlotRegistry } from './slot-registry.js';
+
+/**
+ * 前端认定的"当前阶段"——必须与服务端 `src/server/plugins/slot-catalog.mjs` 的 CURRENT_STAGE 同步。
+ *
+ * 为什么需要它：服务端只下发 slotCatalog（每条带 stage），不下发"当前阶段"本身；
+ *   前端要给出 slot-not-open 这个错误，就必须知道自己的阶段。
+ * ⚠️ 这是**两处表达**：改阶段时两边一起改。S3 起建议由服务端在 /api/plugins 里加一个 stage 字段，
+ *   前端改成读它、把这处常量删掉（已记进本轮遗留）。
+ */
+const CURRENT_SLOT_STAGE = 'S2';
 import * as memoryGuard from '../app/memory-guard.js';
 import { postJson, postStream, getJson, fetchWithRetry, mapLimit } from './api.js';
 // 资源包"形态"判据与文案：与 node 侧 /api/unpack 共用同一份（见 src/shared/bundle-shape.mjs 顶部说明）
@@ -180,8 +190,8 @@ export function createPluginHost(opts = {}) {
   function readSlotStage() {
     try {
       const raw = new URLSearchParams(location.search).get('slotStage') || '';
-      return /^S[1-9]$/i.test(raw.trim()) ? raw.trim().toUpperCase() : 'S1';
-    } catch { return 'S1'; }
+      return /^S[1-9]$/i.test(raw.trim()) ? raw.trim().toUpperCase() : CURRENT_SLOT_STAGE;
+    } catch { return CURRENT_SLOT_STAGE; }
   }
 
   /**
@@ -1656,6 +1666,11 @@ const MIME_BY_EXT = {
     unloadAll,
     /** 回收清单：每插件登记了哪些 effect、还剩多少控件/效果/提供者（验收读它） */
     effectsReport,
+    /**
+     * 插槽登记明细（含 spec.render）：装配期拿它把"插件声明的控件"合进面板。
+     * 返回副本，面板侧改动不会污染注册表。
+     */
+    slotSections: () => (slotRegistry ? slotRegistry.renderEntries() : []),
     providersFor,
     findProvider,
     fetchFile,

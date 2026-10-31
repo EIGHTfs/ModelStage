@@ -260,7 +260,11 @@ test('cgroup 不限额（max）/ 文件缺失 ⇒ 回落宿主口径，fail-open
     process.env.MODELSTAGE_CGROUP_MEMORY_MAX_PATH = maxPath;
     assert.equal(readCgroupAvailable(), null, '"max" = 不限额 ⇒ 不参与判据');
     const hostAvail = readMemAvailable();
-    assert.ok(hostAvail === null || hostAvail > 2147483648, '应当回落到宿主口径（>2GB）或拿不到（null）');
+    // 断言"回落到了宿主口径"，但**不能**写成"宿主可用 > 2GB"这种绝对阈值：
+    //   机器一忙（实测可用掉到 1862MB）它就假红，而代码完全正常。
+    //   正确判据只有两条：要么拿不到（null），要么是有效的非负字节数。
+    assert.ok(hostAvail === null || (Number.isFinite(hostAvail) && hostAvail > 0),
+      `应当回落到宿主口径（有效字节数或 null），实际 ${hostAvail}`);
 
     process.env.MODELSTAGE_CGROUP_MEMORY_MAX_PATH = path.join(dir, 'not-exist', 'memory.max');
     assert.equal(readCgroupAvailable(), null, '文件不存在 ⇒ null（回落，不抛）');
