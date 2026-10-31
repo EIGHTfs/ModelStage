@@ -1,0 +1,145 @@
+// test/slot-registry.test.mjs —— 插槽注册表的四类拒绝与顺序（设计 §4.2）
+//
+// 这一层是本阶段最容易写错的地方，所以**在 node 里直接测**（模块本身 DOM-free）：
+//   ① 四类拒绝码各自能命中
+//   ② 顺序固定：unknown-slot → slot-not-open → undeclared-slot → risk-mismatch
+//      （其中 slot-not-open 必须先于 undeclared-slot —— 否则"目录里有但没开放"会被误报成"没声明"）
+//   ③ 同步约束：不在装载期 ⇒ not-in-load-window
+//   ④ disposer 幂等 + disposeAll 后 stats 归零
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import { createSlotRegistry } from '../src/web/infra/slot-registry.js';
+
+/** 与服务端 /api/plugins 的 slotCatalog 同形的最小目录 */
+const CATALOG = [
+  { name: 'panel.brand', type: 'single', risk: 'replace', stage: 'S5' },
+  { name: 'panel.group.<groupId>', type: 'list', risk: 'append', stage: 'S2' },
+  { name: 'panel.control.<key>', type: 'keyed', risk: 'replace', stage: 'S5' },
+  { name: 'toolbar.actions', type: 'list', risk: 'append', stage: 'S3' },
+];
+
+function makeReg(opts = {}) {
+  const rejects = [];
+  const reg = createSlotRegistry({
+    catalog: CATALOG,
+    declaredByPlugin: opts.declaredByPlugin || {},
+    onReject: (r) => rejects.push(r),
+    openStage: opts.openStage || 'S2',
+    isInLoadWindow: opts.isInLoadWindow || (() => true),
+  });
+  return { reg, rejects };
+}
+
+test('unknown-slot：目录里没有这个名字', () => {
+  const { reg, rejects } = makeReg({ declaredByPlugin: { p1: [{ name: 'panel.nope', risk: 'append' }] } });
+  assert.equal(reg.register('p1', 'panel.nope', { id: 'plugin.p1.a' }), null);
+  assert.equal(rejects.at(-1).code, 'unknown-slot');
+  assert.match(rejects.at(-1).why, /不在插槽目录里/);
+  assert.equal(reg.stats().total, 0);
+});
+
+test('slot-not-open：目录里有，但阶段未到（S2 开放时 S5 的插槽仍拒）', () => {
+  const { reg, rejects } = makeReg({ openStage: 'S2', declaredByPlugin: { p1: [{ name: 'panel.brand', risk: 'replace' }] } });
+  assert.equal(reg.register('p1', 'panel.brand', { id: 'plugin.p1.brand' }), null);
+  assert.equal(rejects.at(-1).code, 'slot-not-open');
+  assert.equal(rejects.at(-1).catalogStage, 'S5');
+  assert.equal(rejects.at(-1).openStage, 'S2');
+});
+
+test('顺序：阶段未到时，即使插件没声明也先报 slot-not-open（不是 undeclared-slot）', () => {
+  const { reg, rejects } = makeReg({ openStage: 'S1', declaredByPlugin: { p1: [] } });   // S1：全部未开放
+  assert.equal(reg.register('p1', 'panel.group.settings', { id: 'plugin.p1.x' }), null);
+  assert.equal(rejects.at(-1).code, 'slot-not-open', '必须先命中阶段判断，而不是"没声明"');
+});
+
+test('undeclared-slot：阶段已开，但清单没声明', () => {
+  const { reg, rejects } = makeReg({ openStage: 'S2', declaredByPlugin: { p1: [{ name: 'panel.brand', risk: 'replace' }] } });
+  assert.equal(reg.register('p1', 'panel.group.settings', { id: 'plugin.p1.x' }), null);
+  assert.equal(rejects.at(-1).code, 'undeclared-slot');
+  assert.match(rejects.at(-1).why, /没有在 plugin\.json 的 slots 里声明/);
+});
+
+test('risk-mismatch：错误里必须同时带 catalogRisk 与 declaredRisk', () => {
+  const { reg, rejects } = makeReg({
+    openStage: 'S5',
+    declaredByPlugin: { p1: [{ name: 'panel.brand', risk: 'append' }] },   // 声明成 append，目录要求 replace
+  });
+  assert.equal(reg.register('p1', 'panel.brand', { id: 'plugin.p1.brand' }), null);
+  const r = rejects.at(-1);
+  assert.equal(r.code, 'risk-mismatch');
+  assert.equal(r.catalogRisk, 'replace');
+  assert.equal(r.declaredRisk, 'append');
+  assert.match(r.why, /replace/);
+});
+
+test('同步约束：不在装载期 ⇒ not-in-load-window（原因写清"必须在脚本顶层同步调用"）', () => {
+  const { reg, rejects } = makeReg({
+    openStage: 'S2',
+    isInLoadWindow: () => false,
+    declaredByPlugin: { p1: [{ name: 'panel.group.settings', risk: 'append' }] },
+  });
+  assert.equal(reg.register('p1', 'panel.group.settings', { id: 'plugin.p1.x' }), null);
+  assert.equal(rejects.at(-1).code, 'not-in-load-window');
+  assert.match(rejects.at(-1).why, /脚本顶层同步调用/);
+});
+
+test('spec 形状：id 必须带 plugin.<pluginId>. 前缀，且同插槽内不许重名', () => {
+  const { reg, rejects } = makeReg({ openStage: 'S2', declaredByPlugin: { p1: [{ name: 'panel.group.settings', risk: 'append' }] } });
+  assert.equal(reg.register('p1', 'panel.group.settings', { id: 'sharpness' }), null);
+  assert.equal(rejects.at(-1).code, 'bad-id-prefix');
+  const ok = reg.register('p1', 'panel.group.settings', { id: 'plugin.p1.sharpness', label: '清晰度', order: 100 });
+  assert.equal(typeof ok, 'function', '合法注册应返回 disposer');
+  assert.equal(reg.register('p1', 'panel.group.settings', { id: 'plugin.p1.sharpness' }), null);
+  assert.equal(rejects.at(-1).code, 'duplicate-id');
+  assert.equal(reg.stats().total, 1);
+});
+
+test('disposer 幂等 + disposeAll 后 stats 归零', () => {
+  const { reg } = makeReg({
+    openStage: 'S2',
+    declaredByPlugin: {
+      p1: [{ name: 'panel.group.settings', risk: 'append' }],
+      p2: [{ name: 'panel.group.settings', risk: 'append' }],
+    },
+  });
+  const d1 = reg.register('p1', 'panel.group.settings', { id: 'plugin.p1.a', order: 10 });
+  reg.register('p1', 'panel.group.settings', { id: 'plugin.p1.b', order: 20 });
+  reg.register('p2', 'panel.group.settings', { id: 'plugin.p2.c' });
+  assert.equal(reg.stats().total, 3);
+  assert.deepEqual(reg.stats().byPlugin, { p1: 2, p2: 1 });
+
+  d1();
+  d1();                               // 幂等：重复调用不能多删
+  assert.equal(reg.stats().total, 2);
+
+  assert.equal(reg.disposeAll('p1'), 1);     // p1 还剩 b
+  assert.equal(reg.stats().total, 1);
+  assert.deepEqual(reg.stats().byPlugin, { p2: 1 }, 'p2 不受影响');
+  assert.equal(reg.disposeAll('p2'), 1);
+  assert.equal(reg.stats().total, 0);
+});
+
+test('占位符匹配允许带点（panel.control.<key> 的 key 本身含点，设计 §8.2）', () => {
+  const { reg } = makeReg({
+    openStage: 'S5',
+    declaredByPlugin: { p1: ['panel.control.plugin.p1.sharpness'] },   // 字符串数组形状（服务端实际下发形状）
+  });
+  const d = reg.register('p1', 'panel.control.plugin.p1.sharpness', { id: 'plugin.p1.sharpness' });
+  assert.equal(typeof d, 'function', 'key 含点也必须能匹配上目录里的 panel.control.<key>');
+  assert.equal(reg.stats().total, 1);
+});
+
+test('stats 明细不含 spec 函数（可被序列化给测试/__SLOT_STATS__）', () => {
+  const { reg } = makeReg({ openStage: 'S2', declaredByPlugin: { p1: [{ name: 'panel.group.settings', risk: 'append' }] } });
+  reg.register('p1', 'panel.group.settings', {
+    id: 'plugin.p1.a',
+    render: () => ({ kind: 'toggle' }),
+    onAction: () => {},
+  });
+  const s = reg.stats();
+  assert.equal(s.total, 1);
+  assert.equal(s.entries[0].id, 'plugin.p1.a');
+  assert.equal(s.entries[0].name, 'panel.group.settings');
+  assert.equal(JSON.parse(JSON.stringify(s)).entries[0].id, 'plugin.p1.a', 'stats 必须可 JSON 序列化');
+});

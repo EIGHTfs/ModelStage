@@ -74,7 +74,9 @@ export function matchSlot(name) {
     const head = entry.name.slice(0, open);       // 如 'panel.group.'
     // 占位符吃"一段非空名字"，**允许带点**：设计 §8.2 要求 panel.control.<key> 的 key 写成
     //   `plugin.<pluginId>.<key>`（本身含两个点），若这里禁点，那条规范就永远匹配不上。
-    if (new RegExp(`^${escapeRe(head)}[^\\\\s]+$`).test(want)) return entry;
+    // 转义层级注意：模板串里写 `[^\\s]`，产出的正则才是"非空白"；写成 `[^\\\\s]` 会变成
+    //   "不是反斜杠且不是字母 s" —— 任何名字含 s 的插槽（settings / skin）都会被误判 unknown-slot。
+    if (new RegExp(`^${escapeRe(head)}[^\\s]+$`).test(want)) return entry;
   }
   return null;
 }

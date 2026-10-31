@@ -16,6 +16,8 @@
 //   ③ canHandle 由宿主调用、宿主兜异常：插件内部抛错一律当"不认这个文件"，不冒泡到调用方
 
 import { getSharedVirtualFS } from './vfs.js';
+// 插槽注册表（DOM-free、可 node 直测）：只登记不渲染，S2 才接渲染
+import { createSlotRegistry } from './slot-registry.js';
 import * as memoryGuard from '../app/memory-guard.js';
 import { postJson, postStream, getJson, fetchWithRetry, mapLimit } from './api.js';
 // 资源包"形态"判据与文案：与 node 侧 /api/unpack 共用同一份（见 src/shared/bundle-shape.mjs 顶部说明）
@@ -126,6 +128,16 @@ export function createPluginHost(opts = {}) {
   /** 最近一次装载完成的插件 id：窗口外注册时用它指出"大概是哪个插件的异步回调" */
   let lastLoadedPluginId = '';
 
+  /**
+   * 插槽注册表（装载时按 /api/plugins 的 slotCatalog 建）。
+   *
+   * 为什么在 doLoadAll 里建、而不是构造期建：目录与"每个插件声明了哪些插槽"都来自那一份响应；
+   *   构造期建只能用空目录，之后还得重建（重建会把已登记项丢掉）。
+   * 阶段口径 openStage='S1'：本阶段所有插槽都未开放 ⇒ 注册一律被 slot-not-open 拒，
+   *   这正是 S1 的语义（只搭基础设施，不动界面）。
+   */
+  let slotRegistry = null;
+
   /** 登记一个可回收 effect（同一插件按注册顺序追加） */
   function addEffect(pluginId, effect) {
     const id = String(pluginId || '');
@@ -135,6 +147,54 @@ export function createPluginHost(opts = {}) {
     pluginEffects.set(id, list);
     publishEffectStats();
     return true;
+  }
+
+  /**
+   * 当前"已开放阶段"：缺省 S1（本阶段所有插槽都未开放）；`?slotStage=S2` 可提前放开（自测用）。
+   * @returns {string}
+   */
+  /**
+   * 自测用：`?slotDeclare=<pluginId>:<slotName>[,<pluginId>:<slotName>…]` 额外注入"已声明"集合。
+   *
+   * 为什么需要：服务端 `CURRENT_STAGE='S1'` 会把所有插槽声明丢进 slotErrors（slots 保持空数组），
+   *   于是"声明过 ⇒ 能注册成功"这条链路在 S1 阶段**端到端不可达**。
+   *   这个开关只影响前端判定用的 declared 集合，不改服务端、不落盘，仅用于提前跑通成功分支。
+   * @returns {Record<string, string[]>}
+   */
+  function readSlotDeclare() {
+    const out = {};
+    try {
+      const raw = new URLSearchParams(location.search).get('slotDeclare') || '';
+      for (const pair of raw.split(',')) {
+        const i = pair.indexOf(':');
+        if (i <= 0) continue;
+        const pid = pair.slice(0, i).trim();
+        const name = pair.slice(i + 1).trim();
+        if (!pid || !name) continue;
+        (out[pid] = out[pid] || []).push(name);
+      }
+    } catch { /* 解析失败就当没注入 */ }
+    return out;
+  }
+
+  function readSlotStage() {
+    try {
+      const raw = new URLSearchParams(location.search).get('slotStage') || '';
+      return /^S[1-9]$/i.test(raw.trim()) ? raw.trim().toUpperCase() : 'S1';
+    } catch { return 'S1'; }
+  }
+
+  /**
+   * 把插槽统计挂到 window.__SLOT_STATS__（测试读它；**不动既有 dataset 字段**）。
+   * 为什么用 window 而不是 dataset：dataset 参与 outerHTML 快照比对（测试侧定案），
+   *   往里塞会变的统计会让"还原性"断言互相打架。
+   */
+  function publishSlotStats() {
+    try {
+      if (typeof window !== 'undefined' && window && typeof window === 'object') {
+        window.__SLOT_STATS__ = slotRegistry ? slotRegistry.stats() : null;
+      }
+    } catch { /* 无 window（node 测试）时忽略 */ }
   }
 
   /** 把 effect 总数写到 dataset（不新增 dataset 字段族，只加一个计数便于验收） */
@@ -336,6 +396,42 @@ export function createPluginHost(opts = {}) {
       say.info(`插件 ${pluginId} 提交控件节：分组「${group}」${controls.length} 个`);
       return true;
     },
+    /**
+     * 插槽注册（设计 §四）：**只登记、不渲染**（渲染在 S2 接）。
+     *
+     * 插件侧写法（经典脚本，必须在脚本顶层**同步**调用）：
+     *   const dispose = window.ModelStagePlugins.slots.register('panel.group.settings', {
+     *     id: 'plugin.<pluginId>.sharpness',  // 必填，必须带插件前缀（设计 §8.2）
+     *     order: 100,                          // 可选，列表插槽按它排序（小在前）
+     *     label: '清晰度',                      // 必填，诊断与冲突提示都用它
+     *     render(props) { return { kind: 'segmented', options: ['关', '轻', '强'] }; },
+     *     onAction(action, props) { … },
+     *   });
+     *
+     * 拒绝原因在 stats().rejects 里可读（unknown-slot / slot-not-open / undeclared-slot / risk-mismatch）。
+     * @param {string} name 插槽名（见 /api/plugins 的 slotCatalog）
+     * @param {object} spec { id, order?, label?, render?, onAction? }
+     * @returns {null | (() => void)} disposer（已登记进该插件的 effect 容器，卸载时自动回收）
+     */
+    slots: {
+      register(name, spec) {
+        if (!slotRegistry) {
+          say.warn('插槽注册失败：注册表尚未就绪（插件清单还没拿到，通常是页面刚启动）');
+          return null;
+        }
+        const dispose = slotRegistry.register(loadingPluginId, name, spec);
+        if (typeof dispose === 'function') {
+          // 挂进 S1-b1 的 effect 容器 ⇒ unloadPlugin 会连插槽登记一起回收
+          addEffect(loadingPluginId, { kind: 'slot', label: String(name), dispose });
+        }
+        publishSlotStats();
+        return dispose;
+      },
+      /** 只读快照（同时挂到 window.__SLOT_STATS__ 供测试断言） */
+      stats: () => (slotRegistry ? slotRegistry.stats() : {
+        openStage: 'S1', catalogSize: 0, total: 0, byPlugin: {}, entries: [], rejects: [],
+      }),
+    },
     /** 提示通道：插件不直接操作 DOM，走这里（同时派发事件给页面其它部分） */
     notify(kind, msg) {
       const level = kind === 'error' ? 'error' : kind === 'warn' ? 'warn' : 'info';
@@ -418,13 +514,17 @@ export function createPluginHost(opts = {}) {
       try { if (wk.worker) wk.worker.terminate(); } catch { /* 已终止 */ }
       workerPool.delete(id);
     }
+    // 插槽登记也要回收：disposer 虽已挂在 effect 容器里，这里按 pluginId 再兜一次
+    //   （历史数据/异常路径可能留下没登记 disposer 的项）
+    const slotsRemoved = slotRegistry ? slotRegistry.disposeAll(id) : 0;
+    publishSlotStats();
     loadState.delete(id);
     publishEffectStats();
     say.info(`插件 ${id} 已卸载：执行 ${disposed} 个 disposer${failures.length ? `（${failures.length} 个失败）` : ''}`
-      + `，清掉控件节 ${removedControls} 个、效果 ${removedEffects} 个${hadProvider ? '、提供者 1 个' : ''}`);
+      + `，清掉控件节 ${removedControls} 个、效果 ${removedEffects} 个、插槽 ${slotsRemoved} 个${hadProvider ? '、提供者 1 个' : ''}`);
     // 让面板重建：只清宿主表不改 DOM 的话，控件会继续挂在界面上（等于没卸载）
     try { window.dispatchEvent(new CustomEvent('spineviewer:plugins-loaded', { detail: { unloaded: id } })); } catch { /* 忽略 */ }
-    return { pluginId: id, disposed, failures, removedControls, removedEffects, hadProvider: hadProviderBefore };
+    return { pluginId: id, disposed, failures, removedControls, removedEffects, slotsRemoved, hadProvider: hadProviderBefore };
   }
 
   /** 卸载全部已装载插件（测试收尾 / 热重载前清理用） */
@@ -1406,6 +1506,31 @@ const MIME_BY_EXT = {
       //   bundle-failures.js 拉的是同一个 URL，两处并发时会被 api.js 合并成一次真实请求。
       const data = await getJson(`${base}/api/plugins`, { cache: 'no-store' });
       discovered = Array.isArray(data && data.plugins) ? data.plugins : [];
+      // 建插槽注册表（**必须在注入任何插件脚本之前**）：目录与"谁声明了什么"都来自这一份响应，
+      //   晚一步建就会出现"插件已经能 register、注册表还不存在"的空窗。
+      const declared = {};
+      for (const pl of discovered) {
+        declared[String(pl && pl.id ? pl.id : '')] = Array.isArray(pl && pl.slots) ? pl.slots : [];
+      }
+      // 自测注入（仅 ?slotDeclare= 时生效）：见 readSlotDeclare 的说明
+      for (const [pid, names] of Object.entries(readSlotDeclare())) {
+        declared[pid] = [...new Set([...(declared[pid] || []), ...names])];
+      }
+      slotRegistry = createSlotRegistry({
+        catalog: Array.isArray(data && data.slotCatalog) ? data.slotCatalog : [],
+        declaredByPlugin: declared,
+        // 默认 S1：所有插槽都未开放，注册被 slot-not-open 拒（这正是 S1 的语义）。
+        // 调试开关 ?slotStage=S2：把"已开放阶段"提前，用来验证"声明过就能注册成功"那条链路。
+        //   存在的理由同 ?workerFetch=0 —— 让不同阶段的分支都能在同一份代码上被实测到，
+        //   否则"成功路径"要等到 S2 落地才第一次被执行（那时才发现问题就太晚）。
+        openStage: readSlotStage(),
+        isInLoadWindow: () => !!loadingPluginId,
+        onReject: (rej) => {
+          say.warn(`插槽注册被拒（${rej.code}）：${rej.why}`);
+          emit('plugin.slot-rejected', rej);
+        },
+      });
+      publishSlotStats();
     } catch (e) {
       say.warn(`插件清单获取失败（页面其余功能不受影响）：${(e && e.message) || e}`);
       return { discovered: 0, registered: 0 };
@@ -1517,6 +1642,11 @@ const MIME_BY_EXT = {
 
   // 插件脚本顶层读的就是它：必须在注入脚本**之前**挂好
   window.SpineViewerPlugins = hostApi;
+  // 设计 §二 的命名收敛：插槽 API 挂在 ModelStagePlugins 命名空间上；
+  //   旧的 SpineViewerPlugins 保留（现有插件仍用它），迁移留给 S2 之后
+  try {
+    window.ModelStagePlugins = Object.assign(window.ModelStagePlugins || {}, { slots: hostApi.slots });
+  } catch { /* 无 window 环境忽略 */ }
 
   return {
     loadAll,

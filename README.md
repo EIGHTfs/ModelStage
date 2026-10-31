@@ -181,6 +181,7 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.4.2 | 2026-10-31 | 插件插槽 S1-b2：`slot-registry.js`（DOM-free，四类校验固定顺序）+ `slots.register` 只登记不渲染+ disposer 接入 effect 容器（`unloadPlugin` 一并回收）+ `window.__SLOT_STATS__`；修服务端 `matchSlot` 模板串双重转义缺陷（含字母 s 的插槽被误判 unknown-slot） |
 | 0.4.1 | 2026-10-31 | 插件设置键强制 `plugin.<pluginId>.<key>` 前缀（能力键白名单全局合并，同名键会撞车；别的插件 id 同样不合法）+ 修 registry 里校验块早于 `const pid` 的 TDZ 缺陷 |
 | 0.4.0 | 2026-10-31 | 插件插槽 S1-b1（前端）：插件级 effect 容器与 `unloadPlugin`（逆序回收 + 兜底清理 + `effectsReport`）；窗口外注册由静默丢弃改为显式拒绝（带可读原因与 likelyOwner）；面板重建保留手风琴展开态（累积表，覆盖换渲染面路径）；渲染写 `data-group-id` |
 | 0.3.9 | 2026-10-31 | 插件插槽 S1-a（服务端）：插槽目录常量表 + 清单校验（unknown-slot / slot-not-open / undeclared-slot / risk-mismatch 四类，逐项降级不整体拒绝）+ `/api/plugins` 下发 `slotCatalog` 与每插件 `slots`/`slotErrors`/`settings`/`settingsErrors`；老插件零改动可用 |

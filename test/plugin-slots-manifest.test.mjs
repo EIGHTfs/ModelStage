@@ -213,3 +213,23 @@ test('settings：非数组 ⇒ bad-shape，不抛异常', () => {
   assert.deepEqual(r.settings, []);
   assert.equal(r.errors[0].why, 'bad-shape');
 });
+
+// ---------------------------------------------------------------- 占位符匹配（回归）
+
+// 回归：模板串转义写错（`[^\\\\s]`）时，正则等价于"不是反斜杠且不是字母 s"，
+//   于是任何名字含 s 的插槽都被判 unknown-slot —— settings / skin 这两个内置分组名首当其冲，
+//   表现为 S2 一开放就整组被拒，而错误信息只说"未知插槽"，极难往转义上想。
+test('matchSlot：名字含字母 s 的占位符插槽必须匹配（转义回归）', () => {
+  for (const name of ['panel.group.settings', 'panel.group.skin', 'panel.group.motion']) {
+    assert.ok(matchSlot(name), `${name} 应匹配到目录项`);
+  }
+});
+
+test('matchSlot：键值插槽允许带点（plugin.<id>.<key>）', () => {
+  assert.ok(matchSlot('panel.control.plugin.p1.sharpness'));
+});
+
+test('matchSlot：目录里没有的名字仍然返回 null（别把占位符放宽成万能匹配）', () => {
+  assert.equal(matchSlot('nope'), null);
+  assert.equal(matchSlot('panel.group.'), null);
+});
