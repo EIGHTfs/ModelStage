@@ -18,6 +18,9 @@
 import { getSharedVirtualFS } from './vfs.js';
 // 插槽注册表（DOM-free、可 node 直测）：只登记不渲染，S2 才接渲染
 import { createSlotRegistry } from './slot-registry.js';
+import { createReport } from './plugin-host-report.mjs';
+import { createUnload } from './plugin-host-unload.mjs';
+import { createWarmup } from './plugin-host-warmup.mjs';
 // 内置分组 id（纯数据，DOM-free）：注册表据此区分"引用内置组"与"插件新建组"
 import { PANEL_GROUPS } from '../panel/schema.js';
 
@@ -92,6 +95,15 @@ function injectScript(src) {
 // 维护方式：改完函数后，若某个函数**起始行**变了，回到本表按名字找到那一行改数字；
 //   加新函数时补一行（名字 / 行 / 代码行 / 职责）。表里行号以"该函数声明所在行"为准。
 //
+// ── 模块拆分现状（B1）─────────────────────────────────────────────────────
+//   三块已搬出本文件（工厂函数式，接收依赖、返回函数；不导出裸单例）：
+//     · plugin-host-report.mjs  createReport({ ctx }) ⇒ report()
+//     · plugin-host-unload.mjs  createUnload({ ctx, manifestEffects, workerPool, publishSlotStats, publishEffectStats })
+//                               ⇒ { unloadPlugin, unloadAll }
+//     · plugin-host-warmup.mjs  createWarmup({ ctx }) ⇒ warmup()
+//         （模块自持 capCache / CAP_TTL_MS / warmupInflight / WARMUP_PHASE_TEXT，自己 import postStream / memoryGuard）
+//   本文件里搜这些名字只能找到"装配那一行"，实现请去对应模块。
+//
 // 为什么按职责分组而不是按文件顺序：文件顺序是历史演进的结果（资源取用和解包占了 64%），
 //   按职责查才是日常改动的真实入口（"我要改插槽注册" → 直奔 G2）。
 //
@@ -101,29 +113,29 @@ function injectScript(src) {
 //   状态耦合：discovered（读清单找 provider）、providers（读 provider 表）、
 //            say（日志）、emit（进度事件）、pluginEffects（登记解包产物用于回溯）。
 //   函数 | 行 | 代码行 | 职责
-//   fetchFile            | 441 | 133 | 取文件字节（唯一取字节通道，worker/同步两条路 + 诊断）
-//   fileUrlOf            | 431 | 3   | 拼 VFS 取文件地址
-//   prefilterReason      | 805 | 12  | provider 预筛原因（能不能读这个文件）
-//   validateResolved     | 823 | 16  | 校验 provider.resolve 返回值形状（拦半成品）
-//   bytesOf              | 841 | 11  | 求一组文件的字节数
-//   filesOfProvider      | 863 | 4   | 某 provider 声明的文件清单
-//   onWorkerProgress     | 869 | 13  | worker 进度回调 → 派发事件
-//   ensureUnpackWorker   | 889 | 29  | 取/建某 provider 的 worker（失败返回 null）
-//   resolveViaWorker     | 930 | 41  | 用 worker 解包，失败不抛、返回 {ok:false} 由调用方回落
-//   classHistogramOf     | 995 | 13  | 字节量直方图（内存准入判断用）
-//   resolveViaProvider   | 1010 | 35  | 按优先级试每个 provider 的 resolve
-//   resolvedUsable       | 1071 | 35  | 判断 resolve 结果是否真能用
-//   registerResolved     | 1108 | 21  | 把解包产物注册进 VFS 并解析入口地址（不碰渲染）
-//   filesCount           | 1142 | 5   | 文件计数
-//   providerFromPrefix   | 1160 | 5   | 前缀 → provider
-//   firstFulfilled       | 1171 | 13  | 取第一个 fulfilled 的结果
-//   resolveFromServer    | 1192 | 43  | 走服务端解包接口（本地没能力时兜底）
-//   fetchCapacity        | 1274 | 25  | 拉服务端内存容量（预热准入依据）
-//   warmup               | 1311 | 17  | 预热主流程（只按内存准入，不看耗时）
-//   scheduleWarmup       | 1358 | 46  | 空闲时排队预热
-//   materialize          | 1424 | 156 | 容器单文件 → 解包 → 校验 → 注册 VFS，返回入口地址与文件清单
-//   providersFor         | 1821 | 6   | 列出能处理某类文件的 provider
-//   findProvider         | 1835 | 23  | 按文件挑 provider（canHandle 必须同步布尔）
+//   fetchFile            | 456 | 133 | 取文件字节（唯一取字节通道，worker/同步两条路 + 诊断）
+//   fileUrlOf            | 446 | 3   | 拼 VFS 取文件地址
+//   prefilterReason      | 766 | 12  | provider 预筛原因（能不能读这个文件）
+//   validateResolved     | 784 | 16  | 校验 provider.resolve 返回值形状（拦半成品）
+//   bytesOf              | 802 | 11  | 求一组文件的字节数
+//   filesOfProvider      | 830 | 4   | 某 provider 声明的文件清单
+//   onWorkerProgress     | 836 | 13  | worker 进度回调 → 派发事件
+//   ensureUnpackWorker   | 856 | 29  | 取/建某 provider 的 worker（失败返回 null）
+//   resolveViaWorker     | 897 | 41  | 用 worker 解包，失败不抛、返回 {ok:false} 由调用方回落
+//   classHistogramOf     | 962 | 13  | 字节量直方图（内存准入判断用）
+//   resolveViaProvider   | 977 | 35  | 按优先级试每个 provider 的 resolve
+//   resolvedUsable       | 1038 | 35  | 判断 resolve 结果是否真能用
+//   registerResolved     | 1075 | 21  | 把解包产物注册进 VFS 并解析入口地址（不碰渲染）
+//   filesCount           | 1109 | 5   | 文件计数
+//   providerFromPrefix   | 1127 | 5   | 前缀 → provider
+//   firstFulfilled       | 1138 | 13  | 取第一个 fulfilled 的结果
+//   resolveFromServer    | 1159 | 43  | 走服务端解包接口（本地没能力时兜底）
+//   fetchCapacity        | → plugin-host-warmup.mjs | —   | 容量探测（已搬出）
+//   warmup               | → plugin-host-warmup.mjs | —   | 预热入口（已搬出，见该模块）
+//   scheduleWarmup       | → plugin-host-warmup.mjs | —   | 预热执行（已搬出）
+//   materialize          | 1238 | 156 | 容器单文件 → 解包 → 校验 → 注册 VFS，返回入口地址与文件清单
+//   providersFor         | 1636 | 6   | 列出能处理某类文件的 provider
+//   findProvider         | 1650 | 23  | 按文件挑 provider（canHandle 必须同步布尔）
 //
 // ── G2 注册与校验（5 个内部函数 + 4 个 hostApi 方法）───────────────────────
 //   职责：插件脚本装载期能调用的**全部注册入口**，以及它们的拒绝原因。
@@ -131,48 +143,48 @@ function injectScript(src) {
 //   状态耦合：registeredEffects（写）、loadState（写）、providers（写）、slotRegistry（读）、
 //            loadingPluginId（读：判定"是否在装载期窗口内"）、say/emit。
 //   函数 | 行 | 代码行 | 职责
-//   rejectRegistration   | 354 | 13  | 注册拒绝的统一出口（可读原因 + likelyOwner）
-//   groupIdOfTitle       | 377 | 7   | 分组标题 → 内置分组 id（兼容层用，从 PANEL_GROUPS 派生）
-//   legacyControlToSlotSpec | 393 | 18 | 老接口控件声明 → 插槽 spec（包一层 render）
-//   publishSlotStats     | 327 | 7   | 插槽统计挂到 window（__SLOT_STATS__）
-//   initSlotRegistry     | 1732 | 22  | 按 /api/plugins 建插槽注册表（必须在注入脚本之前）
-//   hostApi.register（slots.register） | 466 | 26 | 插件插槽注册入口（转发给 slotRegistry）
-//   hostApi.registerEffect | 508 | 34 | 效果注册（清单校验 + 装载期窗口 + 能力键白名单）
-//   hostApi.registerControls | 571 | 54 | 兼容层：老接口转插槽注册（标题→id、隐式声明）
-//   hostApi.notify       | 649 | 5   | 插件向宿主上报一条通知（进日志/事件）
+//   rejectRegistration   | 369 | 13  | 注册拒绝的统一出口（可读原因 + likelyOwner）
+//   groupIdOfTitle       | 392 | 7   | 分组标题 → 内置分组 id（兼容层用，从 PANEL_GROUPS 派生）
+//   legacyControlToSlotSpec | 408 | 18 | 老接口控件声明 → 插槽 spec（包一层 render）
+//   publishSlotStats     | 342 | 7   | 插槽统计挂到 window（__SLOT_STATS__）
+//   initSlotRegistry     | 1547 | 22  | 按 /api/plugins 建插槽注册表（必须在注入脚本之前）
+//   hostApi.register（slots.register） | 481 | 26 | 插件插槽注册入口（转发给 slotRegistry）
+//   hostApi.registerEffect | 523 | 34 | 效果注册（清单校验 + 装载期窗口 + 能力键白名单）
+//   hostApi.registerControls | 586 | 54 | 兼容层：老接口转插槽注册（标题→id、隐式声明）
+//   hostApi.notify       | 664 | 5   | 插件向宿主上报一条通知（进日志/事件）
 //
 // ── G3 装载与装载期窗口（5 个）─────────────────────────────────────────────
 //   职责：发现清单 → 建注册表 → 注入脚本（窗口内才接受注册）→ 统计装载结果。
 //   状态耦合：discovered / loaded（**唯一写者**都在这组）、loadingPluginId（窗口开关）、
 //            slotRegistry（初始化）、loadState（写）。
 //   函数 | 行 | 代码行 | 职责
-//   normalizeStage       | 318 | 4   | 归一化当前阶段（缺省回退 S1）
-//   loadAll              | 1712 | 6   | 装载入口（去重 + 委派 doLoadAll）
-//   countRegistered      | 1720 | 3   | 统计已装载数
-//   doLoadAll            | 1760 | 40  | 装载执行体（发现 → 注册表 → 注入 → 统计）
-//   loadPlugin           | 660 | 27  | 注入单个插件脚本并登记装载状态
+//   normalizeStage       | 333 | 4   | 归一化当前阶段（缺省回退 S1）
+//   loadAll              | 1527 | 6   | 装载入口（去重 + 委派 doLoadAll）
+//   countRegistered      | 1535 | 3   | 统计已装载数
+//   doLoadAll            | 1575 | 40  | 装载执行体（发现 → 注册表 → 注入 → 统计）
+//   loadPlugin           | 676 | 27  | 注入单个插件脚本并登记装载状态
 //
 // ── G4 卸载与回收（3 个）───────────────────────────────────────────────────
 //   职责：逆序跑 disposer，把插槽/效果/提供者/装载状态从各表摘掉，再派发事件让面板重建。
 //   状态耦合：pluginEffects / registeredEffects / providers / loadState（**都在这里删**）、
 //            loaded（读）、say/emit。
 //   函数 | 行 | 代码行 | 职责
-//   addEffect            | 298 | 9   | 往插件级效果容器加一条（统一回收的入口）
-//   unloadPlugin         | 705 | 31  | 卸载一个插件（逆序 dispose + 清表 + 派发事件）
-//   unloadAll            | 743 | 6   | 全部卸载
+//   addEffect            | 313 | 9   | 往插件级效果容器加一条（统一回收的入口）
+//   unloadPlugin         | → plugin-host-unload.mjs | —   | 卸载单个插件（已搬出）
+//   unloadAll            | → plugin-host-unload.mjs | —   | 全部卸载（已搬出）
 //
 // ── G5 效果链（2 个）───────────────────────────────────────────────────────
 //   职责：效果声明的统计与回收报告（"卸载到底发生了没有"靠它读）。
 //   状态耦合：pluginEffects / registeredEffects（只读）、publishEffectStats → window。
 //   函数 | 行 | 代码行 | 职责
-//   publishEffectStats   | 336 | 7   | 效果统计挂到 window
-//   effectsReport        | 756 | 20  | 回收报告（含每个插件的 slots/effects 计数）
+//   publishEffectStats   | 351 | 7   | 效果统计挂到 window
+//   effectsReport        | 716 | 20  | 回收报告（含每个插件的 slots/effects 计数）
 //
 // ── G6 报告（1 个）─────────────────────────────────────────────────────────
 //   职责：把宿主整体状态汇总成一份可序列化报告（排障与自检读它）。
 //   状态耦合：几乎全部只读（loaded/discovered/providers/pluginEffects/registeredEffects/slotRegistry）。
 //   函数 | 行 | 代码行 | 职责
-//   report               | 1862 | 62  | 汇总宿主状态（插件/效果/插槽/失败）供排障
+//   report               | → plugin-host-report.mjs | —   | 宿主状态报告（已搬出）
 //
 // ── 高频共享状态：已收敛为一个显式 `ctx`（B0 完成）────────────────────────
 //   位置：工厂体开头（搜 `const ctx = {`）。**唯一一份定义**，内部函数一律用 `ctx.xxx` 读写；
@@ -236,6 +248,9 @@ export function createPluginHost(opts = {}) {
     /** 是否已完成一次装载（doLoadAll 是唯一写者；卸载时要同步维护，否则 isLoaded 会骗人） */
     loaded: false,
   };
+
+  // 宿主报告：搬到 plugin-host-report.mjs（B1）—— 纯读，只依赖 ctx
+  const report = createReport({ ctx });
   // diag 事件通道（由 main.js 注入 app/status.js 的 diagEvent）：解包来源是**验收要读**的事实，
   //   不能只写 console —— 页面上层与测试都靠 diag 取证。
   const base = String(opts.baseUrl || '').replace(/\/$/, '');
@@ -654,7 +669,8 @@ export function createPluginHost(opts = {}) {
   };
 
   /** 按清单串行注入某插件的全部脚本（顺序即 plugin.json 的 files[] 顺序：lib/* 先、index.js 后） */
-  // ── 分区 R3：装载与卸载回收（loadPlugin / unloadPlugin / unloadAll / effectsReport）──
+  // ── 分区 R3：装载与卸载回收（loadPlugin / effectsReport）──────────────────────────
+  // 注意：unloadPlugin / unloadAll 已搬到 plugin-host-unload.mjs（B1），本区只留装配与 effectsReport。
   // 装载：注入脚本 → 登记 loadState；卸载：逆序 dispose → 清四张表 → 派发事件让面板重建。
   // 状态耦合：loadState（写）、loaded（读）、providers/registeredEffects/pluginEffects（卸载时删）。
   async function loadPlugin(pl) {
@@ -690,62 +706,6 @@ export function createPluginHost(opts = {}) {
     if (error) ctx.say.warn(`插件 ${id} 未生效：${error}（其余插件与页面不受影响）`);
   }
 
-  /**
-   * 卸载一个插件：按**注册逆序**执行它登记的全部 disposer，并把宿主表里的痕迹清干净。
-   *
-   * 设计取舍：
-   *   · disposer 可能抛错（第三方闭包）——单个失败不阻断其余回收，失败项进返回值；
-   *   · disposer 之外还有一层兜底清理（控件节按 pluginId 扫一遍、effect/provider 直接删）——
-   *     因为"老路径注册的东西没登记 disposer"这种情况在演进期一定存在；
-   *   · 结束后派发 `spineviewer:plugins-loaded`，面板侧监听（panel-settings.js:372）会重建，
-   *     控件才真的从界面上消失（只摘宿主表不改 DOM 等于没卸载）。
-   * @param {string} pluginId
-   * @returns {{pluginId:string, disposed:number, failures:string[], removedControls:number, removedEffects:number, hadProvider:boolean}}
-   */
-  async function unloadPlugin(pluginId) {
-    const id = String(pluginId || '');
-    const list = ctx.pluginEffects.get(id) || [];
-    // 先记"卸载前有没有"，再回收：disposer 会把 provider 删掉，之后再查就永远是 false（返回值会误导排障）
-    const hadProviderBefore = ctx.providers.has(id);
-    let disposed = 0;
-    const failures = [];
-    for (let i = list.length - 1; i >= 0; i -= 1) {      // 逆序：后注册的先撤
-      try { list[i].dispose(); disposed += 1; }
-      catch (e) { failures.push(`${list[i].kind}:${list[i].label}: ${(e && e.message) || e}`); }
-    }
-    ctx.pluginEffects.delete(id);
-
-    let removedEffects = 0;
-    for (const [eid, e] of [...ctx.registeredEffects]) {
-      if (e && e.pluginId === id) { ctx.registeredEffects.delete(eid); removedEffects += 1; }
-    }
-    const hadProvider = ctx.providers.delete(id);
-    try { manifestEffects.delete(id); } catch { /* 老版本没有这张表 */ }
-    const wk = workerPool.get(id);
-    if (wk) {
-      try { if (wk.worker) wk.worker.terminate(); } catch { /* 已终止 */ }
-      workerPool.delete(id);
-    }
-    // 插槽登记也要回收：disposer 虽已挂在 effect 容器里，这里按 pluginId 再兜一次
-    //   （历史数据/异常路径可能留下没登记 disposer 的项）
-    const slotsRemoved = ctx.slotRegistry ? ctx.slotRegistry.disposeAll(id) : 0;
-    publishSlotStats();
-    ctx.loadState.delete(id);
-    publishEffectStats();
-    ctx.say.info(`插件 ${id} 已卸载：执行 ${disposed} 个 disposer${failures.length ? `（${failures.length} 个失败）` : ''}`
-      + `，清掉效果 ${removedEffects} 个、插槽 ${slotsRemoved} 个${hadProvider ? '、提供者 1 个' : ''}`);
-    // 让面板重建：只清宿主表不改 DOM 的话，控件会继续挂在界面上（等于没卸载）
-    try { window.dispatchEvent(new CustomEvent('spineviewer:plugins-ctx.loaded', { detail: { unloaded: id } })); } catch { /* 忽略 */ }
-    return { pluginId: id, disposed, failures, removedEffects, slotsRemoved, hadProvider: hadProviderBefore };
-  }
-
-  /** 卸载全部已装载插件（测试收尾 / 热重载前清理用） */
-  async function unloadAll() {
-    const ids = [...new Set([...ctx.pluginEffects.keys(), ...ctx.providers.keys(), ...ctx.loadState.keys()])];
-    const out = [];
-    for (const id of ids) out.push(await unloadPlugin(id));      // 串行：卸载会改宿主表，别并发
-    return out;
-  }
 
   /**
    * 回收清单（可读）：每个插件登记了多少 effect、现在还剩多少控件节/效果/提供者。
@@ -798,7 +758,8 @@ export function createPluginHost(opts = {}) {
    * 预筛：返回 null 表示"可能是资源包，值得读全量"，否则返回跳过原因。
    * @param {{rootId?:string, rel?:string, name?:string, size?:number, rootKind?:string}} file
    */
-  // ── 分区 R4：资源取用与解包（主体，占工厂代码 64%）────────────────────────
+  // ── 分区 R4：资源取用与解包（主体）────────────────────────────────────────────
+  // 注意：预热链（fetchCapacity / warmup / scheduleWarmup）已搬到 plugin-host-warmup.mjs（B1）。
   // 从"文件能不能读"（prefilterReason/validateResolved）到"worker 解包→失败回落服务端"，
   //   再到"内存准入驱动的预热"（fetchCapacity/warmup/scheduleWarmup）。**不碰 DOM**。
   // 状态耦合：discovered（读清单）、providers、say、emit、workerPool/warmupInflight/capCache。
@@ -858,6 +819,12 @@ export function createPluginHost(opts = {}) {
    *   一个 worker 只装一个 provider 的那份 lib。
    */
   const workerPool = new Map();   // providerId → { worker, ready, seq, pending }
+
+  // 卸载与回收：搬到 plugin-host-unload.mjs（B1）
+  //   参数刻意只给"它真正会写的几张表 + 两个统计发布函数"：多给一个就等于把耦合藏起来
+  const { unloadPlugin, unloadAll } = createUnload({
+    ctx, manifestEffects, workerPool, publishSlotStats, publishEffectStats,
+  });
 
   /** 从 `discovered` 找该 provider 的 files[]（按 id 动态找，不硬编码插件名） */
   function filesOfProvider(providerId) {
@@ -1261,162 +1228,9 @@ const MIME_BY_EXT = {
     };
   }
 
-  /** 容量探测缓存（60s）；失败时**保守不放行**（reason=fallback），绝不当成"随便解包" */
-  let capCache = null;
-  const CAP_TTL_MS = 60 * 1000;
 
-  /**
-   * 问服务端"这个包现在能预热吗"。判断全在服务端：可用内存**现取** × 0.5 预算 vs 预估峰值，
-   * 预热**只看内存**（时间不再是门槛：旧规则"预估 >6s 不预热"会让 15MB 以上的包永远进不了缓存）。\n   * 前端只读 `allowWarmup` 一个布尔，不自己算任何阈值。
-   * @param {{rootId: string, rel: string}} file
-   * @returns {Promise<{allowWarmup: boolean, reason: string, peakEstMb?: number, budgetMb?: number, estUnpackSec?: number}>}
-   */
-  async function fetchCapacity(file) {
-    const key = `${file.rootId}/${file.rel}`;
-    if (capCache && capCache.key === key && Date.now() - capCache.at < CAP_TTL_MS) return capCache.value;
-    const fallback = { allowWarmup: false, reason: 'fallback:capacity-unavailable' };
-    try {
-      const qs = `?rootId=${encodeURIComponent(file.rootId)}&rel=${encodeURIComponent(file.rel)}`;
-      const res = await fetch(`/api/unpack/capacity${qs}`, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(1500) });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const j = await res.json();
-      const value = {
-        allowWarmup: j.allowWarmup === true,
-        reason: String(j.reason || 'unknown'),
-        peakEstMb: j.peakEstMb,
-        budgetMb: j.budgetMb,
-        estUnpackSec: j.estUnpackSec,
-        // 判据显示要贴真实值：可用内存与总内存一起带出来（不在这里重算任何阈值）
-        memAvailableMb: j.memAvailableMb,
-        memTotalMb: j.memTotalMb,
-      };
-      capCache = { at: Date.now(), key, value };
-      return value;
-    } catch {
-      capCache = { at: Date.now(), key, value: fallback };
-      return fallback;
-    }
-  }
-
-  /**
-   * 预热：**选中即触发**，让服务端把**当前这一个包**解包落盘，供下次命中。
-   * 绝不预热整个根（19 个包 × 10s 白烧）。
-   *
-   * 两条必须：
-   *   · 只预热当前包；
-   *   · **必打 diag 日志** `unpack.warmup {rootId, rel, sizeMb, skipped?, ms}`，否则"为什么这个包没预热"无从查证。
-   * 不加任何时间门槛：能不能预热只由内存准入决定（服务端给 allowWarmup），不看预估耗时、不延迟。
-   * @param {{rootId: string, rel: string, size?: number}} file
-   */
-  function warmup(file) {
-    const sizeMb = Number(file && file.size) / 1048576;
-    const emitWarm = (extra) => ctx.emit('unpack.warmup', { rootId: file && file.rootId, rel: file && file.rel, sizeMb: +sizeMb.toFixed(1), ...extra });
-    if (!file || !file.rootId || !file.rel) return;
-    // 上限来自服务端（CPU 维度与内存维度取小）；拿不到则保守 12
-    fetchCapacity(file).then((cap) => {
-      if (!cap.allowWarmup) {
-        emitWarm({ skipped: cap.reason, peakEstMb: cap.peakEstMb, budgetMb: cap.budgetMb, estUnpackSec: cap.estUnpackSec });
-        ctx.say.info(`跳过预热：${file.rel} ${sizeMb.toFixed(1)}MB（${cap.reason}；预估峰值 ${cap.peakEstMb}MB / 预算 ${cap.budgetMb}MB / 预估耗时 ${cap.estUnpackSec}s）`);
-        return;
-      }
-      scheduleWarmup(file, emitWarm, cap);
-    }).catch(() => {
-      // fetchCapacity 内部已有兜底（allowWarmup=false），这里防御未知异常：保守跳过
-      emitWarm({ skipped: 'fallback:capacity-unavailable' });
-    });
-  }
-
-  /**
-   * 在途预热去重：key = `${rootId}/${rel}`。
-   *
-   * 为什么必须去重：`model-actions` 每次装载都会调 warmup()，同一个模型被装载多次就排多次请求；
-   *   而服务端的解包是**串行**的（plugin-store 的 inflight + 队列），后到的那几个全部 join 到
-   *   同一个 inflight 上 —— 于是每个都等足同一段时长、每个都被前台的 8.5s 掐断一次、每个再重试一次。
-   *   实测（500 条日志那批）：同一个 rel 被重复预热 4~6 次
-   *     xukufu_3_hx：ms=1969 / 19933 / 12770 / 18598(hit=true) 四条，全是同一次解包的不同等待者。
-   *
-   * 为什么"完成即删"而不是"永久记住已预热"：插件版本升级、服务端缓存被清（LRU/手工删目录）之后，
-   *   同一个包仍然需要能重新预热 —— 记死就再也不会补了。
-   */
-  const warmupInflight = new Set();
-
-  /**
-   * `phase.name` → 界面措辞（契约 §四 ④：服务端只发 read/resolve/write 三个名字，文案归前端）。
-   * 放这一处常量、别散落到各处：措辞变了只改这里，也避免服务端被逼着下发界面文字。
-   * 注意**没有百分比**：解压是一次性整段，服务端给不出可信进度，假进度条比没有更糟。
-   */
-  const WARMUP_PHASE_TEXT = { read: '读盘中', resolve: '解压中', write: '写盘中' };
-
-  /**
-   * 真正执行预热：**选中即触发**，不等空闲、不延迟。
-   *
-   * 为什么删掉了 requestIdleCallback(timeout 3000) + setTimeout(2000)：
-   *   那两个限制加起来最坏 5s 后才开始预热，而页面在 9s 就已经要加载同一个包了 ——
-   *   首次打开任何新资源，缓存都来不及做好，前端只能自己解一遍（实测 4.3s / 19MB 白花）。
-   *   服务端解包是原生能力，不是"抢 CPU 的备选"，不该被推迟到空闲。
-   */
-  function scheduleWarmup(file, emitWarm, cap) {
-    const key = `${file.rootId}/${file.rel}`;
-    // 去重命中时**静默返回**（连 diag 也不发）：验收口径是「unpack.warmup 条数 == 不同 rel 个数」，
-    //   这里多发一条就等于把噪音从网络层搬到日志层。say 没有 debug 级，所以干脆不说话。
-    if (warmupInflight.has(key)) return;
-    warmupInflight.add(key);
-    (async () => {
-      const t0 = performance.now();
-      let events = 0;
-      try {
-        // 预热是**后台**任务，不能借用前台的判失败策略：
-        // · 不重试 —— 服务端解包是串行的，重发只会把队列压得更长。postStream 不走 fetchWithRetry，
-        //   天生不重试，所以这一条与上一轮定的 `retries: 0` 等价（那条约定的目的不变）。
-        // · **不设总时长上限** —— 慢机器解 30s、60s 都属正常。判失败只看「有没有进展」：
-        //   postStream 每收到任意一帧（含 ping）就重置停摆计时，连续 15s 无帧才中止（契约 §四）。
-        //   上一轮那个 120s 固定上限是"没有进展信号时"的妥协；有了事件流就该撤掉它。
-        const j = await postStream('/api/unpack/resolve',
-          { rootId: file.rootId, rel: file.rel, allowOverLimit: !memoryGuard.isMemoryGuardOn(), stream: true },
-          {
-            onEvent: (name, data) => {
-              events += 1;
-              // 进度只进**现有**日志/状态行，不新造 UI 控件；也不给百分比（服务端给不出可信的）
-              if (name === 'queued') ctx.say.info(`预热排队中：${file.rel}（前面约 ${Number((data && data.waiting) || 0)} 个）`);
-              else if (name === 'start') ctx.say.info(`预热开始解包：${file.rel}`);
-              else if (name === 'phase') {
-                const ph = (data && data.name) || '';
-                ctx.say.info(`预热${WARMUP_PHASE_TEXT[ph] || `${ph || '进行'}中`}：${file.rel}（${Number((data && data.ms) || 0)}ms）`);
-              }
-              // ping 不显示：它只用于维持停摆计时（postStream 内部每帧都会重置计时器）
-            },
-            onStall: () => {
-              // 措辞铁律（契约 §四）：这里是"停摆"，不是"超时"
-              ctx.say.info(`预热停摆（15s 无事件），已放弃等待；服务端仍会解完并写缓存：${file.rel}`);
-            },
-          });
-        emitWarm({
-          ok: !!j.ok,
-          hit: !!(j && j.hit),
-          peakEstMb: cap && cap.peakEstMb,
-          ms: Math.round(performance.now() - t0),
-          events,
-          ...(j && j.reason ? { reason: j.reason } : {}),
-        });
-        if (j && j.ok) {
-          // done 即完成：hit:true（已有缓存）与 hit:false（本次已落盘）都算成功
-          ctx.say.info(`预热完成：${file.rel}（${j.hit ? '已有缓存' : '已落盘'}，${Math.round(performance.now() - t0)}ms）`);
-        } else {
-          // 流内 error / 停摆：都只记 info —— 预热失败不是错误，前台装载有自己的路径
-          ctx.say.info(`后台预热未完成：${file.rel}（${(j && j.message) || (j && j.reason) || '未知原因'}）—— 服务端仍会解完并写缓存，下次命中即可`);
-        }
-      } catch (e) {
-        const why = String((e && e.message) || e).slice(0, 120);
-        emitWarm({ ok: false, error: why, events });
-        // 预热失败**不是错误**：前台装载有自己的路径（本地解包 / 服务端命中），预热只是"下次更快"。
-        //   记 info 不记 error/warn —— 否则每次装载都在日志里刷一条红，把真问题淹掉。
-        ctx.say.info(`后台预热未完成：${file.rel}（${why}）—— 服务端仍会解完并写缓存，下次命中即可`);
-      } finally {
-        // 成功/失败/超时都要移除，否则一次失败会让这个 rel 永远不再预热
-        warmupInflight.delete(key);
-      }
-    })();
-  }
+  // 预热：搬到 plugin-host-warmup.mjs（B1）—— 只依赖 ctx.say / ctx.emit + 服务端事件流
+  const warmup = createWarmup({ ctx });
 
   // ── 分区 R5：容器解包主流程（materialize）─────────────────────────────────
   // 唯一对外暴露的"解包"入口：缓存命中 → provider 解析 → 产物校验 → 注册 VFS → 返回入口与清单。
@@ -1706,7 +1520,8 @@ const MIME_BY_EXT = {
    * 这解决了"页面刚起、插件脚本还在注入时就发起装载"的时序竞争。
    * @returns {Promise<{discovered: number, registered: number}>}
    */
-  // ── 分区 R6：装载编排 / provider 查询 / 宿主报告（loadAll ~ report）────────
+  // ── 分区 R6：装载编排 / provider 查询（loadAll ~ findProvider）──────────────
+  // 注意：report 已搬到 plugin-host-report.mjs（B1）。
   // loadAll→doLoadAll 的实现拆分、插槽注册表初始化、provider 查询、report 汇总。
   // 状态耦合：discovered/loaded（**唯一写者** doLoadAll）、slotRegistry（唯一写者 initSlotRegistry）。
   async function loadAll() {
@@ -1810,7 +1625,7 @@ const MIME_BY_EXT = {
     // 面板侧要知道"插件已经交完声明了" —— 它启动时先建面板，插件是之后异步注入的，
     //   不通知就永远看不到插件控件（实测：控件节收到了，但面板不会自己重建）。
     try {
-      window.dispatchEvent(new CustomEvent('spineviewer:plugins-ctx.loaded', {
+      window.dispatchEvent(new CustomEvent('spineviewer:plugins-loaded', {
         detail: { discovered: ctx.discovered.length, registered: ok, slots: ctx.slotRegistry ? ctx.slotRegistry.stats().total : 0 },
       }));
     } catch { /* 忽略 */ }
@@ -1858,22 +1673,6 @@ const MIME_BY_EXT = {
     return null;
   }
 
-  /** 排障快照：装载状态 + 已注册提供者 */
-  function report() {
-    return {
-      loaded: ctx.loaded,
-      discovered: ctx.discovered.map((p) => p.id),
-      providers: [...ctx.providers.values()].map((p) => ({
-        id: p.id,
-        provides: Array.isArray(p.provides) ? p.provides.slice() : [],
-        kind: p.kind || null,
-        fileKinds: Array.isArray(p.fileKinds) ? p.fileKinds.slice() : [],
-        hasCanHandle: typeof p.canHandle === 'function',
-        hasResolve: typeof p.resolve === 'function',
-      })),
-      loadState: [...ctx.loadState.entries()].map(([id, s]) => ({ id, ...s })),
-    };
-  }
 
   // 插件脚本顶层读的就是它：必须在注入脚本**之前**挂好
   window.SpineViewerPlugins = hostApi;
