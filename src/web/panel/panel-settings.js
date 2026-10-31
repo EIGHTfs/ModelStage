@@ -374,7 +374,9 @@ function requestDocFiles(model, key) {
       if (state.panel) {
         docFilesStats.repaints += 1;
         publishDocFilesStats();
-        document.dispatchEvent(new CustomEvent('spineviewer:plugins-loaded', { detail: { reason: 'document-files' } }));
+        // 必须派发到 **window**：重建立监听器挂在 window 上（bindPluginPanelRebuild），
+        //   派发到 document 收不到（DOM 事件路径上它到不了 window 监听）⇒ 重绘静默不生效。
+        window.dispatchEvent(new CustomEvent('spineviewer:plugins-loaded', { detail: { reason: 'document-files' } }));
       }
     })
     .catch(() => { docFilesPending.delete(key); });
