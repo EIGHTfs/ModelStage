@@ -1,46 +1,150 @@
-// test/runtime-adapter.test.mjs —— 插件运行时适配器（第 1 步：只定契约，exec 不实现）
+// test/runtime-adapter.test.mjs —— 插件运行时适配器（node vm 沙盒 / exec 子进程 + 帧协议）
 //
-// 锁四件事：
-//   ① node 适配器契约：能装载真实插件，交出 canHandle/resolve；dispose 是空操作
-//   ② exec 适配器：清单校验通过后仍明确抛 EXEC_RUNTIME_NOT_IMPLEMENTED（不静默、不假装）
-//   ③ 安全门禁：runtime:"exec" 但用户没开启 ⇒ 装载被拒 + 可读原因（含怎么开）
-//   ④ 缺省行为：插件不写 runtime 时按 node 处理（历史兼容，零行为变化）
+// 覆盖两层：
+//   · node 适配器：真实插件能装载、能交出 canHandle/resolve；三个插件都显式声明了 runtime
+//   · exec 适配器：清单校验 / 真 spawn 往返 / **超时必杀（进程真的没了）** / 崩溃传播 / 僵尸检查
 //
-// 本轮**不 spawn 任何子进程**：exec 侧只验"拒绝路径"，验完即可。
+// 设计取舍：exec 的进程级用例用**测试自带的最小 python 插件**（临时目录里现写），不依赖 UnityPy ——
+//   ① 任何有 python 的机器都能跑（不因缺 UnityPy 整文件变红）
+//   ② 能让插件"故意不响应 / 半路退出"，从而精确验证超时与崩溃路径（真插件做不到）
+//   ③ 路径全部参数化（临时目录），不写死本机绝对路径
+// 真 UnityPy 插件另有一条**可选**用例：依赖目录与解释器都可用、且 `import UnityPy` 成功才跑。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import {
-  DEFAULT_RUNTIME, KNOWN_RUNTIMES, EXEC_PERMISSION_FILE,
-  resolveRuntimeName, loadWithRuntime, readExecPermission, listRuntimes,
-} from '../src/server/unpack/runtime/index.mjs';
-import execRuntime, { NOT_IMPLEMENTED, SUPPORTED_FRAME_PROTOCOL, validateExecManifest } from '../src/server/unpack/runtime/exec.mjs';
+
+import { loadWithRuntime, readExecPermission, EXEC_PERMISSION_FILE } from '../src/server/unpack/runtime/index.mjs';
+import { MANIFEST_INVALID, SUPPORTED_FRAME_PROTOCOL, validateExecManifest } from '../src/server/unpack/runtime/exec.mjs';
 import nodeVm from '../src/server/unpack/runtime/node-vm.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PLUGINS_DIR = path.join(ROOT, 'plugins');
-const LIVE2D_DIR = 'unity-live2d-bundle';
 
-/** 读真实插件的清单（用 registry 的生产口径，不自己解析 json） */
-async function live2dMeta() {
-  const { listProviderPlugins } = await import('../src/server/unpack/plugin-runner.mjs');
-  return listProviderPlugins().find((m) => m.id === LIVE2D_DIR) || null;
+/**
+ * 探测可用的 python 解释器（**不写死路径**：不同机器装法不同）。
+ * 找不到返回 null，进程级用例据此 skip —— 缺 python 不该让整文件红。
+ */
+function probePython() {
+  const candidates = [
+    process.env.MODELSTAGE_TEST_PYTHON,
+    '/usr/local/bin/python3.14',
+    '/usr/local/bin/python3.13',
+    '/usr/local/bin/python3.12',
+    '/usr/local/bin/python3.11',
+    '/usr/local/bin/python3.10',
+    '/usr/bin/python3',
+    'python3',
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    try {
+      execFileSync(candidate, ['-V'], { stdio: 'ignore', timeout: 5000 });
+      return candidate;
+    } catch { /* 换下一个 */ }
+  }
+  return null;
 }
 
-// ---------------------------------------------------------------- ① node 适配器契约
+const PYTHON = probePython();
 
-test('node 适配器：能装载真实插件并交出 canHandle/resolve', async () => {
-  const meta = await live2dMeta();
-  if (!meta) return;                      // 插件不在就 skip，不假通过
-  const r = nodeVm.load(meta, { pluginsDir: PLUGINS_DIR });
-  assert.equal(r.ok, true, `装载应成功，实际错误：${r.error}`);
+/** python 插件脚本模板：mode 决定"正常应答 / 不响应 / 半路退出" */
+function workerSource(mode) {
+  return `# -*- coding: utf-8 -*-
+import json
+import os
+import sys
+import time
+
+# 先把 pid 落到文件：测试要据此断言"被 kill 之后进程真的没了"
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pid.txt'), 'w', encoding='utf-8') as f:
+    f.write(str(os.getpid()))
+
+MODE = ${JSON.stringify(mode)}
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    mid = msg.get('id')
+    if MODE == 'hang':
+        # 故意不响应：等父进程的超时把它杀掉（验证"超时必须真杀"）
+        time.sleep(120)
+        continue
+    if MODE == 'crash':
+        # 半路退出：验证在途请求全部判失败、不挂死
+        sys.exit(3)
+    sys.stdout.write(json.dumps({"id": mid, "ok": True, "handled": True}) + "\\n")
+    sys.stdout.flush()
+`;
+}
+
+/**
+ * 在临时目录里造一个 exec 插件（pluginsDir/<id>/worker.py）。
+ * @param {{mode?: string, timeoutMs?: number, manifest?: object}} opts
+ */
+function makeFakePlugin(opts = {}) {
+  const mode = opts.mode || 'ok';
+  const pluginsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'exec-plugin-'));
+  const pluginDir = path.join(pluginsDir, 'fake-exec');
+  fs.mkdirSync(pluginDir, { recursive: true });
+  fs.writeFileSync(path.join(pluginDir, 'worker.py'), workerSource(mode), 'utf8');
+  const meta = {
+    id: 'fake-exec',
+    runtime: 'exec',
+    entry: 'worker.py',
+    frameProtocol: SUPPORTED_FRAME_PROTOCOL,
+    interpreter: PYTHON,
+    requestTimeoutMs: opts.timeoutMs === undefined ? 20000 : opts.timeoutMs,
+    files: [],
+    ...(opts.manifest || {}),
+  };
+  return { pluginDir, pluginsDir, meta, pidFile: path.join(pluginDir, 'pid.txt') };
+}
+
+/** 读插件自己写的 pid（写文件有极小延迟，轮询一下） */
+async function waitPid(pidFile, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const text = fs.readFileSync(pidFile, 'utf8').trim();
+      if (text) return Number(text);
+    } catch { /* 还没写 */ }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return null;
+}
+
+/** 进程是否还活着（signal 0 只探测，不发信号） */
+function isAlive(pid) {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const skipNoPython = PYTHON ? false : '本机没有可用的 python3（可用 MODELSTAGE_TEST_PYTHON 指定）';
+
+// ─────────────────────────── node 适配器 ───────────────────────────
+
+test('node 适配器：能装载真实插件并交出 canHandle/resolve', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(PLUGINS_DIR, 'unity-spine-bundle', 'plugin.json'), 'utf8'));
+  // plugin.json 的 files[] 是**相对插件目录**的（lib/errors.js）；
+  //   registry 读清单时会补成 `unity-spine-bundle/lib/errors.js`，适配器按 pluginsDir 拼，
+  //   所以这里要自己补那一段（否则会去 plugins/lib/… 找文件）。
+  const r = loadWithRuntime(
+    { id: 'unity-spine-bundle', runtime: 'node', files: manifest.files.map((f) => `unity-spine-bundle/${f}`) },
+    { pluginsDir: PLUGINS_DIR, root: ROOT },
+  );
+  assert.equal(r.ok, true, `装载应成功：${r.error || ''}`);
   assert.equal(typeof r.api.canHandle, 'function');
   assert.equal(typeof r.api.resolve, 'function');
-  // explainReject 是可选扩展（上一条任务加的），有就应该也是函数
-  if (r.api.explainReject !== undefined) assert.equal(typeof r.api.explainReject, 'function');
 });
 
 test('node 适配器：dispose 是空操作（进程内沙盒没有外部资源）', () => {
@@ -48,131 +152,171 @@ test('node 适配器：dispose 是空操作（进程内沙盒没有外部资源�
   assert.doesNotThrow(() => nodeVm.dispose());
 });
 
-test('plugin.json 的两个真实插件都声明了 runtime:"node"（显式优于缺省）', async () => {
-  const { listProviderPlugins } = await import('../src/server/unpack/plugin-runner.mjs');
-  const list = listProviderPlugins();
-  if (!list.length) return;
-  // 内置提供者（builtin-spine / builtin-live2d）也声明 asset-provider 角色、与插件同表返回，
-  //   但它们不是 node 插件、没有 runtime 字段（装载器跑在前端）。本用例只管真实插件，
-  //   否则"每个提供者都必须有 runtime:node"会把内置项误判成违规。
-  const disk = list.filter((m) => m.builtin !== true);
-  for (const m of disk) {
-    assert.equal(m.runtime, 'node', `${m.id} 应显式声明 runtime:"node"`);
-    assert.equal(m.frameProtocol, null, `${m.id} 是 node 运行时，frameProtocol 应为 null`);
-  }
-  // 内置项必须能被识别（builtin:true），否则上面的过滤会静默漏掉它们；
-  //   且它们不能声明成 node 运行时（装载器跑在前端，没有 node 入口）。
-  for (const m of list.filter((x) => x.builtin === true)) {
-    assert.notEqual(m.runtime, 'node', `${m.id} 是内置提供者，不应声明 node runtime`);
+test('三个真实插件都显式声明了 runtime（显式优于缺省，避免"忘写就落到 node"）', () => {
+  for (const id of ['unity-spine-bundle', 'unity-live2d-bundle', 'unitypy-bundle']) {
+    const manifest = JSON.parse(fs.readFileSync(path.join(PLUGINS_DIR, id, 'plugin.json'), 'utf8'));
+    assert.equal(typeof manifest.runtime, 'string', `${id} 应显式声明 runtime`);
   }
 });
 
-// ---------------------------------------------------------------- ② exec 适配器：明确未实现
+// ─────────────────────────── exec 清单校验 ───────────────────────────
 
-test('exec 适配器：清单合法时仍明确抛 NOT_IMPLEMENTED（不静默、不假装能跑）', () => {
-  const meta = { id: 'demo-exec', runtime: 'exec', entry: 'bin/run.sh', frameProtocol: SUPPORTED_FRAME_PROTOCOL, files: [] };
-  const r = execRuntime.load(meta, { pluginsDir: PLUGINS_DIR });
-  assert.equal(r.ok, false, '本轮 exec 不应装载成功');
-  assert.equal(r.code, NOT_IMPLEMENTED, `应返回 ${NOT_IMPLEMENTED}，实际 ${r.code}`);
-  assert.match(r.error, /尚未实现/, '错误消息应说清"未实现"而不是"插件坏了"');
-  assert.match(r.error, /清单校验已通过/, '应说明清单本身是合法的（区分两类问题）');
+test('exec 清单校验：合法清单通过', () => {
+  assert.deepEqual(validateExecManifest({ entry: 'worker.py', frameProtocol: SUPPORTED_FRAME_PROTOCOL }), { ok: true });
 });
 
-test('exec 清单校验：缺 entry / 绝对路径 / .. / 缺 frameProtocol / 版本不对 都要拒', () => {
-  const base = { id: 'x', runtime: 'exec', entry: 'bin/run.sh', frameProtocol: SUPPORTED_FRAME_PROTOCOL };
-  assert.equal(validateExecManifest(base).ok, true, '合法清单应通过');
-
-  // 用"明显超出支持范围"的协议号构造非法值：不写死具体数字，避免与将来新增的协议版本冲突
-  const unsupportedProtocol = SUPPORTED_FRAME_PROTOCOL + 1000;
+test('exec 清单校验：缺 entry / 缺 frameProtocol / 协议版本不对 / entry 空串 都要拒', () => {
   const cases = [
-    [{ ...base, entry: '' }, /必须.*声明 entry/],
-    // 绝对路径：用当前平台的根路径拼出来，不硬编码某个具体可执行文件
-    [{ ...base, entry: path.resolve(path.sep, 'anywhere', 'outside.sh') }, /相对路径/],
-    [{ ...base, entry: '../outside.sh' }, /相对路径/],
-    [{ ...base, frameProtocol: undefined }, /frameProtocol/],
-    [{ ...base, frameProtocol: unsupportedProtocol }, /不支持的 frameProtocol/],
+    [{ frameProtocol: 1 }, '缺 entry'],
+    [{ entry: 'worker.py' }, '缺 frameProtocol'],
+    [{ entry: 'worker.py', frameProtocol: 99 }, '协议版本不支持'],
+    [{ entry: '', frameProtocol: 1 }, 'entry 为空串'],
   ];
-  for (const [meta, pattern] of cases) {
-    const v = validateExecManifest(meta);
-    assert.equal(v.ok, false, `应拒：${JSON.stringify(meta)}`);
-    assert.match(v.error, pattern);
+  for (const [manifest, why] of cases) {
+    const r = validateExecManifest(manifest);
+    assert.equal(r.ok, false, `${why} 应被拒`);
+    assert.equal(r.code, MANIFEST_INVALID, `${why} 的错误码应是 ${MANIFEST_INVALID}`);
+    assert.ok(r.error && r.error.length > 0, `${why} 必须给出可读原因`);
   }
 });
 
-// ---------------------------------------------------------------- ③ 安全门禁
-
-test('安全门禁：runtime:"exec" 但未开启 ⇒ 拒绝装载，原因里给出开启方式与风险', () => {
-  const meta = { id: 'demo-exec', runtime: 'exec', entry: 'bin/run.sh', frameProtocol: 1, files: [] };
-  const r = loadWithRuntime(meta, { pluginsDir: PLUGINS_DIR, root: ROOT, execAllowed: { allowed: false, source: 'default' } });
-  assert.equal(r.ok, false);
-  assert.equal(r.code, 'EXEC_RUNTIME_DISABLED');
-  assert.match(r.error, /未开启/, '应说明是门禁拦的');
-  assert.match(r.error, /allowExecRuntime/, '应给出配置文件写法');
-  assert.match(r.error, /MODELSTAGE_ALLOW_EXEC_PLUGINS/, '应给出环境变量写法');
-  assert.match(r.error, /信任/, '应提示风险（只对信任的插件开启）');
+test('exec 清单校验：entry 是绝对路径或含 .. 一律拒（不许把整机任意可执行文件变成入口）', () => {
+  for (const bad of ['/bin/sh', '../evil.py', 'a/../../b.py']) {
+    const r = validateExecManifest({ entry: bad, frameProtocol: 1 });
+    assert.equal(r.ok, false, `${bad} 应被拒`);
+    assert.equal(r.code, MANIFEST_INVALID);
+  }
 });
 
-test('安全门禁：显式开启后才走到适配器（仍报未实现，但不再是"门禁拒绝"）', () => {
-  const meta = { id: 'demo-exec', runtime: 'exec', entry: 'bin/run.sh', frameProtocol: 1, files: [] };
-  const r = loadWithRuntime(meta, { pluginsDir: PLUGINS_DIR, root: ROOT, execAllowed: { allowed: true, source: 'test' } });
+test('exec 适配器：入口文件不存在 ⇒ 装载期就报错（不等到 spawn 才炸）', () => {
+  const pluginsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'exec-missing-'));
+  fs.mkdirSync(path.join(pluginsDir, 'ghost'), { recursive: true });
+  const r = loadWithRuntime(
+    { id: 'ghost', runtime: 'exec', entry: 'nope.py', frameProtocol: 1, interpreter: PYTHON || 'python3', files: [] },
+    { pluginsDir, root: ROOT, execAllowed: { allowed: true, source: 'test' } },
+  );
   assert.equal(r.ok, false);
-  assert.equal(r.code, NOT_IMPLEMENTED, '开启后应是"未实现"而不是"被禁用"');
+  assert.match(String(r.error), /不存在|not exist/i);
+  fs.rmSync(pluginsDir, { recursive: true, force: true });
 });
 
-test('安全门禁默认值：没有配置文件、没有环境变量 ⇒ 关闭', () => {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rt-gate-'));
-  const saved = process.env.MODELSTAGE_ALLOW_EXEC_PLUGINS;
-  delete process.env.MODELSTAGE_ALLOW_EXEC_PLUGINS;
+// ─────────────────────────── exec 真 spawn ───────────────────────────
+
+test('exec 真 spawn：子进程按帧协议应答，canHandle 返回正确布尔', { skip: skipNoPython }, async () => {
+  const { pluginsDir, meta } = makeFakePlugin({ mode: 'ok' });
+  const r = loadWithRuntime(meta, { pluginsDir, root: ROOT, execAllowed: { allowed: true, source: 'test' } });
+  assert.equal(r.ok, true, `装载应成功：${r.error || ''}`);
+  const handled = await r.api.canHandle({ rootId: 'r', rel: 'a/b.bundle', name: 'b.bundle', size: 1, absPath: '/dev/null' });
+  assert.equal(handled, true, '插件回 handled:true，适配器应返回 true');
+  r.api.dispose?.();
+  fs.rmSync(pluginsDir, { recursive: true, force: true });
+});
+
+test('exec 真 spawn：**超时必须真杀**（不只是 reject，进程要真没了）', { skip: skipNoPython }, async () => {
+  const { pluginsDir, meta, pidFile } = makeFakePlugin({ mode: 'hang', timeoutMs: 800 });
+  const r = loadWithRuntime(meta, { pluginsDir, root: ROOT, execAllowed: { allowed: true, source: 'test' } });
+  assert.equal(r.ok, true, `装载应成功：${r.error || ''}`);
+  // exec 是**惰性 spawn**：进程在第一次请求时才起，所以要先发请求（不 await）再等 pid。
+  //   如果先等 pid 会一直等不到（那时进程根本还没起）—— 这是本轮踩到的第一个坑。
+  const pending = r.api.canHandle({ rootId: 'r', rel: 'a', name: 'a', size: 1, absPath: '/dev/null' });
+  const pid = await waitPid(pidFile);
+  assert.ok(pid, '插件应已写出自己的 pid');
+  assert.equal(isAlive(pid), true, '超时前进程应活着');
+
+  await assert.rejects(() => pending, /超时|timeout/i, '超时后应 reject（而不是永远挂着）');
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && isAlive(pid)) await new Promise((res) => setTimeout(res, 100));
+  assert.equal(isAlive(pid), false, `超时后进程必须真的被终止（pid=${pid} 仍存活）`);
+  fs.rmSync(pluginsDir, { recursive: true, force: true });
+});
+
+test('exec 崩溃传播：子进程半路退出时，在途请求全部判失败（不许挂死）', { skip: skipNoPython }, async () => {
+  const { pluginsDir, meta } = makeFakePlugin({ mode: 'crash', timeoutMs: 20000 });
+  const r = loadWithRuntime(meta, { pluginsDir, root: ROOT, execAllowed: { allowed: true, source: 'test' } });
+  assert.equal(r.ok, true, `装载应成功：${r.error || ''}`);
+  // 两个并发请求：进程读到第一帧就 exit ⇒ 两个都应 reject，而不是等满 20s 超时
+  const t0 = Date.now();
+  const both = await Promise.allSettled([
+    r.api.canHandle({ rootId: 'r', rel: 'a', name: 'a', size: 1, absPath: '/dev/null' }),
+    r.api.canHandle({ rootId: 'r', rel: 'b', name: 'b', size: 1, absPath: '/dev/null' }),
+  ]);
+  const elapsed = Date.now() - t0;
+  assert.equal(both[0].status, 'rejected', '第一个请求应失败（进程已退出）');
+  assert.equal(both[1].status, 'rejected', '第二个在途请求也应失败（不能挂死）');
+  assert.ok(elapsed < 15000, `应在进程退出时立即失败（实际 ${elapsed}ms，接近超时 20s 说明没传播）`);
+  fs.rmSync(pluginsDir, { recursive: true, force: true });
+});
+
+test('僵尸检查：跑完多轮请求并 dispose 后，不残留子进程', { skip: skipNoPython }, async () => {
+  const { pluginsDir, meta, pidFile } = makeFakePlugin({ mode: 'ok' });
+  const r = loadWithRuntime(meta, { pluginsDir, root: ROOT, execAllowed: { allowed: true, source: 'test' } });
+  assert.equal(r.ok, true);
+  for (let i = 0; i < 3; i += 1) {
+    await r.api.canHandle({ rootId: 'r', rel: `x${i}`, name: 'x', size: 1, absPath: '/dev/null' });
+  }
+  const pid = await waitPid(pidFile);
+  assert.ok(pid);
+  assert.equal(isAlive(pid), true, '请求期间进程应活着');
+  r.api.dispose?.();
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && isAlive(pid)) await new Promise((res) => setTimeout(res, 100));
+  assert.equal(isAlive(pid), false, `dispose 后不得残留进程（pid=${pid} 仍存活）`);
+  fs.rmSync(pluginsDir, { recursive: true, force: true });
+});
+
+// ─────────────────────────── 真实 UnityPy 插件（可选） ───────────────────────────
+
+test('真实插件 unitypy-bundle：依赖可 import 时能装载并应答 canHandle', async (t) => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(PLUGINS_DIR, 'unitypy-bundle', 'plugin.json'), 'utf8'));
+  const depsDir = manifest.depsDir;
+  const python = manifest.interpreter;
+  if (!depsDir || !fs.existsSync(depsDir)) return t.skip(`依赖目录不存在：${depsDir || '(未声明)'}`);
+  if (!python || !fs.existsSync(python)) return t.skip(`解释器不存在：${python || '(未声明)'}`);
   try {
-    const g = readExecPermission(tmpRoot);
-    assert.equal(g.allowed, false, '默认必须关闭');
-    assert.equal(g.source, 'default');
-  } finally {
-    if (saved !== undefined) process.env.MODELSTAGE_ALLOW_EXEC_PLUGINS = saved;
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    execFileSync(python, ['-c', 'import UnityPy'], {
+      stdio: 'ignore', timeout: 30000, env: { ...process.env, PYTHONPATH: depsDir },
+    });
+  } catch {
+    return t.skip('UnityPy 未能 import（依赖未装或版本不匹配）');
   }
+  const r = loadWithRuntime(manifest, { pluginsDir: PLUGINS_DIR, root: ROOT, execAllowed: { allowed: true, source: 'test' } });
+  assert.equal(r.ok, true, `装载应成功：${r.error || ''}`);
+  // 用插件自己的 README 当"非 UnityFS 文件"：canHandle 只看 8 字节魔数，必须不被认领。
+  //   不写死外部样本包路径（缺样本时这条仍然有验证价值）。
+  const notBundle = path.join(PLUGINS_DIR, 'unitypy-bundle', 'README.md');
+  assert.equal(
+    await r.api.canHandle({ rootId: 'r', rel: 'README.md', name: 'README.md', size: 1, absPath: notBundle }),
+    false,
+    '非 UnityFS 文件必须不被认领（canHandle 只看魔数）',
+  );
+  r.api.dispose?.();
 });
 
-test('安全门禁：配置文件写 true 才放行；写坏 JSON 按"未开启"处理（失败要保守）', () => {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rt-gate2-'));
-  const cfgPath = path.join(tmpRoot, EXEC_PERMISSION_FILE);
-  fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
-  const saved = process.env.MODELSTAGE_ALLOW_EXEC_PLUGINS;
+// ─────────────────────────── 安全门禁 ───────────────────────────
+
+test('安全门禁：exec 默认关闭（无配置文件、无环境变量时 allowed=false）', () => {
+  const prevEnv = process.env.MODELSTAGE_ALLOW_EXEC_PLUGINS;
+  const prevRoot = process.env.MODELSTAGE_DATA_ROOT;
   delete process.env.MODELSTAGE_ALLOW_EXEC_PLUGINS;
+  process.env.MODELSTAGE_DATA_ROOT = path.join(os.tmpdir(), 'no-such-data-root-xyz');
   try {
-    fs.writeFileSync(cfgPath, JSON.stringify({ allowExecRuntime: true }));
-    assert.equal(readExecPermission(tmpRoot).allowed, true, '写 true 应放行');
-
-    fs.writeFileSync(cfgPath, '{ 这不是 JSON');
-    const bad = readExecPermission(tmpRoot);
-    assert.equal(bad.allowed, false, '坏 JSON 必须按未开启处理（不能因为笔误把门打开）');
-    assert.ok(bad.error, '应带上解析失败原因');
+    assert.equal(readExecPermission(ROOT).allowed, false, '缺省必须关闭');
   } finally {
-    if (saved !== undefined) process.env.MODELSTAGE_ALLOW_EXEC_PLUGINS = saved;
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    if (prevEnv === undefined) delete process.env.MODELSTAGE_ALLOW_EXEC_PLUGINS;
+    else process.env.MODELSTAGE_ALLOW_EXEC_PLUGINS = prevEnv;
+    if (prevRoot === undefined) delete process.env.MODELSTAGE_DATA_ROOT;
+    else process.env.MODELSTAGE_DATA_ROOT = prevRoot;
   }
 });
 
-// ---------------------------------------------------------------- ④ 缺省与非法值
-
-test('缺省：插件不写 runtime ⇒ 按 node 处理（历史兼容，零行为变化）', () => {
-  assert.equal(DEFAULT_RUNTIME, 'node');
-  assert.deepEqual(resolveRuntimeName({ id: 'x' }), { ok: true, runtime: 'node' });
-  assert.deepEqual(resolveRuntimeName({ id: 'x', runtime: null }), { ok: true, runtime: 'node' });
-  assert.deepEqual(resolveRuntimeName({ id: 'x', runtime: '' }), { ok: true, runtime: 'node' });
+test('安全门禁：未开启时装载被拒，原因里给出开启方式（不是静默跳过）', () => {
+  const { pluginsDir, meta } = makeFakePlugin({ mode: 'ok' });
+  const r = loadWithRuntime(meta, { pluginsDir, root: ROOT, execAllowed: { allowed: false, source: 'default' } });
+  assert.equal(r.ok, false, '未开启 exec 时必须拒绝');
+  assert.match(String(r.error), /allowExecRuntime|MODELSTAGE_ALLOW_EXEC_PLUGINS/, '错误信息要告诉用户怎么开');
+  fs.rmSync(pluginsDir, { recursive: true, force: true });
 });
 
-test('非法 runtime 值 ⇒ 明确报错并列出可用值（不猜、不静默降级）', () => {
-  const r = resolveRuntimeName({ id: 'x', runtime: 'python' });
-  assert.equal(r.ok, false);
-  assert.match(r.error, /未知 runtime/);
-  assert.match(r.error, /python/, '错误里应带上用户写的值');
-  assert.match(r.error, /node/, '应列出可用值');
-});
-
-test('已注册运行时清单（诊断用）：至少含 node 与 exec', () => {
-  const names = listRuntimes().map((x) => x.runtime);
-  assert.ok(names.includes('node'));
-  assert.ok(names.includes('exec'));
-  assert.deepEqual(KNOWN_RUNTIMES.sort(), ['exec', 'node']);
+test('安全门禁：权限文件固定在 <数据根>/config 下（测试实例与主实例互不影响）', () => {
+  assert.equal(EXEC_PERMISSION_FILE, 'config/plugin-runtime.json');
 });

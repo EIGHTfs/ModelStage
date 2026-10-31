@@ -263,6 +263,19 @@ export function readPluginManifest(pluginsDir, dirName, isFile, disabled, seenEf
     entry: m.entry ? String(m.entry) : null,
     /** exec 运行时的帧协议版本；node 运行时为 null */
     frameProtocol: m.frameProtocol === undefined || m.frameProtocol === null ? null : Number(m.frameProtocol),
+    /**
+     * exec 运行时：解释器可执行文件（缺省由适配器按常见路径探）。
+     * 为什么要在清单里声明：不同插件的依赖装在不同 Python 版本里，宿主猜不出来。
+     */
+    interpreter: m.interpreter ? String(m.interpreter) : null,
+    /**
+     * exec 运行时：依赖目录。**支持绝对路径** —— 本项目仓库常在 CIFS 上（noexec、
+     * 且不能 utime .so），带 C 扩展的依赖装进去会 PermissionError，只能放本地盘，
+     * 由插件在自己的 README 写明位置。相对路径按插件目录解析。
+     */
+    depsDir: m.depsDir ? String(m.depsDir) : null,
+    /** exec 运行时：单次请求超时（毫秒）；缺省由适配器给 120s */
+    requestTimeoutMs: Number.isFinite(Number(m.requestTimeoutMs)) ? Number(m.requestTimeoutMs) : null,
     /** 受限扩展点（契约 §九）：空数组表示"没声明"，前端据此建能力键白名单 */
     effects: Array.isArray(m.effects) ? m.effects : [],
     manifest: true,

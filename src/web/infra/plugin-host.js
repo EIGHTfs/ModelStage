@@ -675,11 +675,20 @@ const MIME_BY_EXT = {
       emit('unpack.lookup', { rootId: file.rootId, rel: file.rel, ok: false, error: (j && (j.reason || j.message)) || 'bad-response', ms: Math.round(performance.now() - tLook) });
       throw Object.assign(new Error((j && (j.message || j.reason)) || '服务端查询失败'), { reason: 'lookup-error' });
     }
-    if (!j.hit) {
+    if (!j.hit && hitOnly) {
+      // **只有"只查缓存"模式**才把 hit:false 当作未命中。
+      //   hitOnly=false 时服务端是**真解包**：解完后返回 hit:false + 完整产物，这是正常成功路径。
+      //   早前这里无条件按 !j.hit 抛 server-miss ⇒「请服务端解包」这条路永远走不通，
+      //   于是"本地插件解不了的包（如纹理格式 ASTC/50）在页面上永远打不开"。
       emit('unpack.lookup', { rootId: file.rootId, rel: file.rel, ok: true, hit: false, missReason: j.missReason || 'no-index', ms: Math.round(performance.now() - tLook) });
       throw Object.assign(new Error(`未命中（${j.missReason || 'no-index'}）`), { reason: 'server-miss' });
     }
-    emit('unpack.lookup', { rootId: file.rootId, rel: file.rel, ok: true, hit: true, ms: Math.round(performance.now() - tLook) });
+    emit('unpack.lookup', {
+      rootId: file.rootId, rel: file.rel, ok: true,
+      hit: !!j.hit,
+      ...(j.hit ? {} : { unpacked: true }),   // 服务端刚解完（server-unpack），验收要看这一次花了多久
+      ms: Math.round(performance.now() - tLook),
+    });
     // **并行**取产物：实测 19 个文件顺序 145ms vs 并行 57ms（39 个文件 413ms vs 174ms）。
     //   顺序取会让"命中路径"慢 2.5 倍，从而在竞速里输给本地解包 —— 那 17b 就白做了。
     const list = j.files || [];
@@ -1032,9 +1041,38 @@ const MIME_BY_EXT = {
       try {
         won = await firstWon([serverP, localP]);
       } catch (e) {
-        if (e && e.passthrough) return e.passthrough; // 本地失败保持原有返回形状
-        // 内存保护的判定是**结论**，不是"服务端失败"：绝不能回落本地解包把它绕过去
-        return { ok: false, reason: (e && e.reason) || 'unpack-failed', message: String((e && e.message) || e) };
+        // 内存保护的判定是**结论**，不是"服务端失败"：绝不能回落服务端/本地把它绕过去
+        if (e && e.reason === 'memory-guard') {
+          return { ok: false, reason: e.reason, message: String((e && e.message) || e) };
+        }
+        // ── 最后一级兜底：让**服务端真解包**（hitOnly:false）再试一次 ──────────────
+        // 为什么需要它：本地线只能跑 JS 插件，而有些包的纹理解码格式它不支持
+        //   （实测：ASTC/50、PVRTC/49）⇒ 本地必然失败；但服务端可能还有别的运行时
+        //   （exec/Python 插件，能力来自 UnityPy）能解。没有这一级，这类包在页面上永远打不开，
+        //   而同一个包用 /api/unpack/resolve 却能解开 —— 那是"两条路两种答案"，不可接受。
+        // 代价可控：只在**本地已失败**之后才走，不影响首屏（首屏竞速仍是 server-hit + local）。
+        //
+        // ⚠️ 这一级必须放在 `passthrough` 之前：本地解包失败时一定带 passthrough
+        //   （见 localPath 里 `Object.assign(..., { passthrough: got })`），
+        //   先处理它就会直接 return，兜底永远走不到（实测就是这个原因）。
+        if (unpackOn && !file.bytes && file.rootId && file.rel) {
+          say.warn(`本地解包失败，改请服务端解包：${file.rel}（${(e && e.message) || e}）`);
+          emit('unpack.fallback', { rootId: file.rootId, rel: file.rel, localReason: (e && e.reason) || 'local-failed' });
+          try {
+            won = await resolveFromServer(file, { hitOnly: false, mon });
+          } catch (e2) {
+            // 兜底也失败：本地失败保持原有返回形状（那是上层认识的形状）
+            if (e && e.passthrough) return e.passthrough;
+            return {
+              ok: false,
+              reason: (e2 && e2.reason) || 'unpack-failed',
+              message: `本地解包失败（${(e && e.message) || e}），服务端解包也失败（${(e2 && e2.message) || e2}）`,
+            };
+          }
+        } else {
+          if (e && e.passthrough) return e.passthrough; // 无可兜底时保持原有返回形状
+          return { ok: false, reason: (e && e.reason) || 'unpack-failed', message: String((e && e.message) || e) };
+        }
       }
       emit('unpack.race', {
         rootId: file.rootId, rel: file.rel,

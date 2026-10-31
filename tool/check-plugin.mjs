@@ -66,12 +66,22 @@ function readManifest(dir, manifestPath) {
   const file = manifestPath ? path.resolve(manifestPath) : path.join(dir, 'plugin.json');
   const text = fs.readFileSync(file, 'utf8');
   const manifest = parseJsonc(text, `${path.basename(dir)}/plugin.json`);
+  const runtime = String(manifest.runtime || 'node');
   // 加载顺序按契约 §二：files[] → entry → index.js
   let files = [];
-  if (Array.isArray(manifest.files) && manifest.files.length) files = manifest.files.slice();
-  else if (typeof manifest.entry === 'string' && manifest.entry) files = [manifest.entry];
-  else files = ['index.js'];
-  return { manifest, files };
+  if (runtime === 'exec') {
+    // exec 运行时的插件**不是 JS**：宿主 spawn 它的 entry（一个独立进程），不在 vm 里跑脚本。
+    //   所以这里不能回落用 entry 当"要编译的脚本" —— 那会把 worker.py 送进 vm.Script，
+    //   必然报 "Invalid or unexpected token"（实测踩到）。entry 的存在性由 B1 单独校验。
+    files = [];
+  } else if (Array.isArray(manifest.files) && manifest.files.length) {
+    files = manifest.files.slice();
+  } else if (typeof manifest.entry === 'string' && manifest.entry) {
+    files = [manifest.entry];
+  } else {
+    files = ['index.js'];
+  }
+  return { manifest, files, runtime };
 }
 
 /** 默认最多试几个候选容器（可用 SAMPLE_TRY_MAX 覆盖，CI 想更快可设 4） */
@@ -157,9 +167,11 @@ export async function checkPlugin(dir, options = {}) {
   // ---------------- A 清单层 ----------------
   let manifest = null;
   let files = [];
+  let runtime = 'node';
   try {
     const r = readManifest(abs, options.manifestPath);
     manifest = r.manifest;
+    runtime = r.runtime || 'node';
     files = r.files;
     rep.ok('A1', 'plugin.json 可解析（JSONC）', '§二');
   } catch (e) {
@@ -252,6 +264,33 @@ export async function checkPlugin(dir, options = {}) {
   }
 
   // ---------------- B 代码层（vm 垫片） ----------------
+  // exec 运行时不是 JS：B2~B9 全是「vm 垫片里跑脚本」的语义，对它不适用。
+  //   等价的可验判据只有"entry 指向的文件真实存在且非空"（宿主 spawn 它才可能成功）。
+  if (runtime === 'exec') {
+    const entryRel = String(manifest.entry || '');
+    if (!entryRel) {
+      rep.fail('B1', 'runtime:"exec" 但清单没声明 entry（宿主不知道要 spawn 什么）', '§三');
+      return { dir: abs, rows: rep.rows, counts: rep.counts(), failed: true };
+    }
+    // entry 必须是插件目录内的相对路径（与 exec 适配器的校验同口径：不许绝对路径 / ..）
+    if (path.isAbsolute(entryRel) || entryRel.split(/[\\/]/).includes('..')) {
+      rep.fail('B1a', `entry 必须是插件目录内的相对路径（不许绝对路径或 ..）：${entryRel}`, '§二');
+      return { dir: abs, rows: rep.rows, counts: rep.counts(), failed: true };
+    }
+    const entryAbs = path.join(abs, entryRel);
+    if (!fs.existsSync(entryAbs)) {
+      rep.fail('B1a', `entry 指向的文件不存在：${entryRel}`, '§二');
+      return { dir: abs, rows: rep.rows, counts: rep.counts(), failed: true };
+    }
+    const entrySize = fs.statSync(entryAbs).size;
+    if (!entrySize) {
+      rep.fail('B1a', `entry 指向的文件是空的：${entryRel}`, '§二');
+      return { dir: abs, rows: rep.rows, counts: rep.counts(), failed: true };
+    }
+    rep.ok('B1', `exec 运行时：entry 存在（${entryRel}，${entrySize} 字节）；不适用 vm 编译检查`, '§三');
+    rep.ok('B1b', `fileKinds=${(manifest.fileKinds || []).join('/')}；调度判据由适配器按 frameProtocol=${manifest.frameProtocol} 走帧协议`, '§三');
+    return { dir: abs, rows: rep.rows, counts: rep.counts(), failed: rep.counts().fail > 0 };
+  }
   const { sandbox, registered, logs } = createSandbox();
   let loaded;
   try {

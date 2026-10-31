@@ -1,77 +1,432 @@
-// src/server/unpack/runtime/exec.mjs —— 「exec」运行时适配器（**本轮只有契约骨架，不真起子进程**）
+// src/server/unpack/runtime/exec.mjs —— 「exec」运行时适配器：spawn 插件入口，走「一行一个 JSON」帧协议
 //
-// 这一档要解决的是"插件用非 JS 语言写"（Go / Rust / Python / shell 都一视同仁）：
-//   宿主 spawn 插件目录里的一个可执行文件，双方用「一行一个 JSON」的帧协议通信。
+// 协议（docs/设计/插件运行时与多语言.md §四）：
+//   请求  父 → 子  {"id":1,"method":"canHandle","absPath":"…","size":123}
+//   响应  子 → 父  {"id":1,"ok":true,"handled":true}
+//                  {"id":1,"ok":true,"prefix":"vfs://…","entry":"entry.json",
+//                   "files":[{"name":"a.png","tmpPath":"<插件临时目录>/a.png","size":123}]}
+//   错误  子 → 父  {"id":1,"ok":false,"code":"ULB_ERR_…","message":"…"}
 //
-// 为什么本轮故意不实现 spawn：
-//   ① 协议细节（大 payload 走临时文件还是流、超时怎么杀、僵尸怎么收、并发怎么命名临时文件）
-//      需要真实现才能定稿；先做一个"能跑但没想清楚"的半成品，比不做更危险 ——
-//      它会让人以为协议已经可用。
-//   ② 当前两个插件都是 node 运行时，没有任何"现在就要靠 exec 才能解开的包"。
-//   ③ 安全面完全不同（见下），需要产品层面的开关与警告，不能顺手打开。
+// 四条硬约束（设计稿 §四，逐条落在代码里）：
+//   ① 帧 = 一行 JSON（UTF-8）+ \n；解析必须支持跨 chunk 拼行（readline 天然满足）
+//   ② 二进制**不进帧**：子进程把产物写到临时目录，帧里只给 {name, tmpPath, size}
+//      —— 20MB 包 base64 会又慢又吃内存。产物由父进程按需读取（见 lazyBytes）
+//   ③ 超时必须双向：父进程每次请求设超时并 kill；子进程侧也有自己的内部上限（插件责任）
+//   ④ 崩溃只重试一次：异常退出后下一次请求重启，仍失败则该插件后续请求直接报错
 //
-// **安全边界（与 node-vm 有本质区别）**：
-//   node-vm 是"进程内造一个隔离对象当全局"——插件再怎么折腾，也只是在一个 JS 对象里；
-//   exec 是"让一个陌生可执行文件在你机器上跑"——它能读你所有文件、连你的网络、
-//   看你的环境变量，宿主没有任何办法在进程内部约束它。
-//   ⇒ 所以本运行时**默认禁用**，必须用户在配置里显式开启（见 runtime/index.mjs 的门禁）。
+// **安全边界**：exec 是"让一个陌生可执行文件在你机器上跑"——它能读你所有文件、连你的网络。
+//   所以本运行时默认禁用，必须 config/plugin-runtime.json 显式开启（门禁在 runtime/index.mjs）。
+import fs from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
+import readline from 'node:readline';
 
 /** 本适配器能处理的 runtime 名 */
 export const RUNTIME = 'exec';
 
-/** 未实现的统一错误码（调用方据此区分"契约未实现"与"插件坏了"） */
-export const NOT_IMPLEMENTED = 'EXEC_RUNTIME_NOT_IMPLEMENTED';
-
 /** 协议版本：exec 插件必须在 plugin.json 声明 frameProtocol，且必须是本版本 */
 export const SUPPORTED_FRAME_PROTOCOL = 1;
 
+/** 清单不合法时的错误码（与"宿主还没实现"区分开，便于排障） */
+export const MANIFEST_INVALID = 'EXEC_MANIFEST_INVALID';
+
+/** 单次请求缺省超时：首帧含 python 启动 + import UnityPy（冷启实测 1~3s），给足余量 */
+const DEFAULT_TIMEOUT_MS = 120_000;
+/** 空闲多久后退出子进程（避免常驻 python 吃内存） */
+const DEFAULT_IDLE_MS = 60_000;
+/** 单行上限：防止子进程吐超大 JSON 把父进程内存拉爆（产物走 tmpPath，帧里不该有大块） */
+const MAX_LINE_BYTES = 4 * 1024 * 1024;
+/** SIGTERM 后等多久改 SIGKILL */
+const KILL_GRACE_MS = 3000;
+
 /**
  * 校验一个 exec 插件的清单是否自洽（**纯校验，不起进程**）。
- * 这一层是有用的：即使 spawn 还没实现，也能在装载期就把"清单写错了"报出来，
- *   而不是等到真实现时才发现一堆清单不合规。
+ * 这一层在装载期就把"清单写错了"报出来，而不是等第一次解包才发现。
  * @param {object} meta 插件清单
  * @returns {{ok: true} | {ok: false, error: string, code: string}}
  */
 export function validateExecManifest(meta) {
   const entry = meta && meta.entry ? String(meta.entry) : '';
   if (!entry) {
-    return { ok: false, code: NOT_IMPLEMENTED, error: 'runtime:"exec" 的插件必须在 plugin.json 里声明 entry（相对插件目录的可执行路径）' };
+    return { ok: false, code: MANIFEST_INVALID, error: 'runtime:"exec" 的插件必须在 plugin.json 里声明 entry（相对插件目录的入口文件，如 worker.py）' };
   }
   // entry 必须是相对路径：绝对路径会让插件把"整机任意可执行文件"变成自己的入口（明显越界）
   if (path.isAbsolute(entry) || entry.split(/[\\/]/).includes('..')) {
-    return { ok: false, code: NOT_IMPLEMENTED, error: `runtime:"exec" 的 entry 必须是插件目录内的相对路径（不允许绝对路径或 ..）：${entry}` };
+    return { ok: false, code: MANIFEST_INVALID, error: `runtime:"exec" 的 entry 必须是插件目录内的相对路径（不允许绝对路径或 ..）：${entry}` };
   }
   const fp = meta && meta.frameProtocol;
   if (fp === undefined || fp === null) {
-    return { ok: false, code: NOT_IMPLEMENTED, error: 'runtime:"exec" 的插件必须声明 frameProtocol（当前支持版本 1）' };
+    return { ok: false, code: MANIFEST_INVALID, error: 'runtime:"exec" 的插件必须声明 frameProtocol（当前支持版本 1）' };
   }
   if (Number(fp) !== SUPPORTED_FRAME_PROTOCOL) {
-    return { ok: false, code: NOT_IMPLEMENTED, error: `不支持的 frameProtocol：${fp}（本宿主支持 ${SUPPORTED_FRAME_PROTOCOL}）` };
+    return { ok: false, code: MANIFEST_INVALID, error: `不支持的 frameProtocol：${fp}（本宿主支持 ${SUPPORTED_FRAME_PROTOCOL}）` };
   }
   return { ok: true };
+}
+
+/**
+ * 惰性字节视图：`filesView` 只要求"有 length 和 slice"，真正取用（take）时才读盘。
+ *
+ * 为什么不做成一次性全读：一个包的产物可能是几十 MB（纹理），而列表/校验路径只看 size；
+ *   全读进内存等于把解包的峰值再抬高一份。
+ *
+ * ⚠️ **必须同时提供 `arrayBuffer()`**：`filesView` 的 toBytes 优先走 Blob 形状
+ *   （`typeof v.arrayBuffer === 'function'`），否则会落到 `new Uint8Array(v)` 那条 ——
+ *   那是 array-like 分支，对一个普通对象只会产出**长度对、内容全 0** 的假字节。
+ *   实测踩到过：entry.json 175 字节全 `0x00`，JSON 解析直接失败。
+ *   返回的 ArrayBuffer 必须是**独立拷贝**（`buf.buffer.slice(...)`）：Buffer 常来自共享池，
+ *   直接把 buf.buffer 交出去会把池里相邻的其它内容也带上。
+ * @param {string} tmpPath 子进程写出的临时文件
+ * @param {number} size 字节数
+ */
+function lazyBytes(tmpPath, size) {
+  return {
+    length: Number(size) || 0,
+    // Blob 形状（优先分支）：filesView → toBytes 会读它
+    arrayBuffer: async () => {
+      const buf = fs.readFileSync(tmpPath);
+      return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    },
+    // Uint8Array 形状（备用分支）
+    slice: () => fs.readFileSync(tmpPath),
+    tmpPath,
+  };
+}
+
+/**
+ * 找可用的解释器：清单声明优先，否则按常见路径探**一次并记住**。
+ *
+ * 为什么缓存：本函数会被每个 worker 的 spawn 调用一次，而探测要对候选路径逐个 statSync；
+ *   同一进程里解释器不会换，探一次就够（`repeat-identical-call` 报的正是这一处）。
+ *   清单显式声明时直接返回，根本不进探测循环。
+ * @param {object} meta 插件清单
+ * @returns {string} 解释器路径或命令名
+ */
+let interpreterProbeCache = null;
+function resolveInterpreter(meta) {
+  const declared = meta && meta.interpreter ? String(meta.interpreter) : '';
+  if (declared) return declared;
+  if (interpreterProbeCache) return interpreterProbeCache;
+  // 候选按"新到旧"排：新版本装的依赖不保证能在旧版本里 import
+  for (const candidate of ['/usr/local/bin/python3.14', '/usr/local/bin/python3.10', '/usr/bin/python3']) {
+    try {
+      if (fs.existsSync(candidate)) {
+        interpreterProbeCache = candidate;
+        return candidate;
+      }
+    } catch { /* 继续下一个 */ }
+  }
+  // 都没探到 ⇒ 交给 PATH（spawn 会报 ENOENT，错误信息里带命令名，够定位）
+  interpreterProbeCache = 'python3';
+  return interpreterProbeCache;
+}
+
+/**
+ * 一个 exec 插件的常驻 worker。
+ *
+ * 生命周期：装载时**不**启动（避免"装了插件就起进程"）；首个请求才 spawn，空闲后自动退出。
+ */
+class ExecWorker {
+  /**
+   * @param {object} meta 插件清单
+   * @param {{pluginDir: string, depsDir?: string|null, log?: Function}} opts
+   */
+  constructor(meta, opts) {
+    this.meta = meta;
+    this.pluginDir = opts.pluginDir;
+    this.depsDir = opts.depsDir || null;
+    this.log = typeof opts.log === 'function' ? opts.log : () => {};
+    this.proc = null;
+    this.pending = new Map();      // id → {resolve, reject, timer, method}
+    this.nextId = 1;
+    this.dead = false;             // 进程结束后置真；下次请求会尝试重启
+    this.restartUsed = false;      // 自动重启只允许一次（设计稿 ④）
+    this.idleTimer = null;
+    this.outputTail = [];          // 最后若干行 stderr/非 JSON 输出，报错时说清"插件为什么挂"
+    this.ready = null;             // spawn 的 Promise（并发首请求共用一次启动）
+    this.disposed = false;
+  }
+
+  /** 启动子进程（幂等：并发调用共用同一次 spawn） */
+  ensureStarted() {
+    if (this.disposed) return Promise.reject(new Error('exec worker 已释放'));
+    if (this.proc && !this.dead) return Promise.resolve(this.proc);
+    if (this.ready) return this.ready;
+    this.ready = new Promise((resolve, reject) => {
+      const interpreter = resolveInterpreter(this.meta);
+      const entryAbs = path.join(this.pluginDir, String(this.meta.entry || 'worker.py'));
+      if (!fs.existsSync(entryAbs)) {
+        this.ready = null;
+        return reject(new Error(`exec 插件入口不存在：${entryAbs}`));
+      }
+      const env = { ...process.env };
+      // 依赖隔离：插件自带依赖目录进 PYTHONPATH，不要求宿主全局装包
+      const deps = this.depsDir || path.join(this.pluginDir, '.deps');
+      env.PYTHONPATH = [deps, this.pluginDir, env.PYTHONPATH || ''].filter(Boolean).join(path.delimiter);
+      // 中文路径：强制 UTF-8 + 不缓冲，否则帧会卡在缓冲区里（本机路径大量中文，踩过）
+      env.PYTHONIOENCODING = 'utf-8';
+      env.PYTHONUNBUFFERED = '1';
+      // 不要继承宿主的 venv：会把插件的依赖解析带到别处去
+      delete env.VIRTUAL_ENV;
+
+      let child;
+      try {
+        child = spawn(interpreter, [entryAbs], {
+          cwd: this.pluginDir,
+          env,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+      } catch (e) {
+        this.ready = null;
+        return reject(new Error(`启动 exec 插件失败（${interpreter} ${entryAbs}）：${e.message}`));
+      }
+      this.proc = child;
+      this.dead = false;
+
+      // 按行读 stdout：readline 自带跨 chunk 拼行（约束 ①）
+      const rl = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
+      rl.on('line', (line) => this.onLine(line));
+      child.stderr.on('data', (buf) => this.pushTail(String(buf)));
+      child.on('error', (e) => this.onExit(`spawn error: ${e.message}`));
+      child.on('exit', (code, signal) => this.onExit(`exit code=${code} signal=${signal}`));
+
+      resolve(child);
+    });
+    return this.ready;
+  }
+
+  /** 记录最后若干行插件输出（诊断用） */
+  pushTail(text) {
+    for (const one of String(text).split('\n')) {
+      if (!one.trim()) continue;
+      this.outputTail.push(one.slice(0, 500));
+      if (this.outputTail.length > 20) this.outputTail.shift();
+    }
+  }
+
+  /** 收一行：解析 JSON → 按 id 配对；坏行只记日志（插件往 stdout 打调试信息很常见） */
+  onLine(line) {
+    const text = String(line).trim();
+    if (!text) return;
+    if (Buffer.byteLength(text, 'utf8') > MAX_LINE_BYTES) {
+      this.log('warn', `exec 插件输出超长行（>${MAX_LINE_BYTES}B），已丢弃`, { plugin: this.meta.id });
+      return;
+    }
+    let msg;
+    try {
+      msg = JSON.parse(text);
+    } catch {
+      this.pushTail(`stdout(非 JSON): ${text.slice(0, 200)}`);
+      return;
+    }
+    const id = Number(msg && msg.id);
+    const waiter = this.pending.get(id);
+    if (!waiter) return;            // 迟到的响应（已超时/已判失败）直接丢
+    this.pending.delete(id);
+    clearTimeout(waiter.timer);
+    waiter.resolve(msg);
+  }
+
+  /** 子进程退出：把在途请求全部判失败，标记需要重启 */
+  onExit(reason) {
+    this.dead = true;
+    this.proc = null;
+    this.ready = null;
+    const tail = this.outputTail.slice(-5).join(' | ');
+    for (const [, waiter] of this.pending) {
+      clearTimeout(waiter.timer);
+      waiter.reject(new Error(`exec 插件进程结束（${reason}）${tail ? `；插件输出：${tail}` : ''}`));
+    }
+    this.pending.clear();
+  }
+
+  /**
+   * 发一个请求并等响应。
+   * @param {string} method canHandle | resolve
+   * @param {object} params
+   * @param {number} timeoutMs
+   * @returns {Promise<object>} 子进程的原始响应帧
+   */
+  async request(method, params, timeoutMs = DEFAULT_TIMEOUT_MS) {
+    await this.ensureStarted();
+    const child = this.proc;
+    if (!child || this.dead) throw new Error('exec 插件进程不可用');
+    const id = this.nextId++;
+    const frame = `${JSON.stringify({ id, method, ...params })}\n`;
+
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        // 超时必须真杀：只 reject 不 kill 的话，子进程会继续占着 CPU/内存
+        this.kill(`请求超时（${method} > ${timeoutMs}ms）`);
+        reject(new Error(`exec 插件请求超时（${method}，${timeoutMs}ms）`));
+      }, timeoutMs);
+      if (typeof timer.unref === 'function') timer.unref();
+      this.pending.set(id, { resolve, reject, timer, method });
+      try {
+        child.stdin.write(frame, 'utf8');
+      } catch (e) {
+        this.pending.delete(id);
+        clearTimeout(timer);
+        reject(new Error(`写入 exec 插件 stdin 失败：${e.message}`));
+      }
+      this.touchIdle();
+    });
+  }
+
+  /** 重置空闲计时（有活动就不退） */
+  touchIdle() {
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => {
+      this.log('debug', 'exec 插件空闲退出', { plugin: this.meta.id });
+      this.kill('空闲超时');
+    }, DEFAULT_IDLE_MS);
+    if (typeof this.idleTimer.unref === 'function') this.idleTimer.unref();
+  }
+
+  /**
+   * 终止子进程：SIGTERM → 宽限期 → SIGKILL（**必须确认真死**，否则留僵尸）。
+   * @param {string} why
+   */
+  kill(why) {
+    const child = this.proc;
+    if (!child) return;
+    const pid = child.pid;
+    this.log('warn', `终止 exec 插件进程（${why}）`, { plugin: this.meta.id, pid });
+    try { child.kill('SIGTERM'); } catch { /* 已退出 */ }
+    const hardTimer = setTimeout(() => {
+      try {
+        // SIGKILL 兜底：插件忽略 SIGTERM 时不能就这么留着
+        child.kill('SIGKILL');
+      } catch { /* 已退出 */ }
+    }, KILL_GRACE_MS);
+    if (typeof hardTimer.unref === 'function') hardTimer.unref();
+    // exit 事件会走 onExit 清 pending；这里显式再清一次，避免"kill 了但 exit 迟迟不来"时挂住
+    this.onExit(`killed: ${why}`);
+  }
+
+  /** 关掉（适配器 dispose 调） */
+  dispose() {
+    this.disposed = true;
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = null;
+    this.kill('适配器释放');
+  }
+}
+
+/**
+ * 装载一个 exec 插件：**不启动进程**，只校验清单并交出一个按需启动的 api。
+ * 这样"装了插件但从不使用"不会在机器上留一个 python。
+ * @param {object} meta
+ * @param {{pluginsDir: string, log?: Function}} ctx
+ */
+export function loadExecPlugin(meta, ctx) {
+  const v = validateExecManifest(meta);
+  if (!v.ok) return v;
+  const pluginsDir = (ctx && ctx.pluginsDir) || '';
+  // files[] 里形如 "unitypy-bundle/worker.py"：第一段是插件目录名
+  const first = Array.isArray(meta.files) && meta.files.length ? String(meta.files[0]) : '';
+  const dirName = first.includes('/') ? first.split('/')[0] : String(meta.id || '');
+  const pluginDir = path.join(pluginsDir, dirName);
+  if (!fs.existsSync(pluginDir)) {
+    return { ok: false, code: 'EXEC_PLUGIN_DIR_MISSING', error: `exec 插件目录不存在：${pluginDir}` };
+  }
+  // 入口文件在**装载期**就校验，不等 spawn 才炸：
+  //   spawn 失败只会在第一次请求时暴露，那时错误会混在"插件判定失败"里，很难看出是清单写错。
+  //   ——同时这也是"清单声明了什么就必须存在什么"的一致性要求。
+  const entryPath = path.join(pluginDir, String(meta.entry));
+  if (!fs.existsSync(entryPath)) {
+    return { ok: false, code: 'EXEC_ENTRY_MISSING', error: `exec 入口文件不存在：${entryPath}` };
+  }
+  const worker = new ExecWorker(meta, {
+    pluginDir,
+    // depsDir 支持两种写法：插件内相对路径（'.deps'）或**绝对路径**。
+    //   为什么需要绝对路径：本项目仓库在 CIFS 上（noexec + 不能 utime .so），
+    //   带 C 扩展的依赖装进去会 PermissionError；这类依赖只能放到本地盘，
+    //   由插件在自己的 README 里写明位置（见 unitypy-bundle 的说明）。
+    depsDir: meta.depsDir
+      ? (path.isAbsolute(String(meta.depsDir)) ? String(meta.depsDir) : path.join(pluginDir, String(meta.depsDir)))
+      : null,
+    log: (ctx && ctx.log) || (() => {}),
+  });
+  const timeoutMs = Number.isFinite(Number(meta.requestTimeoutMs)) ? Number(meta.requestTimeoutMs) : DEFAULT_TIMEOUT_MS;
+  const providerId = String(meta.id || dirName);
+
+  const api = {
+    /**
+     * canHandle 走帧协议（异步）。plugin-runner 已改成 `await` 调用，
+     *   所以返回 Promise 与 node 运行时的同步 boolean 在使用上等价。
+     */
+    async canHandle(file) {
+      const resp = await worker.request('canHandle', {
+        rootId: file.rootId,
+        rel: file.rel,
+        name: file.name,
+        absPath: file.absPath || null,
+        size: file.size,
+      }, timeoutMs);
+      if (!resp || resp.ok === false) {
+        // 插件自报"我不认"与"我出错了"必须分清：后者要抛出去让 runner 记 canhandle-threw
+        if (resp && resp.code) throw new Error(`${resp.code}: ${resp.message || ''}`);
+        return false;
+      }
+      return resp.handled === true;
+    },
+
+    /**
+     * resolve：子进程把产物写到临时目录，这里把 {name,tmpPath,size} 转成
+     * `filesView` 能吃的普通对象（值 = 惰性字节视图，take 时才读盘）。
+     */
+    async resolve(file) {
+      const resp = await worker.request('resolve', {
+        rootId: file.rootId,
+        rel: file.rel,
+        name: file.name,
+        absPath: file.absPath || null,
+        size: file.size,
+      }, timeoutMs);
+      if (!resp || resp.ok === false) {
+        const err = new Error(`${(resp && resp.code) || 'EXEC_RESOLVE_FAILED'}: ${(resp && resp.message) || '插件未返回结果'}`);
+        err.code = (resp && resp.code) || 'EXEC_RESOLVE_FAILED';
+        throw err;
+      }
+      const list = Array.isArray(resp.files) ? resp.files : [];
+      const out = {};
+      for (const f of list) {
+        const name = String((f && (f.name || f.path)) || '');
+        if (!name) continue;
+        const tmp = f && f.tmpPath ? String(f.tmpPath) : '';
+        if (!tmp) continue;             // 没有 tmpPath 的条目拿不到字节，宁可少一个也不报假成功
+        out[name] = lazyBytes(tmp, f.size);
+      }
+      return {
+        prefix: resp.prefix,
+        entry: resp.entry,
+        files: out,
+        // 诊断用（runner 不读，但日志要能看出"是哪个插件解的"）
+        provider: providerId,
+        unpackMs: resp.unpackMs,
+      };
+    },
+
+    /** 释放：拆掉子进程（插件被禁用/热重载时由 runner 调） */
+    dispose() { worker.dispose(); },
+  };
+  return { ok: true, api };
 }
 
 export default {
   runtime: RUNTIME,
   /**
-   * 装载 exec 插件 —— **本轮固定抛"未实现"**。
-   * 之所以先校验清单再报未实现：清单错误是"用户配错了"，未实现是"宿主还没做"，
-   *   两者对使用者是不同性质的问题，不该混成同一句话。
+   * 统一接口：load(meta, ctx) → {ok, api} | {ok:false, error, code}
    * @param {object} meta
    * @param {object} ctx
-   * @returns {{ok: false, error: string, code: string}}
    */
   load(meta, ctx) {
-    const v = validateExecManifest(meta);
-    if (!v.ok) return v;
-    // 走到这里说明清单是合法的、只是宿主还没实现：报得明确，不要假装插件坏了
-    return {
-      ok: false,
-      code: NOT_IMPLEMENTED,
-      error: `runtime:"exec" 的插件装载器尚未实现（清单校验已通过：entry=${meta.entry}, frameProtocol=${meta.frameProtocol}）。`
-        + '按当前排期，exec 通道属第 2 步；本步只定契约。',
-    };
+    const r = loadExecPlugin(meta, ctx);
+    if (!r.ok) return { ok: false, error: r.error, code: r.code };
+    return { ok: true, api: r.api };
   },
-  dispose() { /* 没有子进程可杀 */ },
+  /** 适配器级释放：各插件的子进程随其 api.dispose() 关闭（runner 在卸载时调） */
+  dispose() { /* 无全局资源 */ },
 };

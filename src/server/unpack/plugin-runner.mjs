@@ -18,6 +18,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createLogger } from '../core/log.mjs';
 // 插件发现复用 registry 的扫描（纪律第二条：禁止相似功能多处实现）
 import { readPlugins } from '../plugins/registry.mjs';
 // 装载细节按清单的 runtime 交给对应适配器（node = vm 沙盒 / exec = 子进程，后者本步仅骨架）。
@@ -27,6 +28,8 @@ import { loadWithRuntime, readExecPermission, listRuntimes } from './runtime/ind
 // ../../.. ← 本文件在 src/server/unpack/，回退三级才是项目根（少算一级会把 plugins 指到 src/plugins）
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const PLUGINS_DIR = path.join(ROOT, 'plugins');
+/** 只用于"回退"这类必须留痕的事件（插件 A 解失败、插件 B 接住）—— 静默回退会让插件 bug 永远查不出来 */
+const log = createLogger('unpack');
 /** 插件禁用开关（与 registry 同一份配置；被禁用的插件不参与服务端解包） */
 const PLUGIN_SWITCH_FILE = path.join(ROOT, 'config', 'plugins.json');
 /** 能承担服务端解包的角色：契约 §一 的 asset-provider（"能解析资源、交出资产"） */
@@ -59,6 +62,12 @@ export function listProviderPlugins() {
       runtime: m.runtime,
       entry: m.entry,
       frameProtocol: m.frameProtocol,
+      // exec 运行时的另外三个声明也必须透传：
+      //   interpreter / depsDir / requestTimeoutMs —— 少一个，适配器就只能用缺省值
+      //   （缺 depsDir 时它会去插件目录找 .deps，而带 C 扩展的依赖在本项目里必须放本地盘）。
+      interpreter: m.interpreter,
+      depsDir: m.depsDir,
+      requestTimeoutMs: m.requestTimeoutMs,
       // builtin 标记必须透传：内置提供者（builtin-spine/builtin-live2d）也声明 asset-provider，
       //   但它们没有 node 代码、不能被当成插件装载。丢掉这个标记，调用方（解包/装载流程）
       //   会把它们混进 node 插件列表、按 runtime 去 load，必然失败。
@@ -136,17 +145,37 @@ function loadPlugin(pluginId) {
  *   not-handled        所有插件都说不处理
  *   canhandle-threw    有插件抛错且无人认领
  *   plugin-unavailable 所有插件都装不起来（附原因）
+ *
+ * 为什么是 async：`canHandle` 的契约是"同步返回 boolean"，但那只对 node 运行时成立 ——
+ *   exec 运行时的插件在**另一个进程**里，判定必须过帧协议（异步）。`await` 一个同步 boolean
+ *   是完全合法的（拿到的就是它自己），所以这里改成 await 对 node 插件零影响，
+ *   却让"判定在子进程里做"成为可能。
  * @param {object} file 交给插件判定的上下文（含 bytes）
- * @returns {{kind: string, id?: string, api?: object, message?: string}}
+ * @returns {Promise<{kind: string, id?: string, api?: object, message?: string}>}
  */
-function pickPlugin(file) {
-  const candidates = listProviderPlugins();
-  if (!candidates.length) {
-    return { kind: 'plugin-unavailable', message: `没有可用的解包插件（需要 provides 含 ${SERVER_UNPACK_ROLE}）` };
-  }
+/**
+ * 列出**所有**声明能处理该文件的插件（按清单顺序）。
+ *
+ * 为什么不是"取第一个就完事"：不同插件的能力边界不一样 ——
+ *   JS 的 spine 插件认领容器头，但它的**纹理解码表**里没有 ASTC(50)/PVRTC(49) 等格式，
+ *   于是"canHandle 说认、resolve 却抛错"；而 UnityPy 那条通道（Python）能解。
+ *   只取第一个认领者的话，这类包永远解不开 —— 明明有插件能解，却被前一个插件的**能力缺口**卡死。
+ *   ⇒ 改成"列出所有候选，由调用方按顺序尝试，失败就回退"。
+ *
+ * 语义不变的部分：**顺序仍是清单顺序**（先 live2d 再 spine 再 unitypy），
+ *   所以单插件、以及"第一个就能解"的常见情况，行为与改前逐字一致。
+ *
+ * @param {object} file 交给插件判定的上下文（含 bytes）
+ * @returns {Promise<{handlers: Array<{id: string, api: object}>,
+ *                    loadErrors: string[], firstHandleError: string|null,
+ *                    firstReject: object|null, allUnavailable: boolean}>}
+ */
+async function listHandlers(file) {
+  const handlers = [];
   const loadErrors = [];
   let firstHandleError = null;
   let firstReject = null;      // 插件给出的"为什么不认领"（可选钩子 explainReject）
+  const candidates = listProviderPlugins();
   for (const meta of candidates) {
     const loaded = ensurePlugin(meta.id);
     if (!loaded.ok) {
@@ -155,19 +184,22 @@ function pickPlugin(file) {
     }
     let handled = false;
     try {
-      handled = !!loaded.api.canHandle(file);
+      // canHandle 可能是异步的（exec 运行时在子进程里判定）；await 同步 boolean 也成立
+      handled = !!(await loaded.api.canHandle(file));
     } catch (e) {
       // 单个插件判定抛错不终止：继续问下一个插件
       if (!firstHandleError) firstHandleError = `${meta.id}: ${String((e && e.message) || e)}`;
       continue;
     }
-    if (handled) return { kind: 'picked', id: meta.id, api: loaded.api };
+    if (handled) {
+      handlers.push({ id: meta.id, api: loaded.api });
+      continue;
+    }
     // 不认领时顺带问一句"为什么"：canHandle 的签名只有 boolean，原因只有插件内部知道
     //   （典型场景：Cubism 2.1 的 .moc 包，两个 provider 都不认，用户只看到"插件判定不处理该文件"）。
-    //   钩子是**可选**的（没有就跳过），取第一个给出结构化原因的插件即可。
     if (!firstReject && typeof loaded.api.explainReject === 'function') {
       try {
-        const why = loaded.api.explainReject(file);
+        const why = await loaded.api.explainReject(file);
         if (why && why.message) firstReject = { id: meta.id, code: why.code || null, message: String(why.message) };
       } catch (e) {
         // 解释失败不影响主判定（它只负责把话说清楚），但记下错误便于排障
@@ -175,10 +207,13 @@ function pickPlugin(file) {
       }
     }
   }
-  if (loadErrors.length === candidates.length) return { kind: 'plugin-unavailable', message: loadErrors.join('; ') };
-  if (firstHandleError) return { kind: 'canhandle-threw', message: firstHandleError };
-  if (firstReject && firstReject.message) return { kind: 'not-handled', reject: firstReject };
-  return { kind: 'not-handled' };
+  return {
+    handlers,
+    loadErrors,
+    firstHandleError,
+    firstReject,
+    allUnavailable: candidates.length > 0 && loadErrors.length === candidates.length,
+  };
 }
 
 /** 值是否是"字节/Blob 形状"（跨 realm：一律鸭子类型，不用 instanceof） */
@@ -313,15 +348,21 @@ export async function unpackFile({ rootId, rel, absPath }) {
   }
   const readMs = Date.now() - t0;
   const name = path.basename(String(rel));
-  const file = { rootId, rel, name, size: bytes.byteLength, bytes };
-  // 按清单顺序逐个试 canHandle：谁认领谁解（多插件并存，不需要改这里）
-  const picked = pickPlugin(file);
-  if (picked.kind === 'plugin-unavailable') return { ok: false, reason: 'plugin-unavailable', message: picked.message };
-  if (picked.kind === 'canhandle-threw') return { ok: false, reason: 'canhandle-threw', message: picked.message };
-  // not-handled 时优先用插件给出的原因（如"Cubism 2.1 的 .moc 不支持"），
-  //   取不到才回落到原来那句固定文案 —— 后者说清了"没人认领"，但说不出"为什么"。
-  if (picked.kind === 'not-handled') {
-    const why = picked.reject;
+  // absPath 必须一起交给插件：node 插件有 bytes 就够了，但 **exec 插件在另一个进程里**，
+  //   它拿不到这段内存 —— 只能靠路径自己去读文件头（帧协议里传字符串，不传 20MB 字节）。
+  //   早前这里没放 absPath，于是 exec 插件的 canHandle 永远收到 null ⇒ 永远说"不认"。
+  const file = { rootId, rel, name, size: bytes.byteLength, bytes, absPath };
+  // 列出所有声明能处理的插件（按清单顺序），逐个尝试：
+  //   canHandle 认领只代表"这个容器我认识"，不代表**这个包的全部内容我都能解** ——
+  //   JS 插件的纹理解码表里没有 ASTC(50)/PVRTC(49) 等格式，会在 resolve 阶段抛错；
+  //   而后面还有插件（UnityPy/Python）能解。所以认领者失败要能回退，否则这类包永远打不开。
+  const { handlers, loadErrors, firstHandleError, firstReject, allUnavailable } = await listHandlers(file);
+  if (!handlers.length) {
+    if (allUnavailable) return { ok: false, reason: 'plugin-unavailable', message: loadErrors.join('; ') };
+    if (firstHandleError) return { ok: false, reason: 'canhandle-threw', message: firstHandleError };
+    // not-handled 时优先用插件给出的原因（如"Cubism 2.1 的 .moc 不支持"），
+    //   取不到才回落到原来那句固定文案 —— 后者说清了"没人认领"，但说不出"为什么"。
+    const why = firstReject;
     return {
       ok: false,
       reason: 'not-handled',
@@ -330,21 +371,62 @@ export async function unpackFile({ rootId, rel, absPath }) {
       ...(why && why.id ? { by: why.id } : {}),
     };
   }
-  const t1 = Date.now();
-  let res;
-  try {
-    res = await picked.api.resolve(file);
-  } catch (e) {
-    return { ok: false, reason: 'resolve-threw', message: String((e && e.message) || e) };
+
+  /** 每个认领者的尝试结果（成功时不带；失败时原样交给上层做诊断） */
+  const attempts = [];
+  for (const h of handlers) {
+    const t1 = Date.now();
+    let res;
+    try {
+      res = await h.api.resolve(file);
+    } catch (e) {
+      attempts.push({ id: h.id, reason: 'resolve-threw', message: String((e && e.message) || e) });
+      // 回退必须留痕：否则"JS 插件有 bug 但被 UnityPy 掩盖"会一直查不出来
+      log.warn('插件解包失败，回退到下一个候选', { plugin: h.id, rel, err: String((e && e.message) || e).slice(0, 300) });
+      continue;
+    }
+    const unpackMs = Date.now() - t1;
+    if (!res || !res.prefix || res.entry === undefined) {
+      attempts.push({ id: h.id, reason: 'bad-result', message: '插件返回值缺 prefix/entry' });
+      log.warn('插件返回不合契约，回退到下一个候选', { plugin: h.id, rel });
+      continue;
+    }
+    let view;
+    try {
+      view = filesView(res.files);
+    } catch (e) {
+      attempts.push({ id: h.id, reason: 'bad-files', message: String((e && e.message) || e) });
+      log.warn('插件产物无法解释为文件集合，回退', { plugin: h.id, rel });
+      continue;
+    }
+    if (!view.ok) {
+      attempts.push({ id: h.id, reason: 'empty-files', message: view.error || '产物为空' });
+      log.warn('插件产物为空，回退到下一个候选', { plugin: h.id, rel });
+      continue;
+    }
+    // prefix/entry 直取插件返回值：不在这里做任何拼装，避免与前端解包路径产生第二套语义
+    return {
+      ok: true,
+      pluginId: h.id,
+      prefix: String(res.prefix),
+      entry: String(res.entry),
+      files: view,
+      readMs,
+      unpackMs,
+      // 只有真的回退过才带这个字段：它是"前一个插件没解成"的证据，不是常态噪音
+      ...(attempts.length ? { attempts } : {}),
+    };
   }
-  const unpackMs = Date.now() - t1;
-  if (!res || !res.prefix || res.entry === undefined) {
-    return { ok: false, reason: 'bad-result', message: '插件返回值缺 prefix/entry' };
-  }
-  const view = filesView(res.files);
-  if (!view.ok) return { ok: false, reason: 'empty-files', message: view.error || '产物为空' };
-  // prefix/entry 直取插件返回值：不在这里做任何拼装，避免与前端解包路径产生第二套语义
-  return { ok: true, pluginId: picked.id, prefix: String(res.prefix), entry: String(res.entry), files: view, readMs, unpackMs };
+
+  // 全部认领者都失败：报**第一个**失败（通常最有信息量，例如"暂不支持纹理格式 50"），
+  //   同时把全部尝试附上，便于判断是"能力缺口"还是"某个插件坏了"。
+  const firstFail = attempts[0];
+  return {
+    ok: false,
+    reason: firstFail.reason,
+    message: firstFail.message,
+    attempts,
+  };
 }
 
 /**

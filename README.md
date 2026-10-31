@@ -23,6 +23,7 @@
 | 面板按能力生成 | 面板只问「当前渲染器支持什么」，不支持的项**不构建**（而非灰化占位） |
 | 动作与循环 | 动作列表带时长、当前项高亮；「混合模式」与「循环播放」两个开关正交 |
 | 资源包解包 | UnityFS 单文件容器（Spine / Live2D 两种）由插件解包：服务端命中缓存直接取产物，未命中则由**浏览器本地解包**（不受服务端内存预算限制）；产物带指纹缓存，插件或版本一变即失效 |
+| 插件运行时 | **node（vm 沙盒）与 exec（子进程）两种**：`exec` 支持非 JS 插件（如 Python），按行 JSON 帧协议通信、双向超时必杀、崩溃时在途请求全部判失败；门禁默认关闭（`config/plugin-runtime.json`）。首个 exec 插件 `unitypy-bundle` 用 UnityPy 解容器包，可覆盖 JS 插件暂不支持的纹理格式（如 ASTC） |
 | 资源包自动判型 | 容器先解包、再按**产物**确定内容类型（`entry.json` 含 `skeletonFile` ⇒ Spine；含 `*.model3.json` ⇒ Live2D），不按扩展名猜 |
 | 背景 | 棋盘格 / 纯色 / 透明 / 自定义图；纯色预设可增删改名（服务端存储） |
 | 调试与诊断 | 浮层日志（四档多选）、就绪信号（给机器读的阶段状态机）、诊断探针落盘 |
@@ -163,6 +164,7 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.3.0 | 2026-10-31 | 插件运行时双形态落地：`exec`（子进程 + 行 JSON 帧协议 + 双向超时必杀 + 崩溃传播）与首个 Python 插件 `unitypy-bundle`（UnityPy 解包，覆盖 ASTC 等 JS 侧缺口）；前端本地解包失败时兜底走服务端解包；补 spine 3.8 skel 版本探测（原按 4.x 解析导致装载报错） |
 | 0.2.3 | 2026-10-31 | 清单缓存加「生成者指纹」：由解析器文件内容哈希派生（spine/live2d/probe），改解析代码后落盘清单自动失效重建，不再需要手工删 config/models/*.json；live2d 清单写盘改原子写（与 spine 同口径） |
 | 0.2.2 | 2026-10-31 | 后台探测可观测：启动/完成/暂停三条日志与触发来源（catalog/fingerprint/manual）可辨；`GET /api/entries/probe` 新增 lastTrigger/lastBatchMs/lastQueueAfter，catalog 响应附加 `probeRemaining`（只增不改）；前端 `state.probe` 数据面就绪（UI 未实现） |
 | 0.2.1 | 2026-10-31 | 条目状态落地：`entry-states` 存储与 `/api/entries/result` 写读一体、catalog 三字段（display/support/loadResult）收口、前端只渲染字段并删除 localStorage 失败缓存；新增后台形态探测（事件驱动、按根串行限速、`POST /api/entries/probe`）与 S6 指纹接线三处补齐；`listCatalog` 拆分为 12 个函数（原 123 行） |

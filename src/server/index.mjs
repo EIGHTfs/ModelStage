@@ -25,13 +25,27 @@ import { createCatalog } from './data/catalog.mjs';
 import * as probe from './assets/probe.mjs';
 
 /**
+ * 读一个数值型环境变量（部署差异类的单值按项目约定走 env，不把调参写死在代码里）。
+ * 非法/缺省一律回落 fallback —— 环境变量写错不该让服务起不来。
+ * @param {string} name 变量名
+ * @param {number} fallback 缺省值
+ * @returns {number}
+ */
+function readNumericEnv(name, fallback) {
+  const raw = (process.env[name] || '').trim();
+  if (!raw) return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+/**
  * 装配数据层。
  * @param {{root: string, avatarRoot?: string}} options
  *   root = 项目根（含 config/、plugins/、tool/、data/）
  *   avatarRoot = 头像根（可选，缺省 <root>/avatars）。由调用方解析 CLI/env 后传入 ——
  *     本层保持"不读 process.argv"的约束（见文件头设计约束）。
  */
-export function createServerData({ root, dataRoot, avatarRoot, log }) {
+export function createServerData({ root, dataRoot, avatarRoot, log, activity }) {
   if (!root) throw new Error('createServerData: 需要 root');
   // dataRoot 缺省 = root（历史行为）；测试实例传自己的数据根，代码目录仍跟随 root
   const paths = createPaths({ root, dataRoot, avatarRoot });
@@ -76,6 +90,21 @@ export function createServerData({ root, dataRoot, avatarRoot, log }) {
     providers: () => plugins.readPlugins(),
     readConfig: () => config.readConfig(),
     log: logFn,
+    // 空闲门控（"不抢装载资源"）：有请求在飞、或刚有请求 ⇒ 不推进解析。
+    //   两个数都走配置（部署差异类的单值，按项目约定走 env，不写死在代码里）：
+    //     MODELSTAGE_PROBE_IDLE_GAP_MS  批次开始前要求的静默间隔，缺省 2000（批内另有宽松判据）
+    //     MODELSTAGE_PROBE_MAX_WAIT_MS  一批最多为等空闲耗多久，超时就把剩余条目放回队列，缺省 20000
+    activity,
+    idleGapMs: readNumericEnv('MODELSTAGE_PROBE_IDLE_GAP_MS', 2000),
+    maxWaitMs: readNumericEnv('MODELSTAGE_PROBE_MAX_WAIT_MS', 20000),
+    // 解析线程开关：缺省开。受限环境（起不了 worker）或排障时设 MODELSTAGE_PROBE_WORKER=0
+    //   即回落主线程同步解析（旧行为），便于 A/B 对照与应急。
+    worker: readNumericEnv('MODELSTAGE_PROBE_WORKER', 1) !== 0,
+    // 单包上限（第 2 步）：超过就不探，保持 unknown 并记一条 info。
+    //   实测依据：40MB 级包解析峰值高，且本机可用内存只有 ~1.1GB 时，
+    //   探测与用户解包同时要内存会把服务顶死（进程被内核杀掉，日志无栈）。
+    //   unknown 是合法状态（探测不是必须给结论），点击装载时仍会得到真实结论。
+    maxBytes: readNumericEnv('MODELSTAGE_PROBE_MAX_BYTES', 24 * 1024 * 1024),
   });
   // 触发来源（catalog = 清单重建 / fingerprint = 旧结论作废）由 catalog 判定后一起传进来：
   //   日志里必须能分清"谁让它跑的"，否则排查时只能看到"又探测了"却不知道为什么。

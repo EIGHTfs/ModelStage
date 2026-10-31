@@ -67,13 +67,34 @@ function resolveAvatarRoot() {
 /** 服务端日志（统一形状 {at,level,tag,msg,detail}；error→stderr，其余→stdout） */
 const log = createLogger('serve');
 
+/**
+ * 请求活跃度探针：给后台任务判断"现在是不是真空闲"（契约 §八 的"不抢装载资源"）。
+ *
+ * 为什么需要：catalog / 解包这些同步解析会占满主线程（探测单包 ~543ms），
+ *   后台任务只要在"有请求在飞"时动 CPU，用户就会看到某个请求莫名慢几百毫秒。
+ *   有了这份计数，后台可以主动让路（见 data/shape-probe.mjs 的 waitUntilIdle）。
+ *
+ * 统计口径：**只算短请求**。SSE（/api/ready/stream）会一直挂着不结束，
+ *   把它算进来会得到"永远不空闲"——探测当场饿死。
+ */
+const activity = {
+  inflight: 0,
+  lastRequestAt: Date.now(),
+  /** 有短请求正在处理（长连接不算） */
+  idle() { return this.inflight <= 0; },
+  /** 距上一次短请求开始过了多久（ms） */
+  msSinceLastRequest() { return Date.now() - this.lastRequestAt; },
+};
+
 // log 注入：后台形态探测（§八）要能把"启动/完成/失败"写进同一条服务端日志，
 //   否则 S10 的"探测启动次数 = 0"没有可核对的凭据。
+// activity 注入：探测据此让路（有请求在飞 / 刚有请求 ⇒ 不推进），避免抢主线程。
 const data = createServerData({
   root: ROOT,
   dataRoot: DATA_ROOT || undefined,
   avatarRoot: resolveAvatarRoot() || undefined,
   log,
+  activity,
 });
 // 静态/资源类路由（/plugins、/spine-runtimes、src/web 静态）单独成模块
 // dataRuntimesDir = tool/fetch-runtimes.mjs 的下载落点（<dataRoot>/runtimes/spine）。
@@ -240,6 +261,21 @@ function dispatch(req, res, p, url) {
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
+  // 长连接（SSE）不计入活跃度：它一挂几分钟，计入就等于"服务永远忙"
+  const longLived = url.pathname.includes('/stream');
+  if (!longLived) {
+    activity.inflight += 1;
+    activity.lastRequestAt = Date.now();
+    let counted = true;
+    const done = () => {
+      if (!counted) return;      // close 与 finish 都会来，只减一次
+      counted = false;
+      activity.inflight -= 1;
+      activity.lastRequestAt = Date.now();
+    };
+    res.on('finish', done);
+    res.on('close', done);
+  }
   try {
     dispatch(req, res, url.pathname, url);
   } catch (e) {

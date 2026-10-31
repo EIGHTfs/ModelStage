@@ -181,7 +181,12 @@ const SUITES = [
   //   为什么必须单独一套：上一版 13 个 entry-states 单测全绿，而三处调用只有一处传指纹 ——
   //   纯函数单测永远测不出"调用方没接上"，只有这层能红
   { name: 'entry-states-wiring', runner: 'node-test', file: 'test/entry-states-wiring.test.mjs' },
+  // 运行时适配器（node vm 沙盒 / exec 子进程 + 帧协议）：
+  //   钉住清单校验、真 spawn 往返、**超时必须真杀**、崩溃传播、僵尸检查 ——
+  //   exec 通道的风险全在进程边界上，纯函数测不出来，必须由这套兜住。
+  { name: 'runtime-adapter', runner: 'node-test', file: 'test/runtime-adapter.test.mjs' },
   // 后台形态探测的写回语义（契约 §八/S4/S10）：假判型 + 真实存储，
+
   //   钉住"零待探测不启动 / 依赖包写 unsupported / 探不出只写 unknown / 不覆盖 loadResult"
   { name: 'shape-probe', runner: 'node-test', file: 'test/shape-probe.test.mjs' },
   // 引擎冒烟（3.8 ↔ 4.1 版本往返 + samplePixels().ratio + lastError 判据）：

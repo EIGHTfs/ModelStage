@@ -16,6 +16,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import nodeVm from './node-vm.mjs';
 import execRuntime from './exec.mjs';
+// 配置允许注释：用项目统一的 JSONC 解析器（与 config/plugins.json、resources.json 同一条路径）
+import { parseJsonc } from '../../../../tool/parse-jsonc.mjs';
 
 /** 缺省运行时：插件不写 runtime 时按历史行为走 vm 沙盒 */
 export const DEFAULT_RUNTIME = 'node';
@@ -42,33 +44,41 @@ export const EXEC_PERMISSION_FILE = 'config/plugin-runtime.json';
  *
  * 判据顺序：
  *   ① 环境变量 `MODELSTAGE_ALLOW_EXEC_PLUGINS=1`（部署期覆盖，便于容器化）
- *   ② 配置文件 `<root>/config/plugin-runtime.json` 的 allowExecRuntime === true
+ *   ② 配置文件 `<数据根>/config/plugin-runtime.json` 的 allowExecRuntime === true
  *   ③ 都没有 ⇒ **false（默认关闭）**
  * 任何读取/解析失败都按"未开启"处理（失败要保守，不能因为配置坏了就把门打开）。
+ *
+ * **数据根优先**（与 core/paths.mjs 的 configDir 同口径）：设了 MODELSTAGE_DATA_ROOT 的实例
+ *   （测试实例）读自己的配置，不设的（主实例）读项目根的配置。
+ *   早前只按项目根读 ⇒ 测试实例无法单独开关这个危险通道，只能改项目根，
+ *   而项目根那份主实例也在用 —— 等于"一开就两个实例全开"。
  * @param {string} root 项目根
- * @returns {{allowed: boolean, source: string, error?: string}}
+ * @returns {{allowed: boolean, source: string, error?: string, file?: string}}
  */
 export function readExecPermission(root) {
   const fromEnv = process.env.MODELSTAGE_ALLOW_EXEC_PLUGINS;
   if (fromEnv === '1' || String(fromEnv).toLowerCase() === 'true') {
     return { allowed: true, source: 'env:MODELSTAGE_ALLOW_EXEC_PLUGINS' };
   }
-  const file = path.join(String(root || ''), EXEC_PERMISSION_FILE);
+  const dataRoot = (process.env.MODELSTAGE_DATA_ROOT || '').trim();
+  const base = dataRoot ? path.resolve(dataRoot) : String(root || '');
+  const file = path.join(base, EXEC_PERMISSION_FILE);
   let text;
   try {
     text = fs.readFileSync(file, 'utf8');
   } catch (e) {
     // 文件不存在是最常见的正常情况（默认关闭），不算错误
-    if (e && e.code === 'ENOENT') return { allowed: false, source: 'default' };
-    return { allowed: false, source: 'default', error: `读取 ${EXEC_PERMISSION_FILE} 失败：${e.message}` };
+    if (e && e.code === 'ENOENT') return { allowed: false, source: 'default', file };
+    return { allowed: false, source: 'default', error: `读取 ${EXEC_PERMISSION_FILE} 失败：${e.message}`, file };
   }
   try {
-    const cfg = JSON.parse(text);
-    if (cfg && cfg.allowExecRuntime === true) return { allowed: true, source: EXEC_PERMISSION_FILE };
-    return { allowed: false, source: EXEC_PERMISSION_FILE };
+    // 允许注释（与其他配置一致）；用项目统一的 JSONC 解析器，不另写一套
+    const cfg = parseJsonc(text, EXEC_PERMISSION_FILE);
+    if (cfg && cfg.allowExecRuntime === true) return { allowed: true, source: EXEC_PERMISSION_FILE, file };
+    return { allowed: false, source: EXEC_PERMISSION_FILE, file };
   } catch (e) {
     // 配置坏了按"未开启"：宁可插件用不了，也不要因为一个笔误把危险通道打开
-    return { allowed: false, source: EXEC_PERMISSION_FILE, error: `${EXEC_PERMISSION_FILE} 不是合法 JSON：${e.message}` };
+    return { allowed: false, source: EXEC_PERMISSION_FILE, error: `${EXEC_PERMISSION_FILE} 解析失败：${e.message}`, file };
   }
 }
 

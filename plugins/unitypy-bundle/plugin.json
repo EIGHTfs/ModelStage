@@ -1,0 +1,42 @@
+{
+  "_comment": [
+    "UnityPy 解包插件（Python / exec 运行时）。",
+    "为什么单独做一个：现有两个 node 插件是**自研 JS 解包器**，覆盖它们已经能解的形态；",
+    "  这个插件的能力来自 UnityPy（成熟的 Unity 资产库），用来覆盖 JS 侧还没实现的格式",
+    "  （例如 ETC2_RGBA1 之外更冷门的纹理格式、或对象布局差异导致 JS 解析失败的包）。",
+    "它不抢现有插件的活：matchPriority 低于两个 node 插件 ⇒ 只有它们都不认领时才会轮到这里。"
+  ],
+  "id": "unitypy-bundle",
+  "name": "UnityPy 资源包（Python）",
+  "label": "UnityPy",
+  "version": "0.1.0",
+  "provides": ["asset-provider"],
+  "runtime": "exec",
+  "entry": "worker.py",
+  "frameProtocol": 1,
+  "interpreter": "/usr/local/bin/python3.14",
+  "depsDir": "/volume1/VirtualDSM/unitypy-deps",
+  "requestTimeoutMs": 120000,
+  "accent": "#0f766e",
+  "matchPriority": 5,
+  "fileKinds": ["bundle"],
+  "produces": {
+    "kind": "spine",
+    "entry": "resolve(file)",
+    "schema": "docs/契约/插件.md",
+    "fields": ["prefix", "files", "entry"]
+  },
+  "errorCodes": [
+    "ULB_ERR_NO_FILE",
+    "ULB_ERR_EMPTY_RESULT",
+    "EXEC_INTERNAL",
+    "EXEC_UNKNOWN_METHOD"
+  ],
+  "_files_comment": [
+    "files[] 留空：exec 运行时的插件由 runner 按 entry 直接 spawn，不加载任何 JS。",
+    "  写 worker.py 会被当成'要加载的脚本'（registry 的 resolveLoadFiles 对 exec 返回 []，",
+    "  而 check-plugin 的 B1a 会按 files[] 逐个校验存在性并尝试编译）—— 那是 node 插件的语义。",
+    "  入口只由 entry 声明，这是 exec 与 node 在清单上的唯一区别。"
+  ],
+  "files": []
+}

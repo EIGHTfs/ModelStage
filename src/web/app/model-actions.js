@@ -214,12 +214,51 @@ async function probeSkelVersion(url) {
     //   所以超时按"整文件下载"给：20s（CIFS 上几 MB 骨架可能数秒，实测运行时脚本读取同量级）。
     const res = await fetch(real, { signal: AbortSignal.timeout(20000) });
     if (!res || !res.ok) return null;
-    // 只读前 32 字节：版本串长度不超过 24，够用且不整文件下载
-    const head = new Uint8Array(await (await res.blob()).slice(0, 32).arrayBuffer());
-    const len = head[8];
-    if (!len || len > 24) return null;
-    const ver = new TextDecoder().decode(head.slice(9, 9 + len)).replace(/[^\x20-\x7e]/g, '').trim();
-    return ver || null;
+    // 读前 64 字节：3.8 格式是「hash 串 + 版本串」，两段加起来可能 40+ 字节（实测 1+27+1+7=36）
+    const head = new Uint8Array(await (await res.blob()).slice(0, 64).arrayBuffer());
+
+    const printable = (bytes) => new TextDecoder().decode(bytes).replace(/[^\x20-\x7e]/g, '').trim();
+    const looksLikeVersion = (s) => /^[34]\.\d{1,2}(\.\d{1,2})?/.test(s);
+
+    // ── 格式 ①：spine **4.x** —— `hashLow:int32 + hashHigh:int32 + version:readString`
+    //    版本串长度字节落在 head[8]；编码仍带 1 字节偏移（见下）。
+    const len4 = head[8];
+    if (len4 > 1 && len4 <= 25) {
+      const ver4 = printable(head.slice(9, 9 + (len4 - 1)));
+      if (looksLikeVersion(ver4)) return ver4;
+    }
+
+    // ── 格式 ②：spine **3.8** —— `hash:readString + version:readString`（**没有** 8 字节 int32 hash）
+    //    实测 3.8.96 的包：head[0]=0x1c(28) ⇒ hash 27 字节；接着 0x08(8) ⇒ 版本串 7 字节 "3.8.96"。
+    //    ⚠️ spine 的 readString 长度**含 1 字节偏移**（源码 `byteCount--`）：少减 1 会整体错位，
+    //    读成 ".8.96hDE01_eyeclos" —— 那正是本轮踩到的坑，也是"页面装载这类包必然失败"的根因。
+    let i = 0;
+    const readVarint = () => {
+      let result = 0;
+      let shift = 0;
+      for (;;) {
+        const b = head[i++];
+        if (b === undefined) throw new Error('越界');
+        result |= (b & 0x7f) << shift;
+        if (!(b & 0x80)) break;
+        shift += 7;
+        if (shift > 28) throw new Error('varint 过长');
+      }
+      return result;
+    };
+    try {
+      const hashLen = readVarint();
+      if (hashLen > 1 && hashLen < 64 && i + (hashLen - 1) <= head.length) {
+        i += (hashLen - 1);
+        const verLen = readVarint();
+        if (verLen > 1 && verLen <= 25 && i + (verLen - 1) <= head.length) {
+          const ver3 = printable(head.slice(i, i + (verLen - 1)));
+          if (looksLikeVersion(ver3)) return ver3;
+        }
+      }
+    } catch { /* 3.8 判据不成立就返回 null，让调用方走"最新一档" */ }
+
+    return null;
   } catch { return null; }
 }
 
