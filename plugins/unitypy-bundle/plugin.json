@@ -14,8 +14,14 @@
   "runtime": "exec",
   "entry": "worker.py",
   "frameProtocol": 1,
-  "interpreter": "/usr/local/bin/python3.14",
-  "depsDir": "/volume1/VirtualDSM/unitypy-deps",
+  "_deploy_comment": [
+    "interpreter 不声明：交给宿主的探测链（环境变量 MODELSTAGE_PYTHON → PATH → 常见路径），",
+    "  部署端要指定版本时设 MODELSTAGE_PYTHON 即可，清单里不留本机路径。",
+    "depsDir 用 ${...} 占位符：清单是可分发的，依赖目录是部署差异（每台机器装的位置不同）。",
+    "  取值顺序 process.env → 项目根 .env；都没设时装载期直接报 EXEC_CONFIG_MISSING（不静默降级）。",
+    "  本机实测值写在 .env（已 gitignore），或在环境里 export MODELSTAGE_DEPS_DIR。"
+  ],
+  "depsDir": "${MODELSTAGE_DEPS_DIR}",
   "requestTimeoutMs": 120000,
   "accent": "#0f766e",
   "matchPriority": 5,

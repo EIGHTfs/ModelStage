@@ -18,6 +18,8 @@
 //   所以本运行时默认禁用，必须 config/plugin-runtime.json 显式开启（门禁在 runtime/index.mjs）。
 import fs from 'node:fs';
 import path from 'node:path';
+// .env 解析复用 core/env.mjs（与 /api/brand 同一份文件、同一套规则，不另写一套）
+import { createEnv } from '../../core/env.mjs';
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
 import { createLogger } from '../../core/log.mjs';
@@ -120,7 +122,39 @@ function lazyBytes(tmpPath, size) {
 }
 
 /**
- * 找可用的解释器：清单声明优先，否则按常见路径探**一次并记住**。
+ * 展开清单里的 `${VAR}` 占位符，返回部署端提供的值。
+ *
+ * 为什么需要占位符：插件清单是**可分发**的（不能写死本机路径），但依赖目录又是部署差异
+ *   （每台机器装的位置不同）—— 用 `${VAR}` 声明"这里要一个由部署端提供的值"，
+ *   既不带本机信息、又不用把配置拆到另一个文件。
+ * 取值顺序：`process.env` → `<root>/.env`（与 /api/brand 读同一份，改完刷新即生效）。
+ * 未设置 ⇒ **返回失败而不是空串**：静默降级成"插件不可用但不说为什么"是最难查的那类故障。
+ * @param {string} value 清单里的原始值（可能是 `${VAR}`，也可能就是普通路径）
+ * @param {{root?: string}} opts root = 项目根（.env 所在目录）
+ */
+function expandPlaceholder(value, opts = {}) {
+  const raw = String(value == null ? '' : value).trim();
+  const hit = /^\$\{([A-Z_][A-Z0-9_]*)\}$/.exec(raw);
+  if (!hit) return { ok: true, value: raw };      // 不是占位符：原样返回（绝对/相对路径都走这条）
+  const name = hit[1];
+  const fromProcess = String(process.env[name] || '').trim();
+  if (fromProcess) return { ok: true, value: fromProcess, source: `env:${name}` };
+  // 再查 .env：部署端更愿意改这个文件（.env 已 gitignore，不随仓库分发）
+  try {
+    const root = (opts && opts.root) || process.cwd();
+    const env = createEnv({ dotenvFile: path.join(root, '.env') });
+    const fromDotenv = String((env.readDotEnv() || {})[name] || '').trim();
+    if (fromDotenv) return { ok: true, value: fromDotenv, source: `.env:${name}` };
+  } catch { /* 读 .env 失败按未设置处理，下面统一给可读错误 */ }
+  return {
+    ok: false,
+    code: 'EXEC_CONFIG_MISSING',
+    error: `插件清单里的 \${${name}} 没有值：请设置环境变量 ${name}，`
+      + `或在项目根的 .env 里加一行 ${name}=<路径>（清单不再写死本机路径，改配置即可换机）`,
+  };
+}
+
+/** 找可用的解释器：清单声明优先，否则按常见路径探**一次并记住**。
  *
  * 为什么缓存：本函数会被每个 worker 的 spawn 调用一次，而探测要对候选路径逐个 statSync；
  *   同一进程里解释器不会换，探一次就够（`repeat-identical-call` 报的正是这一处）。
@@ -130,6 +164,10 @@ function lazyBytes(tmpPath, size) {
  */
 let interpreterProbeCache = null;
 function resolveInterpreter(meta) {
+  // ① 环境变量最优先（部署期覆盖，便于换机/换版本而不改清单）
+  const fromEnv = String(process.env.MODELSTAGE_PYTHON || '').trim();
+  if (fromEnv) return fromEnv;
+  // ② 清单声明（插件作者指定；本项目已置空，交给③④探测）
   const declared = meta && meta.interpreter ? String(meta.interpreter) : '';
   if (declared) return declared;
   if (interpreterProbeCache) return interpreterProbeCache;
@@ -410,15 +448,25 @@ export function loadExecPlugin(meta, ctx) {
   if (!fs.existsSync(entryPath)) {
     return { ok: false, code: 'EXEC_ENTRY_MISSING', error: `exec 入口文件不存在：${entryPath}` };
   }
+  // depsDir：支持三种写法 —— `${VAR}` 占位符（推荐，清单不带本机信息）、绝对路径、插件内相对路径。
+  //   占位符取不到值 ⇒ **装载期就失败并给可读错误**，不要等到 spawn 后才以
+  //   "ModuleNotFoundError: No module named 'UnityPy'" 的形式冒出来（那时看不出是配置问题）。
+  let resolvedDepsDir = { ok: true, value: null };
+  if (meta.depsDir) {
+    const expanded = expandPlaceholder(meta.depsDir, { root: ctx && ctx.root });
+    if (!expanded.ok) return expanded;
+    resolvedDepsDir = {
+      ok: true,
+      value: path.isAbsolute(expanded.value) ? expanded.value : path.join(pluginDir, expanded.value),
+    };
+  }
   const worker = new ExecWorker(meta, {
     pluginDir,
     // depsDir 支持两种写法：插件内相对路径（'.deps'）或**绝对路径**。
     //   为什么需要绝对路径：本项目仓库在 CIFS 上（noexec + 不能 utime .so），
     //   带 C 扩展的依赖装进去会 PermissionError；这类依赖只能放到本地盘，
     //   由插件在自己的 README 里写明位置（见 unitypy-bundle 的说明）。
-    depsDir: meta.depsDir
-      ? (path.isAbsolute(String(meta.depsDir)) ? String(meta.depsDir) : path.join(pluginDir, String(meta.depsDir)))
-      : null,
+    depsDir: resolvedDepsDir.ok ? resolvedDepsDir.value : null,
     // log 缺省不再退化成空函数：exec 通道的排障信息（尤其"上报了未知进度档「x」"）必须能在
     //   LOG_LEVEL=debug 下真的打出来。此前调用方只传 {pluginsDir, root}，ctx.log 为空
     //   ⇒ 这些 debug 全被静默丢弃 —— "为什么没有进度"根本无从查起。

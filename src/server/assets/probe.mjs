@@ -4,16 +4,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+/** JS 系扩展名共用的 MIME：.js/.mjs/.mts/.cjs 四个键映射同一值，只在这里写一次 */
+const MIME_JS = 'text/javascript';
+/** 二进制兜底 MIME：.skel/.moc/.mtn 都是八位字节流 */
+const MIME_OCTET = 'application/octet-stream';
 const MIME = {
-  '.html': 'text/html', '.htm': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript',
-  '.mts': 'text/javascript', '.cjs': 'text/javascript', '.css': 'text/css', '.png': 'image/png',
+  '.html': 'text/html', '.htm': 'text/html', '.js': MIME_JS, '.mjs': MIME_JS,
+  '.mts': MIME_JS, '.cjs': MIME_JS, '.css': 'text/css', '.png': 'image/png',
   '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon', '.json': 'application/json', '.webp': 'image/webp', '.woff': 'font/woff',
-  '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.atlas': 'text/plain', '.skel': 'application/octet-stream',
+  '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.atlas': 'text/plain', '.skel': MIME_OCTET,
   '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.m4a': 'audio/mp4', '.wav': 'audio/wav',
   '.txt': 'text/plain', '.map': 'application/json', '.webm': 'video/webm',
   // Live2D 相关（天命之子资源）：moc 是二进制模型、mtn 是二进制动作，都按八位字节流发
-  '.moc': 'application/octet-stream', '.mtn': 'application/octet-stream',
+  '.moc': MIME_OCTET, '.mtn': MIME_OCTET,
   '.moc3': 'application/octet-stream', '.phy': 'application/json',
 };
 

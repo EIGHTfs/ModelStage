@@ -19,8 +19,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { here } from './lib/paths.mjs';
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
+// 本文件所在目录（写法见 tool/lib/paths.mjs，6 个脚本共用一处实现）
+const HERE = here(import.meta.url);
 const ROOT = path.resolve(HERE, '..');
 const NAMES_DIR = path.join(ROOT, 'config', 'names');
 

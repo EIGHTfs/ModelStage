@@ -24,8 +24,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { here } from './lib/paths.mjs';
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
+// 本文件所在目录（写法见 tool/lib/paths.mjs，6 个脚本共用一处实现）
+const HERE = here(import.meta.url);
 const REPO_ROOT = path.resolve(HERE, '..');            // 主仓根（本脚本在 tool/ 下）
 // 头像根**可配置**：头像仓是独立私有仓，可能 clone 到本机任意可写位置
 //   （本项目主仓在 CIFS 挂载上，git init/clone 会因 chmod 受限失败 ⇒ 不能假设它一定在主仓内）。

@@ -4,7 +4,7 @@
 //   历史（搬 worker 之前）：`recordMeasuredPeak` 的实测值是 `before.rss + max(0, VmHWM增量)`，
 //     VmHWM 只增不减 ⇒ 它反映"本次把峰值顶高多少 + 当时进程已占多少"，**不是这一包的成本**；
 //     当时的方向是"measured 高于声明就信它（取 max）"。
-//   现在（2026-10-30，解包搬进 worker 后）：起始 RSS 变成含 worker 常驻内存（独立 isolate +
+//   现在（解包搬进 worker 后）：起始 RSS 变成含 worker 常驻内存（独立 isolate +
 //     预热装载的插件 lib），同一个包从 136.7MB 抬到 212~225MB（+55~65%），预热也只压掉小幅台阶。
 //     ⇒ 一个随执行线程/首个包变化的数不能当准入依据，否则同样大小的包"有时过有时不过"。
 //     故改为 **declared 单判**，measured 只回传供观测（probe.json / 日志 / 前端提示）。
@@ -22,7 +22,7 @@ test('① measured < declared ⇒ 取 declared，basis=plugin-peak（实测不�
 });
 
 test('② measured > declared ⇒ **仍取 declared**（basis=plugin-peak）；measured 只回传供观测', () => {
-  // 口径变更（2026-10-30，实测取证）：解包搬进 worker 后 measured 的起始 RSS 含 worker 常驻内存，
+  // 口径变更（实测取证）：解包搬进 worker 后 measured 的起始 RSS 含 worker 常驻内存，
   //   同一个包从 136.7MB 抬到 212~225MB（+55~65%），且随"在哪个线程/是不是该线程第一个包"变化。
   //   ⇒ 它不再参与准入，只保留在返回值里供 probe/日志/前端观测。
   const r = estimatePeakWithBasis(1.9, { peakBytes: 654 * MB, measuredPeakBytes: 1195 * MB });

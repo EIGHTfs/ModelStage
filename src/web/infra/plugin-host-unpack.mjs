@@ -32,6 +32,8 @@ import { histogramFromObjects, isAssetDependencyHistogram, dependencyReason } fr
  * @returns {{materialize: Function, fetchFile: Function, providersFor: Function,
  *            findProvider: Function, pool: Map}}
  */
+/** 未知二进制类型的兜底 MIME（扩展名对照表、Blob 回落、fetch 兜底三处共用一个） */
+const MIME_OCTET = 'application/octet-stream';
 export function createUnpack({ io, state, limits }) {
   const { say, emit } = io;
   const { providers, getDiscovered } = state;
@@ -287,7 +289,7 @@ async function resolveViaWorker(prov, file, bytes, opts = {}) {
     p,
     (typeof Blob !== 'undefined' && val instanceof Blob)
       ? val
-      : new Blob([val], { type: type || 'application/octet-stream' }),
+      : new Blob([val], { type: type || MIME_OCTET }),
   ]));
   return {
     ok: true,
@@ -450,7 +452,7 @@ const UNPACK_FETCH_CONCURRENCY = 4;
 /** 产物文件的 MIME（按扩展名；未知一律 octet-stream） */
 const MIME_BY_EXT = {
 '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
-'.json': 'application/json', '.moc3': 'application/octet-stream', '.wav': 'audio/wav', '.mp3': 'audio/mpeg',
+'.json': 'application/json', '.moc3': MIME_OCTET, '.wav': 'audio/wav', '.mp3': 'audio/mpeg',
 };
 
 /** 产物文件数（跨 realm 鸭子类型：Map 看 size，普通对象看键数） */
@@ -559,7 +561,7 @@ async function resolveFromServer(file, { hitOnly = true, mon = null } = {}) {
     const res = await fetchWithRetry(f.url, { timeoutMs: 8000, label: 'unpack-file' });
     // VFS 只接受 Blob/字符串（本地路径上插件给的就是 Blob）→ 这里转成带 MIME 的 Blob，
     //   MIME 影响 blob URL 的消费方（<img>/WebGL 纹理、fetch 后 JSON.parse 都看它）
-    const type = MIME_BY_EXT[(/\.[a-z0-9]+$/i.exec(f.path) || [''])[0].toLowerCase()] || 'application/octet-stream';
+    const type = MIME_BY_EXT[(/\.[a-z0-9]+$/i.exec(f.path) || [''])[0].toLowerCase()] || MIME_OCTET;
     return [f.path, new Blob([await res.arrayBuffer()], { type })];
   });
   const files = new Map(got);

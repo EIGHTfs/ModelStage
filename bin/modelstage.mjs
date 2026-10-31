@@ -14,8 +14,10 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
+import { here } from '../tool/lib/paths.mjs';
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
+// 本文件所在目录（写法见 tool/lib/paths.mjs，6 个脚本共用一处实现）
+const HERE = here(import.meta.url);
 const PKG_PATH = path.join(HERE, '..', 'package.json');
 
 const USAGE = `用法：modelstage [选项]

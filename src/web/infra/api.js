@@ -102,8 +102,8 @@ async function attemptOnce(path, { method, body, headers, timeoutMs, signal, cac
   const res = await fetch(path, {
     method,
     headers: {
-      Accept: 'application/json',
-      ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      Accept: MIME_JSON,
+      ...(body !== undefined ? { 'Content-Type': MIME_JSON } : {}),
       ...(headers || {}),
     },
     ...(body !== undefined ? { body: typeof body === 'string' ? body : JSON.stringify(body) } : {}),
@@ -156,6 +156,8 @@ function bucketOf(label) {
 }
 
 /** 重置统计（测试/验收开始前调用，保证数字干净） */
+/** JSON 的 MIME：请求头与响应头两处都用它（同一个字面量原来写了三遍） */
+const MIME_JSON = 'application/json';
 export function resetRetryStats() {
   retryStats.calls = 0;
   retryStats.firstTryOk = 0;
@@ -447,7 +449,7 @@ export async function postStream(path, body, opts = {}) {
     bumpIdle();
     const res = await fetch(path, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', ...(opts.headers || {}) },
+      headers: { 'content-type': MIME_JSON, ...(opts.headers || {}) },
       body: typeof body === 'string' ? body : JSON.stringify(body),
       signal: ctrl.signal,
     });

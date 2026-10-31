@@ -26,16 +26,18 @@ export function resolveUnder(baseDir, pathname, prefix) {
 }
 
 /** 流式发送磁盘文件（长度已知、禁缓存） */
+/** 纯文本响应头：原来 9 处各写一遍同一个字面量，集中一处（改 charset 只改这里） */
+const MIME_TEXT_PLAIN = 'text/plain; charset=utf-8';
 export function sendFile(req, res, abs, extraHeaders) {
   let stat;
   try {
     stat = fs.statSync(abs);
   } catch {
-    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.writeHead(404, { 'Content-Type': MIME_TEXT_PLAIN });
     return res.end('404: not found');
   }
   if (!stat.isFile()) {
-    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.writeHead(404, { 'Content-Type': MIME_TEXT_PLAIN });
     return res.end('404: not found');
   }
   const ext = path.extname(abs).toLowerCase();
@@ -156,7 +158,7 @@ export function serveAssets(ctx, req, res, p) {
   if (p.startsWith('/spine-runtimes/')) {
     const abs = resolveRuntimeFile(ctx, p);
     if (!abs) {
-      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.writeHead(404, { 'Content-Type': MIME_TEXT_PLAIN });
       res.end('404: ' + p);
       return true;
     }
@@ -218,7 +220,7 @@ function isSafeRelPath(rel) {
  */
 export function servePluginFile(ctx, req, res, p) {
   const deny = (status, msg) => {
-    res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.writeHead(status, { 'Content-Type': MIME_TEXT_PLAIN, 'Cache-Control': 'no-store' });
     res.end(msg);
   };
   let rel;
@@ -247,7 +249,7 @@ export function serveStatic(ctx, req, res, p) {
   try {
     rel = decodeURIComponent(p);
   } catch {
-    res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.writeHead(400, { 'Content-Type': MIME_TEXT_PLAIN });
     res.end('400: bad encoding');
     return true;
   }
@@ -259,12 +261,12 @@ export function serveStatic(ctx, req, res, p) {
     const sub = `.${rel.slice('/shared'.length)}`;
     const sharedAbs = path.resolve(sharedRoot, sub);
     if (sharedAbs !== sharedRoot && !sharedAbs.startsWith(sharedRoot + path.sep)) {
-      res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.writeHead(403, { 'Content-Type': MIME_TEXT_PLAIN });
       res.end('403: forbidden');
       return true;
     }
     if (!fs.existsSync(sharedAbs) || !fs.statSync(sharedAbs).isFile()) {
-      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.writeHead(404, { 'Content-Type': MIME_TEXT_PLAIN });
       res.end(`404: ${p}`);
       return true;
     }
@@ -273,12 +275,12 @@ export function serveStatic(ctx, req, res, p) {
   }
   const abs = path.resolve(ctx.webRoot, `.${rel}`);
   if (abs !== ctx.webRoot && !abs.startsWith(ctx.webRoot + path.sep)) {
-    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.writeHead(403, { 'Content-Type': MIME_TEXT_PLAIN });
     res.end('403: forbidden');
     return true;
   }
   if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
-    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.writeHead(404, { 'Content-Type': MIME_TEXT_PLAIN });
     res.end(`404: ${p}`);
     return true;
   }

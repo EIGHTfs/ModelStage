@@ -29,9 +29,11 @@ import { copyFilePortable } from '../src/server/core/fs-portable.mjs';
 import { checkSingleSource, formatViolations } from './check-single-source.mjs';
 import { checkWiring, formatWiringProblems } from './check-wiring.mjs';
 import { memAvailableMB, tailLines, classifyOutcome, openRun, writeSuiteResult, updateSummary, finishRun } from './lib/test-report.mjs';
+import { here } from './lib/paths.mjs';
 
 // 必须用 fileURLToPath：项目路径含中文/空格，URL.pathname 是百分号编码，直接当路径会找不到文件
-const HERE = path.dirname(fileURLToPath(import.meta.url));
+// 本文件所在目录（写法见 tool/lib/paths.mjs，6 个脚本共用一处实现）
+const HERE = here(import.meta.url);
 const REPO_ROOT = path.resolve(HERE, '..');
 const PROJECT = path.resolve(HERE, '..');
 const PROFILE_PREFIX = '/tmp/check-console-profile-';

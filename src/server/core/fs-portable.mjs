@@ -2,7 +2,7 @@
 //
 // 为什么需要这一层：CIFS/SMB 挂载不允许改权限位，而 Node 的 fs.copyFileSync
 //   在 libuv 层复制完字节后会 fchmod 把源权限位套到目标文件 —— 于是在 SMB 上
-//   稳定报 EPERM。对照实验（2026-10-26）：
+//   稳定报 EPERM。对照实验：
 //     fs.copyFileSync(src, dst)              → EPERM
 //     readFileSync + writeFileSync           → OK
 //     openSync('w') + writeSync + close      → OK

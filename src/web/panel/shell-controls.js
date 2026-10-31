@@ -172,7 +172,7 @@ function hangGuardTick() {
 
   // **暂停时完全跳过**（不碰 ticks / stalls / lastFrames），与"后台标签页"同型：
   //   暂停本来就不该有帧（canvas-api 的 pause() 会 stopFrameTick），拿它去判"渲染停滞"必然误判。
-  // 实测代价（2026-10-30，8899，spine char000101）：暂停后每 tick frames 不涨 ⇒ stalls 累加到 3
+  // 实测代价（8899，spine char000101）：暂停后每 tick frames 不涨 ⇒ stalls 累加到 3
   //   ⇒ 看门狗执行 pause();play() 自愈 ⇒ rec 0→1、paused 被改回 false、
   //   引擎 animationId 从"字段不存在"变成 522 并持续递增。
   //   ⇒ 用户点了暂停，**画面 3~4 秒后自己继续动** —— 这是用户可见的功能缺陷，不是计数虚涨。

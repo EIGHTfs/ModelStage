@@ -139,7 +139,7 @@ export function estimatePeakWithBasis(sourceMb, memory) {
   //
   // ② 实测回填值 —— **不再参与准入判定**，只作为观测数据回传（probe.json / 日志 / 前端提示）
   //
-  //    为什么从"取 max"改成"完全不采信"（2026-10-30 实测取证）：
+  //    为什么从"取 max"改成"完全不采信"（实测取证）：
   //      解包搬进 worker 后，measured 的公式 `峰值 = 起始 RSS + 本次 VmHWM 增量` 里的**起始 RSS
   //      已经含 worker 的常驻内存**（独立 V8 isolate + 预热装载的插件 lib + vm 沙盒）。
   //      同一个包、同一台机器：搬 worker 前 136.7MB → 搬之后 212~225MB（+55~65%）；
