@@ -117,18 +117,39 @@ export function createPluginHost(opts = {}) {
   let loadingPromise = null;
 
   /**
+   * 资源根里某个文件的下载 URL（**唯一拼法**）。
+   *
+   * 为什么单独抽出来：现在有两条路要取同一个文件 —— 主线程读（fetchFile）与
+   *   worker 自己按 URL 拉（unpack-worker）。两处各拼一遍就是"改一处漏一处"的漂移，
+   *   而且拼错的表现极难查（一边能解、一边 404）。
+   * @param {string} rootId
+   * @param {string} rel
+   * @returns {string}
+   */
+  function fileUrlOf(rootId, rel) {
+    return `${base}/api/file?root=${encodeURIComponent(rootId)}&path=${encodeURIComponent(rel)}`;
+  }
+
+  /**
    * 取资源根里的文件字节（契约 §3.6 的唯一取字节通道）。
    * @param {string} rootId 资源根 id
    * @param {string} rel 相对该根的路径（POSIX）
    * @returns {Promise<{bytes: ArrayBuffer, size: number, url: string}>}
    */
   async function fetchFile(rootId, rel) {
-    const url = `${base}/api/file?root=${encodeURIComponent(rootId)}&path=${encodeURIComponent(rel)}`;
+    const url = fileUrlOf(rootId, rel);
+    const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    const t0 = now();
     // 容器包字节同样走重试：这是"模型文件"主路径，keep-alive race 会打中它
     const res = await fetchWithRetry(url, { timeoutMs: 20000, label: 'plugin-file' });
     // 契约 §1.1：file.bytes 的类型是 **Uint8Array**（不是 ArrayBuffer）。
     //   宿主在这里就转好，调用方拿到的直接是插件期望的类型。
     const bytes = new Uint8Array(await res.arrayBuffer());
+    // 打点：这是"主线程整包读入"的唯一入口。方向④ 完成后它**只该在回落路径出现**，
+    //   正常装载不该再有这条 ⇒ 验收就看它在不在。
+    try {
+      emit('unpack.main-read', { rel, bytes: bytes.byteLength, ms: Math.round(now() - t0) });
+    } catch { /* 打点失败不影响取字节 */ }
     return { bytes, size: bytes.byteLength, url };
   }
 
@@ -408,20 +429,45 @@ export function createPluginHost(opts = {}) {
 
   /**
    * 用 worker 解包。失败**不抛**，返回 {ok:false} 让调用方回落同步路径（降级不静默，由调用方报）。
+   * @param {object} prov 提供者
+   * @param {object} file 条目（rootId/rel/name）
+   * @param {Uint8Array|null} bytes 已读字节；为 null 时改用 opts.url 让 worker 自己拉
+   * @param {{url?: string, size?: number}} [opts] url 模式参数（方向④）
    * @returns {Promise<{ok:boolean, res?:object, src?:string, error?:string}>}
    */
-  async function resolveViaWorker(prov, file, bytes) {
+  async function resolveViaWorker(prov, file, bytes, opts = {}) {
     const entry = await ensureUnpackWorker(prov.id);
     if (!entry) return { ok: false, unavailable: true, error: `worker 不可用（${prov.id}：CSP / 老浏览器 / 插件 lib 加载失败）` };
     const id = (entry.seq += 1);
-    // 刻意**不**用 transferable：同一份 bytes 可能要依次交给多个 provider 试（第一个不认就换下一个），
-    //   一旦 transfer 出去主线程的 buffer 就 detached 了。8MB 结构化拷贝只有几十毫秒，
-    //   远比"白跑一次 5.7 秒的 canHandle"划算。
-    const result = await new Promise((resolve) => {
+    // 两种投喂方式（方向④）：
+    //   · bytes 已就绪（调用方本来就要读 / 或 file.bytes 内联给了）⇒ 结构化拷贝给 worker
+    //   · 只有 URL ⇒ **worker 自己 fetch**：主线程不再把 19MB 读进来再拷一遍
+    //     （实测那一段 "read arrayBuffer + postMessage" 占 3918ms/19.3MB，是首帧最大的单笔开销）
+    // 仍然刻意**不**用 transferable：同一份 bytes 可能要依次交给多个 provider 试，
+    //   transfer 出去主线程的 buffer 就 detached 了；而 url 模式下这条顾虑从根本上不存在。
+    const url = opts && opts.url ? String(opts.url) : '';
+    const useUrl = !bytes && !!url;
+    const payload = { t: 'unpack', id, file: { rootId: file.rootId, rel: file.rel, name: file.name } };
+    if (useUrl) { payload.url = url; payload.size = Number.isFinite(opts.size) ? Number(opts.size) : 0; }
+    else { payload.bytes = bytes; }
+    const nowMs = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    const postT0 = nowMs();
+    // 注意 Promise 的执行器是**同步**跑的 ⇒ 构造返回时 postMessage 已经调用完毕，
+    //   于是 postMs 量到的就纯粹是"投喂"这一步（bytes 模式是结构化拷贝，url 模式只是发个小对象）。
+    const waitDone = new Promise((resolve) => {
       const timer = setTimeout(() => { entry.pending.delete(id); resolve({ t: 'fail', message: 'worker 超时（60s）' }); }, 60000);
       entry.pending.set(id, (m) => { clearTimeout(timer); resolve(m); });
-      entry.worker.postMessage({ t: 'unpack', id, file: { rootId: file.rootId, rel: file.rel, name: file.name }, bytes });
+      entry.worker.postMessage(payload);
     });
+    const postMs = Math.round(nowMs() - postT0);
+    const result = await waitDone;
+    // 打点分两个数（别混）：postMs = 投喂；totalMs = 整轮（含 worker 自己拉包 + 解压）
+    try {
+      emit('unpack.worker-post', {
+        rel: file.rel, mode: useUrl ? 'url' : 'bytes', bytes: useUrl ? 0 : (bytes ? bytes.byteLength : 0),
+        postMs, totalMs: Math.round(nowMs() - postT0),
+      });
+    } catch { /* 打点失败不影响解包 */ }
     if (result.t === 'no-handle') return { ok: false, noHandle: true };
     if (result.t !== 'done' || !result.res) {
       return { ok: false, error: `${result.code || 'worker-fail'}: ${result.message || '未知'}` };
@@ -926,14 +972,43 @@ const MIME_BY_EXT = {
       //   但同一台机器的浏览器解同一个包只要 4.3s 且能正常渲染 —— 拒绝是错的。
       // 读整包进内存是这条路径上最吃内存的一步：先查一次，越线就不读
       if (mon.checkNow()) throw Object.assign(new Error(mon.reason()), { reason: 'memory-guard' });
-      const read = await bytesOf(file);
-      if (!read.ok) throw Object.assign(new Error(read.message), { reason: 'read-failed' });
+      // ── 方向④：**主线程不再预先读整包** ────────────────────────────────
+      //   以前这里先 bytesOf(file) 把 19MB 读进主线程、再 postMessage 拷给 worker，
+      //   实测那一段 3918ms/19.3MB，是首帧最大的单笔开销。现在改成：
+      //     · 有内联 bytes（调用方已给）⇒ 照旧直接投喂
+      //     · 否则只把 **URL + 体积** 交给 worker，由它自己 fetch（主线程只发一条小消息）
+      //   懒读兜底：只有"worker 整条路都不成立"时，才真正 bytesOf() 一次（回落到同步解包）。
+      let sizeHint = Number.isFinite(file.size) ? Number(file.size) : 0;
+      const fileUrl = fileUrlOf(file.rootId, file.rel);
+      const inlineBytes = toUint8Array(file.bytes);
+      // 调试开关 ?workerFetch=0：强制回"主线程先读整包再投喂"的旧行为。
+      //   存在的理由只有一个 —— 让"改造前/后"能在**同一台机器同一次会话**里 A/B 对比，
+      //   而不是拿两份不同时间的日志比。平时不设即走 url 模式。
+      const forceMainRead = (() => {
+        try { return new URLSearchParams(location.search).get('workerFetch') === '0'; } catch { return false; }
+      })();
+      let readCache = null;
+      const ensureBytes = async () => {
+        if (readCache) return readCache;
+        const r = await bytesOf(file);
+        if (!r.ok) throw Object.assign(new Error(r.message), { reason: 'read-failed' });
+        readCache = r;
+        return r;
+      };
+      // 条目没带体积时（少数历史条目 / 目录型），进度事件的 bytes 就没法凭空写对。
+      //   这时**先读一次**把真实体积拿到 —— 宁可多读这一次，也不要把既有事件语义
+      //   从"压缩字节数"降级成 0（下游按它显示"压缩 xMB / 估算耗时"，0 会被当真）。
+      if (!inlineBytes && sizeHint <= 0) {
+        const r = await ensureBytes();
+        sizeHint = r.bytes.length;
+      }
       // 同步解压前先把"在等什么"写出去，并**让出一帧**：
       //   插件 resolve 是同步的，LZMA 包实测要 1.7~10 秒（≈300~620ms/MB 解压后体积），
       //   主线程一旦进解压就再没机会渲染这条提示（DOM 已改、但浏览器不会给你帧）。
       //   让帧代价约 16ms，换来"用户知道在解压、不是卡死"。非 LZMA 包几乎不受影响（多一帧）。
-      say.info(`本地解包中：${file.rel}（压缩 ${(read.bytes.length / 1048576).toFixed(2)}MB，大包可能要数秒）`);
-      emit('unpack.local-start', { rootId: file.rootId, rel: file.rel, bytes: read.bytes.length });
+      // 体积取自条目元信息（解包前主线程不读包，拿不到就得等读完才知道大小）
+      say.info(`本地解包中：${file.rel}（压缩约 ${(sizeHint / 1048576).toFixed(2)}MB，大包可能要数秒）`);
+      emit('unpack.local-start', { rootId: file.rootId, rel: file.rel, bytes: sizeHint });
       // **所有压缩类型**都先试 worker：resolve 的成本只看包有多大，与压缩类型无关。
       //   为什么从"只看 canHandle"改成"看 resolve 成本"：
       //     · 旧门禁只看 canHandle 贵不贵（LZMA 的 canHandle 要 5.7s、LZ4 只要毫秒级），
@@ -951,7 +1026,10 @@ const MIME_BY_EXT = {
         let fellBack = '';
         let anyProbed = false;   // 有没有任何一个 worker 真的判过"不认这个包"
         for (const cand of bundleCands) {
-          const w = await resolveViaWorker(cand, file, read.bytes);
+          // 有内联字节就直投；否则把 URL 交给 worker 自己拉（主线程零字节搬运）。
+          //   ?workerFetch=0 时故意先读一遍，用来量"改造前"那一段的耗时。
+          const wBytes = forceMainRead ? (await ensureBytes()).bytes : inlineBytes;
+          const w = await resolveViaWorker(cand, file, wBytes, wBytes ? {} : { url: fileUrl, size: sizeHint });
           if (w.ok) {
             if (mon.checkNow()) throw Object.assign(new Error(mon.reason()), { reason: 'memory-guard' });
             // 「说能解」≠「解出来能用」：产物不自洽就换下一个候选（判据见 resolvedUsable 注释）。
@@ -990,6 +1068,8 @@ const MIME_BY_EXT = {
         const next = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (cb) => setTimeout(cb, 16);
         next(() => resolve());
       });
+      // 走到这里说明 worker 路径没成：**这时候才**把整包读进主线程（懒读兜底）
+      const read = await ensureBytes();
       const got = await resolveViaProvider(file, read.bytes);
       if (mon.checkNow()) throw Object.assign(new Error(mon.reason()), { reason: 'memory-guard' });
       if (!got.ok) throw Object.assign(new Error(got.message || '本地解包失败'), { reason: got.reason, passthrough: got });

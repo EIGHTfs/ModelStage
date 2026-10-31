@@ -80,7 +80,36 @@ async function handleMessage(ev) {
         self.postMessage({ t: 'fail', id: msg.id, code: 'ULB_WORKER_NO_PROVIDER', message: 'worker 里没有可用的 provider.resolve（插件注册失败）' });
         return;
       }
-      const bytes = toU8(msg.bytes);
+      // 取字节的两种方式（方向④）：
+      //   · msg.bytes 已给 ⇒ 直接用（调用方本来就读过了）
+      //   · 只有 msg.url ⇒ **worker 自己拉**。这一步是本轮的核心：主线程不再把 19MB 读进来
+      //     再 postMessage 拷一遍（实测那一段 3918ms/19.3MB，是首帧最大的单笔开销）。
+      //     fetch 与页面同源，自动带 cookie；失败要如实回 fail，让主线程按老规矩回落。
+      let bytes;
+      if (msg.bytes) {
+        bytes = toU8(msg.bytes);
+      } else if (msg.url) {
+        const tf = Date.now();
+        let res;
+        try {
+          res = await fetch(msg.url, { credentials: 'same-origin' });
+        } catch (e) {
+          self.postMessage({ t: 'fail', id: msg.id, code: 'ULB_WORKER_FETCH', message: `worker 拉包失败：${(e && e.message) || e}` });
+          return;
+        }
+        if (!res || !res.ok) {
+          self.postMessage({ t: 'fail', id: msg.id, code: 'ULB_WORKER_FETCH', message: `worker 拉包失败：HTTP ${res ? res.status : '?'}` });
+          return;
+        }
+        bytes = toU8(await res.arrayBuffer());
+        self.postMessage({
+          t: 'progress', id: msg.id, phase: 'fetched',
+          detail: { bytes: bytes.byteLength, fetchMs: Date.now() - tf },
+        });
+      } else {
+        self.postMessage({ t: 'fail', id: msg.id, code: 'ULB_WORKER_NO_BYTES', message: '既没有 bytes 也没有 url' });
+        return;
+      }
       const t0 = Date.now();
 
       // 注意：这里**不调 captured.canHandle**。

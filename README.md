@@ -164,6 +164,7 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.3.7 | 2026-10-31 | 大包首帧优化第一步：容器包改由解包 worker **自己按 URL 拉取**，主线程不再整包读取与结构化拷贝（实测读包 152/172ms → 0、投喂 13ms → 0）；新增 `?workerFetch=0` 同机 A/B 开关与 `unpack.main-read`/`unpack.worker-post` 打点 |
 | 0.3.6 | 2026-10-31 | exec 进度档名收敛为单一来源（`PROGRESS_PHASES` 表，档名与语义同处）；修 exec 默认 logger 未接线（未知档的 debug 原本在生产里根本不输出）；两份设计稿改为指向该表、不复述名单 |
 | 0.3.5 | 2026-10-31 | exec 插件解包进度变成**真实时**：帧协议新增进度帧（read/resolve/write），插件在三个自然边界上报、宿主即时 fire `phase` 事件、收尾只补未发档；node 插件事件顺序与时刻不变 |
 | 0.3.4 | 2026-10-31 | 探测增加可用内存判据：`可用 ≥ 基线 + 包体积 × 系数` 才探，不满足则保持 unknown 并单独计数 `skippedMemory`（与"包太大"分开）；MemAvailable 优先、`os.freemem()` 回落、取不到则放行；阈值走 env 且逐次重读 |
