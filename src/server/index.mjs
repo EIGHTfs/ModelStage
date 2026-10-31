@@ -100,6 +100,15 @@ export function createServerData({ root, dataRoot, avatarRoot, log, activity }) 
     // 解析线程开关：缺省开。受限环境（起不了 worker）或排障时设 MODELSTAGE_PROBE_WORKER=0
     //   即回落主线程同步解析（旧行为），便于 A/B 对照与应急。
     worker: readNumericEnv('MODELSTAGE_PROBE_WORKER', 1) !== 0,
+    // 内存判据（"该不该探"的第二道门）：可用 ≥ 基线余量 + 包体积 × 系数。
+    //   两个数**每次判定时重读 env** ⇒ 调参不用改代码、也不用改调用点；
+    //   注意：进程外的 env 改动仍要重启才生效（process.env 是启动时快照）。
+    //     MODELSTAGE_PROBE_MEM_BASELINE_MB  系统要留的余量，缺省 256
+    //     MODELSTAGE_PROBE_MEM_FACTOR       包体积 → 预估占用 的倍数，缺省 3（解包产物比包大）
+    readLimits: () => ({
+      baselineBytes: readNumericEnv('MODELSTAGE_PROBE_MEM_BASELINE_MB', 256) * 1024 * 1024,
+      factor: readNumericEnv('MODELSTAGE_PROBE_MEM_FACTOR', 3),
+    }),
     // 单包上限（第 2 步）：超过就不探，保持 unknown 并记一条 info。
     //   实测依据：40MB 级包解析峰值高，且本机可用内存只有 ~1.1GB 时，
     //   探测与用户解包同时要内存会把服务顶死（进程被内核杀掉，日志无栈）。

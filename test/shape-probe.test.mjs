@@ -170,6 +170,66 @@ test('真实解析路径（worker）：坏包不崩，结论只会是 unknown �
   }
 });
 
+test('可用内存不足 ⇒ 跳过解析，保持 unknown 并单独计数（与"太大"区分）', async () => {
+  const root = makeRoot('mem.unity3d');
+  try {
+    const key = 'r/mem.unity3d';
+    const states = createEntryStates({ file: '', log: () => {} });
+    const catalog = { takeProbeKeys: () => [key], requeueProbeKey: () => {} };
+    const logs = [];
+    const probe = track(createShapeProbe({
+      catalog, entryStates: states, providers: () => [],
+      readConfig: () => [{ id: 'r', path: root }],
+      log: (level, msg) => logs.push(String(msg)),
+      probeBytes: () => { throw new Error('内存不足时必须跳过解析'); },
+      availableBytes: () => 10 * 1024 * 1024,                    // 只有 10MB 可用
+      readLimits: () => ({ baselineBytes: 256 * 1024 * 1024, factor: 3 }),
+      delayMs: 0, maxPerRun: 4, maxBytes: 24 * 1024 * 1024,      // 包本身**没有**超上限
+    }));
+    await probe.kick('r');
+    const rec = states.get(key);
+    const st = probe.stats();
+    assert.equal(rec.probe.result, 'unknown', '内存不足只说明"没探"，绝不能写 unsupported');
+    assert.equal(st.skippedMemory, 1, '要计入 skippedMemory');
+    assert.equal(st.skippedBig, 0, 'skippedBig 必须保持不变（区分"太大"与"内存不够"）');
+    assert.ok(logs.some((m) => m.includes('可用内存不足') && m.includes('MB')), '日志要带 available 与需要值');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('内存充足 ⇒ 照常解析；取不到内存数据 ⇒ fail-open 放行', async () => {
+  const root = makeRoot('mem2.unity3d');
+  try {
+    const key = 'r/mem2.unity3d';
+    const make = (availableBytes) => {
+      const states = createEntryStates({ file: '', log: () => {} });
+      const catalog = { takeProbeKeys: () => [key], requeueProbeKey: () => {} };
+      const probe = track(createShapeProbe({
+        catalog, entryStates: states, providers: () => [],
+        readConfig: () => [{ id: 'r', path: root }],
+        probeBytes: () => ({ assetDependency: true, dependencyReason: '美术依赖包' }),
+        availableBytes,
+        readLimits: () => ({ baselineBytes: 256 * 1024 * 1024, factor: 3 }),
+        delayMs: 0, maxPerRun: 4,
+      }));
+      return { probe, states };
+    };
+    // ① 内存充足：正常出结论
+    const rich = make(() => 8 * 1024 * 1024 * 1024);
+    await rich.probe.kick('r');
+    assert.equal(rich.states.get(key).probe.result, 'unsupported', '内存够就该照常探出结论');
+    assert.equal(rich.probe.stats().skippedMemory, 0);
+    // ② 拿不到内存数据（null）：fail-open，不能因为"读不到 /proc"就停摆
+    const blind = make(() => null);
+    await blind.probe.kick('r');
+    assert.equal(blind.states.get(key).probe.result, 'unsupported', '取不到可用内存时应放行');
+    assert.equal(blind.probe.stats().skippedMemory, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('探测不覆盖 loadResult（当事端的装载结论优先保留）', async () => {
   const root = makeRoot();
   try {

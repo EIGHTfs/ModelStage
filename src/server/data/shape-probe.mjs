@@ -15,6 +15,7 @@
 // 写回只填 support（putProbe），绝不覆盖 loadResult —— 那是当事端上报的（INV-D1）。
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { Worker } from 'node:worker_threads';
 
@@ -42,8 +43,49 @@ const DEFAULT_IDLE_GAP_MS = 2000;
 const DEFAULT_MAX_WAIT_MS = 20000;
 /** 等空闲时的轮询步长：越短越容易抢到刚出现的空隙，代价是空转次数更多 */
 const WAIT_STEP_MS = 200;
+/**
+ * 内存判据的缺省值（都可用 env 覆盖，见 index.mjs 的接线）。
+ *   BASELINE：探测之外系统还要留的余量（别把可用内存吃到 0）
+ *   FACTOR  ：包体积 → 预估占用 的倍数。**不能按 1:1 估**：解包产物（纹理/RGBA 缓冲）
+ *             通常比包本身大好几倍，按 1 估等于默认"装得下"，那这道门就白加了。
+ */
+const DEFAULT_MEM_BASELINE_BYTES = 256 * 1024 * 1024;
+const DEFAULT_MEM_FACTOR = 3;
 
 const sleep = (ms) => new Promise((r) => { const t = setTimeout(r, ms); if (typeof t.unref === 'function') t.unref(); });
+
+/**
+ * 字节数 → 可读 MB（日志用；拿不到值给 '?'）。
+ * @param {number|null|undefined} n
+ * @returns {string}
+ */
+function fmtMb(n) {
+  const v = Number(n);
+  return Number.isFinite(v) && v >= 0 ? `${Math.round(v / 1024 / 1024)}MB` : '?';
+}
+
+/**
+ * 读"可用内存"（字节）。**优先 MemAvailable，不是 MemFree**：
+ *   MemFree 不含可回收的页缓存，在 NAS 上常年只有几十 MB，按它判会把探测永久锁死。
+ * 取不到就返回 null —— 调用方按"放行"处理（fail-open：宁可偶尔多探一个包，也不要因为读不到 /proc 就停摆）。
+ * @returns {number|null}
+ */
+function readMemAvailable() {
+  try {
+    const txt = fs.readFileSync('/proc/meminfo', 'utf8');
+    const m = /^MemAvailable:\s+(\d+)\s+kB/m.exec(txt);
+    if (m) {
+      const n = Number(m[1]) * 1024;
+      if (Number.isFinite(n) && n > 0) return n;
+    }
+  } catch { /* 非 Linux / 容器里没有 procfs：走回落 */ }
+  try {
+    const n = os.freemem();
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * 造一个后台形态探测器。
@@ -65,6 +107,17 @@ export function createShapeProbe(opts = {}) {
   const delayMs = Number.isFinite(opts.delayMs) ? Number(opts.delayMs) : DEFAULT_DELAY_MS;
   const maxPerRun = Number.isFinite(opts.maxPerRun) ? Number(opts.maxPerRun) : DEFAULT_MAX_PER_RUN;
   const maxBytes = Number.isFinite(opts.maxBytes) ? Number(opts.maxBytes) : DEFAULT_MAX_BYTES;
+  /**
+   * 内存判据（"该不该探"的第二道门）：每次**逐包**取一次可用内存。
+   *   readLimits 由装配层注入（每批重读 env）⇒ 阈值可调而不用改代码；
+   *   availableBytes 可注入，测试里就能精确造"内存不够/够/拿不到"三种情形。
+   */
+  const readLimits = typeof opts.readLimits === 'function'
+    ? opts.readLimits
+    : () => ({ baselineBytes: DEFAULT_MEM_BASELINE_BYTES, factor: DEFAULT_MEM_FACTOR });
+  const availableBytes = typeof opts.availableBytes === 'function'
+    ? opts.availableBytes
+    : readMemAvailable;
   // 判型函数可注入：默认用与 /api/unpack 同一份实现；测试里换成假实现就能在
   //   不造真实 UnityFS 包的前提下验证"写回 unsupported / unknown"的分支（契约 §八）。
   const probeBytes = typeof opts.probeBytes === 'function' ? opts.probeBytes : probeBundleBytes;
@@ -101,6 +154,12 @@ export function createShapeProbe(opts = {}) {
     deferred: 0, waitedMs: 0,
     // 超过单包上限而跳过的包数（保持 unknown，留待点击验证）
     skippedBig: 0,
+    // 因**可用内存不足**而跳过的包数（与 skippedBig 分开：一个是"太大"，一个是"装不下"）
+    skippedMemory: 0,
+    // 最近一次内存判据看到的可用内存（字节；null = 拿不到，fail-open 放行）
+    lastMemAvailable: null,
+    // 最近一次"因内存不足而跳过"的判定明细（available/need/baseline/size/factor）
+    lastMemDetail: null,
   };
   /** 进行中的那一轮（同一时刻只允许一轮：串行是硬约束，多个 kick 合并成一个） */
   let running = null;
@@ -300,7 +359,7 @@ export function createShapeProbe(opts = {}) {
     stats.lastQueueAfter = queueLeft;
 
     // ② 完成：本轮结果分类 + 耗时 + 剩余（让路时额外说明"放回了几个"）
-    log('info', `后台形态探测完成 · 本轮 ${out.probed}/${keys.length} · unsupported ${out.unsupported} · unknown ${out.unknown} · 跳过 ${stats.skipped} · 排队剩 ${queueLeft ?? '?'} · 耗时 ${stats.lastBatchMs}ms`
+    log('info', `后台形态探测完成 · 本轮 ${out.probed}/${keys.length} · unsupported ${out.unsupported} · unknown ${out.unknown} · 跳过 ${stats.skipped} · 内存跳过 ${out.memSkipped || 0} · 排队剩 ${queueLeft ?? '?'} · 耗时 ${stats.lastBatchMs}ms`
       + (out.yielded ? ` · 让路放回 ${out.yielded} 个` : ''), {
       trigger, probed: out.probed, unsupported: out.unsupported, unknown: out.unknown,
       queue: queueLeft, ms: stats.lastBatchMs, yielded: out.yielded,
@@ -342,6 +401,8 @@ export function createShapeProbe(opts = {}) {
     let unsupported = 0;
     let unknown = 0;
     let yielded = 0;
+    let memSkipped = 0;               // 本批因内存不足跳过的条数
+    let memLogged = false;            // 本批是否已记过"内存不足"（每批只记一次，避免刷屏）
     for (let i = 0; i < keys.length; i += 1) {
       const key = keys[i];
       // 批内也要让路：一批 8 个包跑十几秒，中途用户来请求了就该停手（已探的结论已写回，不浪费）。
@@ -359,6 +420,17 @@ export function createShapeProbe(opts = {}) {
         const kind = await probeOne(key, fp, roots);
         if (kind === 'unsupported') { probed += 1; unsupported += 1; }
         else if (kind === 'unknown') { probed += 1; unknown += 1; }
+        else if (kind === 'memory') {
+          // 内存不够 ⇒ 这一批里**只记一条**（同类跳过会连续发生，逐条记就是刷屏）
+          memSkipped += 1;
+          if (!memLogged) {
+            memLogged = true;
+            const d = stats.lastMemDetail || {};
+            log('info', `形态探测跳过（可用内存不足，保持 unknown）· available ${fmtMb(d.available)} · 本包需 ≥ ${fmtMb(d.need)}（基线 ${fmtMb(d.baseline)} + 包 ${fmtMb(d.size)} × 系数 ${d.factor ?? '?'}）`, {
+              available: d.available ?? null, need: d.need ?? null, baseline: d.baseline ?? null, size: d.size ?? null, factor: d.factor ?? null,
+            });
+          }
+        }
       } catch (e) {
         // 单个包出错不能带走整轮：记日志、把 key 放回队列（下一轮再试）
         stats.skipped += 1;
@@ -367,7 +439,40 @@ export function createShapeProbe(opts = {}) {
       }
       if (delayMs > 0) await sleep(delayMs);     // 包间限速：不顶满 CPU/IO
     }
-    return { probed, unsupported, unknown, yielded };
+    return { probed, unsupported, unknown, yielded, memSkipped };
+  }
+
+  /**
+   * 超过单包上限的处理：记 unknown（**不是** unsupported）+ 单独计数 + 一条 info。
+   * unknown 是合法状态：点击装载时仍会得到真实结论（探测不是必须给答案）。
+   * @param {string} key 条目键
+   * @param {number} size 包体积
+   * @param {string|null} fp 当前提供者指纹
+   */
+  function skipTooBig(key, size, fp) {
+    entryStates.putProbe(key, { result: 'unknown', message: null }, { providerFingerprint: fp, assetFingerprint: assetFingerprintOf(size) });
+    stats.skippedBig += 1;
+    log('info', `形态探测跳过（包太大，留待点击验证）· ${fmtMb(size)} > 上限 ${fmtMb(maxBytes)}`, { key, size, maxBytes });
+  }
+
+  /**
+   * 内存判据：可用 ≥ 基线余量 + 包体积 × 系数。
+   *
+   * 取不到可用内存时**放行**（fail-open）：读不到 /proc 或 os.freemem 异常的环境里，
+   *   宁可能探就探，也不要因为"量不到"而让探测永久停摆（那是把排查工具弄成哑巴）。
+   * @param {number} size 包体积（字节）
+   * @returns {{blocked: boolean, detail: null | {available: number, need: number, baseline: number, size: number, factor: number}}}
+   */
+  function checkMemoryFor(size) {
+    const avail = availableBytes();
+    stats.lastMemAvailable = avail === null ? null : Number(avail);
+    if (avail === null) return { blocked: false, detail: null };
+    const lim = readLimits() || {};
+    const baseline = Number.isFinite(lim.baselineBytes) ? Number(lim.baselineBytes) : DEFAULT_MEM_BASELINE_BYTES;
+    const factor = Number.isFinite(lim.factor) ? Number(lim.factor) : DEFAULT_MEM_FACTOR;
+    const need = Math.ceil(baseline + size * factor);
+    if (Number(avail) < need) return { blocked: true, detail: { available: Number(avail), need, baseline, size, factor } };
+    return { blocked: false, detail: null };
   }
 
   /**
@@ -396,15 +501,19 @@ export function createShapeProbe(opts = {}) {
       // 文件不在了（被移走/改名）：不写结论，也不重排队 —— 下次扫描它就不在列表里了
       return null;
     }
-    if (size > maxBytes) {
-      // 太大的包不探（内存/阻塞风险），但**要记一条"探过没结论"**，否则每次启动都会重试它。
-      //   unknown 是合法状态：点击装载时仍会得到真实结论（探测不是必须给答案）。
+    // 太大的包不探（内存/阻塞风险）：跳过也要落一条"探过没结论"，否则每次启动都会重试它
+    if (size > maxBytes) { skipTooBig(s, size, fp); return 'unknown'; }
+
+    // ── 第二道门：可用内存（不是包大小）────────────────────────────────
+    //   为什么需要：包不大但机器装不下时（实测可用内存被压到 283MB），
+    //   解析 20MB 包仍会把进程拖进 swap。判据 = 可用 ≥ 基线余量 + 本包预估占用。
+    const mem = checkMemoryFor(size);
+    if (mem.blocked) {
+      // 内存不够 ⇒ 记 unknown（**不是** unsupported：这是"没探"，不是"装不动"）
       entryStates.putProbe(s, { result: 'unknown', message: null }, { providerFingerprint: fp, assetFingerprint: assetFingerprintOf(size) });
-      stats.skippedBig += 1;
-      log('info', `形态探测跳过（包太大，留待点击验证）· ${Math.round(size / 1024 / 1024)}MB > 上限 ${Math.round(maxBytes / 1024 / 1024)}MB`, {
-        key: s, size, maxBytes,
-      });
-      return 'unknown';
+      stats.skippedMemory += 1;
+      stats.lastMemDetail = mem.detail;      // 批内日志要能打出 available / need / 系数
+      return 'memory';
     }
 
     // 解析：优先走 worker（主线程不参与 CPU）—— 这是"不阻塞事件循环"的关键一步。

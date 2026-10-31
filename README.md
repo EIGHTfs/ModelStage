@@ -164,6 +164,7 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.3.4 | 2026-10-31 | 探测增加可用内存判据：`可用 ≥ 基线 + 包体积 × 系数` 才探，不满足则保持 unknown 并单独计数 `skippedMemory`（与"包太大"分开）；MemAvailable 优先、`os.freemem()` 回落、取不到则放行；阈值走 env 且逐次重读 |
 | 0.3.3 | 2026-10-31 | catalog 的 `warnings` 收敛为空数组：能力说明只在 `capabilityNotes`、根级问题只在 `rootIssues`/`rootWarning`（兼容期结束，消除同一事实两份表达） |
 | 0.3.2 | 2026-10-31 | 修复 exec 插件的假告警：前端不再把 `runtime:"exec"` 的插件当 JS 插件注入脚本（其 `files[]` 为空 ⇒ 必然误报「已加载但没有调用 register()」），改为只登记声明、不计入"需装载"分母 |
 | 0.3.1 | 2026-10-31 | 探测不再阻塞事件循环：两级空闲门控（有请求在飞不解析）+ 单包 24MB 上限 + 解析移入 worker 线程；新增显式生命周期 `close()` 与 SIGINT/SIGTERM 收尾（修复 worker 悬挂导致测试进程不退出）；实测事件循环 max 683→104ms、吞吐 28.5→63.9/min |
