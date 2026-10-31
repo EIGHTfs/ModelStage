@@ -20,6 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
+import { createLogger } from '../../core/log.mjs';
 
 /** 本适配器能处理的 runtime 名 */
 export const RUNTIME = 'exec';
@@ -38,14 +39,28 @@ const DEFAULT_IDLE_MS = 60_000;
 const MAX_LINE_BYTES = 4 * 1024 * 1024;
 /** SIGTERM 后等多久改 SIGKILL */
 const KILL_GRACE_MS = 3000;
+/** 本适配器自己的日志（exec 通道排障：未知进度档、空闲退出等） */
+const execLog = createLogger('exec');
+
 /**
- * 认识的进度档名（契约 §四·⑨：不认识的**忽略并记 debug**，不报错）。
+ * 进度档白名单 —— **唯一来源**：档名与每档语义都只在这张表里写一次。
  *
- * 与 plugin-store 的三段阶段名对齐（read / resolve / write）——两处必须是同一套词，
- *   否则插件报上来的档名转发出去后，前端 / SSE 订阅方对不上。
- * 插件可以自由加更细的档（monotonic 名字也行），老主进程只会打一条 debug。
+ * 契约 §四·⑨：不认识的档名**忽略并记 debug**，不报错、不中断请求 ——
+ *   插件可以自由加更细的档（monotonic 名字也行），老主进程只打一条 debug。
+ * 为什么不散在别处：这份名单曾同时抄在设计稿里，新增档位若只改一处，
+ *   插件发的帧就会被当"未知档"静默忽略（不报错，但也**没有进度**）——
+ *   "同一事实两处表达"是本项目反复踩的坑；设计稿现在只解释语义并指向本表。
+ * 与 plugin-store 的三段阶段名对齐（read / resolve / write）：档名要转发给前端 / SSE 订阅方，
+ *   两处必须是同一套词，否则对不上。
  */
-const KNOWN_PROGRESS_PHASES = new Set(['read', 'resolve', 'write']);
+export const PROGRESS_PHASES = Object.freeze([
+  { name: 'read', note: '从盘读整包（容器字节进内存）' },
+  { name: 'resolve', note: '插件解压/解析（真正吃 CPU 的那一段）' },
+  { name: 'write', note: '产物落盘（写 files/ 与 index.json）' },
+]);
+
+/** 快速判定用的集合（由上表派生 —— **不要**在这里另写一份名单） */
+const KNOWN_PROGRESS_PHASES = new Set(PROGRESS_PHASES.map((p) => p.name));
 
 /**
  * 校验一个 exec 插件的清单是否自洽（**纯校验，不起进程**）。
@@ -256,7 +271,9 @@ class ExecWorker {
     const phase = String((progress && progress.phase) || '');
     if (!phase) return;
     if (!KNOWN_PROGRESS_PHASES.has(phase)) {
-      this.log('debug', `exec 插件上报了未知进度档「${phase}」，已忽略`, { plugin: this.meta.id });
+      // 已知档名从表里现算（不另写一份）：排查"为什么没进度"时，一行日志就能看出
+      //   "插件发了个不在名单里的名字"还是"根本没发"。
+      this.log('debug', `exec 插件上报了未知进度档「${phase}」，已忽略（已知：${KNOWN_PROGRESS_PHASES.size ? [...KNOWN_PROGRESS_PHASES].join('/') : '无'}）`, { plugin: this.meta.id });
       return;
     }
     const rawMs = Number(progress && progress.ms);
@@ -399,7 +416,13 @@ export function loadExecPlugin(meta, ctx) {
     depsDir: meta.depsDir
       ? (path.isAbsolute(String(meta.depsDir)) ? String(meta.depsDir) : path.join(pluginDir, String(meta.depsDir)))
       : null,
-    log: (ctx && ctx.log) || (() => {}),
+    // log 缺省不再退化成空函数：exec 通道的排障信息（尤其"上报了未知进度档「x」"）必须能在
+    //   LOG_LEVEL=debug 下真的打出来。此前调用方只传 {pluginsDir, root}，ctx.log 为空
+    //   ⇒ 这些 debug 全被静默丢弃 —— "为什么没有进度"根本无从查起。
+    log: (ctx && ctx.log) || ((level, msg, detail) => {
+      const fn = typeof execLog[level] === 'function' ? execLog[level] : execLog.info;
+      fn(msg, detail);
+    }),
   });
   const timeoutMs = Number.isFinite(Number(meta.requestTimeoutMs)) ? Number(meta.requestTimeoutMs) : DEFAULT_TIMEOUT_MS;
   const providerId = String(meta.id || dirName);

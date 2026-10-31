@@ -18,7 +18,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { loadWithRuntime, readExecPermission, EXEC_PERMISSION_FILE } from '../src/server/unpack/runtime/index.mjs';
-import { MANIFEST_INVALID, SUPPORTED_FRAME_PROTOCOL, validateExecManifest } from '../src/server/unpack/runtime/exec.mjs';
+import { MANIFEST_INVALID, SUPPORTED_FRAME_PROTOCOL, validateExecManifest, PROGRESS_PHASES } from '../src/server/unpack/runtime/exec.mjs';
 import nodeVm from '../src/server/unpack/runtime/node-vm.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -260,6 +260,42 @@ test('exec 进度帧：不终结请求 + 未知档忽略 + 同档同毫秒去重
   assert.equal(seen.filter((x) => x.phase === 'read').length, 1, '同档同毫秒只能转发一次');
   assert.equal(seen[0].ms, 5);
   assert.equal(seen[1].ms, 40);
+  r.api.dispose?.();
+  fs.rmSync(pluginsDir, { recursive: true, force: true });
+});
+
+test('exec 未知进度档：忽略但**可观测**（debug 日志带档名，且不影响请求结果）', { skip: skipNoPython }, async () => {
+  const { pluginsDir, meta } = makeFakePlugin({ mode: 'progress' });
+  const logs = [];
+  // 注入 log：真实链路（plugin-runner）不传 log 时走适配器自己的 logger；
+  //   这里显式注入，只为把"到底有没有打、打的是什么"钉住。
+  const r = loadWithRuntime(meta, {
+    pluginsDir,
+    root: ROOT,
+    execAllowed: { allowed: true, source: 'test' },
+    log: (level, msg, detail) => logs.push({ level, msg, detail }),
+  });
+  assert.equal(r.ok, true, `装载应成功：${r.error || ''}`);
+
+  const seen = [];
+  const handled = await r.api.canHandle({
+    rootId: 'r', rel: 'a', name: 'a', size: 1, absPath: '/dev/null',
+    onProgress: (p) => seen.push(p),
+  });
+
+  // ① 不影响请求结果：未知档只是旁路信息，不能把请求带崩
+  assert.equal(handled, true, '未知档不能影响请求结果');
+  // ② 不转发给进度回调
+  assert.ok(!seen.some((p) => p.phase === 'bogus'), '未知档不该进 onProgress');
+  // ③ 必须留下一条 debug 日志且**带档名** —— 排查"为什么没有进度"时要能直接看到插件发了什么
+  const hit = logs.find((x) => x.level === 'debug' && String(x.msg).includes('bogus'));
+  assert.ok(hit, `应有带档名的 debug 日志，实际 ${JSON.stringify(logs)}`);
+  assert.match(String(hit.msg), /未知进度档/);
+  assert.equal(hit.detail && hit.detail.plugin, 'fake-exec', '日志要能定位到是哪个插件发的');
+  // ④ 转发出去的档名必须都来自白名单表（表与派生 Set 不许漂）
+  assert.ok(seen.every((p) => PROGRESS_PHASES.some((d) => d.name === p.phase)),
+    `转发的档名必须来自 PROGRESS_PHASES，实际 ${JSON.stringify(seen.map((p) => p.phase))}`);
+
   r.api.dispose?.();
   fs.rmSync(pluginsDir, { recursive: true, force: true });
 });
