@@ -19,6 +19,7 @@ import { getSharedVirtualFS } from './vfs.js';
 // 插槽注册表（DOM-free、可 node 直测）：只登记不渲染，S2 才接渲染
 import { createSlotRegistry } from './slot-registry.js';
 import { EVENTS } from './events.mjs';
+import { createRegistration } from './plugin-host-registration.mjs';
 import { createReport } from './plugin-host-report.mjs';
 import { createUnload } from './plugin-host-unload.mjs';
 import { createWarmup } from './plugin-host-warmup.mjs';
@@ -102,6 +103,9 @@ function injectScript(src) {
 //     · plugin-host-unload.mjs  createUnload({ ctx, manifestEffects, workerPool, publishSlotStats, publishEffectStats })
 //                               ⇒ { unloadPlugin, unloadAll }
 //     · plugin-host-warmup.mjs  createWarmup({ ctx }) ⇒ warmup()
+//     · plugin-host-registration.mjs
+//         createRegistration({ io, tables, decls, probe, sinks }) ⇒ { registerProvider, registerEffect,
+//                               registerControls, slots, notify }（对外公开面，错误码/文案/校验顺序逐字保留）
 //         （模块自持 capCache / CAP_TTL_MS / warmupInflight / WARMUP_PHASE_TEXT，自己 import postStream / memoryGuard）
 //   本文件里搜这些名字只能找到"装配那一行"，实现请去对应模块。
 //
@@ -114,63 +118,63 @@ function injectScript(src) {
 //   状态耦合：discovered（读清单找 provider）、providers（读 provider 表）、
 //            say（日志）、emit（进度事件）、pluginEffects（登记解包产物用于回溯）。
 //   函数 | 行 | 代码行 | 职责
-//   fetchFile            | 456 | 133 | 取文件字节（唯一取字节通道，worker/同步两条路 + 诊断）
-//   fileUrlOf            | 446 | 3   | 拼 VFS 取文件地址
-//   prefilterReason      | 766 | 12  | provider 预筛原因（能不能读这个文件）
-//   validateResolved     | 784 | 16  | 校验 provider.resolve 返回值形状（拦半成品）
-//   bytesOf              | 802 | 11  | 求一组文件的字节数
-//   filesOfProvider      | 830 | 4   | 某 provider 声明的文件清单
-//   onWorkerProgress     | 836 | 13  | worker 进度回调 → 派发事件
-//   ensureUnpackWorker   | 856 | 29  | 取/建某 provider 的 worker（失败返回 null）
-//   resolveViaWorker     | 897 | 41  | 用 worker 解包，失败不抛、返回 {ok:false} 由调用方回落
-//   classHistogramOf     | 962 | 13  | 字节量直方图（内存准入判断用）
-//   resolveViaProvider   | 977 | 35  | 按优先级试每个 provider 的 resolve
-//   resolvedUsable       | 1038 | 35  | 判断 resolve 结果是否真能用
-//   registerResolved     | 1075 | 21  | 把解包产物注册进 VFS 并解析入口地址（不碰渲染）
-//   filesCount           | 1109 | 5   | 文件计数
-//   providerFromPrefix   | 1127 | 5   | 前缀 → provider
-//   firstFulfilled       | 1138 | 13  | 取第一个 fulfilled 的结果
-//   resolveFromServer    | 1159 | 43  | 走服务端解包接口（本地没能力时兜底）
+//   fetchFile            | 396 | 133 | 取文件字节（唯一取字节通道，worker/同步两条路 + 诊断）
+//   fileUrlOf            | 386 | 3   | 拼 VFS 取文件地址
+//   prefilterReason      | 551 | 12  | provider 预筛原因（能不能读这个文件）
+//   validateResolved     | 569 | 16  | 校验 provider.resolve 返回值形状（拦半成品）
+//   bytesOf              | 587 | 11  | 求一组文件的字节数
+//   filesOfProvider      | 615 | 4   | 某 provider 声明的文件清单
+//   onWorkerProgress     | 621 | 13  | worker 进度回调 → 派发事件
+//   ensureUnpackWorker   | 641 | 29  | 取/建某 provider 的 worker（失败返回 null）
+//   resolveViaWorker     | 682 | 41  | 用 worker 解包，失败不抛、返回 {ok:false} 由调用方回落
+//   classHistogramOf     | 747 | 13  | 字节量直方图（内存准入判断用）
+//   resolveViaProvider   | 762 | 35  | 按优先级试每个 provider 的 resolve
+//   resolvedUsable       | 823 | 35  | 判断 resolve 结果是否真能用
+//   registerResolved     | 860 | 21  | 把解包产物注册进 VFS 并解析入口地址（不碰渲染）
+//   filesCount           | 894 | 5   | 文件计数
+//   providerFromPrefix   | 912 | 5   | 前缀 → provider
+//   firstFulfilled       | 923 | 13  | 取第一个 fulfilled 的结果
+//   resolveFromServer    | 944 | 43  | 走服务端解包接口（本地没能力时兜底）
 //   fetchCapacity        | → plugin-host-warmup.mjs | —   | 容量探测（已搬出）
 //   warmup               | → plugin-host-warmup.mjs | —   | 预热入口（已搬出，见该模块）
 //   scheduleWarmup       | → plugin-host-warmup.mjs | —   | 预热执行（已搬出）
-//   materialize          | 1238 | 156 | 容器单文件 → 解包 → 校验 → 注册 VFS，返回入口地址与文件清单
-//   providersFor         | 1636 | 6   | 列出能处理某类文件的 provider
-//   findProvider         | 1650 | 23  | 按文件挑 provider（canHandle 必须同步布尔）
+//   materialize          | 1023 | 156 | 容器单文件 → 解包 → 校验 → 注册 VFS，返回入口地址与文件清单
+//   providersFor         | 1421 | 6   | 列出能处理某类文件的 provider
+//   findProvider         | 1435 | 23  | 按文件挑 provider（canHandle 必须同步布尔）
 //
-// ── G2 注册与校验（5 个内部函数 + 4 个 hostApi 方法）───────────────────────
+// ── G2 注册与校验（**已整体搬到 plugin-host-registration.mjs**，B2）────────
 //   职责：插件脚本装载期能调用的**全部注册入口**，以及它们的拒绝原因。
 //        三条通道：效果注册、插槽注册、老接口控件（兼容层，内部转插槽）。
 //   状态耦合：registeredEffects（写）、loadState（写）、providers（写）、slotRegistry（读）、
 //            loadingPluginId（读：判定"是否在装载期窗口内"）、say/emit。
 //   函数 | 行 | 代码行 | 职责
-//   rejectRegistration   | 369 | 13  | 注册拒绝的统一出口（可读原因 + likelyOwner）
-//   groupIdOfTitle       | 392 | 7   | 分组标题 → 内置分组 id（兼容层用，从 PANEL_GROUPS 派生）
-//   legacyControlToSlotSpec | 408 | 18 | 老接口控件声明 → 插槽 spec（包一层 render）
-//   publishSlotStats     | 342 | 7   | 插槽统计挂到 window（__SLOT_STATS__）
-//   initSlotRegistry     | 1547 | 22  | 按 /api/plugins 建插槽注册表（必须在注入脚本之前）
-//   hostApi.register（slots.register） | 481 | 26 | 插件插槽注册入口（转发给 slotRegistry）
-//   hostApi.registerEffect | 523 | 34 | 效果注册（清单校验 + 装载期窗口 + 能力键白名单）
-//   hostApi.registerControls | 586 | 54 | 兼容层：老接口转插槽注册（标题→id、隐式声明）
-//   hostApi.notify       | 664 | 5   | 插件向宿主上报一条通知（进日志/事件）
+//   rejectRegistration     | → plugin-host-registration.mjs | —   | 注册拒绝统一出口（已搬出）
+//   groupIdOfTitle         | → plugin-host-registration.mjs | —   | 标题→内置组 id（已搬出）
+//   legacyControlToSlotSpec | → plugin-host-registration.mjs | — | 老控件→插槽 spec（已搬出）
+//   publishSlotStats       | 
+//   initSlotRegistry     | 1332 | 22  | 按 /api/plugins 建插槽注册表（必须在注入脚本之前）
+//   slots.register（原 hostApi.register）  | → plugin-host-registration.mjs | — | 插槽注册入口（已搬出）
+//   registerEffect         | → plugin-host-registration.mjs | —   | 效果注册（已搬出）
+//   registerControls     | → plugin-host-registration.mjs | —   | 老接口兼容层（已搬出）
+//   notify                 | → plugin-host-registration.mjs | —   | 插件通知通道（已搬出）
 //
 // ── G3 装载与装载期窗口（5 个）─────────────────────────────────────────────
 //   职责：发现清单 → 建注册表 → 注入脚本（窗口内才接受注册）→ 统计装载结果。
 //   状态耦合：discovered / loaded（**唯一写者**都在这组）、loadingPluginId（窗口开关）、
 //            slotRegistry（初始化）、loadState（写）。
 //   函数 | 行 | 代码行 | 职责
-//   normalizeStage       | 333 | 4   | 归一化当前阶段（缺省回退 S1）
-//   loadAll              | 1527 | 6   | 装载入口（去重 + 委派 doLoadAll）
-//   countRegistered      | 1535 | 3   | 统计已装载数
-//   doLoadAll            | 1575 | 40  | 装载执行体（发现 → 注册表 → 注入 → 统计）
-//   loadPlugin           | 676 | 27  | 注入单个插件脚本并登记装载状态
+//   normalizeStage       | 338 | 4   | 归一化当前阶段（缺省回退 S1）
+//   loadAll              | 1312 | 6   | 装载入口（去重 + 委派 doLoadAll）
+//   countRegistered      | 1320 | 3   | 统计已装载数
+//   doLoadAll            | 1360 | 40  | 装载执行体（发现 → 注册表 → 注入 → 统计）
+//   loadPlugin           | 461 | 27  | 注入单个插件脚本并登记装载状态
 //
 // ── G4 卸载与回收（3 个）───────────────────────────────────────────────────
 //   职责：逆序跑 disposer，把插槽/效果/提供者/装载状态从各表摘掉，再派发事件让面板重建。
 //   状态耦合：pluginEffects / registeredEffects / providers / loadState（**都在这里删**）、
 //            loaded（读）、say/emit。
 //   函数 | 行 | 代码行 | 职责
-//   addEffect            | 313 | 9   | 往插件级效果容器加一条（统一回收的入口）
+//   addEffect            | 318 | 9   | 往插件级效果容器加一条（统一回收的入口）
 //   unloadPlugin         | → plugin-host-unload.mjs | —   | 卸载单个插件（已搬出）
 //   unloadAll            | → plugin-host-unload.mjs | —   | 全部卸载（已搬出）
 //
@@ -178,8 +182,8 @@ function injectScript(src) {
 //   职责：效果声明的统计与回收报告（"卸载到底发生了没有"靠它读）。
 //   状态耦合：pluginEffects / registeredEffects（只读）、publishEffectStats → window。
 //   函数 | 行 | 代码行 | 职责
-//   publishEffectStats   | 351 | 7   | 效果统计挂到 window
-//   effectsReport        | 716 | 20  | 回收报告（含每个插件的 slots/effects 计数）
+//   publishEffectStats   | 356 | 7   | 效果统计挂到 window
+//   effectsReport        | 501 | 20  | 回收报告（含每个插件的 slots/effects 计数）
 //
 // ── G6 报告（1 个）─────────────────────────────────────────────────────────
 //   职责：把宿主整体状态汇总成一份可序列化报告（排障与自检读它）。
@@ -357,73 +361,8 @@ export function createPluginHost(opts = {}) {
     } catch { /* 无 DOM（测试环境）时忽略 */ }
   }
 
-  /**
-   * 注册被拒：显式记一条 + 可读原因（H2）。
-   *
-   * 与"静默丢弃"的区别：调用方能拿到 false，日志里能看出**哪个阶段**、**哪个插件**、
-   *   **为什么**（异步注册 vs 缺字段），并且 `effectsReport().rejects` 可被测试断言。
-   * @param {string} kind register / registerEffect / registerControls
-   * @param {string} why 人话原因
-   * @param {object} [detail] 附加信息（id / group 等）
-   * @returns {false}
-   */
-  function rejectRegistration(kind, why, detail) {
-    const rec = {
-      kind, why, at: Date.now(),
-      pluginId: loadingPluginId || null,
-      likelyOwner: loadingPluginId ? null : (lastLoadedPluginId || null),
-      ...(detail || {}),
-    };
-    registrationRejects.push(rec);
-    if (registrationRejects.length > 50) registrationRejects.shift();
-    ctx.say.warn(`插件注册被拒（${kind}）：${why}${rec.likelyOwner ? `（疑似来自最后装载的插件 ${rec.likelyOwner}）` : ''}`);
-    ctx.emit('plugin.register-rejected', rec);
-    return false;
-  }
 
-  /**
-   * 内置分组的 title → id 映射（兼容层用）。
-   *
-   * 为什么从 PANEL_GROUPS 派生而不是写死一张表：老接口传的是**标题**（「设置」），
-   *   而插槽名要的是 groupId；写死映射会在加组/改标题时静默失配（这正是本轮要消灭的"两处表达"）。
-   * 传进来的本来就是合法 id 时原样返回，方便调用方"标题或 id 都行"。
-   * @param {string} name
-   * @returns {string|null}
-   */
-  function groupIdOfTitle(name) {
-    const want = String(name || '').trim();
-    if (!want) return null;
-    if (PANEL_GROUPS.some((g) => String(g.id || '') === want)) return want;
-    const hit = PANEL_GROUPS.find((g) => String(g.title || '') === want);
-    return hit ? String(hit.id || '') : null;
-  }
 
-  /**
-   * 老控件声明 → 插槽 spec（兼容层用）。
-   *
-   * 老接口给的是"数据"，插槽要的是"render 函数"：这里把老形状包成一个返回老形状的 render，
-   *   之后统一由 mergeSlotControls → slotSpecToControl 翻译成渲染层 kind（一处翻译，两路共用）。
-   * @param {object} raw 老控件声明（{id, kind, label, options, order, ...}）
-   * @returns {object|null} 插槽 spec；缺 id 返回 null
-   */
-  function legacyControlToSlotSpec(raw) {
-    const id = String((raw && raw.id) || '').trim();
-    if (!id) return null;
-    return {
-      id,
-      label: String((raw && raw.label) || id),
-      // 老接口的语义：控件 id 就是个效果 id —— 效果没注册成功时该控件要**置灰 + 给原因**（契约 §9.3）。
-      //   转插槽后由 mergeSlotControls 用 registeredEffects 判定，语义与迁移前一致。
-      effectId: id,
-      // 老接口没有 order 概念：缺省 1000（排在组内内置控件之后），显式给了就尊重
-      order: Number.isFinite(Number(raw && raw.order)) ? Number(raw.order) : 1000,
-      render: () => ({
-        kind: String((raw && raw.kind) || ''),
-        options: Array.isArray(raw && raw.options) ? raw.options.slice() : undefined,
-        label: String((raw && raw.label) || id),
-      }),
-    };
-  }
 
   /** /api/plugins 返回的清单快照 */
   /**
@@ -472,201 +411,46 @@ export function createPluginHost(opts = {}) {
   }
 
   /** 插件侧可见的宿主面（插件脚本顶层会读 window.SpineViewerPlugins） */
-  // ── 分区 R2：注册入口 hostApi（插件脚本装载期唯一能碰的一面）──────────────
+  // ── 分区 R2：注册入口 hostApi（**只剩组装**；实现在 plugin-host-registration.mjs）──
+  // B2 之后本区只做两件事：把 ctx/状态以"窄视图"注入注册模块、把返回的方法拼成 hostApi。
   // 四个方法：slots.register（插槽）/ registerEffect（效果）/ registerControls（老接口兼容层）/ notify。
   // 共同约束：**只接受装载期同步调用**（loadingPluginId 非空），异步注册一律拒绝并给原因。
   // 状态耦合：registeredEffects、loadState、providers（写）；slotRegistry、manifestEffects（读）。
+  // 注册与校验（G2）：搬到 plugin-host-registration.mjs（B2）
+  //   参数刻意用"窄视图"而不是整块 ctx：io（日志/事件）/ tables（它读写的三张表 + 插槽表 getter）/
+  //   decls（清单声明与拒绝记录）/ probe（装载期窗口与最后装载者，必须现读）/ sinks（回收登记与统计发布）
+  const registration = createRegistration({
+    io: { say: ctx.say, emit: ctx.emit },
+    tables: {
+      providers: ctx.providers,
+      loadState: ctx.loadState,
+      registeredEffects: ctx.registeredEffects,
+      // 惰性初始化：必须用 getter 现取，快照会在"注册表还没建好"时永远拿到 null
+      getSlotRegistry: () => ctx.slotRegistry,
+    },
+    decls: { manifestProvides, manifestEffects, registrationRejects, maxFragmentChars: MAX_FRAGMENT_CHARS },
+    probe: {
+      getLoadingPluginId: () => loadingPluginId,
+      getLastLoadedPluginId: () => lastLoadedPluginId,
+      dispatch: (name, detail) => { try { window.dispatchEvent(new CustomEvent(name, { detail })); } catch { /* 忽略 */ } },
+    },
+    sinks: { addEffect, publishSlotStats },
+  });
+
+  /**
+   * 插件侧可见的宿主面（插件脚本顶层会读 window.SpineViewerPlugins）。
+   *
+   * B2 之后这里**只剩组装**：注册类方法来自 plugin-host-registration.mjs，
+   *   本文件只补"不是注册入口"的成员（version / fetchFile）。
+   */
   const hostApi = {
     version: 1,
-    /** 插件注册自己：只收有 id 的对象；缺 canHandle/resolve 时保留但标注（供排障） */
-    register(plugin) {
-      if (!plugin || typeof plugin !== 'object') { ctx.say.warn('register 收到非对象，已忽略'); return false; }
-      const id = String(plugin.id || '').trim();
-      if (!id) { ctx.say.warn('register 缺少 id，已忽略'); return false; }
-      // 契约 PL2：id 重复必须**拒绝**且不覆盖已注册的那个。
-      //   静默 providers.set 覆盖会让"后加载的插件顶掉先加载的"，且排障时看不出发生过覆盖。
-      //   保留先注册的实例（先到先得）：它可能已经参与过解析，换掉会留下"半新半旧"的对象。
-      if (ctx.providers.has(id)) {
-        ctx.say.warn(`插件 ${id} 重复注册，已忽略（保留先注册的实例）`);
-        return false;
-      }
-      // 角色以**清单**为准（契约 插件契约 §二）：register 上来的对象不覆盖它
-      const declared = manifestProvides.get(id) || [];
-      const rec = { ...plugin, id, provides: declared.slice() };
-      ctx.providers.set(id, rec);
-      // 登记回收动作：卸载时把 provider 从表里摘掉（只摘自己这一份，别误删后来者）
-      addEffect(id, {
-        kind: 'provider',
-        label: id,
-        dispose: () => { if (ctx.providers.get(id) === rec) ctx.providers.delete(id); },
-      });
-      const st = ctx.loadState.get(id) || { files: 0, ms: 0 };
-      ctx.loadState.set(id, { ...st, loaded: true, error: null });
-      const caps = [];
-      if (typeof rec.canHandle === 'function') caps.push('canHandle');
-      if (typeof rec.resolve === 'function') caps.push('resolve');
-      ctx.say.info(`已注册提供者 ${id}（${rec.name || id}）：${caps.join('/') || '无可调用成员'}`);
-      try { window.dispatchEvent(new CustomEvent(EVENTS.PLUGIN_REGISTERED, { detail: { id } })); } catch { /* 忽略 */ }
-      return true;
-    },
     fetchFile,
-    /**
-     * 注册一个渲染效果（契约 §9.2）：只收"作用于当前像素的表达式"，不是完整着色器。
-     *
-     * 校验三条（任一不满足即注册失败，**不是静默忽略**）：
-     *   · id 必须在本插件清单的 effects[].id 里声明过 —— 否则能力键白名单不会认它，
-     *     面板能选、渲染层不认，就是"选了没反应"的静默失败；
-     *   · fragment 必须是非空字符串；
-     *   · id 全局唯一（跨插件也唯一，防两个插件抢同一个 uniform 命名空间）。
-     * @param {{id:string, fragment:string}} spec
-     * @returns {boolean} 是否注册成功
-     */
-    registerEffect(spec) {
-      const pluginId = loadingPluginId;
-      const id = String((spec && spec.id) || '').trim();
-      if (!pluginId) {
-        return rejectRegistration('registerEffect', '不在脚本装载期（异步注册不被支持：registerEffect 必须在脚本顶层同步调用）', { id });
-      }
-      if (!id) { ctx.say.warn(`registerEffect 缺少 id（插件 ${pluginId}），已忽略`); return false; }
-      const declared = (manifestEffects.get(pluginId) || []).some((e) => String(e.id) === id);
-      if (!declared) {
-        ctx.say.warn(`registerEffect(${id}) 未在插件 ${pluginId} 的 effects[] 里声明，已拒绝`);
-        return false;
-      }
-      if (typeof (spec && spec.fragment) !== 'string' || !spec.fragment.trim()) {
-        ctx.say.warn(`registerEffect(${id}) 的 fragment 为空，已拒绝`);
-        return false;
-      }
-      // 超长直接拒：fragment 会被拼进着色器并在挂载时编译，没有长度闸门就等于
-      //   允许插件往渲染链路里塞任意大段代码（编译失败还会连带拖慢首帧）
-      if (spec.fragment.length > MAX_FRAGMENT_CHARS) {
-        ctx.say.warn(`registerEffect(${id}) 的 fragment 过长（${spec.fragment.length} > ${MAX_FRAGMENT_CHARS} 字符），已拒绝`);
-        return false;
-      }
-      if (ctx.registeredEffects.has(id)) {
-        ctx.say.warn(`registerEffect(${id}) 重复注册（已被 ${ctx.registeredEffects.get(id).pluginId} 占用），已忽略`);
-        return false;
-      }
-      // uniforms 是插件侧的"参数默认值兜底"（清单 params[].default 的补充口）。
-      //   实际每档用哪个值由 effect-chain.uniformsForOption 按档位算，这里只做缺省兜底。
-      const uniforms = (spec && spec.uniforms && typeof spec.uniforms === 'object') ? { ...spec.uniforms } : {};
-      ctx.registeredEffects.set(id, { pluginId, fragment: spec.fragment, uniforms });
-      addEffect(pluginId, {
-        kind: 'effect',
-        label: id,
-        dispose: () => ctx.registeredEffects.delete(id),
-      });
-      ctx.say.info(`已注册效果 ${id}（插件 ${pluginId}）`);
-      return true;
-    },
-    /**
-     * 提交一节面板控件（契约 §9.2）：**只收声明式数据**，宿主负责渲染与存取。
-     *
-     * 这里只做"收下"，不合并不校验分组/kind —— 那两件事在面板侧合并时统一做
-     *   （那里才知道当前有哪些分组、哪些 kind 被允许），拒绝时能记进 diag。
-     * @param {{group:string, controls:Array}} section
-     * @returns {boolean}
-     */
-    /**
-     * **兼容层**：老接口 `registerControls({group, controls})` —— 内部转成插槽注册。
-     *
-     * 新插件请直接用 `slots.register('panel.group.<groupId>', { id, render })`；
-     *   这里保留是因为它写在契约里（公开面），不能因为"现网没人用"就悄悄删掉。
-     *
-     * 三条兼容语义（都是老插件能零改动继续工作的前提）：
-     *   ① 分组参数是**标题**（「设置」）⇒ 用内置表的 title→id 映射换成 groupId（不写死映射表）
-     *   ② 老控件 id **不强制** plugin. 前缀（分组插槽本就不要求前缀）
-     *   ③ **隐式声明**：老插件没有 plugin.json 的 slots 字段 ⇒ 视为已声明该分组插槽，
-     *      不报 undeclared-slot（否则老插件一升级就全部失效）
-     *
-     * 迁移后老接口与 slots.register 的控件走**同一条**合并/渲染/回收链路：
-     *   登记进同一个 slotRegistry ⇒ disposer 进同一个 effect 容器 ⇒ unloadPlugin 一并回收。
-     * @param {{group:string, controls:Array}} section
-     * @returns {boolean} 至少成功登记一个控件
-     */
-    registerControls(section) {
-      const pluginId = loadingPluginId;
-      if (!pluginId) {
-        return rejectRegistration('registerControls', '不在脚本装载期（异步注册不被支持：registerControls 必须在脚本顶层同步调用）', {
-          group: String((section && section.group) || ''),
-        });
-      }
-      const groupName = String((section && section.group) || '').trim();
-      const controls = Array.isArray(section && section.controls) ? section.controls : null;
-      if (!groupName || !controls || !controls.length) {
-        ctx.say.warn(`registerControls（插件 ${pluginId}）缺少 group 或 controls，已忽略`);
-        return false;
-      }
-      if (!ctx.slotRegistry) {
-        ctx.say.warn(`registerControls（插件 ${pluginId}）失败：插槽注册表尚未就绪`);
-        return false;
-      }
-      // ① 标题 → groupId：内置表派生；传进来的本来就是 id 时原样放过
-      const groupId = groupIdOfTitle(groupName) || groupName;
-      const slotName = `panel.group.${groupId}`;
-      let ok = 0;
-      const rejects = [];
-      for (const raw of controls) {
-        const spec = legacyControlToSlotSpec(raw);
-        if (!spec) { rejects.push({ id: (raw && raw.id) || '', reason: '控件缺 id' }); continue; }
-        // ②③ 前缀不强制、隐式声明：都靠 implicitDeclare 分支表达
-        const dispose = ctx.slotRegistry.register(pluginId, slotName, spec, { implicitDeclare: true });
-        if (typeof dispose === 'function') {
-          // 与 slots.register 完全同一条回收链：disposer 进同一个 effect 容器
-          //   （不挂的话 unloadPlugin 只能靠 disposeAll 兜底，统计上会显示"disposed 少、slotsRemoved 多"）
-          addEffect(pluginId, { kind: 'slot', label: slotName, dispose });
-          ok += 1;
-        } else {
-          rejects.push({ id: spec.id, reason: '插槽注册被拒（见 stats.rejects）' });
-        }
-      }
-      ctx.say.info(`插件 ${pluginId} 提交控件节（兼容层 → 插槽）：分组「${groupName}」→ ${slotName}，成功 ${ok}/${controls.length}`
-        + (rejects.length ? `，被拒 ${rejects.length}` : ''));
-      publishSlotStats();
-      return ok > 0;
-    },
-    /**
-     * 插槽注册（设计 §四）：**只登记、不渲染**（渲染在 S2 接）。
-     *
-     * 插件侧写法（经典脚本，必须在脚本顶层**同步**调用）：
-     *   const dispose = window.ModelStagePlugins.slots.register('panel.group.settings', {
-     *     id: 'plugin.<pluginId>.sharpness',  // 必填，必须带插件前缀（设计 §8.2）
-     *     order: 100,                          // 可选，列表插槽按它排序（小在前）
-     *     label: '清晰度',                      // 必填，诊断与冲突提示都用它
-     *     render(props) { return { kind: 'segmented', options: ['关', '轻', '强'] }; },
-     *     onAction(action, props) { … },
-     *   });
-     *
-     * 拒绝原因在 stats().rejects 里可读（unknown-slot / slot-not-open / undeclared-slot / risk-mismatch）。
-     * @param {string} name 插槽名（见 /api/plugins 的 slotCatalog）
-     * @param {object} spec { id, order?, label?, render?, onAction? }
-     * @returns {null | (() => void)} disposer（已登记进该插件的 effect 容器，卸载时自动回收）
-     */
-    slots: {
-      register(name, spec) {
-        if (!ctx.slotRegistry) {
-          ctx.say.warn('插槽注册失败：注册表尚未就绪（插件清单还没拿到，通常是页面刚启动）');
-          return null;
-        }
-        const dispose = ctx.slotRegistry.register(loadingPluginId, name, spec);
-        if (typeof dispose === 'function') {
-          // 挂进 S1-b1 的 effect 容器 ⇒ unloadPlugin 会连插槽登记一起回收
-          addEffect(loadingPluginId, { kind: 'slot', label: String(name), dispose });
-        }
-        publishSlotStats();
-        return dispose;
-      },
-      /** 只读快照（同时挂到 window.__SLOT_STATS__ 供测试断言） */
-      stats: () => (ctx.slotRegistry ? ctx.slotRegistry.stats() : {
-        openStage: 'S1', catalogSize: 0, total: 0, byPlugin: {}, entries: [], rejects: [],
-      }),
-    },
-    /** 提示通道：插件不直接操作 DOM，走这里（同时派发事件给页面其它部分） */
-    notify(kind, msg) {
-      const level = kind === 'error' ? 'error' : kind === 'warn' ? 'warn' : 'info';
-      ctx.say[level](`[插件] ${msg}`);
-      try { window.dispatchEvent(new CustomEvent(EVENTS.NOTIFY, { detail: { kind, msg } })); } catch { /* 忽略 */ }
-    },
+    register: registration.registerProvider,
+    registerEffect: registration.registerEffect,
+    registerControls: registration.registerControls,
+    slots: registration.slots,
+    notify: registration.notify,
   };
 
   /** 按清单串行注入某插件的全部脚本（顺序即 plugin.json 的 files[] 顺序：lib/* 先、index.js 后） */
