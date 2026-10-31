@@ -18,6 +18,7 @@
 import { getSharedVirtualFS } from './vfs.js';
 // 插槽注册表（DOM-free、可 node 直测）：只登记不渲染，S2 才接渲染
 import { createSlotRegistry } from './slot-registry.js';
+import { EVENTS } from './events.mjs';
 import { createReport } from './plugin-host-report.mjs';
 import { createUnload } from './plugin-host-unload.mjs';
 import { createWarmup } from './plugin-host-warmup.mjs';
@@ -505,7 +506,7 @@ export function createPluginHost(opts = {}) {
       if (typeof rec.canHandle === 'function') caps.push('canHandle');
       if (typeof rec.resolve === 'function') caps.push('resolve');
       ctx.say.info(`已注册提供者 ${id}（${rec.name || id}）：${caps.join('/') || '无可调用成员'}`);
-      try { window.dispatchEvent(new CustomEvent('spineviewer:plugin-registered', { detail: { id } })); } catch { /* 忽略 */ }
+      try { window.dispatchEvent(new CustomEvent(EVENTS.PLUGIN_REGISTERED, { detail: { id } })); } catch { /* 忽略 */ }
       return true;
     },
     fetchFile,
@@ -664,7 +665,7 @@ export function createPluginHost(opts = {}) {
     notify(kind, msg) {
       const level = kind === 'error' ? 'error' : kind === 'warn' ? 'warn' : 'info';
       ctx.say[level](`[插件] ${msg}`);
-      try { window.dispatchEvent(new CustomEvent('spineviewer:notify', { detail: { kind, msg } })); } catch { /* 忽略 */ }
+      try { window.dispatchEvent(new CustomEvent(EVENTS.NOTIFY, { detail: { kind, msg } })); } catch { /* 忽略 */ }
     },
   };
 
@@ -1625,7 +1626,7 @@ const MIME_BY_EXT = {
     // 面板侧要知道"插件已经交完声明了" —— 它启动时先建面板，插件是之后异步注入的，
     //   不通知就永远看不到插件控件（实测：控件节收到了，但面板不会自己重建）。
     try {
-      window.dispatchEvent(new CustomEvent('spineviewer:plugins-loaded', {
+      window.dispatchEvent(new CustomEvent(EVENTS.PLUGINS_LOADED, {
         detail: { discovered: ctx.discovered.length, registered: ok, slots: ctx.slotRegistry ? ctx.slotRegistry.stats().total : 0 },
       }));
     } catch { /* 忽略 */ }

@@ -17,6 +17,7 @@ import { activeChain } from '../engine/effect-chain.js';
 import { getSharedVirtualFS } from '../infra/vfs.js';
 import { mountPanel } from './view.js';
 import { syncBrand, syncPluginToolbar } from './toolbar.js';
+import { EVENTS } from '../infra/events.mjs';
 import { applyDebugLog, applyHangGuard, applyMemoryGuard, applyShowStatus, connectShellControls, runSettingsAction } from './shell-controls.js';
 import { applyBackground, applyTheme, readViewSettings, saveViewSettings } from '../app/view-settings.js';
 import { bindBgGroupToggle, refreshBgSources } from './background-list.js';
@@ -376,7 +377,7 @@ function requestDocFiles(model, key) {
         publishDocFilesStats();
         // 必须派发到 **window**：重建立监听器挂在 window 上（bindPluginPanelRebuild），
         //   派发到 document 收不到（DOM 事件路径上它到不了 window 监听）⇒ 重绘静默不生效。
-        window.dispatchEvent(new CustomEvent('spineviewer:plugins-loaded', { detail: { reason: 'document-files' } }));
+        window.dispatchEvent(new CustomEvent(EVENTS.PLUGINS_LOADED, { detail: { reason: 'document-files' } }));
       }
     })
     .catch(() => { docFilesPending.delete(key); });
@@ -725,7 +726,7 @@ function restoreExpandedGroups() {
 export function bindPluginPanelRebuild() {
   if (pluginRebuildBound) return false;
   pluginRebuildBound = true;
-  window.addEventListener('spineviewer:plugins-loaded', () => {
+  window.addEventListener(EVENTS.PLUGINS_LOADED, () => {
     try {
       // 先重建面板（这一步把当前插件控件登记进 SPEC），**再**清孤儿键：
       //   顺序反了会把"还没来得及登记"的键当成残留删掉。

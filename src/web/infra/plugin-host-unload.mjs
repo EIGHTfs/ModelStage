@@ -11,7 +11,7 @@
 //   · publishEffectStats  —— 效果统计发布（同上）
 // 日志与事件：say/emit 在 ctx 里，但调用口径与搬迁前完全一致（文案逐字未改）。
 //
-// ⚠️ 事件名 `spineviewer:plugins-loaded` 是**外部契约**（panel-settings 监听并重建面板），
+// ⚠️ 事件名见 `EVENTS.PLUGINS_LOADED`（infra/events.mjs），是**外部契约**（panel-settings 监听并重建面板），
 //   改动它等于"卸载后界面不刷新"——本次搬迁逐字保留。
 
 /**
@@ -19,12 +19,14 @@
  *          publishSlotStats: () => void, publishEffectStats: () => void}} deps
  * @returns {{unloadPlugin: (pluginId: string) => Promise<object>, unloadAll: () => Promise<object[]>}}
  */
+import { EVENTS } from './events.mjs';
+
 export function createUnload({ ctx, manifestEffects, workerPool, publishSlotStats, publishEffectStats }) {
   /**
    * 卸载一个插件：逆序跑它的 disposer，再从各张表里摘干净，最后派发事件让面板重建。
    *
    * 为什么必须派发事件：宿主表清掉、DOM 不会自己变；panel-settings 监听
-   *   `spineviewer:plugins-loaded` 后重建，控件才真的从界面上消失（只摘宿主表不改 DOM 等于没卸载）。
+   *   `EVENTS.PLUGINS_LOADED` 后重建，控件才真的从界面上消失（只摘宿主表不改 DOM 等于没卸载）。
    * @param {string} pluginId
    * @returns {{pluginId:string, disposed:number, failures:string[], removedEffects:number, slotsRemoved:number, hadProvider:boolean}}
    */
@@ -61,7 +63,7 @@ export function createUnload({ ctx, manifestEffects, workerPool, publishSlotStat
     ctx.say.info(`插件 ${id} 已卸载：执行 ${disposed} 个 disposer${failures.length ? `（${failures.length} 个失败）` : ''}`
       + `，清掉效果 ${removedEffects} 个、插槽 ${slotsRemoved} 个${hadProvider ? '、提供者 1 个' : ''}`);
     // 让面板重建：只清宿主表不改 DOM 的话，控件会继续挂在界面上（等于没卸载）
-    try { window.dispatchEvent(new CustomEvent('spineviewer:plugins-loaded', { detail: { unloaded: id } })); } catch { /* 忽略 */ }
+    try { window.dispatchEvent(new CustomEvent(EVENTS.PLUGINS_LOADED, { detail: { unloaded: id } })); } catch { /* 忽略 */ }
     return { pluginId: id, disposed, failures, removedEffects, slotsRemoved, hadProvider: hadProviderBefore };
   }
 

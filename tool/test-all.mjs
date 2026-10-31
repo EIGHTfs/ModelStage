@@ -129,6 +129,8 @@ const SUITES = [
   // VirtualFS 纯模块（注册/命中/归一化/revoke/重复注册/懒创建缓存/统计口径）：
   //   它是插件资源进渲染层的唯一通道，纯函数秒级，必须是契约级保护而非交互套件的副产品
   { name: 'vfs', runner: 'node-test', file: 'test/vfs.test.mjs' },
+  // 事件名常量：防"批量重命名把协议字符串改坏"（真发生过，静默失效）
+  { name: 'events-const', runner: 'node-test', file: 'test/events-const.test.mjs' },
   // 测试单实例锁的回归：锁坏了会让**所有人**跑不了测试，属基础设施，必须有保护
   { name: 'test-lock', runner: 'node-test', file: 'test/lib/test-lock.test.mjs' },
   // api.js 的重试/退避/超时/去重：网络层是所有页面功能的入口，坏了整站都挂

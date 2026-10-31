@@ -123,7 +123,7 @@ export function registerSpecItems(ctls) {
 /**
  * 清掉存档里"确认已无主"的键（插件被真删掉之后留下的残留）。
  *
- * 什么时候才敢调：**插件声明全部交完之后**（`spineviewer:plugins-loaded`）。
+ * 什么时候才敢调：**插件声明全部交完之后**（`EVENTS.PLUGINS_LOADED`，见 infra/events.mjs）。
  *   在那之前 SPEC 里可能只是"还没来得及登记"，此时清理会误删用户已经设好的值。
  *   调用时机由 panel-settings 保证（先 rebuildPanelFor 登记 SPEC，再调本函数）。
  *
