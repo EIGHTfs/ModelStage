@@ -138,6 +138,52 @@ export function restorePanelSettings(skipIds) {
 }
 
 /** 面板控件回调：外壳项直接处理，其余一律经 renderer.setSetting（回显用生效值） */
+/**
+ * 插槽控件的动作回调表：控件 id → { pluginId, fn }。
+ * 每次重建面板时刷新（控件随插件装载/卸载出现或消失）。
+ */
+const slotActions = new Map();
+
+/**
+ * 插件声明设置项的**当前快照**（当前值 ?? 清单里的 default）。
+ * 为什么由面板侧构造：值存在 uiState 工厂里，插件宿主读不到；
+ *   render(props) 与 onAction(props) 必须看到同一份真相，所以两边共用这个函数。
+ * @param {string} pluginId
+ * @returns {Record<string, unknown>}
+ */
+function pluginSettingsSnapshot(pluginId) {
+  const host = state.pluginHost;
+  const decls = host && typeof host.pluginSettings === 'function' ? host.pluginSettings(pluginId) : [];
+  const out = {};
+  for (const d of decls) {
+    if (!d || !d.key) continue;
+    const cur = uiState.getValue(d.key);
+    out[d.key] = (cur === undefined || cur === null) ? d.default : cur;
+  }
+  return out;
+}
+
+/**
+ * 构造插槽回调的 owner props（设计 §4.1）。
+ * 现阶段：settings 真实值 + setSetting；geometry/activeSurface/document 先给 null，
+ *   S4 换成 getter（resize / 换模型 / 换面后值会变，快照会陈旧）。
+ * @param {{pluginId?: string}} entry
+ * @returns {object}
+ */
+function slotPropsFor(entry) {
+  const pluginId = String((entry && entry.pluginId) || '');
+  return {
+    settings: pluginSettingsSnapshot(pluginId),
+    get geometry() { return null; },
+    get activeSurface() { return null; },
+    get document() { return null; },
+    /** 插件写设置也走面板同一条通道（校验 → 生效 → 落盘） */
+    setSetting(key, value) {
+      try { applyPanelSetting(key, value); } catch { /* 插件侧写入失败不影响面板 */ }
+    },
+  };
+}
+
 function applyPanelSetting(id, value) {
   // 一次性动作（导出/导入/恢复默认）：执行，不进持久化（ONE_SHOT_IDS 已在工厂侧双保险）
   if (ONE_SHOT_IDS.has(String(id))) { runSettingsAction(value); return; }
@@ -151,6 +197,16 @@ function applyPanelSetting(id, value) {
   // 其余一律经工厂：校验 → apply（生效）→ render（显示）→ 去抖落盘。
   //   这样"谁是真相"只有一处（契约 R1），也就不会出现"值对但显示错"。
   uiState.set(id, value);
+  // 插槽控件：值落地后再派发插件的 onAction（先 onSetting 语义、后回调 —— 顺序固定）
+  const act = slotActions.get(String(id));
+  if (act) {
+    try {
+      act.fn({ value, id: String(id) }, slotPropsFor({ pluginId: act.pluginId }));
+    } catch (e) {
+      // 插件回调抛错**必须隔离**：面板值已经存好，不能因为插件写错就把界面带崩
+      stageLog('warn', `插件动作回调抛错（已隔离，面板不受影响）：${(e && e.message) || e}`, { source: 'plugin-slots', id: String(id) });
+    }
+  }
 }
 
 /**
@@ -451,12 +507,20 @@ function rebuildPanelFor(renderer) {
   //   声明落在 slot-registry 里。两条通道都汇到装配期这一处，渲染层不区分来源。
   const slotEntries = host && typeof host.slotSections === 'function' ? host.slotSections() : [];
   const slotMerged = mergeSlotControls(merged.groups, slotEntries, {
+    buildProps: (entry) => slotPropsFor(entry),
     onReject: (rej) => {
       stageLog('warn', `插件插槽控件被拒（${rej.pluginId || '未知插件'} · ${rej.slot || '未知插槽'}）：${rej.reason}`, { source: 'plugin-slots' });
     },
   });
   // 插件控件登记进 SPEC：这样它们是走既有的 loadAll/set/flush 通道，不新开存储路径
   const pluginControls = slotMerged.groups.flatMap((g) => (g.controls || []).filter((c) => c && c.pluginId));
+  // 动作表随重建刷新：控件消失（插件卸载）后不许还留着能点的回调
+  slotActions.clear();
+  for (const ctl of pluginControls) {
+    if (ctl && ctl.id && typeof ctl.onAction === 'function') {
+      slotActions.set(String(ctl.id), { pluginId: ctl.pluginId, fn: ctl.onAction });
+    }
+  }
   // 填充效果元数据（按声明顺序）并把链下发一次：插件晚于首帧加载，不补这一次画面就不对
   PLUGIN_EFFECTS.clear();
   if (host && typeof host.effectDeclarations === 'function') {

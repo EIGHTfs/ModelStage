@@ -19,15 +19,6 @@ import { getSharedVirtualFS } from './vfs.js';
 // 插槽注册表（DOM-free、可 node 直测）：只登记不渲染，S2 才接渲染
 import { createSlotRegistry } from './slot-registry.js';
 
-/**
- * 前端认定的"当前阶段"——必须与服务端 `src/server/plugins/slot-catalog.mjs` 的 CURRENT_STAGE 同步。
- *
- * 为什么需要它：服务端只下发 slotCatalog（每条带 stage），不下发"当前阶段"本身；
- *   前端要给出 slot-not-open 这个错误，就必须知道自己的阶段。
- * ⚠️ 这是**两处表达**：改阶段时两边一起改。S3 起建议由服务端在 /api/plugins 里加一个 stage 字段，
- *   前端改成读它、把这处常量删掉（已记进本轮遗留）。
- */
-const CURRENT_SLOT_STAGE = 'S2';
 import * as memoryGuard from '../app/memory-guard.js';
 import { postJson, postStream, getJson, fetchWithRetry, mapLimit } from './api.js';
 // 资源包"形态"判据与文案：与 node 侧 /api/unpack 共用同一份（见 src/shared/bundle-shape.mjs 顶部说明）
@@ -148,6 +139,14 @@ export function createPluginHost(opts = {}) {
    */
   let slotRegistry = null;
 
+  /**
+   * 每个插件在清单里声明的设置项（`plugin.json` 的 settings[]）。
+   * 用途：插件 render(props) 要能看到"自己声明的键当前是多少"——
+   *   面板侧据此构造 `props.settings`（当前值 ?? 声明默认值），插件不必再自己去猜键名。
+   * 缺省空 Map（老插件没声明 settings 时就是空对象，插件侧应容忍）。
+   */
+  const pluginSettings = new Map();
+
   /** 登记一个可回收 effect（同一插件按注册顺序追加） */
   function addEffect(pluginId, effect) {
     const id = String(pluginId || '');
@@ -160,40 +159,19 @@ export function createPluginHost(opts = {}) {
   }
 
   /**
-   * 当前"已开放阶段"：缺省 S1（本阶段所有插槽都未开放）；`?slotStage=S2` 可提前放开（自测用）。
+   * 当前阶段：**只信服务端**（`/api/plugins` 的 currentStage，由 slot-catalog 的 CURRENT_STAGE 派生）。
+   *
+   * 唯一来源原则：阶段是"服务端开放到哪一步"的事实，前端自己存一份必然漂移
+   *   （上一轮就埋过一个 CURRENT_SLOT_STAGE 常量，已经删掉）。
+   * 回退 'S1' 只是过渡：字段缺失时按最保守处理（所有插槽都未开放）——
+   *   宁可全部拒绝并报 slot-not-open，也不要因为读不到就放开。
+   * @param {unknown} raw 服务端下发的 currentStage
    * @returns {string}
    */
-  /**
-   * 自测用：`?slotDeclare=<pluginId>:<slotName>[,<pluginId>:<slotName>…]` 额外注入"已声明"集合。
-   *
-   * 为什么需要：服务端 `CURRENT_STAGE='S1'` 会把所有插槽声明丢进 slotErrors（slots 保持空数组），
-   *   于是"声明过 ⇒ 能注册成功"这条链路在 S1 阶段**端到端不可达**。
-   *   这个开关只影响前端判定用的 declared 集合，不改服务端、不落盘，仅用于提前跑通成功分支。
-   * @returns {Record<string, string[]>}
-   */
-  function readSlotDeclare() {
-    const out = {};
-    try {
-      const raw = new URLSearchParams(location.search).get('slotDeclare') || '';
-      for (const pair of raw.split(',')) {
-        const i = pair.indexOf(':');
-        if (i <= 0) continue;
-        const pid = pair.slice(0, i).trim();
-        const name = pair.slice(i + 1).trim();
-        if (!pid || !name) continue;
-        (out[pid] = out[pid] || []).push(name);
-      }
-    } catch { /* 解析失败就当没注入 */ }
-    return out;
+  function normalizeStage(raw) {
+    const text = String(raw == null ? '' : raw).trim().toUpperCase();
+    return /^S[1-9]$/.test(text) ? text : 'S1';
   }
-
-  function readSlotStage() {
-    try {
-      const raw = new URLSearchParams(location.search).get('slotStage') || '';
-      return /^S[1-9]$/i.test(raw.trim()) ? raw.trim().toUpperCase() : CURRENT_SLOT_STAGE;
-    } catch { return CURRENT_SLOT_STAGE; }
-  }
-
   /**
    * 把插槽统计挂到 window.__SLOT_STATS__（测试读它；**不动既有 dataset 字段**）。
    * 为什么用 window 而不是 dataset：dataset 参与 outerHTML 快照比对（测试侧定案），
@@ -1520,20 +1498,15 @@ const MIME_BY_EXT = {
       //   晚一步建就会出现"插件已经能 register、注册表还不存在"的空窗。
       const declared = {};
       for (const pl of discovered) {
-        declared[String(pl && pl.id ? pl.id : '')] = Array.isArray(pl && pl.slots) ? pl.slots : [];
-      }
-      // 自测注入（仅 ?slotDeclare= 时生效）：见 readSlotDeclare 的说明
-      for (const [pid, names] of Object.entries(readSlotDeclare())) {
-        declared[pid] = [...new Set([...(declared[pid] || []), ...names])];
+        const pid = String(pl && pl.id ? pl.id : '');
+        declared[pid] = Array.isArray(pl && pl.slots) ? pl.slots : [];
+        pluginSettings.set(pid, Array.isArray(pl && pl.settings) ? pl.settings : []);
       }
       slotRegistry = createSlotRegistry({
         catalog: Array.isArray(data && data.slotCatalog) ? data.slotCatalog : [],
         declaredByPlugin: declared,
-        // 默认 S1：所有插槽都未开放，注册被 slot-not-open 拒（这正是 S1 的语义）。
-        // 调试开关 ?slotStage=S2：把"已开放阶段"提前，用来验证"声明过就能注册成功"那条链路。
-        //   存在的理由同 ?workerFetch=0 —— 让不同阶段的分支都能在同一份代码上被实测到，
-        //   否则"成功路径"要等到 S2 落地才第一次被执行（那时才发现问题就太晚）。
-        openStage: readSlotStage(),
+        // 阶段只信服务端（currentStage）；字段缺失时 normalizeStage 回退 'S1'（过渡兜底）
+        openStage: normalizeStage(data && data.currentStage),
         isInLoadWindow: () => !!loadingPluginId,
         onReject: (rej) => {
           say.warn(`插槽注册被拒（${rej.code}）：${rej.why}`);
@@ -1671,6 +1644,8 @@ const MIME_BY_EXT = {
      * 返回副本，面板侧改动不会污染注册表。
      */
     slotSections: () => (slotRegistry ? slotRegistry.renderEntries() : []),
+    /** 某插件在清单里声明的 settings[]（面板侧构造 props.settings 用） */
+    pluginSettings: (pluginId) => (pluginSettings.get(String(pluginId || '')) || []).map((s) => ({ ...s })),
     providersFor,
     findProvider,
     fetchFile,

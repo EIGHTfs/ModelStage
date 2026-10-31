@@ -181,6 +181,7 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.4.6 | 2026-10-31 | 插件插槽 S2-b2：阶段改读服务端 `currentStage`（删前端常量与两个自测开关）、`onAction` 派发（异常隔离）、`props.settings` 传当前值或声明默认值 |
 | 0.4.5 | 2026-10-31 | `/api/plugins` 下发 `currentStage`（与 `slotCatalog[i].stage` 是两个概念，不合并），消灭阶段的两处表达；补路由层用例（含"目录里必须仍有未开放插槽"这条防扁平化断言） |
 | 0.4.4 | 2026-10-31 | 插件插槽 S2-a：插件控件真正渲染进右栏（装配期聚合，不写回静态表）、按 groupId 匹配与 order 排序、id 冲突拒绝、设置键并入能力白名单、`panelWired` 与合并结果同源；卸载后 DOM 节点消失 |
 | 0.4.3 | 2026-10-31 | 插槽阶段抬到 S2：`panel.group.<groupId>` 开放（其余四类仍按各自阶段拒绝）；阶段文档补 S2 参考清单（验证用插件的 plugin.json 与脚本全文） |

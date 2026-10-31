@@ -586,7 +586,7 @@ export function mergeSlotControls(baseGroups, entries, opts = {}) {
   for (const g of groups) for (const c of g.controls || []) if (c && c.id) taken.add(String(c.id));
 
   const acc = { added: 0, rejected: 0, capabilityKeys: [], byGroup: new Map() };
-  for (const entry of list) resolveSlotEntry(entry, taken, byId, acc, report);
+  for (const entry of list) resolveSlotEntry(entry, taken, byId, acc, report, opts);
 
   for (const [groupId, bucket] of acc.byGroup) {
     const group = byId.get(groupId);
@@ -606,7 +606,7 @@ export function mergeSlotControls(baseGroups, entries, opts = {}) {
  * @param {{added:number, rejected:number, capabilityKeys:string[], byGroup:Map}} acc 累加器
  * @param {(rej: object) => void} report 拒绝回报
  */
-function resolveSlotEntry(entry, taken, byId, acc, report) {
+function resolveSlotEntry(entry, taken, byId, acc, report, opts = {}) {
   const m = /^panel\.group\.(.+)$/.exec(String((entry && entry.name) || ''));
   if (!m) {
     acc.rejected += 1;
@@ -625,7 +625,9 @@ function resolveSlotEntry(entry, taken, byId, acc, report) {
     report({ pluginId: entry && entry.pluginId, slot: entry && entry.name, id, reason: taken.has(id) ? `控件 id「${id}」与已有控件重名` : '控件缺 id' });
     return;
   }
-  const desc = slotSpecToControl(entry);
+  // owner props：settings 传**真实值**（当前值 ?? 声明默认值），S4 会再加 geometry/activeSurface/document
+  const props = typeof opts.buildProps === 'function' ? opts.buildProps(entry) : {};
+  const desc = slotSpecToControl(entry, props);
   if (!desc) {
     acc.rejected += 1;
     report({ pluginId: entry && entry.pluginId, slot: entry && entry.name, id, reason: 'render() 没有返回可用的控件描述（kind 必须是已知类型）' });
@@ -638,6 +640,8 @@ function resolveSlotEntry(entry, taken, byId, acc, report) {
     pluginId: String((entry && entry.pluginId) || ''),
     // 能力键显式声明为该控件 id：装配期把 id 并进 capabilities.settings，渲染层据此认它
     capabilityKey: id,
+    // 插件的动作回调（面板点击时派发；由装配层负责调用并兜住异常）
+    onAction: typeof (entry.spec || {}).onAction === 'function' ? entry.spec.onAction : null,
   };
   taken.add(id);
   acc.capabilityKeys.push(id);
@@ -656,13 +660,13 @@ function resolveSlotEntry(entry, taken, byId, acc, report) {
  * @param {{id:string,label:string,spec:object}} entry
  * @returns {object|null}
  */
-function slotSpecToControl(entry) {
+function slotSpecToControl(entry, props) {
   const spec = (entry && entry.spec) || {};
   if (typeof spec.render !== 'function') return null;
   let out = null;
   try {
-    // props 目前只给只读骨架（S4 补 geometry/activeSurface/document）；插件不得依赖其可变引用
-    out = spec.render({ settings: {}, document: null, geometry: null, activeSurface: null });
+    // props 由装配层构造：settings 是**真实值**（当前值 ?? 声明默认值），S4 再扩 geometry/activeSurface/document
+    out = spec.render(props || { settings: {} });
   } catch {
     return null;
   }
