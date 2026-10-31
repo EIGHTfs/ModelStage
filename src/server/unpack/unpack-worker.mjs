@@ -51,7 +51,17 @@ parentPort.on('message', async (msg) => {
   const { id, rootId, rel, absPath, fp, meta, decl } = msg || {};
   try {
     const before = rssNow(localPeak);
-    const res = await unpackFile({ rootId, rel, absPath });
+    // 进度是**跨线程**的：主线程没法把回调函数传进来（structured clone 不支持函数），
+    //   所以这里把插件上报的进度原样 postMessage 出去，由 worker-client 转成回调。
+    //   发送失败（通道已关）只丢这一帧，绝不影响解包本身。
+    const res = await unpackFile({
+      rootId, rel, absPath,
+      onProgress: (progress) => {
+        try {
+          parentPort.postMessage({ id, progress });
+        } catch { /* 主线程已断开：进度丢掉即可 */ }
+      },
+    });
     if (!res.ok) {
       parentPort.postMessage({ id, ok: false, reason: res.reason, message: res.message });
       return;

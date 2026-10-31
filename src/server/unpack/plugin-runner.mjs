@@ -332,7 +332,15 @@ async function toBytes(v) {
  *   files?: {ok: boolean, entries: Array<{path: string}>, take: Function, release: Function, error?: string},
  *   readMs?: number, unpackMs?: number}>}
  */
-export async function unpackFile({ rootId, rel, absPath }) {
+/**
+ * @param {{rootId: string, rel: string, absPath: string,
+ *          onProgress?: (p: {phase: string, ms: number|null}) => void}} opts
+ *   onProgress：可选的进度回调。只有 exec 运行时会上报（子进程在自然边界发进度帧）；
+ *   node 插件是进程内同步执行、没有中间边界，一律不发 —— 传了也不会被调用。
+ *   **挂在 file 上而不是模块级变量**：file 是每次调用现造的，天然按请求隔离
+ *   （同插件并发两个解包时，A 的进度不会报给 B）。
+ */
+export async function unpackFile({ rootId, rel, absPath, onProgress }) {
   let bytes;
   const t0 = Date.now();
   try {
@@ -351,7 +359,8 @@ export async function unpackFile({ rootId, rel, absPath }) {
   // absPath 必须一起交给插件：node 插件有 bytes 就够了，但 **exec 插件在另一个进程里**，
   //   它拿不到这段内存 —— 只能靠路径自己去读文件头（帧协议里传字符串，不传 20MB 字节）。
   //   早前这里没放 absPath，于是 exec 插件的 canHandle 永远收到 null ⇒ 永远说"不认"。
-  const file = { rootId, rel, name, size: bytes.byteLength, bytes, absPath };
+  // onProgress 一起交给插件：exec 适配器把它绑到本次请求的挂起记录上（见 exec.mjs 的 request）
+  const file = { rootId, rel, name, size: bytes.byteLength, bytes, absPath, onProgress };
   // 列出所有声明能处理的插件（按清单顺序），逐个尝试：
   //   canHandle 认领只代表"这个容器我认识"，不代表**这个包的全部内容我都能解** ——
   //   JS 插件的纹理解码表里没有 ASTC(50)/PVRTC(49) 等格式，会在 resolve 阶段抛错；

@@ -77,6 +77,19 @@ for line in sys.stdin:
     if MODE == 'crash':
         # 半路退出：验证在途请求全部判失败、不挂死
         sys.exit(3)
+    if MODE == 'progress':
+        # 进度帧专项：真档 + 未知档 + 同档同毫秒重复，最后才是响应
+        for frame in (
+            {"id": mid, "progress": {"phase": "read", "ms": 5}},
+            {"id": mid, "progress": {"phase": "bogus", "ms": 6}},      # 未知档：应被忽略
+            {"id": mid, "progress": {"phase": "read", "ms": 5}},       # 同档同毫秒：应被去重
+            {"id": mid, "progress": {"phase": "resolve", "ms": 40}},
+        ):
+            sys.stdout.write(json.dumps(frame) + "\\n")
+            sys.stdout.flush()
+        sys.stdout.write(json.dumps({"id": mid, "ok": True, "handled": True}) + "\\n")
+        sys.stdout.flush()
+        continue
     sys.stdout.write(json.dumps({"id": mid, "ok": True, "handled": True}) + "\\n")
     sys.stdout.flush()
 `;
@@ -227,6 +240,27 @@ test('exec 真 spawn：**超时必须真杀**（不只是 reject，进程要真�
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline && isAlive(pid)) await new Promise((res) => setTimeout(res, 100));
   assert.equal(isAlive(pid), false, `超时后进程必须真的被终止（pid=${pid} 仍存活）`);
+  fs.rmSync(pluginsDir, { recursive: true, force: true });
+});
+
+test('exec 进度帧：不终结请求 + 未知档忽略 + 同档同毫秒去重', { skip: skipNoPython }, async () => {
+  const { pluginsDir, meta } = makeFakePlugin({ mode: 'progress' });
+  const r = loadWithRuntime(meta, { pluginsDir, root: ROOT, execAllowed: { allowed: true, source: 'test' } });
+  assert.equal(r.ok, true, `装载应成功：${r.error || ''}`);
+  const seen = [];
+  const handled = await r.api.canHandle({
+    rootId: 'r', rel: 'a', name: 'a', size: 1, absPath: '/dev/null',
+    onProgress: (p) => seen.push(p),
+  });
+  // ① 进度帧**不终结请求**：插件发完 4 条进度帧才发响应，请求必须仍拿到真正的结果
+  assert.equal(handled, true, '进度帧不能把请求提前 settle 掉（否则这里会抛"缺 prefix/entry"或返回假值）');
+  // ② 未知档被忽略（bogus 不该出现在回调里）
+  assert.deepEqual(seen.map((x) => x.phase), ['read', 'resolve'], '只转发认识的档；未知档忽略');
+  // ③ 同档同毫秒去重（两次 read@5 只剩一条）
+  assert.equal(seen.filter((x) => x.phase === 'read').length, 1, '同档同毫秒只能转发一次');
+  assert.equal(seen[0].ms, 5);
+  assert.equal(seen[1].ms, 40);
+  r.api.dispose?.();
   fs.rmSync(pluginsDir, { recursive: true, force: true });
 });
 

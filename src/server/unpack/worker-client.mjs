@@ -64,6 +64,19 @@ export function createUnpackWorkerClient(opts) {
   function onMessage(msg) {
     const cur = current;
     if (!cur || !msg || msg.id !== cur.id) return;   // 迟到/陌生消息：忽略（重建后可能收到旧 id）
+    // 进度消息：**不终结请求** —— worker 后面还会发真正的回复（契约 §四·⑦）。
+    //   所以这里 early return，绝不能落到下面的 clearTimeout + resolve。
+    if (msg.progress) {
+      if (typeof cur.onProgress === 'function') {
+        try {
+          cur.onProgress(msg.progress);
+        } catch (e) {
+          // 进度是旁路信息：回调抛错不能影响本次解包
+          log('warn', `进度回调抛错（已忽略）：${(e && e.message) || e}`);
+        }
+      }
+      return;
+    }
     clearTimeout(cur.timer);
     current = null;
     cur.resolve(msg);
@@ -113,9 +126,12 @@ export function createUnpackWorkerClient(opts) {
   /**
    * 跑一次解包。串行：前一个没完成时，调用方会在这条链上等待。
    * @param {object} task {rootId, rel, absPath, fp, meta, decl}
+   * @param {{onProgress?: (p: {phase: string, ms: number|null}) => void}} [opts]
+   *   onProgress：worker 线程里 exec 插件上报的进度帧会转成这个回调（可选）。
+   *   为什么要回调而不是靠返回值：进度必须**边跑边报**，等 run() 回来就已经晚了。
    * @returns {Promise<object>} worker 的回复（ok:true 带 index，ok:false 带 reason/message）
    */
-  function run(task) {
+  function run(task, opts = {}) {
     const go = () => new Promise((resolve, reject) => {
       const w = ensureWorker();
       const id = (seq += 1);
@@ -135,7 +151,7 @@ export function createUnpackWorkerClient(opts) {
         cleanupTmp(fp);
         reject(new Error(`unpack worker timeout after ${timeoutMs}ms（本次解包未完成，已终止并重建 worker）`));
       }, timeoutMs);
-      current = { id, resolve, reject, timer };
+      current = { id, resolve, reject, timer, onProgress: typeof opts.onProgress === 'function' ? opts.onProgress : null };
       try {
         w.postMessage({
           id,

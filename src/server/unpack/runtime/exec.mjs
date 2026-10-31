@@ -38,6 +38,14 @@ const DEFAULT_IDLE_MS = 60_000;
 const MAX_LINE_BYTES = 4 * 1024 * 1024;
 /** SIGTERM 后等多久改 SIGKILL */
 const KILL_GRACE_MS = 3000;
+/**
+ * 认识的进度档名（契约 §四·⑨：不认识的**忽略并记 debug**，不报错）。
+ *
+ * 与 plugin-store 的三段阶段名对齐（read / resolve / write）——两处必须是同一套词，
+ *   否则插件报上来的档名转发出去后，前端 / SSE 订阅方对不上。
+ * 插件可以自由加更细的档（monotonic 名字也行），老主进程只会打一条 debug。
+ */
+const KNOWN_PROGRESS_PHASES = new Set(['read', 'resolve', 'write']);
 
 /**
  * 校验一个 exec 插件的清单是否自洽（**纯校验，不起进程**）。
@@ -222,9 +230,47 @@ class ExecWorker {
     const id = Number(msg && msg.id);
     const waiter = this.pending.get(id);
     if (!waiter) return;            // 迟到的响应（已超时/已判失败）直接丢
+    // 进度帧：**不终结请求** —— 同一 id 后面还会有真正的响应/错误帧（契约 §四·⑦）。
+    //   所以必须在这里 early return，绝不能落到下面的 settle 分支：
+    //   否则一条进度帧会被当成响应，请求提前以"返回值缺 prefix/entry"失败。
+    if (msg && msg.progress && typeof msg.progress === 'object') {
+      this.deliverProgress(waiter, msg.progress);
+      return;
+    }
     this.pending.delete(id);
     clearTimeout(waiter.timer);
     waiter.resolve(msg);
+  }
+
+  /**
+   * 转发一条进度帧（契约 §四·⑦⑧⑨⑩ 的唯一落点）。
+   *
+   * 三件事都在这里收口，避免散落到调用方：
+   *   ⑨ 未知档名 → 忽略 + debug（插件可以自由加分档，主进程不认识不算错）
+   *   ⑩ 同档同毫秒的重复 → 丢掉（没有新信息）
+   *   ⑧ 没注册回调 → 静默丢弃（进度只是旁路增强，不影响正确性）
+   * @param {object} waiter 该请求的挂起记录（含 onProgress / progressSeen）
+   * @param {{phase?: string, ms?: number}} progress 子进程上报的内容
+   */
+  deliverProgress(waiter, progress) {
+    const phase = String((progress && progress.phase) || '');
+    if (!phase) return;
+    if (!KNOWN_PROGRESS_PHASES.has(phase)) {
+      this.log('debug', `exec 插件上报了未知进度档「${phase}」，已忽略`, { plugin: this.meta.id });
+      return;
+    }
+    const rawMs = Number(progress && progress.ms);
+    const ms = Number.isFinite(rawMs) ? Math.max(0, Math.round(rawMs)) : null;
+    const key = `${phase}@${ms}`;
+    if (waiter.progressSeen.has(key)) return;
+    waiter.progressSeen.add(key);
+    if (typeof waiter.onProgress !== 'function') return;
+    try {
+      waiter.onProgress({ phase, ms });
+    } catch (e) {
+      // 回调抛错不能污染请求本身（它只是旁路信息）
+      this.log('warn', `进度回调抛错（已忽略）：${(e && e.message) || e}`, { plugin: this.meta.id });
+    }
   }
 
   /** 子进程退出：把在途请求全部判失败，标记需要重启 */
@@ -247,7 +293,7 @@ class ExecWorker {
    * @param {number} timeoutMs
    * @returns {Promise<object>} 子进程的原始响应帧
    */
-  async request(method, params, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  async request(method, params, timeoutMs = DEFAULT_TIMEOUT_MS, opts = {}) {
     await this.ensureStarted();
     const child = this.proc;
     if (!child || this.dead) throw new Error('exec 插件进程不可用');
@@ -262,7 +308,13 @@ class ExecWorker {
         reject(new Error(`exec 插件请求超时（${method}，${timeoutMs}ms）`));
       }, timeoutMs);
       if (typeof timer.unref === 'function') timer.unref();
-      this.pending.set(id, { resolve, reject, timer, method });
+      this.pending.set(id, {
+        resolve, reject, timer, method,
+        // 进度回调按**请求**绑定，不绑在 worker 实例上：
+        //   同一插件可能被两个解包任务同时用，绑实例会让 A 的进度报给 B（契约 §四·⑦ 的并发含义）
+        onProgress: typeof opts.onProgress === 'function' ? opts.onProgress : null,
+        progressSeen: new Set(),   // 同档同毫秒去重（契约 §四·⑩）
+      });
       try {
         child.stdin.write(frame, 'utf8');
       } catch (e) {
@@ -364,7 +416,7 @@ export function loadExecPlugin(meta, ctx) {
         name: file.name,
         absPath: file.absPath || null,
         size: file.size,
-      }, timeoutMs);
+      }, timeoutMs, { onProgress: file && file.onProgress });
       if (!resp || resp.ok === false) {
         // 插件自报"我不认"与"我出错了"必须分清：后者要抛出去让 runner 记 canhandle-threw
         if (resp && resp.code) throw new Error(`${resp.code}: ${resp.message || ''}`);
@@ -384,7 +436,7 @@ export function loadExecPlugin(meta, ctx) {
         name: file.name,
         absPath: file.absPath || null,
         size: file.size,
-      }, timeoutMs);
+      }, timeoutMs, { onProgress: file && file.onProgress });
       if (!resp || resp.ok === false) {
         const err = new Error(`${(resp && resp.code) || 'EXEC_RESOLVE_FAILED'}: ${(resp && resp.message) || '插件未返回结果'}`);
         err.code = (resp && resp.code) || 'EXEC_RESOLVE_FAILED';

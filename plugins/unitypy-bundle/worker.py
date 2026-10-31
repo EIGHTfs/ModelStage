@@ -29,6 +29,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import traceback
 
 # 保留最近多少个解包结果（父进程惰性读盘，删早了会读到空）
@@ -131,6 +132,39 @@ def parse_atlas_pages(atlas_text):
         if "." in line.split("/")[-1]:
             pages.append(line.split("/")[-1])
     return pages
+
+
+class _Progress:
+    """进度帧发送器（契约 §四·⑦⑧⑩ 的插件侧）。
+
+    只做两件事：算出"自收到请求起过了多少毫秒"、并按频率上限决定发不发。
+    当前只有 read / resolve / write 三档，间隔远大于 200ms；节流是为"将来细分到
+    对象级/每 N 个文件一档"预留的保险 —— 真按对象发帧会把 stdout 打满、反而拖慢解包。
+
+    **请求没有 id 时一律不发**：进度必须挂在某个请求上，没有 id 的帧主进程无处归属。
+    """
+
+    MIN_INTERVAL_MS = 200
+
+    def __init__(self, req_id, clock=None):
+        self.req_id = req_id
+        self._clock = clock or time.monotonic
+        self._t0 = self._clock()
+        self._last_ms = None
+
+    def elapsed_ms(self):
+        return int((self._clock() - self._t0) * 1000)
+
+    def emit(self, phase):
+        """发一帧进度。被节流跳过时返回 False（对请求本身没有任何影响）。"""
+        if self.req_id is None:
+            return False
+        ms = self.elapsed_ms()
+        if self._last_ms is not None and ms - self._last_ms < self.MIN_INTERVAL_MS:
+            return False
+        self._last_ms = ms
+        emit({"id": self.req_id, "progress": {"phase": phase, "ms": ms}})
+        return True
 
 
 class _FileCollector:
@@ -313,7 +347,21 @@ def resolve(msg):
     if not abs_path or not os.path.isfile(abs_path):
         return {"ok": False, "code": "ULB_ERR_NO_FILE", "message": f"文件不存在：{abs_path}"}
 
-    env = UnityPy.load(abs_path)
+    progress = _Progress(msg.get("id"))
+
+    # ① read：把包字节读进内存
+    #   为什么自己读（而不是让 UnityPy.load 传路径）：只有自己读完才有"字节已就绪"这个边界，
+    #   否则读与解析在 UnityPy.load 内部合成一步，进度永远只能在"全部做完"时发（等于没进度）。
+    #   代价是峰值多一份包大小（实测 8MB 包 +8MB；estimateMemory 给的内存预算约 100MB，够用）。
+    with open(abs_path, "rb") as f:
+        raw = f.read()
+    progress.emit("read")
+
+    # ② resolve：UnityPy 解析容器 + 对象表
+    env = UnityPy.load(raw)
+    _ = list(env.objects)      # 枚举即触发对象表解析（此时还没 read 任何对象的数据）
+    progress.emit("resolve")
+
     out_dir = tempfile.mkdtemp(prefix="res-", dir=_tmp_root_dir())
     _result_dirs.append(out_dir)
     _rotate()
@@ -323,6 +371,7 @@ def resolve(msg):
     page_to_atlas = _align_atlas_pages(exported, out_dir, collector)
     entry_doc = _build_entry_doc(exported["texts"], collector, page_to_atlas)
     entry_name = _write_entry(out_dir, entry_doc, collector)
+    progress.emit("write")      # ③ write：全部产物已落盘
 
     if not collector.items:
         return {"ok": False, "code": "ULB_ERR_EMPTY_RESULT", "message": "UnityPy 未从该包导出任何文件"}

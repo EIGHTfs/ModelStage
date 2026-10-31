@@ -543,6 +543,11 @@ export function createUnpackStore(opts) {
       // start：worker 真正要开工了（此前是排队与内存准入）。三个字段对齐契约 §2.1。
       fire('start', { fp, rootId: req.rootId, rel: req.rel });
       const tUnpack0 = Date.now();
+      // 进度**实时**转发（只有 exec 插件会上报；node 插件进程内同步执行，没有中间边界）。
+      //   为什么记 lastMs：收尾要判断"某档到底发过没有" —— 发过的不能再补一条，
+      //   否则前端/SSE 订阅方会看到同一档两条（ms 语义还不同：实时那条是"相对请求起点"，
+      //   收尾补的那条是"该段耗时"）。
+      const livePhases = new Map();
       const reply = await workerClient.run({
         rootId: req.rootId,
         rel: req.rel,
@@ -556,6 +561,13 @@ export function createUnpackStore(opts) {
           pluginVersion: version,
         },
         decl,
+      }, {
+        onProgress: ({ phase, ms }) => {
+          // 契约 §四·⑨：同一档可以多次上报，**以最后一次为准** ⇒ 每次都照发（后到的覆盖前一条）
+          if (!phase) return;
+          livePhases.set(phase, ms);
+          fire('phase', { name: phase, ms });
+        },
       });
       const unpackWallMs = Date.now() - tUnpack0;
       if (!reply.ok) {
@@ -581,11 +593,17 @@ export function createUnpackStore(opts) {
         files: index.files.length,
       };
       // phase 三段：read / resolve / write（名字对齐 phases 键，契约 §2.2）。
-      //   ⚠️ 实测口径：read、resolve、write **都在 worker 内部完成**，主线程只有等 reply 才知道毫秒数，
-      //   所以这三条是"段结束后立即发"，不是"段进行中实时发"（真正实时要 worker 增量上报，不在本轮）。
-      fire('phase', { name: 'read', ms: phases.readMs });
-      fire('phase', { name: 'resolve', ms: phases.pluginResolveMs });
-      fire('phase', { name: 'write', ms: phases.writeMs });
+      //   exec 插件已在上面**实时**发过（livePhases 有记录的那几档），这里只补发**没发过的** ——
+      //   否则同一档会出现两条，而且两条的 ms 语义不同（实时=相对请求起点，补发=该段耗时）。
+      //   node 插件不发实时帧 ⇒ 三档都落到这里补发，行为与改动前**逐字一致**。
+      for (const [name, ms] of [
+        ['read', phases.readMs],
+        ['resolve', phases.pluginResolveMs],
+        ['write', phases.writeMs],
+      ]) {
+        if (livePhases.has(name)) continue;
+        fire('phase', { name, ms });
+      }
       fire('done', { fp, hit: false, files: index.files, unpackMs: index.unpackMs, phases });
       return { ok: true, hit: false, fingerprint: fp, prefix: index.prefix, entry: index.entry, files: index.files, unpackMs: index.unpackMs, phases, memBasis: mem.basis, peakEstMb: mem.peakEstMb,
         // 实际解出这个包的插件 id（写 entry-states 的 loadResult.provider 用它 ⇒ 展示归属与颜色）
