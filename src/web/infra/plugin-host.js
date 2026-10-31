@@ -80,25 +80,25 @@ function injectScript(src) {
 //   下面各区只说明"这一段负责什么、和哪些状态耦合"，不再记录函数行号——
 //   要定位具体函数，进对应模块后按名字搜。
 //
-// ── 分区 R1：基础工具与统计发布 ─────────────────────────────────────────────
+// ── 分区 · 基础工具与统计发布 ────────────────────────────────────────────────────────────────
 //   职责：日志适配、类型转换、事件派发封装、把插槽/效果统计挂到 window（面板与测试读这些数据集）。
 //   状态耦合：say / emit（依赖）、slotRegistry / pluginEffects（只读汇总）。
 //
-// ── 分区 R2：注册入口 hostApi（只剩组装；实现在 plugin-host-registration.mjs）──
+// ── 分区 · 注册入口组装（hostApi；实现在 plugin-host-registration.mjs） ──────────────────────
 //   职责：把 ctx 与各表以"窄视图"注入注册模块，再把返回的方法拼成 hostApi。
 //   状态耦合：providers / loadState / registeredEffects（经注册模块写）、slotRegistry（读）、loadingPluginId（读）。
 //
-// ── 分区 R3：装载与卸载回收（loadPlugin / effectsReport；卸载在 -unload.mjs）────
+// ── 分区 · 装载与卸载回收（loadPlugin / effectsReport；卸载在 -unload.mjs） ──────────────────
 //   职责：注入脚本 → 登记 loadState；卸载由 -unload.mjs 负责（逆序 dispose → 清表 → 派发事件）。
 //   状态耦合：discovered / loaded（**唯一写者**都在这段）、loadingPluginId（窗口开关）、
 //            slotRegistry（初始化）、loadState（写）。
 //
-// ── 分区 R4/R5：资源取用与解包（整体在 plugin-host-unpack.mjs）──────────────
+// ── 分区 · 资源取用与解包（已整体搬出到 plugin-host-unpack.mjs） ─────────────────────────────
 //   职责：把"资源根里的文件"变成"可用字节 / 解包产物 / VFS 前缀"，**不碰 DOM、不碰面板**。
 //   状态耦合：discovered（读清单找 provider）、providers（读 provider 表）、say / emit；
 //            workerPool 与该区常量由解包模块自持，宿主只拿引用做卸载清理。
 //
-// ── 分区 R6：装载编排 / provider 查询（report 在 -report.mjs）────────────────
+// ── 分区 · 装载编排（report 在 -report.mjs） ─────────────────────────────────────────────────
 //   职责：发现清单 → 建注册表 → 注入脚本 → 统计结果；以及 provider 查询与回收报告。
 //   状态耦合：几乎全部只读（loaded / discovered / providers / pluginEffects /
 //            registeredEffects / slotRegistry）。
@@ -173,7 +173,7 @@ export function createPluginHost(opts = {}) {
   //   不能只写 console —— 页面上层与测试都靠 diag 取证。
   const base = String(opts.baseUrl || '').replace(/\/$/, '');
 
-  // 解包区（R4）：搬到 plugin-host-unpack.mjs（B4）—— 参数只有 io / state / limits 三个窄视图
+  // 资源取用与解包（已搬到 plugin-host-unpack.mjs）—— 参数只有 io / state / limits 三个窄视图
   //   workerPool 由该模块**创建并持有**（生命周期归它），这里只拿引用给卸载流程做清理
   const unpack = createUnpack({
     io: { say: ctx.say, emit: ctx.emit },
@@ -238,7 +238,7 @@ export function createPluginHost(opts = {}) {
   const pluginSettings = new Map();
 
   /** 登记一个可回收 effect（同一插件按注册顺序追加） */
-  // ── 分区 R1：基础工具与统计发布 ─────────────────────────────────────────────
+  // ── 分区 · 基础工具与统计发布 ──────────────────────────────────────────────────────────────
   // 本区放"其它区都要用的小工具"：效果容器入口（addEffect）、阶段归一（normalizeStage）、
   //   两处 window 统计发布（插槽/效果）。注册拒绝出口与老控件包装已随注册模块搬走。
   // 状态耦合：addEffect / publishEffectStats 写 pluginEffects；publishSlotStats 读 slotRegistry。
@@ -302,7 +302,7 @@ export function createPluginHost(opts = {}) {
 
 
   /** 插件侧可见的宿主面（插件脚本顶层会读 window.SpineViewerPlugins） */
-  // ── 分区 R2：注册入口 hostApi（只剩组装；实现在 plugin-host-registration.mjs）──
+  // ── 分区 · 注册入口组装（hostApi；实现在 plugin-host-registration.mjs） ────────────────────
   // 本区只做两件事：把 ctx 与各表以"窄视图"注入注册模块，再把返回的方法拼成 hostApi。
   // 共同约束（仍在注册模块里执行）：**只接受装载期同步调用**（loadingPluginId 非空），
   //   异步注册一律显式拒绝并给原因。
@@ -345,7 +345,7 @@ export function createPluginHost(opts = {}) {
   };
 
   /** 按清单串行注入某插件的全部脚本（顺序即 plugin.json 的 files[] 顺序：lib/* 先、index.js 后） */
-  // ── 分区 R3：装载与卸载回收（装配 + effectsReport）──────────────────────────
+  // ── 分区 · 装载与卸载回收（装配 + effectsReport） ──────────────────────────────────────────
   // 装载：注入脚本 → 登记 loadState；卸载与回收在 plugin-host-unload.mjs（逆序 dispose → 清表 → 派发事件）。
   // 状态耦合：loadState（写）、loaded（读）、providers/registeredEffects/pluginEffects（卸载时删）。
   async function loadPlugin(pl) {
@@ -422,7 +422,7 @@ export function createPluginHost(opts = {}) {
   // 预热：搬到 plugin-host-warmup.mjs（B1）—— 只依赖 ctx.say / ctx.emit + 服务端事件流
   const warmup = createWarmup({ ctx });
 
-  // ── 分区 R4/R5：资源取用与解包（整体在 plugin-host-unpack.mjs）──────────────
+  // ── 分区 · 资源取用与解包（已整体搬出到 plugin-host-unpack.mjs） ───────────────────────────
   // 解包主流程（缓存命中 → provider 解析 → 产物校验 → 注册 VFS）与预热都在搬出去的模块里，
   //   本区只剩装配那一行。状态耦合（在模块内）：providers / discovered（读）、say / emit。
 
@@ -435,7 +435,7 @@ export function createPluginHost(opts = {}) {
    * 这解决了"页面刚起、插件脚本还在注入时就发起装载"的时序竞争。
    * @returns {Promise<{discovered: number, registered: number}>}
    */
-  // ── 分区 R6：装载编排（loadAll / doLoadAll / initSlotRegistry）──────────────
+  // ── 分区 · 装载编排（loadAll / doLoadAll / initSlotRegistry） ──────────────────────────────
   // 装载编排与插槽注册表初始化留在这里（它们要驱动脚本注入与窗口开关）；
   //   provider 查询与状态报告分别在 -unpack.mjs / -report.mjs。
   // 状态耦合：discovered / loaded（**唯一写者** doLoadAll）、slotRegistry（唯一写者 initSlotRegistry）。

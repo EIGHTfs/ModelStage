@@ -112,7 +112,7 @@ const MAX_BUNDLE_BYTES = 2 * 1024 * 1024 * 1024;
  * 预筛：返回 null 表示"可能是资源包，值得读全量"，否则返回跳过原因。
  * @param {{rootId?:string, rel?:string, name?:string, size?:number, rootKind?:string}} file
  */
-// ── 分区 R4：资源取用与解包（主体）────────────────────────────────────────────
+// ── 分区 · 资源取用与解包（本体：本文件） ────────────────────────────────────────────────────
 // 注意：预热链（fetchCapacity / warmup / scheduleWarmup）已搬到 plugin-host-warmup.mjs（B1）。
 // 从"文件能不能读"（prefilterReason/validateResolved）到"worker 解包→失败回落服务端"，
 //   再到"内存准入驱动的预热"（fetchCapacity/warmup/scheduleWarmup）。**不碰 DOM**。
