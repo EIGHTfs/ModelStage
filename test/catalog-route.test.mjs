@@ -159,3 +159,34 @@ test('真实的根且能扫到东西 → rootWarning 为 null', () => {
   if (r.body.count > 0) assert.equal(r.body.rootWarning, null, '扫到条目时不该有根级警告');
   else assert.match(String(r.body.rootWarning), /没有任何模型条目/, '空根应给出"没有条目"的根级警告');
 });
+
+// ── 兼容期结束：warnings 不再承载任何内容（能力说明 → capabilityNotes，根级问题 → rootIssues）──
+// 锁两件事：① 健康的根 warnings 必须是空数组 ② 有问题的根也只走 rootIssues，warnings 仍为空。
+// 为什么留空数组而不是删字段：旧消费方（读 warnings 后直接 .map/.join）拿到 undefined 会炸。
+
+test('健康的根：warnings 为空数组，能力说明只在 capabilityNotes', () => {
+  const roots = data.config.readConfig();
+  const alive = roots.find((x) => {
+    try { return fs.existsSync(x.path); } catch { return false; }
+  });
+  if (!alive) return;
+  const r = callCatalog(`?root=${encodeURIComponent(alive.id)}`);
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body.warnings, [], `warnings 必须是空数组，实际 ${JSON.stringify(r.body.warnings)}`);
+  // 能力说明（"有 N 个能解包资源包的插件…"）与根无关：有多个 provider 时必然出现在 capabilityNotes
+  const providers = data.plugins.readPlugins().filter((p) => Array.isArray(p.fileKinds) && p.fileKinds.includes('bundle'));
+  if (providers.length >= 2) {
+    assert.ok(Array.isArray(r.body.capabilityNotes) && r.body.capabilityNotes.length > 0,
+      `多 provider 时 capabilityNotes 不该为空，实际 ${JSON.stringify(r.body.capabilityNotes)}`);
+  }
+});
+
+test('有问题的根：根级问题只进 rootIssues，warnings 仍为空数组', () => {
+  const r = catalogWithRoot('/no/such/dir-for-warnings-test');
+  assert.equal(r.status, 200);
+  assert.equal(r.body.count, 0);
+  assert.ok(Array.isArray(r.body.rootIssues) && r.body.rootIssues.length > 0, '根级问题必须写进 rootIssues');
+  assert.equal(r.body.rootIssues[0].rootId, 'probe-root');
+  assert.match(String(r.body.rootIssues[0].text), /不存在/);
+  assert.deepEqual(r.body.warnings, [], `根级问题不该回填到 warnings，实际 ${JSON.stringify(r.body.warnings)}`);
+});

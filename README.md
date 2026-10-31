@@ -164,6 +164,7 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.3.3 | 2026-10-31 | catalog 的 `warnings` 收敛为空数组：能力说明只在 `capabilityNotes`、根级问题只在 `rootIssues`/`rootWarning`（兼容期结束，消除同一事实两份表达） |
 | 0.3.2 | 2026-10-31 | 修复 exec 插件的假告警：前端不再把 `runtime:"exec"` 的插件当 JS 插件注入脚本（其 `files[]` 为空 ⇒ 必然误报「已加载但没有调用 register()」），改为只登记声明、不计入"需装载"分母 |
 | 0.3.1 | 2026-10-31 | 探测不再阻塞事件循环：两级空闲门控（有请求在飞不解析）+ 单包 24MB 上限 + 解析移入 worker 线程；新增显式生命周期 `close()` 与 SIGINT/SIGTERM 收尾（修复 worker 悬挂导致测试进程不退出）；实测事件循环 max 683→104ms、吞吐 28.5→63.9/min |
 | 0.3.0 | 2026-10-31 | 插件运行时双形态落地：`exec`（子进程 + 行 JSON 帧协议 + 双向超时必杀 + 崩溃传播）与首个 Python 插件 `unitypy-bundle`（UnityPy 解包，覆盖 ASTC 等 JS 侧缺口）；前端本地解包失败时兜底走服务端解包；补 spine 3.8 skel 版本探测（原按 4.x 解析导致装载报错） |

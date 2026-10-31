@@ -82,7 +82,7 @@ test('回归：根层平铺的容器仍被全部列出（数量从磁盘现算�
   assert.ok(flatContainers.length > 0, '该根层至少应有一个 UnityFS 容器才具回归意义');
 });
 
-test('多插件时 kind 一律为 null，并在 warnings 说明原因', () => {
+test('多插件时 kind 一律为 null，原因写在 capabilityNotes（warnings 不再承载）', () => {
   const cfg = data.config.readConfig().find((r) => r.id === 'azurlane_bundle');
   if (!cfg || !fs.existsSync(cfg.path)) return;
 
@@ -94,8 +94,10 @@ test('多插件时 kind 一律为 null，并在 warnings 说明原因', () => {
   for (const e of r.body.entries || []) {
     assert.equal(e.kind, null, `多插件并存时 kind 必须为 null（否则会被错标成某一类内容），实际 ${e.kind}`);
   }
-  assert.ok((r.body.warnings || []).some((w) => w.includes('kind 置空') || w.includes('多个资源包插件')),
-    `warnings 应说明 kind 为何为空，实际 ${JSON.stringify(r.body.warnings)}`);
+  // 兼容期结束后：能力说明只走 capabilityNotes；warnings 保持空数组（不再是"混装袋"）
+  assert.ok((r.body.capabilityNotes || []).some((w) => w.includes('kind 置空') || w.includes('多个资源包插件')),
+    `capabilityNotes 应说明 kind 为何为空，实际 ${JSON.stringify(r.body.capabilityNotes)}`);
+  assert.deepEqual(r.body.warnings, [], 'warnings 不该再有内容（能力说明已拆到 capabilityNotes）');
 });
 
 test('单插件时 kind 仍取插件声明（live2d 现状零变化）', () => {

@@ -1018,7 +1018,10 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
         // 后台探测进度（本次不做 UI，数据先就绪）：剩多少条待探。旧字段一个没动。
         probeRemaining,
         ...(skipped ? { skipped } : {}),
-        ...(warnings.length ? { warnings } : {}),
+        // 兼容期已结束：能力说明去 capabilityNotes、根级问题去 rootIssues/rootWarning，
+        //   warnings 不再承载任何内容 —— 仍保留成空数组而不是删字段，
+        //   是为了让"读 warnings 后直接 .map/.join"的旧消费方拿到 [] 而不是 undefined。
+        warnings: [],
       },
     };
   }
@@ -1029,6 +1032,8 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
    * 为什么单开一个字段而不是塞进 warnings：warnings 里混着通用能力说明
    *   （例如「有 N 个能解包资源包的插件…」），前端拿它拼用户提示会得出
    *   「因为有两个插件所以没模型」这种错误因果（前端实测踩过）。
+   * 现状：拆分已完成 —— 对外 `warnings` 恒为空数组，根级问题只走本字段 / `rootIssues`。
+   *   上面说的"混着"指**扫描汇总的中间数组**，不是响应体里的 warnings（别按旧行为读它）。
    * 文案一律**不带绝对路径**（那是排障信息，进日志），只带 rootId 便于对照配置。
    * 优先级：路径问题 > 扫描抛错 > 扫描成功但 0 条目。
    * @param {{cfg: {id: string}, pathProblem: string|null, scanErrors: Error[], entries: Array}} p
@@ -1050,6 +1055,7 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
    *
    * 为什么必须拆：两者混在一起时，前端拿 warnings 拼提示会得出
    *   "因为有两个插件所以没有模型" 这种错误因果（实测踩过）。
+   * 现状：拆分已落地，响应里的 `warnings` 恒为空数组；本函数只负责把**中间数组**分到两轨。
    * @param {string[]} warnings 扫描汇总
    * @param {string|null} rootWarning 根级结论（可能为 null）
    * @param {string} rootId 资源根 id
