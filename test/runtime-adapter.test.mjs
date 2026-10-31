@@ -19,6 +19,8 @@ import { fileURLToPath } from 'node:url';
 
 import { loadWithRuntime, readExecPermission, EXEC_PERMISSION_FILE } from '../src/server/unpack/runtime/index.mjs';
 import { MANIFEST_INVALID, SUPPORTED_FRAME_PROTOCOL, validateExecManifest, PROGRESS_PHASES } from '../src/server/unpack/runtime/exec.mjs';
+// SSE 补发的档名映射（plugin-store 从 PROGRESS_PHASES 派生）—— 本文件断言两者不许漂
+import { SSE_PHASE_FIELDS } from '../src/server/unpack/plugin-store.mjs';
 import nodeVm from '../src/server/unpack/runtime/node-vm.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -298,6 +300,25 @@ test('exec 未知进度档：忽略但**可观测**（debug 日志带档名，�
 
   r.api.dispose?.();
   fs.rmSync(pluginsDir, { recursive: true, force: true });
+});
+
+test('SSE 补发的档名集合必须等于 PROGRESS_PHASES（每档都要配 msField）', () => {
+  // 为什么锁这条：plugin-store 的补发循环从 PROGRESS_PHASES 派生，
+  //   若新增档位忘了配 msField，那一档会被派生表过滤掉 ⇒ 运行时**静默少发一条进度**。
+  //   在这里直接红，逼着补字段（而不是等用户发现"进度少一段"）。
+  const missing = PROGRESS_PHASES
+    .filter((p) => typeof p.msField !== 'string' || !p.msField)
+    .map((p) => p.name);
+  assert.deepEqual(missing, [], `这些档缺 msField（SSE 补发会少发）：${missing.join(', ')}`);
+
+  // 档名集合与顺序都要一致：既不能少，也不能多出表里没有的档
+  assert.deepEqual(
+    SSE_PHASE_FIELDS.map((x) => x.name),
+    PROGRESS_PHASES.map((p) => p.name),
+    'SSE 补发的档名必须与白名单表逐个对齐',
+  );
+  // 每个派生项都要有可用的字段名（防手滑写成 undefined / 空串）
+  assert.ok(SSE_PHASE_FIELDS.every((x) => typeof x.msField === 'string' && x.msField.length > 0));
 });
 
 test('exec 崩溃传播：子进程半路退出时，在途请求全部判失败（不许挂死）', { skip: skipNoPython }, async () => {

@@ -20,23 +20,12 @@ import { createTree } from './data/tree.mjs';
 import { createModelMeta } from './data/model-meta.mjs';
 import { getSharedEntryStates } from './data/entry-states.mjs';
 import { createShapeProbe } from './data/shape-probe.mjs';
+// 数值型 env 统一从 core/env-num.mjs 读（含非法值回落 + warn），不在各模块重复实现
+import { readNumericEnv } from './core/env-num.mjs';
 import { createBundleProbe } from './assets/bundle-probe.mjs';
 import { createCatalog } from './data/catalog.mjs';
 import * as probe from './assets/probe.mjs';
 
-/**
- * 读一个数值型环境变量（部署差异类的单值按项目约定走 env，不把调参写死在代码里）。
- * 非法/缺省一律回落 fallback —— 环境变量写错不该让服务起不来。
- * @param {string} name 变量名
- * @param {number} fallback 缺省值
- * @returns {number}
- */
-function readNumericEnv(name, fallback) {
-  const raw = (process.env[name] || '').trim();
-  if (!raw) return fallback;
-  const n = Number(raw);
-  return Number.isFinite(n) && n >= 0 ? n : fallback;
-}
 
 /**
  * 装配数据层。

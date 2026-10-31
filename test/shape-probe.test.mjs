@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createShapeProbe } from '../src/server/data/shape-probe.mjs';
+import { createShapeProbe, readCgroupAvailable, readMemAvailable } from '../src/server/data/shape-probe.mjs';
 import { createEntryStates, providerFingerprintOf } from '../src/server/data/entry-states.mjs';
 
 /**
@@ -227,6 +227,47 @@ test('内存充足 ⇒ 照常解析；取不到内存数据 ⇒ fail-open 放行
     assert.equal(blind.probe.stats().skippedMemory, 0);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('cgroup v2 限额优先：memory.max − memory.current 作为可用内存（宿主口径不算数）', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-'));
+  const maxPath = path.join(dir, 'memory.max');
+  const oldEnv = process.env.MODELSTAGE_CGROUP_MEMORY_MAX_PATH;
+  try {
+    fs.writeFileSync(maxPath, '2147483648\n');                 // 2GB 限额
+    fs.writeFileSync(path.join(dir, 'memory.current'), '1610612736\n'); // 已用 1.5GB
+    process.env.MODELSTAGE_CGROUP_MEMORY_MAX_PATH = maxPath;
+    const cg = readCgroupAvailable();
+    assert.ok(cg, '应当读到 cgroup 限额');
+    assert.equal(cg.bytes, 2147483648 - 1610612736, '可用 = max − current');
+    assert.equal(cg.source, 'cgroup-v2');
+    // readMemAvailable 也必须优先用它（而不是宿主 /proc/meminfo 的数）
+    assert.equal(readMemAvailable(), cg.bytes, 'cgroup 可用时不得回落到宿主口径');
+  } finally {
+    if (oldEnv === undefined) delete process.env.MODELSTAGE_CGROUP_MEMORY_MAX_PATH;
+    else process.env.MODELSTAGE_CGROUP_MEMORY_MAX_PATH = oldEnv;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('cgroup 不限额（max）/ 文件缺失 ⇒ 回落宿主口径，fail-open 不变', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg2-'));
+  const maxPath = path.join(dir, 'memory.max');
+  const oldEnv = process.env.MODELSTAGE_CGROUP_MEMORY_MAX_PATH;
+  try {
+    fs.writeFileSync(maxPath, 'max\n');
+    process.env.MODELSTAGE_CGROUP_MEMORY_MAX_PATH = maxPath;
+    assert.equal(readCgroupAvailable(), null, '"max" = 不限额 ⇒ 不参与判据');
+    const hostAvail = readMemAvailable();
+    assert.ok(hostAvail === null || hostAvail > 2147483648, '应当回落到宿主口径（>2GB）或拿不到（null）');
+
+    process.env.MODELSTAGE_CGROUP_MEMORY_MAX_PATH = path.join(dir, 'not-exist', 'memory.max');
+    assert.equal(readCgroupAvailable(), null, '文件不存在 ⇒ null（回落，不抛）');
+  } finally {
+    if (oldEnv === undefined) delete process.env.MODELSTAGE_CGROUP_MEMORY_MAX_PATH;
+    else process.env.MODELSTAGE_CGROUP_MEMORY_MAX_PATH = oldEnv;
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 

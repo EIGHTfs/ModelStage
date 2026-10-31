@@ -25,6 +25,18 @@ import { estimateMemoryOf } from './plugin-runner.mjs';
 import { createProbeStore } from './probe-store.mjs';
 import { rssNow } from './mem-probe.mjs';
 import { createUnpackWorkerClient } from './worker-client.mjs';
+// 进度档白名单的**唯一来源**（档名 + 对应的 phases 字段名都在那张表里）：
+//   SSE 补发循环从它派生，本文件不再手写任何档名字面量。
+import { PROGRESS_PHASES } from './runtime/exec.mjs';
+
+/**
+ * SSE 补发用的「档名 → phases 字段名」（从 PROGRESS_PHASES 派生）。
+ * 导出是为了让单测能断言"补发的档名集合 === 表的档名集合" —— 新增档位漏配 msField 时，
+ * 这里会少一项、测试立刻红，而不是运行时静默少发一条进度。
+ */
+export const SSE_PHASE_FIELDS = Object.freeze(PROGRESS_PHASES
+  .filter((p) => typeof p.msField === 'string' && p.msField)
+  .map((p) => ({ name: p.name, msField: p.msField })));
 
 /** 1MB 的字节数（下面多处换算用；写成常量避免 1048576 散落） */
 const BYTES_PER_MB = 1024 * 1024;
@@ -595,13 +607,22 @@ export function createUnpackStore(opts) {
       // phase 三段：read / resolve / write（名字对齐 phases 键，契约 §2.2）。
       //   exec 插件已在上面**实时**发过（livePhases 有记录的那几档），这里只补发**没发过的** ——
       //   否则同一档会出现两条，而且两条的 ms 语义不同（实时=相对请求起点，补发=该段耗时）。
-      //   node 插件不发实时帧 ⇒ 三档都落到这里补发，行为与改动前**逐字一致**。
-      for (const [name, ms] of [
-        ['read', phases.readMs],
-        ['resolve', phases.pluginResolveMs],
-        ['write', phases.writeMs],
-      ]) {
+      //   node 插件不发实时帧 ⇒ 每档都落到这里补发，行为与改动前**逐字一致**。
+      // 档名与 phases 字段名都来自 PROGRESS_PHASES（经 SSE_PHASE_FIELDS 派生）—— 这里不写死档名，
+      //   改档名/加档位只改 exec.mjs 那张表，SSE 与 exec 白名单自动保持一致。
+      for (const { name, msField } of SSE_PHASE_FIELDS) {
         if (livePhases.has(name)) continue;
+        // 防御：msField 只保证"这一档有字段名"，不保证 phases 里真有那个键 ——
+        //   phases 的键仍是本文件手写的（readMs/pluginResolveMs/writeMs）。
+        //   若有人改了 phases 的键却忘了改表里的 msField，这里会拿到 undefined，
+        //   前端画进度时表现为"有这一档但没有数值"。宁可记一条 warn 并跳过，
+        //   也不要把 undefined 当毫秒数发出去（那会让前端把 NaN 画进进度条）。
+        const ms = phases[msField];
+        if (typeof ms !== 'number' || !Number.isFinite(ms)) {
+          // 该文件没有统一的 log 注入点（只有零散的 console.warn），这里沿用同一风格
+          console.warn(`[unpack-store] phase 补发缺少数值，已跳过：phase=${name} msField=${msField} keys=${Object.keys(phases).join(',')}`);
+          continue;
+        }
         fire('phase', { name, ms });
       }
       fire('done', { fp, hit: false, files: index.files, unpackMs: index.unpackMs, phases });

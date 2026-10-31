@@ -14,6 +14,7 @@
 // 缺 Live2D 运行时时的引导文案：503（解析器不可用）与 404（单个文件不存在）**共用同一份**，
 //   否则两处各说各话（一个说去官网下、另一个只说文件名），用户被堵在门口。
 import { live2dGuide } from '../../../tool/lib/runtime-guides.mjs';
+import { readRatioEnv } from '../core/env-num.mjs';
 
 /** 资源根 / 插件 / 品牌 / 前端配置 */
 function apiBasics(ctx, res, p) {
@@ -46,6 +47,11 @@ function apiBasics(ctx, res, p) {
       ok: true,
       autoRestoreLast: data.env.parseEnvFlag(env.AUTO_RESTORE_LAST),
       debugLog: data.env.parseEnvFlag(env.DEBUG_LOG),
+      // 准入堆比例：前端读不到 env，所以由服务端下发（env 覆盖见 core/env-num.mjs）。
+      //   非法值在服务端就回落缺省并 warn，不透传脏值给浏览器。
+      admitHeapRatio: readRatioEnv('MODELSTAGE_ADMIT_HEAP_RATIO', 0.85),
+      // 容量系数一并下发，只为"面板/排障能看到当前实际生效值"，不参与前端判定
+      admitCapacityRatio: readRatioEnv('MODELSTAGE_ADMIT_CAPACITY_RATIO', 0.5),
     });
   }
   return false;

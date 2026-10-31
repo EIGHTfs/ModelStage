@@ -67,6 +67,23 @@ npx modelstage --port 8804 --data-root ~/modelstage-data # 发布到 registry �
 | `--data-root <path>` | `MODELSTAGE_DATA_ROOT` | 数据根：日志、解包缓存、配置的持久化位置；缺省 = 项目根 |
 | `-h` / `--help`、`-v` / `--version` | — | 用法与版本号 |
 
+### 调参（内存准入 / 后台探测，全部可 env 覆盖）
+
+这些系数决定"要不要解包""要不要后台探测"。**非法值（NaN / 越界）一律回落缺省并打一条 warn**，
+不会静默用错值；进程内改 env 立即生效，进程外改 env 需重启（`process.env` 是启动快照）。
+
+| 环境变量 | 缺省 | 作用 |
+|---|---|---|
+| `MODELSTAGE_ADMIT_HEAP_RATIO` | `0.85` | 前端 JS 堆占用上限比例（超过就拒绝装载）。前端读不到 env，由服务端经 `GET /api/web-config` 的 `admitHeapRatio` 下发 |
+| `MODELSTAGE_ADMIT_CAPACITY_RATIO` | `0.5` | 服务端解包容量系数：预算 = 可用内存 × 该比例（给系统与渲染留余量） |
+| `MODELSTAGE_PROBE_MEM_BASELINE_MB` | `256` | 后台形态探测前要留的可用内存余量（MB） |
+| `MODELSTAGE_PROBE_MEM_FACTOR` | `3` | 探测时"包体积 → 预估占用"的倍数（解包产物通常比包大，不要按 1 估） |
+| `MODELSTAGE_PROBE_MAX_BYTES` | `25165824`（24MB） | 超过该体积的包不做后台探测（保持 unknown，留待点击验证） |
+| `MODELSTAGE_PROBE_IDLE_GAP_MS` | `2000` | 探测批次开始前要求的静默时长（有请求在飞时探测主动让路） |
+| `MODELSTAGE_PROBE_MAX_WAIT_MS` | `20000` | 一批最多等空闲多久；超时把剩余条目放回队列 |
+| `MODELSTAGE_PROBE_WORKER` | `1` | `0` = 关掉探测的解析线程，回落主线程同步解析（受限环境用） |
+| `MODELSTAGE_CGROUP_MEMORY_MAX_PATH` | `/sys/fs/cgroup/memory.max` | cgroup v2 限额文件路径（同时读同目录 `memory.current`）。用于非标准挂载或测试注入；读不到或为 `max` ⇒ 回落 `/proc/meminfo` |
+
 `--data-root` 必须指向一个**可写且持久**的目录：npx 运行时"项目根"是 npm 的临时缓存目录（会被清理），
 把日志与解包缓存写在里面会丢。数据根下的 `runtime/`、`config/` 由服务自行创建与维护。
 
@@ -164,6 +181,7 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.3.8 | 2026-10-31 | SSE 补发档名改由 `PROGRESS_PHASES` 派生（消除第三处档名字面量，缺 msField 测试期即失败）；准入系数与 cgroup 限额全部 env 可覆盖（`MODELSTAGE_ADMIT_HEAP_RATIO` / `_CAPACITY_RATIO` / `MODELSTAGE_CGROUP_MEMORY_MAX_PATH`），cgroup v2 优先、缺失回落 `/proc/meminfo`，非法值回落缺省并告警一次 |
 | 0.3.7 | 2026-10-31 | 大包首帧优化第一步：容器包改由解包 worker **自己按 URL 拉取**，主线程不再整包读取与结构化拷贝（实测读包 152/172ms → 0、投喂 13ms → 0）；新增 `?workerFetch=0` 同机 A/B 开关与 `unpack.main-read`/`unpack.worker-post` 打点 |
 | 0.3.6 | 2026-10-31 | exec 进度档名收敛为单一来源（`PROGRESS_PHASES` 表，档名与语义同处）；修 exec 默认 logger 未接线（未知档的 debug 原本在生产里根本不输出）；两份设计稿改为指向该表、不复述名单 |
 | 0.3.5 | 2026-10-31 | exec 插件解包进度变成**真实时**：帧协议新增进度帧（read/resolve/write），插件在三个自然边界上报、宿主即时 fire `phase` 事件、收尾只补未发档；node 插件事件顺序与时刻不变 |

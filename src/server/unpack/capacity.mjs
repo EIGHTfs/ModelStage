@@ -14,8 +14,20 @@
 import fs from 'node:fs';
 import os from 'node:os';
 
-/** 预算比例：只用可用内存的一半，给系统/渲染留另一半 */
-const MEM_BUDGET_RATIO = 0.5;
+import { readRatioEnv } from '../core/env-num.mjs';
+
+/**
+ * 预算比例：只用可用内存的一部分，给系统/渲染留另一半。
+ *
+ * 缺省 0.5；可用 **MODELSTAGE_ADMIT_CAPACITY_RATIO** 覆盖（服务端容量判据）。
+ * 非法值（NaN / ≤0 / >1）⇒ 回落 0.5 + 一条 warn（见 core/env-num.mjs），
+ *   绝不把 NaN 传进乘法 —— 那会让预算恒为 NaN、判据静默失效。
+ * 每次判断现读（进程内改 env/测试注入即生效；进程外改 env 仍要重启）。
+ */
+const DEFAULT_MEM_BUDGET_RATIO = 0.5;
+function memBudgetRatio() {
+  return readRatioEnv('MODELSTAGE_ADMIT_CAPACITY_RATIO', DEFAULT_MEM_BUDGET_RATIO);
+}
 
 /**
  * 可用内存（MB）——**每次判断时现取，绝不缓存**。
@@ -71,13 +83,14 @@ export function estimateUnpackSec(sourceMb) {
  */
 export function capacity(sourceMb, memory) {
   const avail = memAvailableMb();
-  const budgetMb = Math.round(avail.mb * MEM_BUDGET_RATIO);
+  const ratio = memBudgetRatio();
+  const budgetMb = Math.round(avail.mb * ratio);
   const base = {
     memTotalMb: Math.round(os.totalmem() / 1024 / 1024),
     memAvailableMb: avail.mb,
     memAvailableSource: avail.source,
     budgetMb,
-    ratio: MEM_BUDGET_RATIO,
+    ratio,
     rssMb: Math.round(process.memoryUsage().rss / 1048576),
   };
   if (!(sourceMb > 0)) {
@@ -167,7 +180,8 @@ export function overLimitText(peakEstMb, budgetMb, availMb) {
 export function checkUnpackMemory(sourceBytes, opts = {}) {
   const sourceMb = sourceBytes / 1024 / 1024;
   const avail = memAvailableMb();
-  const budgetMb = Math.round(avail.mb * MEM_BUDGET_RATIO);
+  const ratio = memBudgetRatio();
+  const budgetMb = Math.round(avail.mb * ratio);
   const est = estimatePeakWithBasis(sourceMb, opts.memory);
   const peakEstMb = est.peakEstMb;
   if (peakEstMb > budgetMb) {
@@ -190,7 +204,7 @@ export function checkUnpackMemory(sourceBytes, opts = {}) {
       // 说清"为什么被拒 + 还能怎么办"：解包本来就是**串行**的（plugin-store 的 enqueue 链），
       //   所以这里不是"并发太多"，而是这个包自己就要这么多 —— 能做的只有等内存回来再试。
       //   不提高全局上限（那等于把守护关掉），也不自动重试（会在内存紧张时形成抖动重试风暴）。
-      message: `预估峰值 ${peakEstMb}MB 超过可用预算 ${budgetMb}MB（当前可用 ${avail.mb}MB × ${MEM_BUDGET_RATIO}）`
+      message: `预估峰值 ${peakEstMb}MB 超过可用预算 ${budgetMb}MB（当前可用 ${avail.mb}MB × ${ratio}）`
         + '；解包串行执行，稍后内存释放后可重试（或先关掉其它已加载模型）',
       budgetMb,
       peakEstMb,

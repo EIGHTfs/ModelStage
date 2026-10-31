@@ -31,6 +31,8 @@ let lastMountProvider = null;
 async function loadWebConfig() {
   try {
     const cfg = await getJson('/api/web-config');
+    // 服务端下发的前端准入参数（前端读不到 env）：拿到就应用，缺省值保持在 memory-budget.js
+    try { applyAdmitConfig(cfg); } catch { /* 应用失败不该影响装载 */ }
     if (cfg && typeof cfg.autoRestoreLast === 'boolean') return cfg.autoRestoreLast;
     return true;
   } catch {
@@ -40,6 +42,7 @@ async function loadWebConfig() {
 import { createRosterView } from '../roster/view.js';
 import { fillTransportOptions } from './transport-actions.js';
 import { connectPanelRefresh, connectReloadApp, rebuildPanelFor, refreshPanelAnimations } from '../panel/panel-settings.js';
+import { applyAdmitConfig } from './memory-budget.js';
 
 /** 加载模型后刷新皮肤列表（换模型必须重建，不能停在上一个模型的皮肤） */
 function refreshSkinList() {

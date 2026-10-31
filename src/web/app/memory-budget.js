@@ -19,11 +19,39 @@ import { memStats } from '../infra/mem-stats.js';
 import { stageLog } from './status.js';
 
 /**
- * 前端堆占用阈值（路径 B / C 与 assess 共用**同一个**常量）。
+ * 前端堆占用阈值（路径 B / C 与 assess 共用**同一个**值）。
  * 为什么放在这里：判据口径只允许有一份，memory-guard 从这里 import ——
  *   两边各写一个 0.85 就是新一轮"同一事实两处表达"，迟早漂移。
+ *
+ * 缺省 0.85；服务端可用 **MODELSTAGE_ADMIT_HEAP_RATIO** 覆盖，
+ *   经 `GET /api/web-config` 的 `admitHeapRatio` 下发到前端（前端读不到 env）。
+ * 这里用 `let` 而不是 const：下发值要在启动后覆盖缺省，而 import 方拿到的是**活绑定**，
+ *   memory-guard 里那些 `h.pct > HEAP_RATIO` 无需改动就会看到新值。
  */
-export const HEAP_RATIO = 0.85;
+export let HEAP_RATIO = 0.85;
+/** 缺省值（下发值缺失/非法时回落到它；也是文档里写的那个数） */
+export const DEFAULT_HEAP_RATIO = 0.85;
+
+/**
+ * 应用服务端下发的准入配置（幂等；非法值回落缺省并 warn 一次）。
+ * @param {{admitHeapRatio?: number}} cfg /api/web-config 的响应
+ * @returns {{ratio: number, applied: boolean}}
+ */
+export function applyAdmitConfig(cfg) {
+  if (!cfg || cfg.admitHeapRatio === undefined || cfg.admitHeapRatio === null) {
+    return { ratio: HEAP_RATIO, applied: false };
+  }
+  const v = Number(cfg.admitHeapRatio);
+  const ok = Number.isFinite(v) && v > 0 && v <= 1;
+  if (!ok) {
+    // 不静默：下发值非法时说明白用的是哪个数，否则"为什么阈值没变"只能靠猜
+    try { stageLog('warn', `准入堆比例下发值非法（${JSON.stringify(cfg.admitHeapRatio)}）—— 继续用 ${HEAP_RATIO}`); } catch { /* 日志失败不影响判据 */ }
+    return { ratio: HEAP_RATIO, applied: false };
+  }
+  HEAP_RATIO = v;
+  try { stageLog('info', `准入堆比例已按服务端下发调整：${v}`); } catch { /* 同上 */ }
+  return { ratio: HEAP_RATIO, applied: true };
+}
 
 /** 服务端判据缓存时长：同一个包在短时间内反复判断不该每次都打服务端 */
 const CAP_TTL_MS = 5000;

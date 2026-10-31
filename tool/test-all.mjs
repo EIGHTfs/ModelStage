@@ -189,6 +189,9 @@ const SUITES = [
 
   //   钉住"零待探测不启动 / 依赖包写 unsupported / 探不出只写 unknown / 不覆盖 loadResult"
   { name: 'shape-probe', runner: 'node-test', file: 'test/shape-probe.test.mjs' },
+  // 数值型 env 的统一读取（准入/探测门槛）：非法值必须回落缺省 + 告警一条。
+  //   纯模块、毫秒级；它是"门槛悄悄失效"的唯一防线（NaN 比较恒 false，不报错）
+  { name: 'env-num', runner: 'node-test', file: 'test/env-num.test.mjs' },
   // 引擎冒烟（3.8 ↔ 4.1 版本往返 + samplePixels().ratio + lastError 判据）：
   //   它验证的是"引擎能不能出画"，是所有交互套件的前置
   { name: 'engine-b1', wait: 4500 },

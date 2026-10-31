@@ -52,11 +52,14 @@ const execLog = createLogger('exec');
  *   "同一事实两处表达"是本项目反复踩的坑；设计稿现在只解释语义并指向本表。
  * 与 plugin-store 的三段阶段名对齐（read / resolve / write）：档名要转发给前端 / SSE 订阅方，
  *   两处必须是同一套词，否则对不上。
+ * `msField`：该档在 plugin-store 的 `phases` 对象里对应的字段名（`read→readMs` 这种**名字不同**的
+ *   也必须写明）。SSE 的补发循环靠它派生，**不再手写档名**；新增档位漏配 msField 会被单测拦下
+ *   （而不是运行时少发一条、静默少一段进度）。
  */
 export const PROGRESS_PHASES = Object.freeze([
-  { name: 'read', note: '从盘读整包（容器字节进内存）' },
-  { name: 'resolve', note: '插件解压/解析（真正吃 CPU 的那一段）' },
-  { name: 'write', note: '产物落盘（写 files/ 与 index.json）' },
+  { name: 'read', msField: 'readMs', note: '从盘读整包（容器字节进内存）' },
+  { name: 'resolve', msField: 'pluginResolveMs', note: '插件解压/解析（真正吃 CPU 的那一段）' },
+  { name: 'write', msField: 'writeMs', note: '产物落盘（写 files/ 与 index.json）' },
 ]);
 
 /** 快速判定用的集合（由上表派生 —— **不要**在这里另写一份名单） */

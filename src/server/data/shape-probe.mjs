@@ -71,17 +71,66 @@ function fmtMb(n) {
  * @returns {number|null}
  */
 function readMemAvailable() {
+  return readMemAvailableInfo().bytes;
+}
+
+/**
+ * 同上，但连"这个数是怎么来的"一起返回（排障要能分辨 cgroup 与宿主口径）。
+ * @returns {{bytes: number|null, source: 'cgroup-v2'|'MemAvailable'|'freemem'|'none'}}
+ */
+function readMemAvailableInfo() {
+  const cg = readCgroupAvailable();
+  if (cg && Number.isFinite(cg.bytes) && cg.bytes > 0) return { bytes: cg.bytes, source: 'cgroup-v2' };
   try {
     const txt = fs.readFileSync('/proc/meminfo', 'utf8');
     const m = /^MemAvailable:\s+(\d+)\s+kB/m.exec(txt);
     if (m) {
       const n = Number(m[1]) * 1024;
-      if (Number.isFinite(n) && n > 0) return n;
+      if (Number.isFinite(n) && n > 0) return { bytes: n, source: 'MemAvailable' };
     }
   } catch { /* 非 Linux / 容器里没有 procfs：走回落 */ }
   try {
     const n = os.freemem();
-    return Number.isFinite(n) && n > 0 ? n : null;
+    if (Number.isFinite(n) && n > 0) return { bytes: n, source: 'freemem' };
+  } catch { /* 再兜底 */ }
+  return { bytes: null, source: 'none' };
+}
+
+/** cgroup v2 的 memory.max：字符串 "max" = 不限额 */
+const CGROUP_UNLIMITED = 'max';
+/** 缺省挂载点（cgroup v2 unified） */
+const DEFAULT_CGROUP_MAX_PATH = '/sys/fs/cgroup/memory.max';
+
+/**
+ * 读 cgroup v2 的"可用内存" = memory.max − memory.current。
+ *
+ * 为什么要优先它：/proc/meminfo 的 MemAvailable 是**宿主口径**。
+ *   容器里限额 1GB、宿主还有 30GB 时，按 MemAvailable 判会得出"想探多少探多少"，
+ *   实际一探就被 OOM-kill。cgroup 才是本进程真正能用的上限。
+ *
+ * 取不到 / 不限额 / 值不合法 ⇒ 返回 null（调用方回落 /proc/meminfo，fail-open 不变）。
+ * 路径可用 MODELSTAGE_CGROUP_MEMORY_MAX_PATH 覆盖（非标准挂载 + 测试注入都用它）；
+ *   memory.current 取同目录下的同名文件。
+ * @returns {{bytes: number, max: number, current: number, source: string}|null}
+ */
+function readCgroupAvailable() {
+  const maxPath = String(process.env.MODELSTAGE_CGROUP_MEMORY_MAX_PATH || '').trim() || DEFAULT_CGROUP_MAX_PATH;
+  try {
+    if (!fs.existsSync(maxPath)) return null;
+    const maxRaw = String(fs.readFileSync(maxPath, 'utf8')).trim();
+    if (!maxRaw || maxRaw === CGROUP_UNLIMITED) return null;      // 不限额 ⇒ 交给宿主口径
+    const max = Number(maxRaw);
+    if (!Number.isFinite(max) || max <= 0) return null;
+    const curPath = path.join(path.dirname(maxPath), 'memory.current');
+    let current = 0;
+    try {
+      const curRaw = String(fs.readFileSync(curPath, 'utf8')).trim();
+      const n = Number(curRaw);
+      if (Number.isFinite(n) && n >= 0) current = n;
+    } catch { /* 没有 memory.current：按 0 算（保守方向：可用=上限） */ }
+    const bytes = max - current;
+    if (!Number.isFinite(bytes) || bytes <= 0) return null;
+    return { bytes, max, current, source: 'cgroup-v2' };
   } catch {
     return null;
   }
@@ -99,6 +148,8 @@ function readMemAvailable() {
  *   delayMs?: number, maxPerRun?: number, maxBytes?: number,
  * }} opts
  */
+export { readMemAvailable, readCgroupAvailable };
+
 export function createShapeProbe(opts = {}) {
   const { catalog, entryStates } = opts;
   const providers = typeof opts.providers === 'function' ? opts.providers : () => [];
@@ -115,9 +166,8 @@ export function createShapeProbe(opts = {}) {
   const readLimits = typeof opts.readLimits === 'function'
     ? opts.readLimits
     : () => ({ baselineBytes: DEFAULT_MEM_BASELINE_BYTES, factor: DEFAULT_MEM_FACTOR });
-  const availableBytes = typeof opts.availableBytes === 'function'
-    ? opts.availableBytes
-    : readMemAvailable;
+  const injectedAvailable = typeof opts.availableBytes === 'function';
+  const availableBytes = injectedAvailable ? opts.availableBytes : readMemAvailable;
   // 判型函数可注入：默认用与 /api/unpack 同一份实现；测试里换成假实现就能在
   //   不造真实 UnityFS 包的前提下验证"写回 unsupported / unknown"的分支（契约 §八）。
   const probeBytes = typeof opts.probeBytes === 'function' ? opts.probeBytes : probeBundleBytes;
@@ -158,6 +208,8 @@ export function createShapeProbe(opts = {}) {
     skippedMemory: 0,
     // 最近一次内存判据看到的可用内存（字节；null = 拿不到，fail-open 放行）
     lastMemAvailable: null,
+    // 这个数从哪来：cgroup-v2（容器限额）/ MemAvailable（宿主口径）/ freemem / injected（测试）
+    lastMemSource: null,
     // 最近一次"因内存不足而跳过"的判定明细（available/need/baseline/size/factor）
     lastMemDetail: null,
   };
@@ -466,6 +518,8 @@ export function createShapeProbe(opts = {}) {
   function checkMemoryFor(size) {
     const avail = availableBytes();
     stats.lastMemAvailable = avail === null ? null : Number(avail);
+    // 来源能分辨"cgroup 限额"与"宿主 MemAvailable"，否则同一个数字两种口径无法排障
+    stats.lastMemSource = injectedAvailable ? 'injected' : readMemAvailableInfo().source;
     if (avail === null) return { blocked: false, detail: null };
     const lim = readLimits() || {};
     const baseline = Number.isFinite(lim.baselineBytes) ? Number(lim.baselineBytes) : DEFAULT_MEM_BASELINE_BYTES;
