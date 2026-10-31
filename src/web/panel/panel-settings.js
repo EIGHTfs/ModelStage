@@ -366,6 +366,55 @@ function applyPluginEffectChain() {
 }
 
 let pluginRebuildBound = false;
+/**
+ * 记录当前面板各组的展开态（重建前调用）。
+ *
+ * 为什么要记：`mountPanel` 会 `bodyEl.replaceChildren()` 整块重建（view.js:389/421），
+ *   而展开态只写在 DOM 上（view.js:341 的 aria-expanded / :373 的 body.hidden / :375 的 is-open），
+ *   没有持久化 ⇒ 插件装载完成、切换渲染面触发的重建都会把用户手动展开的组打回 defaultOpen。
+ * 只存内存、不落盘：这是**会话内视图状态**，不是用户设置（面板设置由 uiState 工厂负责，二者别混）。
+ * @returns {Map<string, boolean>} groupId → 是否展开
+ */
+/**
+ * 模块级累积表：groupId → 是否展开（仅内存、不落盘）。
+ *
+ * 为什么不能"每次重建只快照当前 DOM"：切换渲染面时有些组会**临时不存在**
+ *   （例如 live2d 面没有「皮肤」组，实测切过去再切回来，「皮肤」的展开态就丢了）。
+ *   累积表把"最近一次见到它时的状态"留着，组重新出现时就能还原；
+ *   组的永久消失（插件卸载）只会留下几个无用 key，代价可忽略，所以不做主动清理。
+ */
+const expandedState = new Map();
+
+function snapshotExpandedGroups() {
+  if (typeof document === 'undefined') return;
+  for (const sec of document.querySelectorAll('#right-panel .acc[data-group]')) {
+    const t = sec.querySelector('.acc-trigger');
+    if (t) expandedState.set(sec.dataset.group, t.getAttribute('aria-expanded') === 'true');
+  }
+}
+
+/**
+ * 重建后回填展开态，并给每个手风琴节点写 `data-group-id`。
+ *
+ * 为什么不改 view.js：渲染层已经用 `section.dataset.group = group.id`（view.js:340）把 id 放在
+ *   `data-group` 上；测试要断言的"插件组必须 plugin. 前缀"读 `data-group-id` 更直白，
+ *   在装配期补写一行即可，不必为命名偏好去动渲染层（渲染层改动面越小越好）。
+ */
+function restoreExpandedGroups() {
+  if (typeof document === 'undefined') return;
+  for (const sec of document.querySelectorAll('#right-panel .acc')) {
+    const id = sec.dataset.group || '';
+    if (id) sec.dataset.groupId = id;                 // → 属性 data-group-id
+    if (!id || !expandedState.has(id)) continue;       // 从没见过的组（插件新建）走自身 defaultOpen
+    const open = !!expandedState.get(id);
+    const t = sec.querySelector('.acc-trigger');
+    const b = sec.querySelector('.acc-body');
+    if (t) t.setAttribute('aria-expanded', String(open));
+    if (b) b.hidden = !open;
+    sec.classList.toggle('is-open', open);
+  }
+}
+
 export function bindPluginPanelRebuild() {
   if (pluginRebuildBound) return false;
   pluginRebuildBound = true;
@@ -441,6 +490,8 @@ function rebuildPanelFor(renderer) {
   document.documentElement.dataset.pluginControls = String(merged.added);
   document.documentElement.dataset.pluginControlsRejected = String(merged.rejected + merged.rejectedControls);
   document.documentElement.dataset.panelGroups = String(groups.length);
+  // 重建前记住用户手动展开/收起的组：mountPanel 会整块换 DOM，不记就回缺省（实测过的现状缺陷）
+  snapshotExpandedGroups();        // 把"用户现在的选择"并入累积表（在换 DOM 之前）
   const info = mountPanel({
     groups,
     headEl: dom.panelHead,
@@ -460,6 +511,8 @@ function rebuildPanelFor(renderer) {
     // 首次渲染就显示用户值（契约 R2）：工厂里已经有 loadAll 读回的值
     initialValue: (id) => uiState.getValue(id),
   });
+  // 回填展开态 + 写 data-group-id（必须紧跟 mountPanel：中间不许再有别的重建）
+  restoreExpandedGroups();
   // 先把句柄补完，再暴露 state.panel。
   //   为什么顺序重要：设置下拉的同步会**触发面板重建**，重建期间若 state.panel 指向
   //   一个"还没挂 refreshAnimations"的半成品，调用方一检查 typeof 就跳过，表现为

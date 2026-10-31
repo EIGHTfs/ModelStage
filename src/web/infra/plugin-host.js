@@ -105,6 +105,70 @@ export function createPluginHost(opts = {}) {
   const MAX_FRAGMENT_CHARS = 2000;
   /** id → { loaded, error, files, ms } 装载状态（排障用） */
   const loadState = new Map();
+
+  /**
+   * 插件级 effect 容器：pluginId → [{ kind, label, dispose }]（**注册顺序**，回收时逆序执行）。
+   *
+   * 为什么要有它：在此之前 register* 只是往宿主表里塞（controlSections 只 push、从不删除），
+   *   插件卸载/禁用没有任何可执行的回收动作 —— 插槽一旦能改界面，残留就只能靠人肉排查。
+   * 这里给每个插件一份"我注册了什么"的清单，把回收变成一次可验证的批量操作。
+   */
+  const pluginEffects = new Map();
+
+  /**
+   * 窗口外注册的显式拒绝记录（最近 50 条，供排障与验收读取）。
+   *
+   * 为什么单独记：以前异步注册只有一条 warn，既看不出是哪个插件，也没法被判据读取；
+   *   典型表现是"插件装了、控件不出现、日志里一句话都搜不到"。
+   */
+  const registrationRejects = [];
+
+  /** 最近一次装载完成的插件 id：窗口外注册时用它指出"大概是哪个插件的异步回调" */
+  let lastLoadedPluginId = '';
+
+  /** 登记一个可回收 effect（同一插件按注册顺序追加） */
+  function addEffect(pluginId, effect) {
+    const id = String(pluginId || '');
+    if (!id || !effect || typeof effect.dispose !== 'function') return false;
+    const list = pluginEffects.get(id) || [];
+    list.push(effect);
+    pluginEffects.set(id, list);
+    publishEffectStats();
+    return true;
+  }
+
+  /** 把 effect 总数写到 dataset（不新增 dataset 字段族，只加一个计数便于验收） */
+  function publishEffectStats() {
+    try {
+      let total = 0;
+      for (const list of pluginEffects.values()) total += list.length;
+      document.documentElement.dataset.pluginEffects = String(total);
+    } catch { /* 无 DOM（测试环境）时忽略 */ }
+  }
+
+  /**
+   * 注册被拒：显式记一条 + 可读原因（H2）。
+   *
+   * 与"静默丢弃"的区别：调用方能拿到 false，日志里能看出**哪个阶段**、**哪个插件**、
+   *   **为什么**（异步注册 vs 缺字段），并且 `effectsReport().rejects` 可被测试断言。
+   * @param {string} kind register / registerEffect / registerControls
+   * @param {string} why 人话原因
+   * @param {object} [detail] 附加信息（id / group 等）
+   * @returns {false}
+   */
+  function rejectRegistration(kind, why, detail) {
+    const rec = {
+      kind, why, at: Date.now(),
+      pluginId: loadingPluginId || null,
+      likelyOwner: loadingPluginId ? null : (lastLoadedPluginId || null),
+      ...(detail || {}),
+    };
+    registrationRejects.push(rec);
+    if (registrationRejects.length > 50) registrationRejects.shift();
+    say.warn(`插件注册被拒（${kind}）：${why}${rec.likelyOwner ? `（疑似来自最后装载的插件 ${rec.likelyOwner}）` : ''}`);
+    emit('plugin.register-rejected', rec);
+    return false;
+  }
   /** /api/plugins 返回的清单快照 */
   let discovered = [];
   let loaded = false;
@@ -172,6 +236,12 @@ export function createPluginHost(opts = {}) {
       const declared = manifestProvides.get(id) || [];
       const rec = { ...plugin, id, provides: declared.slice() };
       providers.set(id, rec);
+      // 登记回收动作：卸载时把 provider 从表里摘掉（只摘自己这一份，别误删后来者）
+      addEffect(id, {
+        kind: 'provider',
+        label: id,
+        dispose: () => { if (providers.get(id) === rec) providers.delete(id); },
+      });
       const st = loadState.get(id) || { files: 0, ms: 0 };
       loadState.set(id, { ...st, loaded: true, error: null });
       const caps = [];
@@ -196,7 +266,9 @@ export function createPluginHost(opts = {}) {
     registerEffect(spec) {
       const pluginId = loadingPluginId;
       const id = String((spec && spec.id) || '').trim();
-      if (!pluginId) { say.warn('registerEffect 不在插件装载期内调用，已忽略'); return false; }
+      if (!pluginId) {
+        return rejectRegistration('registerEffect', '不在脚本装载期（异步注册不被支持：registerEffect 必须在脚本顶层同步调用）', { id });
+      }
       if (!id) { say.warn(`registerEffect 缺少 id（插件 ${pluginId}），已忽略`); return false; }
       const declared = (manifestEffects.get(pluginId) || []).some((e) => String(e.id) === id);
       if (!declared) {
@@ -221,6 +293,11 @@ export function createPluginHost(opts = {}) {
       //   实际每档用哪个值由 effect-chain.uniformsForOption 按档位算，这里只做缺省兜底。
       const uniforms = (spec && spec.uniforms && typeof spec.uniforms === 'object') ? { ...spec.uniforms } : {};
       registeredEffects.set(id, { pluginId, fragment: spec.fragment, uniforms });
+      addEffect(pluginId, {
+        kind: 'effect',
+        label: id,
+        dispose: () => registeredEffects.delete(id),
+      });
       say.info(`已注册效果 ${id}（插件 ${pluginId}）`);
       return true;
     },
@@ -234,14 +311,28 @@ export function createPluginHost(opts = {}) {
      */
     registerControls(section) {
       const pluginId = loadingPluginId;
-      if (!pluginId) { say.warn('registerControls 不在插件装载期内调用，已忽略'); return false; }
+      if (!pluginId) {
+        return rejectRegistration('registerControls', '不在脚本装载期（异步注册不被支持：registerControls 必须在脚本顶层同步调用）', {
+          group: String((section && section.group) || ''),
+        });
+      }
       const group = String((section && section.group) || '').trim();
       const controls = Array.isArray(section && section.controls) ? section.controls : null;
       if (!group || !controls || !controls.length) {
         say.warn(`registerControls（插件 ${pluginId}）缺少 group 或 controls，已忽略`);
         return false;
       }
-      controlSections.push({ pluginId, group, controls: controls.map((c) => ({ ...c })) });
+      // 留下这一节的**对象引用**：disposer 要能精确摘掉自己这一节（按 pluginId 批量删会误伤同插件其它节）
+      const entry = { pluginId, group, controls: controls.map((c) => ({ ...c })) };
+      controlSections.push(entry);
+      addEffect(pluginId, {
+        kind: 'controls',
+        label: group,
+        dispose: () => {
+          const i = controlSections.indexOf(entry);
+          if (i >= 0) controlSections.splice(i, 1);
+        },
+      });
       say.info(`插件 ${pluginId} 提交控件节：分组「${group}」${controls.length} 个`);
       return true;
     },
@@ -281,7 +372,92 @@ export function createPluginHost(opts = {}) {
     const providerOk = providers.has(id);
     const error = st.error || (providerOk || didPanelWork ? null : '脚本已加载但没有调用 register()');
     loadState.set(id, { ...st, loaded: providerOk || didPanelWork, error, files: okCount, ms: Date.now() - t0 });
+    lastLoadedPluginId = id;
     if (error) say.warn(`插件 ${id} 未生效：${error}（其余插件与页面不受影响）`);
+  }
+
+  /**
+   * 卸载一个插件：按**注册逆序**执行它登记的全部 disposer，并把宿主表里的痕迹清干净。
+   *
+   * 设计取舍：
+   *   · disposer 可能抛错（第三方闭包）——单个失败不阻断其余回收，失败项进返回值；
+   *   · disposer 之外还有一层兜底清理（控件节按 pluginId 扫一遍、effect/provider 直接删）——
+   *     因为"老路径注册的东西没登记 disposer"这种情况在演进期一定存在；
+   *   · 结束后派发 `spineviewer:plugins-loaded`，面板侧监听（panel-settings.js:372）会重建，
+   *     控件才真的从界面上消失（只摘宿主表不改 DOM 等于没卸载）。
+   * @param {string} pluginId
+   * @returns {{pluginId:string, disposed:number, failures:string[], removedControls:number, removedEffects:number, hadProvider:boolean}}
+   */
+  async function unloadPlugin(pluginId) {
+    const id = String(pluginId || '');
+    const list = pluginEffects.get(id) || [];
+    // 先记"卸载前有没有"，再回收：disposer 会把 provider 删掉，之后再查就永远是 false（返回值会误导排障）
+    const hadProviderBefore = providers.has(id);
+    let disposed = 0;
+    const failures = [];
+    for (let i = list.length - 1; i >= 0; i -= 1) {      // 逆序：后注册的先撤
+      try { list[i].dispose(); disposed += 1; }
+      catch (e) { failures.push(`${list[i].kind}:${list[i].label}: ${(e && e.message) || e}`); }
+    }
+    pluginEffects.delete(id);
+
+    // 兜底清理：没登记 disposer 的残留也一并处理
+    const beforeControls = controlSections.length;
+    for (let i = controlSections.length - 1; i >= 0; i -= 1) {
+      if (controlSections[i].pluginId === id) controlSections.splice(i, 1);
+    }
+    const removedControls = beforeControls - controlSections.length;
+    let removedEffects = 0;
+    for (const [eid, e] of [...registeredEffects]) {
+      if (e && e.pluginId === id) { registeredEffects.delete(eid); removedEffects += 1; }
+    }
+    const hadProvider = providers.delete(id);
+    try { manifestEffects.delete(id); } catch { /* 老版本没有这张表 */ }
+    const wk = workerPool.get(id);
+    if (wk) {
+      try { if (wk.worker) wk.worker.terminate(); } catch { /* 已终止 */ }
+      workerPool.delete(id);
+    }
+    loadState.delete(id);
+    publishEffectStats();
+    say.info(`插件 ${id} 已卸载：执行 ${disposed} 个 disposer${failures.length ? `（${failures.length} 个失败）` : ''}`
+      + `，清掉控件节 ${removedControls} 个、效果 ${removedEffects} 个${hadProvider ? '、提供者 1 个' : ''}`);
+    // 让面板重建：只清宿主表不改 DOM 的话，控件会继续挂在界面上（等于没卸载）
+    try { window.dispatchEvent(new CustomEvent('spineviewer:plugins-loaded', { detail: { unloaded: id } })); } catch { /* 忽略 */ }
+    return { pluginId: id, disposed, failures, removedControls, removedEffects, hadProvider: hadProviderBefore };
+  }
+
+  /** 卸载全部已装载插件（测试收尾 / 热重载前清理用） */
+  async function unloadAll() {
+    const ids = [...new Set([...pluginEffects.keys(), ...providers.keys(), ...loadState.keys()])];
+    const out = [];
+    for (const id of ids) out.push(await unloadPlugin(id));      // 串行：卸载会改宿主表，别并发
+    return out;
+  }
+
+  /**
+   * 回收清单（可读）：每个插件登记了多少 effect、现在还剩多少控件节/效果/提供者。
+   *
+   * 为什么需要：本轮界面还没接插槽，但"回收到底发生了没有"必须能被读取（验收与排障都靠它）。
+   * @returns {{totalEffects:number, plugins:Array, rejects:Array}}
+   */
+  function effectsReport() {
+    const ids = [...new Set([...pluginEffects.keys(), ...loadState.keys(), ...providers.keys(),
+      ...controlSections.map((s) => s.pluginId)])];
+    const plugins = ids.filter(Boolean).map((id) => {
+      const list = pluginEffects.get(id) || [];
+      return {
+        id,
+        effects: list.length,
+        kinds: list.map((e) => e.kind),
+        controls: controlSections.filter((s) => s.pluginId === id).length,
+        effectsRegistered: [...registeredEffects.values()].filter((e) => e.pluginId === id).length,
+        provider: providers.has(id),
+        loaded: !!(loadState.get(id) || {}).loaded,
+      };
+    });
+    const totalEffects = [...pluginEffects.values()].reduce((n, l) => n + l.length, 0);
+    return { totalEffects, plugins, rejects: registrationRejects.slice() };
   }
 
   // ---------------------------------------------------------------- 预筛与物化（resolve → VFS）
@@ -1344,6 +1520,12 @@ const MIME_BY_EXT = {
 
   return {
     loadAll,
+    /** 卸载单个插件（逆序回收它的 effect，并从宿主表移除痕迹） */
+    unloadPlugin,
+    /** 卸载全部已装载插件 */
+    unloadAll,
+    /** 回收清单：每插件登记了哪些 effect、还剩多少控件/效果/提供者（验收读它） */
+    effectsReport,
     providersFor,
     findProvider,
     fetchFile,
