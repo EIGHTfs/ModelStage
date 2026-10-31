@@ -54,23 +54,10 @@
        放在顶栏内部而不是浮在舞台上，是为了不遮挡画面、并跟着顶栏一起进退
        （影院模式顶栏滑出时它自动一起隐藏）。 -->
   <div id="mem-bar-stage" class="mem-bar-host mem-bar-host--header" hidden></div>
-  <nav class="header-actions" aria-label="顶栏操作">
-    <!-- 顶栏：图标用内联 SVG（不引图标库）；可访问名走 aria-label + title -->
-    <button type="button" class="icon-btn" id="btn-library" aria-label="模型库（显示/隐藏左栏）" title="模型库（显示/隐藏左栏）">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"></svg>
-    </button>
-    <button type="button" class="icon-btn" id="btn-menu" aria-pressed="true" aria-label="菜单（显示/隐藏右侧控制面板）" title="菜单（显示/隐藏右侧控制面板）">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"></svg>
-    </button>
-    <button type="button" class="icon-btn" id="btn-shot" aria-label="截图导出" title="截图导出（PNG，文件名带模型名与时间戳）">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
-    </button>
-    <button type="button" class="icon-btn" id="btn-cinema" aria-pressed="false" aria-label="影院模式（显示/隐藏顶栏与左右栏，Esc 或中心双击退出）" title="影院模式（Esc 或中心双击退出）">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M7 4v16M17 4v16M2 12h20"/></svg>
-    </button>
-    <button type="button" class="icon-btn" id="btn-fullscreen" aria-label="全屏" title="全屏">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
-    </button>
+  <nav class="header-actions" id="header-actions" aria-label="顶栏操作">
+    <!-- 顶栏按钮由声明式表渲染（panel/toolbar-schema.js → panel/toolbar.js）：
+         内置 5 个 + 插件追加，两者走同一个渲染器与同一套图标白名单。
+         为什么不在 HTML 里手写：手写节点没有"位置"可插，插件按钮也无法与内置定序。 -->
   </nav>
 </header>
 
@@ -118,6 +105,11 @@
 <!-- ============ 底栏（第 5 区域）：播放条（M3 骨架，内容由 transport.js 渲染） ============ -->
 <footer id="app-footer" class="app-footer" aria-label="播放控制"></footer>
 
+<!-- 顶栏必须先于 main.js 渲染：context.js 在模块加载时用 getElementById 缓存这些按钮节点 -->
+<script type="module">
+  import { mountToolbar } from './panel/toolbar.js';
+  mountToolbar(document.getElementById('header-actions'));
+</script>
 <script type="module" src="./main.js"></script>
 </body>
 </html>

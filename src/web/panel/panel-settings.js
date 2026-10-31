@@ -15,6 +15,7 @@ import { stageLog, stageStatus } from '../app/status.js';
 import { PANEL_GROUPS, applyCapabilities, mergeSlotControls, selfCheck, settingKeyOf } from './schema.js';
 import { activeChain } from '../engine/effect-chain.js';
 import { mountPanel } from './view.js';
+import { syncPluginToolbar } from './toolbar.js';
 import { applyDebugLog, applyHangGuard, applyMemoryGuard, applyShowStatus, connectShellControls, runSettingsAction } from './shell-controls.js';
 import { applyBackground, applyTheme, readViewSettings, saveViewSettings } from '../app/view-settings.js';
 import { bindBgGroupToggle, refreshBgSources } from './background-list.js';
@@ -610,7 +611,10 @@ function aggregatePanelGroups() {
   const registeredEffects = host && typeof host.registeredEffectIds === 'function' ? host.registeredEffectIds() : [];
   // 内置表 → 插槽登记聚合（唯一通路：老接口 registerControls 已在其内部转成插槽注册）
   const slotEntries = host && typeof host.slotSections === 'function' ? host.slotSections() : [];
-  const slotMerged = mergeSlotControls(PANEL_GROUPS, slotEntries, {
+  // 只把分组插槽交给面板聚合：toolbar.actions 是顶栏的，走到这里会被判"不是面板控件"并刷一条拒绝日志
+  //   （实测每个顶栏按钮刷一条，纯噪音）。顶栏那条路由 syncToolbarPlugins 负责。
+  const panelEntries = slotEntries.filter((e) => String((e && e.name) || '').startsWith('panel.group.'));
+  const slotMerged = mergeSlotControls(PANEL_GROUPS, panelEntries, {
     buildProps: (entry) => slotPropsFor(entry),
     // 老接口迁移来的控件靠它判"效果是否注册成功"（置灰 + 原因，契约 §9.3）
     registeredEffects,
@@ -625,7 +629,7 @@ function aggregatePanelGroups() {
   const pluginControls = slotMerged.groups.flatMap((g) => (g.controls || []).filter((c) => c && c.pluginId));
   // 旧控件节通道已删除：merged 只保留"零"计数以维持 dataset 字段口径（pluginControls 全来自插槽）
   const merged = { added: 0, rejected: 0, rejectedControls: 0 };
-  return { host, merged, slotMerged, registeredEffects, pluginControls };
+  return { host, merged, slotMerged, registeredEffects, pluginControls, slotEntries };
 }
 
 /**
@@ -637,6 +641,32 @@ function aggregatePanelGroups() {
  *   · appliers 是模块加载时按 SPEC 快照注册的，插件晚于那一刻 ⇒ 不补就"只存值不 render"
  * @param {Array} pluginControls 合并后的插件控件
  */
+/**
+ * 同步顶栏的插件按钮（toolbar.actions 插槽）。
+ *
+ * 为什么不在这里处理排序/上限：那是渲染器的规则（toolbar.js），装配层只负责
+ *   "把插槽登记项与 onAction 通道接起来"，规则集中在一处才不会被两处表达。
+ * @param {Array} slotEntries 插槽登记项（全部插槽，渲染器只挑 toolbar.actions）
+ */
+function syncToolbarPlugins(slotEntries) {
+  const nav = document.getElementById('header-actions');
+  if (!nav) return;
+  syncPluginToolbar(nav, slotEntries, {
+    // 日志能力由这里注入（渲染器不能 import app 层，否则 context.js 会提前快照顶栏节点）
+    log: (level, message, detail) => stageLog(level, message, detail),
+    onAction: (entry) => {
+      const spec = (entry && entry.spec) || {};
+      if (typeof spec.onAction !== 'function') return;
+      try {
+        // 与面板控件同一套动作口径：{ id, value } + owner props
+        spec.onAction({ id: String(entry.id || ''), value: String(entry.id || '') }, slotPropsFor(entry));
+      } catch (e) {
+        stageLog('warn', `插件顶栏按钮回调抛错（已隔离，顶栏不受影响）：${(e && e.message) || e}`, { source: 'plugin-toolbar' });
+      }
+    },
+  });
+}
+
 function registerSlotStorage(pluginControls) {
   if (!pluginControls.length) return;
   // 存值键映射随重建刷新（控件消失后不许还留着旧映射）
@@ -767,7 +797,7 @@ function mountRebuiltPanel(groups, pluginControls) {
 
 function rebuildPanelFor(renderer) {
   bindPluginPanelRebuild();   // 幂等：确保"插件交完声明后重建面板"这条链只绑一次
-  const { host, merged, slotMerged, registeredEffects, pluginControls } = aggregatePanelGroups();
+  const { host, merged, slotMerged, registeredEffects, pluginControls, slotEntries } = aggregatePanelGroups();
   // 动作表随重建刷新：控件消失（插件卸载）后不许还留着能点的回调
   slotActions.clear();
   for (const ctl of pluginControls) {
@@ -778,6 +808,8 @@ function rebuildPanelFor(renderer) {
   syncPluginEffects(host, pluginControls);
   registerSlotStorage(pluginControls);
   const groups = filterByCapabilities(renderer, slotMerged, pluginControls, registeredEffects);
+  // 顶栏插件按钮：与面板同一次重建里同步（卸载后旧按钮随重建消失）
+  syncToolbarPlugins(slotEntries);
   document.documentElement.dataset.pluginControls = String(merged.added + slotMerged.added);
   document.documentElement.dataset.pluginControlsRejected = String(merged.rejected + merged.rejectedControls + slotMerged.rejected);
   document.documentElement.dataset.panelGroups = String(groups.length);
