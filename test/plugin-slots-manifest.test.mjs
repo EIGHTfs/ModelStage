@@ -22,6 +22,8 @@ import {
   validateDeclaredSlots,
   validateSlotRegistration,
 } from '../src/server/plugins/slot-catalog.mjs';
+// 路由层：/api/plugins 的响应组装（用 mock sendJson 直接测，不起服务、不碰 IO）
+import { handleData } from '../src/server/routes/data.mjs';
 
 // ─────────────────────────── 目录本身 ───────────────────────────
 
@@ -239,4 +241,34 @@ test('matchSlot：键值插槽允许带点（plugin.<id>.<key>）', () => {
 test('matchSlot：目录里没有的名字仍然返回 null（别把占位符放宽成万能匹配）', () => {
   assert.equal(matchSlot('nope'), null);
   assert.equal(matchSlot('panel.group.'), null);
+});
+
+// ─────────────────────────── /api/plugins 下发（阶段单一来源） ───────────────────────────
+
+test('/api/plugins 下发 currentStage，且**取自 slot-catalog**（抬阶段忘同步会立刻红）', () => {
+  let captured = null;
+  const ctx = {
+    // sendJson 返回 true：apiBasics 靠它的返回值告诉 handleData"这条我已处理"
+    sendJson: (res, code, body) => { captured = { code, body }; return true; },
+    // 只给 /api/plugins 用得到的两条（readPlugins / roleIndex）
+    data: { plugins: { readPlugins: () => [], roleIndex: () => ({}) } },
+  };
+  const handled = handleData({ method: 'GET' }, {}, '/api/plugins', new URL('http://x/api/plugins'), ctx);
+
+  assert.equal(handled, true, '/api/plugins 应被 apiBasics 处理');
+  assert.equal(captured.code, 200);
+  const body = captured.body;
+  // ① 顶层有 currentStage，且与模块常量同源（不是路由层自己写死的字符串）
+  assert.equal(body.currentStage, CURRENT_STAGE);
+  assert.equal(typeof body.currentStage, 'string');
+  // ② slotCatalog 仍在，且每项的 stage **没被 currentStage 顶掉**
+  //    （两者是不同概念：目录 stage = 该插槽从哪阶段起开放；currentStage = 现在开放到哪）
+  assert.ok(Array.isArray(body.slotCatalog) && body.slotCatalog.length >= 5);
+  assert.ok(body.slotCatalog.every((s) => typeof s.stage === 'string'), '每项都要保留自己的 stage');
+  assert.ok(
+    body.slotCatalog.some((s) => s.stage > body.currentStage),
+    '目录里应仍有"未开放"的插槽 —— 否则说明有人把 currentStage 混进了目录 stage',
+  );
+  // ③ localStorage 时代的前端常量已不需要：值只有这一份
+  assert.equal(body.currentStage, 'S2');
 });

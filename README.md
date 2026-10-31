@@ -181,6 +181,7 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.4.5 | 2026-10-31 | `/api/plugins` 下发 `currentStage`（与 `slotCatalog[i].stage` 是两个概念，不合并），消灭阶段的两处表达；补路由层用例（含"目录里必须仍有未开放插槽"这条防扁平化断言） |
 | 0.4.4 | 2026-10-31 | 插件插槽 S2-a：插件控件真正渲染进右栏（装配期聚合，不写回静态表）、按 groupId 匹配与 order 排序、id 冲突拒绝、设置键并入能力白名单、`panelWired` 与合并结果同源；卸载后 DOM 节点消失 |
 | 0.4.3 | 2026-10-31 | 插槽阶段抬到 S2：`panel.group.<groupId>` 开放（其余四类仍按各自阶段拒绝）；阶段文档补 S2 参考清单（验证用插件的 plugin.json 与脚本全文） |
 | 0.4.2 | 2026-10-31 | 插件插槽 S1-b2：`slot-registry.js`（DOM-free，四类校验固定顺序）+ `slots.register` 只登记不渲染+ disposer 接入 effect 容器（`unloadPlugin` 一并回收）+ `window.__SLOT_STATS__`；修服务端 `matchSlot` 模板串双重转义缺陷（含字母 s 的插槽被误判 unknown-slot） |
