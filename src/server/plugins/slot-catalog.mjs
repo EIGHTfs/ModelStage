@@ -15,10 +15,19 @@
 //   先判 risk 的话会报"risk 不符" —— 可它写得完全正确，只是阶段没到，这种错误会把人引向错方向。
 
 /** 阶段序列：用来比较"目录声明的 stage 是否已到" */
-export const SLOT_STAGES = ['S1', 'S2', 'S3', 'S4', 'S5'];
+/**
+ * 阶段序列（**只能用这六档**）。
+ *
+ * S6 是**占位档**，不是"第六阶段"：它表示"尚未排期"。
+ * 为什么要它：`stage.overlay` 设计里写明"暂不排期"，但若把它留在 S4，
+ *   一旦 CURRENT_STAGE 抬到 S5（S4 < S5），它就会被判成"已开放" ——
+ *   而它根本没有渲染实现，结果是"注册成功但看不见"，比直接拒绝更难查。
+ * 用 S6 表达"排在所有已实现阶段之后"，既让判定天然为假，又不必给目录多一个维度。
+ */
+export const SLOT_STAGES = ['S1', 'S2', 'S3', 'S4', 'S5', 'S6'];
 
 /** 当前实现阶段。改动这里等于"开放下一批插槽"，是**有意为之的开关**，不要让它随代码漂移 */
-export const CURRENT_STAGE = 'S3';
+export const CURRENT_STAGE = 'S5';
 
 /** 风险三档（设计 §三）：append 只追加 / replace 会替换原生内容 / shadow 会遮蔽原生界面 */
 export const SLOT_RISKS = ['append', 'replace', 'shadow'];
@@ -46,8 +55,10 @@ export const SLOT_CATALOG = [
   { name: 'toolbar.actions', type: 'list', risk: 'append', stage: 'S3',
     desc: '顶栏追加按钮' },
   // 舞台叠加层：只追加 ⇒ append，暂不排期（S4）
-  { name: 'stage.overlay', type: 'list', risk: 'append', stage: 'S4',
-    desc: '画布之上的叠加层（调试/水印）' },
+  // S6 = 尚未排期（占位档，不是"第六阶段"）：留 S4 的话，CURRENT_STAGE 抬到 S5 时会被判成已开放，
+  //   而它没有渲染实现 —— 那种"注册成功但看不见"比直接拒绝难查得多。
+  { name: 'stage.overlay', type: 'list', risk: 'append', stage: 'S6',
+    desc: '画布之上的叠加层（调试/水印）—— 尚未排期，S6 为占位档' },
 ];
 
 /** 转义正则元字符（占位符名字里可能有 `.`，必须转义成字面点） */
