@@ -1164,16 +1164,26 @@ const MIME_BY_EXT = {
     //   过去把它们当普通插件走"注入脚本 → 等 register()"的生效判定，files 为空 ⇒ 循环不跑，
     //   必然产出「插件未生效：脚本已加载但没有调用 register()」这种误报（实测 builtin-spine /
     //   builtin-live2d 各一条）。这里把它们从"需要装载"的名单里分出来：只声明、不装载、不算失败。
-    const scripts = discovered.filter((p) => p && p.builtin !== true);
+    // exec 运行时（runtime:"exec"）同理：它的代码在**服务端进程**里（宿主 spawn 一个子进程），
+    //   浏览器里没有脚本可注入 —— 前端只消费它解包结果（`/api/unpack/resolve` 那一路）。
+    //   files[] 本来就是空的，混进"需要注入脚本"的名单 ⇒ 必然报同样的假告警
+    //   （实测 8804：「插件 unitypy-bundle 未生效：脚本已加载但没有调用 register()」）。
+    const scripts = discovered.filter((p) => p && p.builtin !== true && p.runtime !== 'exec');
     const builtinDecls = discovered.filter((p) => p && p.builtin === true);
+    const execDecls = discovered.filter((p) => p && p.runtime === 'exec');
     say.info(`发现 ${discovered.length} 个启用插件：${discovered.map((p) => p.id).join(', ')}`
-      + (builtinDecls.length ? `（其中 ${builtinDecls.length} 个为内置装载器声明，无代码需注入）` : ''));
-    for (const pl of scripts) {
+      + (builtinDecls.length ? `（其中 ${builtinDecls.length} 个为内置装载器声明，无代码需注入）` : '')
+      + (execDecls.length ? `（${execDecls.length} 个为 exec 运行时，代码在服务端进程里跑，前端只登记声明）` : ''));
+    // 声明登记对所有提供者都要做（含 exec / 内置）：归属着色与候选名单靠这张表，
+    //   跳过它们会让"这个包是谁解的"查不到声明色。
+    for (const pl of [...scripts, ...execDecls]) {
       if (pl && pl.id) {
         manifestProvides.set(pl.id, Array.isArray(pl.provides) ? pl.provides.map(String) : []);
         // effects 可选；形状不合法在这里就归一成空数组（服务端已校验过，这里只防脏数据）
         manifestEffects.set(pl.id, Array.isArray(pl.effects) ? pl.effects.filter((e) => e && e.id) : []);
       }
+    }
+    for (const pl of scripts) {
       try { await loadPlugin(pl); } catch (e) { say.warn(`插件 ${pl && pl.id} 装载异常：${(e && e.message) || e}`); }
     }
     loaded = true;
