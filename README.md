@@ -181,6 +181,7 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.5.17 | 2026-10-31 | 拆分 B4：解包区整体搬出为 `plugin-host-unpack.mjs`（20 函数 / 487 代码行，3 个窄参数），`plugin-host.js` **1538 → 694 行**；workerPool 归属明确（unpack 创建持有、unload 清理）；B3（装载与窗口区）评估后不动，依据记入调研文档 |
 | 0.5.16 | 2026-10-31 | 拆分 B2：抽出「注册与校验」区为 `plugin-host-registration.mjs`（5 个窄参数、不塞整块 ctx），plugin-host 净减 215 行；7 类错误码文案与校验顺序原样随迁、对外 API 形状不变 |
 | 0.5.15 | 2026-10-31 | 事件名收敛为常量 `EVENTS`（3 个 spineviewer 事件 / 7 处字面量清零），并新增「src/web 下不许再出现事件名字面量」的扫描单测（已自证会红）；防的是批量改名再次静默改坏协议字符串 |
 | 0.5.14 | 2026-10-31 | 拆分 B1：抽出 report / unloadPlugin 链 / warmup 链三个独立模块（plugin-host 净减 201 行）；**修 0.5.13 的静默回归**——批量重命名把事件名 `spineviewer:plugins-loaded` 改成了 `plugins-ctx.loaded`（2 处），导致卸载后面板不重建、document.files 就绪后不重绘 |
