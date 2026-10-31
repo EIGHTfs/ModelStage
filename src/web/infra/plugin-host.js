@@ -18,6 +18,8 @@
 import { getSharedVirtualFS } from './vfs.js';
 // 插槽注册表（DOM-free、可 node 直测）：只登记不渲染，S2 才接渲染
 import { createSlotRegistry } from './slot-registry.js';
+// 内置分组 id（纯数据，DOM-free）：注册表据此区分"引用内置组"与"插件新建组"
+import { PANEL_GROUPS } from '../panel/schema.js';
 
 import * as memoryGuard from '../app/memory-guard.js';
 import { postJson, postStream, getJson, fetchWithRetry, mapLimit } from './api.js';
@@ -1507,6 +1509,8 @@ const MIME_BY_EXT = {
         declaredByPlugin: declared,
         // 阶段只信服务端（currentStage）；字段缺失时 normalizeStage 回退 'S1'（过渡兜底）
         openStage: normalizeStage(data && data.currentStage),
+        // 内置组 id：新建分组必须带 plugin.<pluginId>. 前缀（设计 §七·一）
+        groupIds: new Set(PANEL_GROUPS.map((g) => String(g.id || ''))),
         isInLoadWindow: () => !!loadingPluginId,
         onReject: (rej) => {
           say.warn(`插槽注册被拒（${rej.code}）：${rej.why}`);
