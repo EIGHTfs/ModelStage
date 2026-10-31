@@ -301,3 +301,34 @@ server.listen(PORT, '0.0.0.0', () => {
   log.info(`数据根 ${data.paths.dataRoot}${DATA_ROOT ? '（MODELSTAGE_DATA_ROOT 覆盖）' : '（默认=项目根）'}`);
   log.info('资源根已登记', { roots: data.config.readConfig().map((r) => `${r.id}=${r.name}`) });
 });
+
+/**
+ * 收尾钩子：先把**常驻资源**放掉再退出。
+ *
+ * 为什么必须有：后台形态探测为省掉"每批重建解析沙箱"（一批 4.5s → 76s）会保留一个 worker 线程。
+ *   `worker.unref()` 只让它不单独撑住进程，挡不住 `worker.on('message')` 把事件循环 hold 住 ——
+ *   不显式关掉就表现为"服务收到 SIGTERM 停不下来"（同样的问题在 `node --test` 里就是退出码 124）。
+ */
+function registerShutdown() {
+  const stop = async (signal) => {
+    log.info(`收到 ${signal}，开始收尾`);
+    try {
+      if (data.shapeProbe && typeof data.shapeProbe.close === 'function') await data.shapeProbe.close();
+    } catch (e) {
+      log.warn('收尾时关闭探测 worker 失败（继续退出）', { err: (e && e.message) || String(e) });
+    }
+    try { server.close(); } catch { /* 已经关了 */ }
+    // 兜底强退：keep-alive 连接可能把 close() 拖住（这里不等它们）
+    const t = setTimeout(() => process.exit(0), 200);
+    if (typeof t.unref === 'function') t.unref();
+  };
+  let stopping = false;
+  const once = (signal) => {
+    if (stopping) return;                      // 连按两次 Ctrl-C 不重复走流程
+    stopping = true;
+    stop(signal);
+  };
+  process.once('SIGINT', () => once('SIGINT'));
+  process.once('SIGTERM', () => once('SIGTERM'));
+}
+registerShutdown();

@@ -164,6 +164,7 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.3.1 | 2026-10-31 | 探测不再阻塞事件循环：两级空闲门控（有请求在飞不解析）+ 单包 24MB 上限 + 解析移入 worker 线程；新增显式生命周期 `close()` 与 SIGINT/SIGTERM 收尾（修复 worker 悬挂导致测试进程不退出）；实测事件循环 max 683→104ms、吞吐 28.5→63.9/min |
 | 0.3.0 | 2026-10-31 | 插件运行时双形态落地：`exec`（子进程 + 行 JSON 帧协议 + 双向超时必杀 + 崩溃传播）与首个 Python 插件 `unitypy-bundle`（UnityPy 解包，覆盖 ASTC 等 JS 侧缺口）；前端本地解包失败时兜底走服务端解包；补 spine 3.8 skel 版本探测（原按 4.x 解析导致装载报错） |
 | 0.2.3 | 2026-10-31 | 清单缓存加「生成者指纹」：由解析器文件内容哈希派生（spine/live2d/probe），改解析代码后落盘清单自动失效重建，不再需要手工删 config/models/*.json；live2d 清单写盘改原子写（与 spine 同口径） |
 | 0.2.2 | 2026-10-31 | 后台探测可观测：启动/完成/暂停三条日志与触发来源（catalog/fingerprint/manual）可辨；`GET /api/entries/probe` 新增 lastTrigger/lastBatchMs/lastQueueAfter，catalog 响应附加 `probeRemaining`（只增不改）；前端 `state.probe` 数据面就绪（UI 未实现） |

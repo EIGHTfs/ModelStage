@@ -15,6 +15,26 @@ import path from 'node:path';
 import { createShapeProbe } from '../src/server/data/shape-probe.mjs';
 import { createEntryStates, providerFingerprintOf } from '../src/server/data/entry-states.mjs';
 
+/**
+ * 用完必须关掉探测器的常驻 worker。
+ *
+ * 为什么非关不可：worker 跨批复用（否则每批重建解析沙箱，一批从 4.5s 涨到 76s），
+ *   它会一直挂在进程里；`unref()` 只能让它不单独撑住进程，挡不住 `worker.on('message')`
+ *   把事件循环 hold 住 ⇒ 表现为"用例全过、node --test 永不退出"（被超时杀掉，退出码 124）。
+ * 这里统一登记 + afterEach 关闭，用例里漏写也不会漏收（比逐个 finally 更稳）。
+ */
+const openedProbes = [];
+function track(probe) {
+  openedProbes.push(probe);
+  return probe;
+}
+test.afterEach(async () => {
+  while (openedProbes.length) {
+    const p = openedProbes.pop();
+    try { await p.close(); } catch { /* 关不掉也不该影响用例结论 */ }
+  }
+});
+
 /** 造一个含单个"包文件"的根目录 */
 function makeRoot(fileName = 'pack.unity3d') {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shape-probe-'));
@@ -28,7 +48,7 @@ function makeHarness({ root, keys, probeBytes }) {
     takeProbeKeys: () => keys.slice(),
     requeueProbeKey: () => {},
   };
-  const probe = createShapeProbe({
+  const probe = track(createShapeProbe({
     catalog,
     entryStates: states,
     providers: () => [],
@@ -36,7 +56,7 @@ function makeHarness({ root, keys, probeBytes }) {
     probeBytes,
     delayMs: 0,
     maxPerRun: 8,
-  });
+  }));
   return { probe, states };
 }
 
@@ -99,6 +119,52 @@ test('探不出形态 ⇒ 只记 unknown，support 保持 unknown（不猜内容
     });
     assert.equal(computed.support.state, 'unknown', '探不出形态绝不能写 unsupported');
     assert.equal(probe.stats().unknown, 1);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('超过单包上限 ⇒ 跳过解析，保持 unknown 并计数（第 2 步）', async () => {
+  const root = makeRoot('big.unity3d');
+  try {
+    const key = 'r/big.unity3d';
+    const states = createEntryStates({ file: '', log: () => {} });
+    const catalog = { takeProbeKeys: () => [key], requeueProbeKey: () => {} };
+    const logs = [];
+    const probe = track(createShapeProbe({
+      catalog, entryStates: states, providers: () => [],
+      readConfig: () => [{ id: 'r', path: root }],
+      log: (level, msg) => logs.push(String(msg)),
+      probeBytes: () => { throw new Error('不该走到解析：超限的包必须跳过'); },
+      delayMs: 0, maxPerRun: 4, maxBytes: 4,        // 文件 > 4 字节 ⇒ 必然超限
+    }));
+    await probe.kick('r');
+    const rec = states.get(key);
+    assert.equal(rec.probe.result, 'unknown', '超限包必须保持 unknown（不猜、也不写 unsupported）');
+    assert.equal(probe.stats().skippedBig, 1, '要能被计数（面板/排障要看得到跳了多少）');
+    assert.ok(logs.some((m) => m.includes('包太大')), '必须记一条 info 说明"太大，留待点击验证"');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('真实解析路径（worker）：坏包不崩，结论只会是 unknown 或被跳过', async () => {
+  const root = makeRoot('bad.unity3d');
+  try {
+    const key = 'r/bad.unity3d';
+    const states = createEntryStates({ file: '', log: () => {} });
+    const catalog = { takeProbeKeys: () => [key], requeueProbeKey: () => {} };
+    // 不注入 probeBytes ⇒ 走真实解析（worker 优先，失败回落同步）
+    const probe = track(createShapeProbe({
+      catalog, entryStates: states, providers: () => [],
+      readConfig: () => [{ id: 'r', path: root }], delayMs: 0, maxPerRun: 4,
+    }));
+    await probe.kick('r');
+    const rec = states.get(key);
+    assert.equal(probe.stats().runs, 1, '这一轮必须真的跑起来（不是静默跳过）');
+    const ok = (rec && rec.probe && rec.probe.result === 'unknown') || probe.stats().skipped === 1;
+    assert.ok(ok, '坏包要么被判 unknown（可继续用），要么记为跳过并放回队列；不许写成 unsupported');
+    if (rec && rec.probe) assert.notEqual(rec.probe.result, 'unsupported', '解析不出形态时绝不能写 unsupported');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
