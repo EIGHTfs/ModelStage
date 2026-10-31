@@ -18,7 +18,7 @@ import { capacity } from './capacity.mjs';
 import { probeBundleBytes } from '../../../tool/lib/bundle-probe-node.mjs';
 // 条目状态（契约《条目状态与展示归属》§三）：resolve 成功/失败都要留痕 ——
 //   否则列表永远显示"未试过"，S4 的"点击后错误文案与 ⚠ 同源"就断了。
-import { getSharedEntryStates, providerFingerprintOf } from '../data/entry-states.mjs';
+import { getSharedEntryStates, providerFingerprintOf, assetFingerprintOf } from '../data/entry-states.mjs';
 import { createPaths } from '../core/paths.mjs';
 import { createLogger } from '../core/log.mjs';
 import { readPlugins } from '../plugins/registry.mjs';
@@ -102,7 +102,10 @@ export function createUnpackRoutes(deps) {
       let assetFingerprint = null;
       try {
         const st = fs.statSync(p.absPath);
-        assetFingerprint = `${st.size}-${Math.trunc(st.mtimeMs)}`;
+        // 用与 catalog / 上报路由**同一个派生函数**（只用 size）。
+        //   原先这里算 `size-mtime`，另两处只能拿到 size ⇒ 同一个文件在两条路上指纹不同，
+        //   切一次模型就被判"文件变了"、结论反复失效（规则②被误触发，最难查的一种漂移）。
+        assetFingerprint = assetFingerprintOf(st.size);
       } catch { /* 文件不在了 ⇒ 指纹留空，失效规则②不参与判定 */ }
       const key = `${p.rootId}/${p.rel}`;
       states.put(key, {

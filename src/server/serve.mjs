@@ -67,7 +67,14 @@ function resolveAvatarRoot() {
 /** 服务端日志（统一形状 {at,level,tag,msg,detail}；error→stderr，其余→stdout） */
 const log = createLogger('serve');
 
-const data = createServerData({ root: ROOT, dataRoot: DATA_ROOT || undefined, avatarRoot: resolveAvatarRoot() || undefined });
+// log 注入：后台形态探测（§八）要能把"启动/完成/失败"写进同一条服务端日志，
+//   否则 S10 的"探测启动次数 = 0"没有可核对的凭据。
+const data = createServerData({
+  root: ROOT,
+  dataRoot: DATA_ROOT || undefined,
+  avatarRoot: resolveAvatarRoot() || undefined,
+  log,
+});
 // 静态/资源类路由（/plugins、/spine-runtimes、src/web 静态）单独成模块
 // dataRuntimesDir = tool/fetch-runtimes.mjs 的下载落点（<dataRoot>/runtimes/spine）。
 //   传进去之后 /spine-runtimes/index.json 才列得出它、/spine-runtimes/* 才发得出文件
@@ -181,6 +188,9 @@ const ctx = {
   resolveSafe, browseDir, sendFile, toRootView, sendJson, sendText, readBody, fs, path, log,
   // 条目状态（契约 §三）：写读一体的存储实例与"条目静态事实"查询
   entryStates: data.entryStates,
+  // 后台形态探测（契约 §八）：计数/手动重探走 /api/entries/probe（S10 的佐证口）
+  shapeProbe: data.shapeProbe,
+  catalog: data.catalog,
   contextFor: createContextFor({
     providers: () => data.plugins.readPlugins(),
     describe: (key) => data.catalog.describeEntry(key),

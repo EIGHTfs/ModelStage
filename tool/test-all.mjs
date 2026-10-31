@@ -171,6 +171,17 @@ const SUITES = [
   //   纯函数套件、秒级。它是右边栏与底边栏**两处共用**的那一层，
   //   选中态判错会同时影响两端，所以必须有纯函数级保护
   { name: 'bg-source', runner: 'node-test', file: 'test/bg-source.test.mjs' },
+  // 条目状态存储（契约 §三）：三条失效规则 + 一致性约束 + 落盘竞态的构造用例。
+  //   纯模块、秒级；它是"⚠ 该不该挂"的唯一判据来源，坏了全站展示都在撒谎
+  { name: 'entry-states', runner: 'node-test', file: 'test/entry-states.test.mjs' },
+  // 指纹**接线**的集成级用例（契约 §六 S6 / §七 INV-D6）：走真实 catalog 读路径与
+  //   entries 路由的 contextFor，不自己造 ctx。
+  //   为什么必须单独一套：上一版 13 个 entry-states 单测全绿，而三处调用只有一处传指纹 ——
+  //   纯函数单测永远测不出"调用方没接上"，只有这层能红
+  { name: 'entry-states-wiring', runner: 'node-test', file: 'test/entry-states-wiring.test.mjs' },
+  // 后台形态探测的写回语义（契约 §八/S4/S10）：假判型 + 真实存储，
+  //   钉住"零待探测不启动 / 依赖包写 unsupported / 探不出只写 unknown / 不覆盖 loadResult"
+  { name: 'shape-probe', runner: 'node-test', file: 'test/shape-probe.test.mjs' },
   // 引擎冒烟（3.8 ↔ 4.1 版本往返 + samplePixels().ratio + lastError 判据）：
   //   它验证的是"引擎能不能出画"，是所有交互套件的前置
   { name: 'engine-b1', wait: 4500 },

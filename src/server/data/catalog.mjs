@@ -22,6 +22,8 @@ import { encodePath } from '../assets/probe.mjs';
 // 扩展名集合复用 tree.mjs 那一份：容器列举与目录浏览必须用同一套「哪些扩展名要探魔数」，
 //   两处各写一份会漂移（一处加了新扩展名、另一处没加 ⇒ 某个根莫名列不出容器，且不报错）。
 import { KNOWN_FILE_EXT } from './tree.mjs';
+// 指纹判据只有一份实现：catalog / 上报路由 / 解包路径三处必须同源（INV-D6）
+import { providerFingerprintOf, assetFingerprintOf } from './entry-states.mjs';
 
 /**
  * 路径式文件 URL（Live2D 定义文件内部用相对路径引用，必须用 /files/ 前缀）。
@@ -601,6 +603,20 @@ function isCapabilityNote(text) {
   return /超过深度上限|未扫描|插件|提供者|未声明|需要运行时枚举|需运行时枚举/.test(s);
 }
 
+/**
+ * 目录型条目的"形态"键（契约 §一·五：目录型是 spine-dir / live2d-dir）。
+ *
+ * 为什么放模块级：它是"内容类型 ↔ 提供者 fileKinds"的固定映射，与任何一次请求无关；
+ *   放在装配函数里会变成每次调用重建一个闭包，也让那个函数更难读。
+ * @param {string|null} kind 内容类型（spine / live2d）
+ * @returns {string|null} 未知类型返回 null（不猜）
+ */
+function dirKindOf(kind) {
+  if (kind === 'live2d') return 'live2d-dir';
+  if (kind === 'spine') return 'spine-dir';
+  return null;
+}
+
 function inspectRootPath(rootPath) {
   let stat = null;
   try {
@@ -658,6 +674,27 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
    */
   const ENTRY_DESC_MAX = 60000;
   const entryDesc = new Map();
+  /**
+   * 待探测条目（§八 触发判据 a/b）：读路径只**登记**，由后台任务消费。
+   *
+   * 为什么用 Set 且允许重复登记：同一根会在每次 /api/catalog 时重新遍历一遍，
+   *   探测还没跑完（或刚好被限速卡住）时这些条目会再次被登记 —— 去重靠 Set 天然做到，
+   *   重复登记不产生额外代价（不读盘、不排队多份）。
+   */
+  const probeQueue = new Set();
+  /**
+   * 探测触发钩子（§八 判据 a：清单重建后）。
+   *
+   * 为什么用"可注入的钩子"而不是让 catalog 直接 import 探测模块：
+   *   catalog 是纯读路径、且被测试大量直接构造；一旦反向依赖后台任务，
+   *   单测就会连带起定时器/读盘。由装配层（index.mjs）把 kick 注进来，依赖方向保持单向。
+   * @type {null | ((rootId: string) => void)}
+   */
+  let probeNotifier = null;
+  /** 装配层注入触发钩子（传 null 可摘掉） */
+  function setProbeNotifier(fn) {
+    probeNotifier = typeof fn === 'function' ? fn : null;
+  }
   function rememberEntry(key, desc) {
     entryDesc.delete(key);
     entryDesc.set(key, desc);
@@ -676,6 +713,35 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
     return entryDesc.get(String(key || '')) || {};
   }
 
+  /**
+   * 取走当前待探测队列（取走即清空，由探测任务持有，避免两边各跑一遍）。
+   *
+   * 为什么"取走"而不是"只读"：探测任务按根串行、逐包限速，可能跨多次调用才跑完；
+   *   只要 key 还留在队列里，下一次 /api/catalog 就会再登记一次，队列永远清不空。
+   * @param {number} [max] 一次最多取多少（限速用）
+   * @returns {string[]} `${rootId}/${rel}` 列表
+   */
+  function takeProbeKeys(max = Infinity) {
+    const out = [];
+    for (const key of probeQueue) {
+      out.push(key);
+      probeQueue.delete(key);
+      if (out.length >= max) break;
+    }
+    return out;
+  }
+
+  /** 探测没跑完就中止时把 key 放回队列（不丢，下一轮继续） */
+  function requeueProbeKey(key) {
+    const k = String(key || '');
+    if (k) probeQueue.add(k);
+  }
+
+  /** 队列长度（自检/日志用：S10 要能证明"指纹没变时没有待探测项"） */
+  function probeQueueSize() {
+    return probeQueue.size;
+  }
+
   /** 记一条根的耗时（同一根只留最新一条；totalMs 按各根最新值求和） */
   function recordRootStat(one) {
     const i = stats.roots.findIndex((r) => r.rootId === one.rootId);
@@ -688,13 +754,17 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
    * @param {string} rootId
    * @returns {{status: number, body: object}}
    */
-  function listCatalog(rootId) {
-    const t0 = performance.now();
-    const cfg = config.readConfig().find((r) => r.id === rootId);
-    if (!cfg) {
-      // 形状与其它接口的错误体保持一致；按约定这里用 404（资源根不存在）
-      return { status: 404, body: { error: `未找到资源根: ${rootId}` } };
-    }
+  /**
+   * 第①段·扫描：把一个根扫成条目数组（普通模型 + 容器单文件）+ 这一根的诊断素材。
+   *
+   * 为什么拆出来：原 listCatalog 两百行、审计按"函数过长"拦过提交；按
+   *   「扫描 / 组装三字段 / 包装响应」三段切开后每段只做一件事，也便于各自单独验证。
+   *   **行为零变化**：只是把原来线性排下来的代码按职责分成三段。
+   * @param {{id: string, name?: string, path: string}} cfg 资源根配置
+   * @returns {{entries: Array, warnings: string[], scanErrors: Error[],
+   *            cachedAll: boolean, pathProblem: string|null}}
+   */
+  function scanRootEntries(cfg) {
     const entries = [];
     const warnings = [];
     /** 扫描过程中抛的错（用于判断 rootWarning 该说"扫不动"还是"真的空"） */
@@ -728,6 +798,30 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
     entries.push(...bundle.entries);
     if (bundle.warnings.length) warnings.push(...bundle.warnings);
 
+    return { entries, warnings, scanErrors, cachedAll, pathProblem, skipped: bundle.skipped };
+  }
+
+  function listCatalog(rootId) {
+    const t0 = performance.now();
+    const cfg = config.readConfig().find((r) => r.id === rootId);
+    if (!cfg) {
+      // 形状与其它接口的错误体保持一致；按约定这里用 404（资源根不存在）
+      return { status: 404, body: { error: `未找到资源根: ${rootId}` } };
+    }
+    const { entries, warnings, scanErrors, cachedAll, pathProblem, skipped } = scanRootEntries(cfg);
+    assembleEntryStates(cfg, entries);
+    return buildCatalogResponse({ cfg, t0, entries, warnings, scanErrors, cachedAll, pathProblem, skipped });
+  }
+
+  /**
+   * 第②段·组装三字段：给扫描出来的条目补 candidates / ownerProvider / display / support / loadResult。
+   *
+   * 这是"展示归属"的唯一装配点（契约 §一 INV-D1/D4）：颜色、可装载性、最近一次结果
+   *   全部由 entry-states 的 recompute 产出，这里只负责把上下文喂对。
+   * @param {{id: string}} cfg 资源根
+   * @param {Array} entries 扫描产物（就地写入三字段）
+   */
+  function assembleEntryStates(cfg, entries) {
     // ---- 展示归属：聚合键是 **fileKinds**，不是 produces.kind ----
     //
     // 为什么必须用 fileKinds（改错这里所有散目录条目会一起掉成中性色）：
@@ -736,7 +830,22 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
     //   而 fileKinds 是**互斥**的：内置项是 'spine-dir'/'live2d-dir'，资源包插件是 'bundle'。
     //   ⇒ 目录型条目只匹配到 builtin-*，容器条目只匹配到 bundle 插件。
     const providers = plugins.readPlugins();
-    /** 条目形态 → 能认领它的提供者（按 matchPriority 降序，同分按 id 稳定排序） */
+    // 提供者指纹：**一次算一次**，喂给每条记录的规则①判定（INV-D6）。
+    //   不传的后果实测过：recompute 里判不了"能力是否变过" ⇒ 规则①整段跳过 ⇒
+    //   插件升级后旧的"不支持"结论永远挂着（这正是本次要修的断链）。
+    const providerFp = providerFingerprintOf(providers);
+    const byFileKind = buildFileKindIndex(providers);
+    for (const e of entries) applyEntryStateTo(cfg, e, { providers, providerFp, byFileKind });
+  }
+
+  /**
+   * 建"条目形态 → 能认领它的提供者"索引（按 matchPriority 降序，同分按 id 稳定排序）。
+   *
+   * 单独成函数的原因：这张表只与注册表有关、与条目无关，一条目录几万条目也只该建一次。
+   * @param {Array<{id: string, fileKinds?: string[], matchPriority?: number}>} providers
+   * @returns {Map<string, Array>}
+   */
+  function buildFileKindIndex(providers) {
     const byFileKind = new Map();
     for (const p of providers) {
       for (const fk of (Array.isArray(p.fileKinds) ? p.fileKinds : [])) {
@@ -749,81 +858,109 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
       list.sort((a, b) => (Number(b.matchPriority) || 0) - (Number(a.matchPriority) || 0)
         || String(a.id).localeCompare(String(b.id)));
     }
-    /** 目录型条目用哪种形态（契约 §一·五：目录型是 spine-dir / live2d-dir） */
-    const dirKindOf = (kind) => (kind === 'live2d' ? 'live2d-dir' : (kind === 'spine' ? 'spine-dir' : null));
+    return byFileKind;
+  }
 
-    for (const e of entries) {
-      const isContainer = !!e.container;
-      const fileKind = isContainer ? 'bundle' : dirKindOf(e.kind);
-      const cands = (fileKind && byFileKind.get(fileKind)) || [];
-      // candidates 顺序即 matchPriority 顺序；容器条目在 toBundleEntry 里已经带过一份，取更全的这里
-      e.candidates = cands.map((p) => String(p.id));
+  /**
+   * 给**一个**条目组三字段（assembleEntryStates 的循环体）。
+   * 只做"把算好的结果写到条目上 + 归属兜底"，判断逻辑都在下面两个函数里。
+   * @param {{id: string}} cfg 资源根
+   * @param {object} e 条目（就地写入）
+   * @param {{providers: Array, providerFp: string, byFileKind: Map}} common 每条共享的上下文
+   */
+  function applyEntryStateTo(cfg, e, common) {
+    e.candidates = candidatesFor(e, common.byFileKind);
+    if (!e.container) {
       // 目录型：唯一候选 ⇒ 归属确定；多候选/零候选 ⇒ null（中性色，不猜）
-      if (!isContainer) {
-        e.ownerProvider = cands.length === 1 ? String(cands[0].id) : null;
-      }
-      // 三字段统一由 entry-states 的 recompute 产出（唯一口径，见契约 §二）
-      const key = `${cfg.id}/${e.rel || e.name}`;
-      e.stateKey = key;
-      // 记下这条的静态事实，供 /api/entries/result 的写读一体使用（见 rememberEntry）
-      // 条目的静态事实（谁认领 / 尺寸 / 缺哪些贴图）——**只写一次**：
-      //   既记进 describeEntry 供 /api/entries/result 写读一体复用，也喂本行的 recompute。
-      //   两处各写一份字面量就是"改一处漏一处"的经典漂移源。
-      //   注意不含 providers：消费方（contextFor）自己取注册表，存进缓存只会白占内存。
-      const entryFacts = {
-        candidates: e.candidates,
-        size: Number.isFinite(e.size) ? Number(e.size) : undefined,
-        // 目录型条目没有"未解包"这一说 ⇒ 传 undefined 表示"没做资产检查"→ unknown，
-        //   有 missingTextures（含空数组）时才由 recompute 判 ready/unsupported
-        missingTextures: e.meta && Array.isArray(e.meta.missingTextures) ? e.meta.missingTextures : undefined,
-        assetDependency: null,
-      };
-      rememberEntry(key, entryFacts);
-      const state = entryStates ? entryStates.get(key) : null;
-      const computed = entryStates
-        ? entryStates.recompute(state, { providers, ...entryFacts })
-        : { display: { accent: null, provider: null, candidates: e.candidates }, support: { state: 'unknown', detail: null }, loadResult: null };
-      e.display = computed.display;
-      e.support = computed.support;
-      e.loadResult = computed.loadResult;
-      // 归属确定的条目把色补上（**只有唯一认领者时才确定**，多候选/零候选保持 null 不猜）：
-      //   · 容器：解包过 ⇒ 实际命中的插件（toBundleEntry 里设的 ownerProvider）
-      //   · 目录型：唯一认领它的内置装载器（上面按 fileKinds 算出的 ownerProvider）
-      //   loadResult.ok 时 recompute 已经给对了 provider/accent，这里只在"还没有归属"时补，
-      //   不覆盖 recompute 的结论（一致性约束：ok 的 loadResult 说了算）。
-      if (e.ownerProvider && !e.display.provider) {
-        const hit = providers.find((p) => String(p.id) === String(e.ownerProvider));
-        if (hit) {
-          e.display.provider = String(hit.id);
-          e.display.accent = hit.accent ? String(hit.accent) : null;
-        }
-      }
-      // 注意：不再输出 badgeAccent / displayProvider / providerCandidates 这类旧别名。
-      //   契约 §一 规定"展示归属"的唯一权威是 display.*；同义字段两份就是 INV-D1 违规，
-      //   而且一旦两边漂移，前端读哪个都能对、也都能错（比没有更糟）。
-      //   前端与服务端在同一次提交里切到三字段，不做灰度兼容层。
+      e.ownerProvider = e.candidates.length === 1 ? e.candidates[0] : null;
     }
+    const computed = computeEntryStateFor(cfg, e, common);
+    e.display = computed.display;
+    e.support = computed.support;
+    e.loadResult = computed.loadResult;
+    applyOwnerFallback(e, common.providers);
+  }
 
+  /**
+   * 这条目能被哪些提供者认领（顺序即 matchPriority 顺序）。
+   * @param {object} e 条目
+   * @param {Map<string, Array>} byFileKind 形态 → 提供者
+   * @returns {string[]} 提供者 id 列表（可能是空数组 = 没人认领）
+   */
+  function candidatesFor(e, byFileKind) {
+    const fileKind = e.container ? 'bundle' : dirKindOf(e.kind);
+    const cands = (fileKind && byFileKind.get(fileKind)) || [];
+    // 容器条目在 toBundleEntry 里已经带过一份候选，这里用 fileKinds 的结论覆盖（更全、口径统一）
+    return cands.map((p) => String(p.id));
+  }
 
-    /**
-     * 根级诊断：**这根本身有没有问题**（与"这根确实没有模型"要能区分）。
-     *
-     * 为什么单开一个字段而不是塞进 warnings：warnings 里混着通用能力说明
-     *   （例如「有 N 个能解包资源包的插件…」），前端拿它拼用户提示会得出
-     *   「因为有两个插件所以没模型」这种错误因果（前端实测踩过）。
-     * 文案一律**不带绝对路径**（那是排障信息，进日志），只带 rootId 便于对照配置。
-     * 优先级：路径问题 > 扫描抛错 > 扫描成功但 0 条目。
-     */
-    let rootWarning = null;
-    // 三种根级问题的文案都以它结尾：格式只在这里定义一次（改样式不用改三处）
-    const rootTag = `（rootId=${cfg.id}）`;
-    if (pathProblem) {
-      rootWarning = `${ROOT_PATH_PROBLEM_TEXT[pathProblem]}${rootTag}`;
-    } else if (scanErrors.length) {
-      rootWarning = `资源根扫描失败${rootTag}：具体原因见 warnings`;
-    } else if (!entries.length) {
-      rootWarning = `扫描完成但没有任何模型条目${rootTag}`;
-    }
+  /**
+   * 取这一条的静态事实 + 存储状态 ⇒ recompute 出三字段（顺带登记待探测）。
+   * @param {{id: string}} cfg 资源根
+   * @param {object} e 条目
+   * @param {{providers: Array, providerFp: string}} common
+   * @returns {{display: object, support: object, loadResult: object|null, pendingProbe: boolean}}
+   */
+  function computeEntryStateFor(cfg, e, common) {
+    const { providers, providerFp } = common;
+    const key = `${cfg.id}/${e.rel || e.name}`;
+    e.stateKey = key;
+    // 条目的静态事实（谁认领 / 尺寸 / 缺哪些贴图）——**只写一次**：
+    //   既记进 describeEntry 供 /api/entries/result 写读一体复用，也喂本行的 recompute。
+    //   两处各写一份字面量就是"改一处漏一处"的经典漂移源；
+    //   不含 providers：消费方（contextFor）自己取注册表，存进缓存只会白占内存。
+    const entryFacts = {
+      candidates: e.candidates,
+      size: Number.isFinite(e.size) ? Number(e.size) : undefined,
+      // 目录型条目没有"未解包"这一说 ⇒ 传 undefined 表示"没做资产检查"→ unknown，
+      //   有 missingTextures（含空数组）时才由 recompute 判 ready/unsupported
+      missingTextures: e.meta && Array.isArray(e.meta.missingTextures) ? e.meta.missingTextures : undefined,
+      assetDependency: null,
+    };
+    rememberEntry(key, entryFacts);
+    const state = entryStates ? entryStates.get(key) : null;
+    // 规则①（能力变了 ⇒ 结论作废）与规则②（文件换了 ⇒ 该条失效）的判据都在这里接上：
+    //   providerFingerprint 缺了规则①形同虚设；assetFingerprint 缺了规则②永远不触发。
+    const computed = entryStates
+      ? entryStates.recompute(state, {
+        providers,
+        ...entryFacts,
+        providerFingerprint: providerFp,
+        assetFingerprint: assetFingerprintOf(e.size),
+      })
+      : { display: { accent: null, provider: null, candidates: e.candidates }, support: { state: 'unknown', detail: null }, loadResult: null, pendingProbe: false };
+    // 待探测登记（§八 判据 a/b）：**同步路径只登记**，绝不在这次请求里解析包体。
+    //   · 容器条目：从没结论，或旧结论因能力/文件变化作废 ⇒ 都要排
+    //   · 目录型条目：support 来自资产检查（缺贴图），与包内形态无关 ⇒ 不排
+    if (e.container && (!state || computed.pendingProbe)) probeQueue.add(key);
+    return computed;
+  }
+
+  /**
+   * 归属兜底：唯一认领者明确时补上 provider/accent。
+   *
+   * 只在"还没有归属"时补 —— `loadResult.ok` 时 recompute 已经给对了（一致性约束：
+   *   ok 的 loadResult 说了算），这里覆盖它就是拿声明色去盖事实色。
+   * @param {object} e 条目（就地写入 display）
+   * @param {Array} providers 提供者注册表
+   */
+  function applyOwnerFallback(e, providers) {
+    if (!e.ownerProvider || e.display.provider) return;
+    const hit = providers.find((p) => String(p.id) === String(e.ownerProvider));
+    if (!hit) return;
+    e.display.provider = String(hit.id);
+    e.display.accent = hit.accent ? String(hit.accent) : null;
+  }
+
+  /**
+   * 第③段·包装响应：根级诊断（rootWarning / rootIssues / capabilityNotes）+ 耗时记账 + 返回体。
+   * 只做"把前两段的产物翻译成 HTTP 响应"，不再碰条目本身（想知道字段怎么来的看第②段）。
+   * @param {{cfg: object, t0: number, entries: Array, warnings: string[],
+   *          scanErrors: Error[], cachedAll: boolean, pathProblem: string|null, skipped?: number}} p
+   * @returns {{status: number, body: object}}
+   */
+  function buildCatalogResponse({ cfg, t0, entries, warnings, scanErrors, cachedAll, pathProblem, skipped }) {
+    const rootWarning = computeRootWarning({ cfg, pathProblem, scanErrors, entries });
 
     // 记账（只此一处写）：耗时口径 = 本次 listCatalog 从入口到末尾的墙钟时间，
     //   source 只有两种：两根扫描器都命中清单缓存 ⇒ cache；任一重建（或抛错）⇒ built。
@@ -837,19 +974,13 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
       at: Date.now(),
     });
 
-    // ---- warnings 分轨（契约 §四）----
-    //   rootIssues[]      = "这一根怎么了"（可拼用户提示，带 rootId、不带绝对路径）
-    //   capabilityNotes[] = 通用能力说明（"有几个插件能解包"这类），**不许**拿来拼因果
-    // 为什么必须拆：两者混在一起时，前端拿 warnings 拼提示会得出
-    //   "因为有两个插件所以没有模型" 这种错误因果（实测踩过）。
-    // warnings 保留一版（契约 §五 迁移期），前端切换后删除。
-    const capabilityNotes = warnings.filter((w) => isCapabilityNote(w));
-    const inlineRootIssues = warnings.filter((w) => !isCapabilityNote(w))
-      .map((text) => ({ rootId: cfg.id, text }));
-    const rootIssues = [
-      ...(rootWarning ? [{ rootId: cfg.id, text: rootWarning }] : []),
-      ...inlineRootIssues,
-    ];
+    const { rootIssues, capabilityNotes } = splitWarnings(warnings, rootWarning, cfg.id);
+
+    // 喊一声"这一根扫完了"（§八 触发判据 a）：同步路径只负责触发，不等待、不读包。
+    //   没有待探测项时探测器内部会立刻返回，等于零开销（S10）。
+    if (probeNotifier) {
+      try { probeNotifier(cfg.id); } catch { /* 触发失败不影响列表本身 */ }
+    }
 
     return {
       status: 200,
@@ -864,9 +995,54 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
         rootWarning,
         rootIssues,
         capabilityNotes,
-        ...(bundle.skipped ? { skipped: bundle.skipped } : {}),
+        ...(skipped ? { skipped } : {}),
         ...(warnings.length ? { warnings } : {}),
       },
+    };
+  }
+
+  /**
+   * 根级诊断：**这根本身有没有问题**（与"这根确实没有模型"要能区分）。
+   *
+   * 为什么单开一个字段而不是塞进 warnings：warnings 里混着通用能力说明
+   *   （例如「有 N 个能解包资源包的插件…」），前端拿它拼用户提示会得出
+   *   「因为有两个插件所以没模型」这种错误因果（前端实测踩过）。
+   * 文案一律**不带绝对路径**（那是排障信息，进日志），只带 rootId 便于对照配置。
+   * 优先级：路径问题 > 扫描抛错 > 扫描成功但 0 条目。
+   * @param {{cfg: {id: string}, pathProblem: string|null, scanErrors: Error[], entries: Array}} p
+   * @returns {string|null}
+   */
+  function computeRootWarning({ cfg, pathProblem, scanErrors, entries }) {
+    // 三种根级问题的文案都以它结尾：格式只在这里定义一次（改样式不用改三处）
+    const rootTag = `（rootId=${cfg.id}）`;
+    if (pathProblem) return `${ROOT_PATH_PROBLEM_TEXT[pathProblem]}${rootTag}`;
+    if (scanErrors.length) return `资源根扫描失败${rootTag}：具体原因见 warnings`;
+    if (!entries.length) return `扫描完成但没有任何模型条目${rootTag}`;
+    return null;
+  }
+
+  /**
+   * warnings 分轨（契约 §四）：
+   *   rootIssues[]      = "这一根怎么了"（可拼用户提示，带 rootId、不带绝对路径）
+   *   capabilityNotes[] = 通用能力说明（"有几个插件能解包"这类），**不许**拿来拼因果
+   *
+   * 为什么必须拆：两者混在一起时，前端拿 warnings 拼提示会得出
+   *   "因为有两个插件所以没有模型" 这种错误因果（实测踩过）。
+   * @param {string[]} warnings 扫描汇总
+   * @param {string|null} rootWarning 根级结论（可能为 null）
+   * @param {string} rootId 资源根 id
+   * @returns {{rootIssues: Array<{rootId: string, text: string}>, capabilityNotes: string[]}}
+   */
+  function splitWarnings(warnings, rootWarning, rootId) {
+    const capabilityNotes = warnings.filter((w) => isCapabilityNote(w));
+    const inlineRootIssues = warnings.filter((w) => !isCapabilityNote(w))
+      .map((text) => ({ rootId, text }));
+    return {
+      rootIssues: [
+        ...(rootWarning ? [{ rootId, text: rootWarning }] : []),
+        ...inlineRootIssues,
+      ],
+      capabilityNotes,
     };
   }
 
@@ -879,5 +1055,9 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
     return { at: stats.at, totalMs: stats.totalMs, roots: stats.roots.map((r) => ({ ...r })) };
   }
 
-  return { listCatalog, getCatalogStats, setUnpackStore, describeEntry };
+  return {
+    listCatalog, getCatalogStats, setUnpackStore, describeEntry,
+    // §八 后台探测的取件口（只登记与取件，判定与写回在 data/shape-probe.mjs）
+    takeProbeKeys, requeueProbeKey, probeQueueSize, setProbeNotifier,
+  };
 }
