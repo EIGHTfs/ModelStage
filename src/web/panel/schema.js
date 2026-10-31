@@ -694,11 +694,23 @@ function resolveSlotEntry(entry, taken, byId, acc, report, opts = {}) {
     report({ pluginId: entry && entry.pluginId, slot: entry && entry.name, id, reason: 'render() 没有返回可用的控件描述（kind 必须是已知类型）' });
     return;
   }
+  // 老接口迁移来的控件带 effectId：效果没注册成功 ⇒ 置灰 + 原因（与迁移前语义一致，契约 §9.3）
+  const effectId = String((entry && entry.spec && entry.spec.effectId) || '');
+  const registered = new Set((opts && opts.registeredEffects) || []);
+  const effectMissing = !!effectId && !registered.has(effectId);
   const ctl = {
     ...desc,
     id,
     label: String((entry && entry.label) || id),
     pluginId: String((entry && entry.pluginId) || ''),
+    ...(effectMissing ? {
+      disabled: true,
+      // reason 与 disabledReason 两个键都要给：
+      //   applyCapabilities 读 disabledReason，mountPanel 建 disabledMap 时读的是 reason ——
+      //   只给一个会出现"置灰了但文案是通用的「当前渲染器不支持」"（实测踩到）。
+      reason: `效果「${effectId}」未注册成功（插件脚本可能加载失败或被禁用）`,
+      disabledReason: `效果「${effectId}」未注册成功（插件脚本可能加载失败或被禁用）`,
+    } : {}),
     // 能力键显式声明为该控件 id：装配期把 id 并进 capabilities.settings，渲染层据此认它
     capabilityKey: id,
     // 插件的动作回调（面板点击时派发；由装配层负责调用并兜住异常）

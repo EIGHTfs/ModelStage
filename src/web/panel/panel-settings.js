@@ -508,6 +508,8 @@ function rebuildPanelFor(renderer) {
   const slotEntries = host && typeof host.slotSections === 'function' ? host.slotSections() : [];
   const slotMerged = mergeSlotControls(merged.groups, slotEntries, {
     buildProps: (entry) => slotPropsFor(entry),
+    // 老接口迁移来的控件靠它判"效果是否注册成功"（置灰 + 原因，契约 §9.3）
+    registeredEffects,
     onReject: (rej) => {
       // title-collision 是**提示**不是拒绝（设计 §七·一 明确允许与内置组同名）
       const advisory = rej.code === 'title-collision';

@@ -181,6 +181,7 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.5.0 | 2026-10-31 | 老接口 `registerControls` 迁移到插槽注册（一条通路）：标题→id 派生映射、老控件 id 不强制前缀、`implicitDeclare` 隐式声明（只跳过 undeclared，阶段/前缀/重名/风险仍全查）；`via` 标注控件来源；老控件与 `slots.register` 的控件共用同一合并/渲染/回收链路 |
 | 0.4.9 | 2026-10-31 | 补提交 S3-a 遗漏的接线：`plugin-host.js` 从 schema 取内置分组 id 传给插槽注册表（据此区分"引用内置组"与"插件新建组"，新建组必须带 `plugin.<pluginId>.` 前缀） |
 | 0.4.8 | 2026-10-31 | 修插件控件 kind 两套词汇缺映射（`toggle`/`button` 曾落进 `ctl-note` 空行，表现为"控件消失"，连正常态都不渲染）；新增唯一映射表 `PLUGIN_KIND_TO_VIEW` 并补 kind 映射完备性单测；孤儿能力键检查改合并口径（三源 declared + 跳过 disabled + DOM 漂移护栏 + 判据自检） |
 | 0.4.7 | 2026-10-31 | 插件插槽 S3-a：允许插件新建分组（id 强制 `plugin.<pluginId>.` 前缀、order 缺省 1000、排在内置组之后、与内置组同名允许并提示）；分组存在性判定由标题集合改为 id 优先/title 兜底；分组 id 规则前移到注册期（`bad-group-id`） |

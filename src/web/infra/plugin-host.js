@@ -219,6 +219,51 @@ export function createPluginHost(opts = {}) {
     emit('plugin.register-rejected', rec);
     return false;
   }
+
+  /**
+   * 内置分组的 title → id 映射（兼容层用）。
+   *
+   * 为什么从 PANEL_GROUPS 派生而不是写死一张表：老接口传的是**标题**（「设置」），
+   *   而插槽名要的是 groupId；写死映射会在加组/改标题时静默失配（这正是本轮要消灭的"两处表达"）。
+   * 传进来的本来就是合法 id 时原样返回，方便调用方"标题或 id 都行"。
+   * @param {string} name
+   * @returns {string|null}
+   */
+  function groupIdOfTitle(name) {
+    const want = String(name || '').trim();
+    if (!want) return null;
+    if (PANEL_GROUPS.some((g) => String(g.id || '') === want)) return want;
+    const hit = PANEL_GROUPS.find((g) => String(g.title || '') === want);
+    return hit ? String(hit.id || '') : null;
+  }
+
+  /**
+   * 老控件声明 → 插槽 spec（兼容层用）。
+   *
+   * 老接口给的是"数据"，插槽要的是"render 函数"：这里把老形状包成一个返回老形状的 render，
+   *   之后统一由 mergeSlotControls → slotSpecToControl 翻译成渲染层 kind（一处翻译，两路共用）。
+   * @param {object} raw 老控件声明（{id, kind, label, options, order, ...}）
+   * @returns {object|null} 插槽 spec；缺 id 返回 null
+   */
+  function legacyControlToSlotSpec(raw) {
+    const id = String((raw && raw.id) || '').trim();
+    if (!id) return null;
+    return {
+      id,
+      label: String((raw && raw.label) || id),
+      // 老接口的语义：控件 id 就是个效果 id —— 效果没注册成功时该控件要**置灰 + 给原因**（契约 §9.3）。
+      //   转插槽后由 mergeSlotControls 用 registeredEffects 判定，语义与迁移前一致。
+      effectId: id,
+      // 老接口没有 order 概念：缺省 1000（排在组内内置控件之后），显式给了就尊重
+      order: Number.isFinite(Number(raw && raw.order)) ? Number(raw.order) : 1000,
+      render: () => ({
+        kind: String((raw && raw.kind) || ''),
+        options: Array.isArray(raw && raw.options) ? raw.options.slice() : undefined,
+        label: String((raw && raw.label) || id),
+      }),
+    };
+  }
+
   /** /api/plugins 返回的清单快照 */
   let discovered = [];
   let loaded = false;
@@ -359,6 +404,23 @@ export function createPluginHost(opts = {}) {
      * @param {{group:string, controls:Array}} section
      * @returns {boolean}
      */
+    /**
+     * **兼容层**：老接口 `registerControls({group, controls})` —— 内部转成插槽注册。
+     *
+     * 新插件请直接用 `slots.register('panel.group.<groupId>', { id, render })`；
+     *   这里保留是因为它写在契约里（公开面），不能因为"现网没人用"就悄悄删掉。
+     *
+     * 三条兼容语义（都是老插件能零改动继续工作的前提）：
+     *   ① 分组参数是**标题**（「设置」）⇒ 用内置表的 title→id 映射换成 groupId（不写死映射表）
+     *   ② 老控件 id **不强制** plugin. 前缀（分组插槽本就不要求前缀）
+     *   ③ **隐式声明**：老插件没有 plugin.json 的 slots 字段 ⇒ 视为已声明该分组插槽，
+     *      不报 undeclared-slot（否则老插件一升级就全部失效）
+     *
+     * 迁移后老接口与 slots.register 的控件走**同一条**合并/渲染/回收链路：
+     *   登记进同一个 slotRegistry ⇒ disposer 进同一个 effect 容器 ⇒ unloadPlugin 一并回收。
+     * @param {{group:string, controls:Array}} section
+     * @returns {boolean} 至少成功登记一个控件
+     */
     registerControls(section) {
       const pluginId = loadingPluginId;
       if (!pluginId) {
@@ -366,25 +428,39 @@ export function createPluginHost(opts = {}) {
           group: String((section && section.group) || ''),
         });
       }
-      const group = String((section && section.group) || '').trim();
+      const groupName = String((section && section.group) || '').trim();
       const controls = Array.isArray(section && section.controls) ? section.controls : null;
-      if (!group || !controls || !controls.length) {
+      if (!groupName || !controls || !controls.length) {
         say.warn(`registerControls（插件 ${pluginId}）缺少 group 或 controls，已忽略`);
         return false;
       }
-      // 留下这一节的**对象引用**：disposer 要能精确摘掉自己这一节（按 pluginId 批量删会误伤同插件其它节）
-      const entry = { pluginId, group, controls: controls.map((c) => ({ ...c })) };
-      controlSections.push(entry);
-      addEffect(pluginId, {
-        kind: 'controls',
-        label: group,
-        dispose: () => {
-          const i = controlSections.indexOf(entry);
-          if (i >= 0) controlSections.splice(i, 1);
-        },
-      });
-      say.info(`插件 ${pluginId} 提交控件节：分组「${group}」${controls.length} 个`);
-      return true;
+      if (!slotRegistry) {
+        say.warn(`registerControls（插件 ${pluginId}）失败：插槽注册表尚未就绪`);
+        return false;
+      }
+      // ① 标题 → groupId：内置表派生；传进来的本来就是 id 时原样放过
+      const groupId = groupIdOfTitle(groupName) || groupName;
+      const slotName = `panel.group.${groupId}`;
+      let ok = 0;
+      const rejects = [];
+      for (const raw of controls) {
+        const spec = legacyControlToSlotSpec(raw);
+        if (!spec) { rejects.push({ id: (raw && raw.id) || '', reason: '控件缺 id' }); continue; }
+        // ②③ 前缀不强制、隐式声明：都靠 implicitDeclare 分支表达
+        const dispose = slotRegistry.register(pluginId, slotName, spec, { implicitDeclare: true });
+        if (typeof dispose === 'function') {
+          // 与 slots.register 完全同一条回收链：disposer 进同一个 effect 容器
+          //   （不挂的话 unloadPlugin 只能靠 disposeAll 兜底，统计上会显示"disposed 少、slotsRemoved 多"）
+          addEffect(pluginId, { kind: 'slot', label: slotName, dispose });
+          ok += 1;
+        } else {
+          rejects.push({ id: spec.id, reason: '插槽注册被拒（见 stats.rejects）' });
+        }
+      }
+      say.info(`插件 ${pluginId} 提交控件节（兼容层 → 插槽）：分组「${groupName}」→ ${slotName}，成功 ${ok}/${controls.length}`
+        + (rejects.length ? `，被拒 ${rejects.length}` : ''));
+      publishSlotStats();
+      return ok > 0;
     },
     /**
      * 插槽注册（设计 §四）：**只登记、不渲染**（渲染在 S2 接）。
@@ -453,7 +529,11 @@ export function createPluginHost(opts = {}) {
     //   asset-provider 必须 register() 交出 canHandle/resolve；
     //   只提供 panel 的插件没有 register() 可言，它交的是 effects/controls ——
     //   拿 register() 当唯一成功标志会把它误判成"加载失败"，进而把它的控件也置灰。
-    const didPanelWork = controlSections.some((sec) => sec.pluginId === id)
+    // 兼容层迁移后，老接口的控件进的是 slotRegistry（不再进 controlSections）——
+    //   生效判定必须把两者都算上，否则"只交控件的插件"会被判成"未生效"并置灰（S1 就是这么误报的）。
+    const slotCount = slotRegistry ? (slotRegistry.stats().byPlugin[id] || 0) : 0;
+    const didPanelWork = slotCount > 0
+      || controlSections.some((sec) => sec.pluginId === id)
       || [...registeredEffects.values()].some((e) => e.pluginId === id);
     const providerOk = providers.has(id);
     const error = st.error || (providerOk || didPanelWork ? null : '脚本已加载但没有调用 register()');

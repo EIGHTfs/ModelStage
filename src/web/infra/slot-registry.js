@@ -123,7 +123,7 @@ export function createSlotRegistry(opts = {}) {
    * @param {string} slotName
    * @returns {{ok: true, entry: object, catalogRisk: string} | {ok: false}}
    */
-  function checkSlotAllowed(pid, slotName) {
+  function checkSlotAllowed(pid, slotName, opts = {}) {
     // ② 目录里没有
     const entry = findCatalogEntry(slotName);
     if (!entry) {
@@ -139,7 +139,12 @@ export function createSlotRegistry(opts = {}) {
       return { ok: false };
     }
     // ④ 插件清单没声明
-    const declared = declaredOf(pid).find((d) => d.name === slotName) || null;
+    //   implicitDeclare（兼容层用）：老接口 registerControls 的插件不可能在 plugin.json 里写 slots，
+    //   把它当成"隐式声明了它要注册的那个分组插槽"——否则老插件一升级就全部失效。
+    //   注意：隐式只作用于**声明检查**，前缀/阶段/风险等级/重名检查一条都不放过。
+    const declared = opts.implicitDeclare
+      ? { name: slotName, risk: null }
+      : (declaredOf(pid).find((d) => d.name === slotName) || null);
     if (!declared) {
       reject(pid, slotName, 'undeclared-slot',
         `插件 ${pid} 没有在 plugin.json 的 slots 里声明「${slotName}」，拒绝注册`,
@@ -209,7 +214,7 @@ export function createSlotRegistry(opts = {}) {
    * @param {object} spec 插件声明：{ id, order?, label?, render?, onAction? }
    * @returns {null | (() => void)} 成功返回 disposer；失败返回 null（原因走 onReject + stats）
    */
-  function register(pluginId, name, spec) {
+  function register(pluginId, name, spec, opts = {}) {
     const pid = String(pluginId || '').trim();
     const slotName = String(name || '').trim();
 
@@ -222,7 +227,7 @@ export function createSlotRegistry(opts = {}) {
     if (!pid) { reject('', slotName, 'missing-plugin-id', '缺少 pluginId（宿主未提供装载上下文）'); return null; }
     if (!slotName) { reject(pid, '', 'missing-slot-name', '缺少插槽名'); return null; }
 
-    const allowed = checkSlotAllowed(pid, slotName);
+    const allowed = checkSlotAllowed(pid, slotName, opts);
     if (!allowed.ok) return null;
     const shape = checkSpec(pid, slotName, spec);
     if (!shape.ok) return null;
@@ -230,6 +235,8 @@ export function createSlotRegistry(opts = {}) {
     const record = {
       pluginId: pid, name: slotName, id: shape.id, order: shape.order, label: shape.label,
       risk: allowed.catalogRisk, spec: spec || {},
+      // 兼容层来的登记留个标记：排查"这个控件哪来的"时能一眼分清
+      via: opts.implicitDeclare ? 'legacy-registerControls' : 'slots.register',
     };
     const list = byPlugin.get(pid) || [];
     list.push(record);
@@ -273,7 +280,7 @@ export function createSlotRegistry(opts = {}) {
       byPlugin: plugins,
       // 明细保留必要字段即可：spec 里可能有函数，不能直接序列化给测试
       entries: [...byPlugin].flatMap(([pid, list]) => list.map((r) => ({
-        pluginId: pid, name: r.name, id: r.id, order: r.order, label: r.label, risk: r.risk,
+        pluginId: pid, name: r.name, id: r.id, order: r.order, label: r.label, risk: r.risk, via: r.via || 'slots.register',
       }))),
       rejects: rejects.slice(),
     };
