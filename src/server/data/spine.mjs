@@ -10,7 +10,7 @@ const log = createLogger('models');
 // 路径依赖（清单文件位置）改成显式入参，模块内不持有全局路径。
 import fs from 'node:fs';
 import { createLogger } from '../core/log.mjs';
-import { dirSignature, signatureMatches } from './manifest-stamp.mjs';
+import { dirSignature, signatureMatches, generatorFingerprint } from './manifest-stamp.mjs';
 import {
   spineManifestFile, ensureManifestDir, invalidateManifests,
 } from './manifest-cache.mjs';
@@ -281,12 +281,17 @@ export function getSpineModels(configFile, root, force, deps) {
     try {
       const j = JSON.parse(fs.readFileSync(f, 'utf8'));
       if (j && Array.isArray(j.models)) {
-        // 读之前先比对目录签名：资源文件增删后清单要能自动失效，不必等 ?refresh=1
-        //   （边界：只感知目录增删，改文件内容不触发 —— 见 manifest-stamp.mjs 的说明）
-        if (signatureMatches(j.dirStamps, root.path)) {
+        // 两道判据，缺一不可：
+        //   ① 生成者指纹 —— 解析代码变了就该重建（dirStamps 只感知目录增删，感知不到代码改动）
+        //   ② 目录签名  —— 资源文件增删后重建，不必等 ?refresh=1
+        const gen = generatorFingerprint();
+        if (j.generator !== gen) {
+          log.info('解析器已变化，清单失效重建', { root: root.id, from: j.generator || null, to: gen });
+        } else if (signatureMatches(j.dirStamps, root.path)) {
           return { models: j.models, cached: true, ts: j.ts || Date.now() };
+        } else {
+          log.info('目录已变化，清单失效重建', { root: root.id });
         }
-        log.info('目录已变化，清单失效重建', { root: root.id });
       }
     } catch (e) {
       log.warn('清单读取失败，将重新扫描', { file: f, err: e.message });
@@ -302,6 +307,8 @@ export function getSpineModels(configFile, root, force, deps) {
     count: models.length,
     // 生成时的目录签名：下次读清单先比对它，目录增删即自动重建（详见 manifest-stamp.mjs）
     dirStamps: dirSignature(root.path),
+    // 生成时的解析器指纹：解析代码一改，这份清单自动失效（无需手工删文件）
+    generator: generatorFingerprint(),
     models,
   };
   // 原子写入，避免写到一半被读到损坏内容

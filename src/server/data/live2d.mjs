@@ -9,7 +9,7 @@
 //   因此对外必须给**路径式** URL（/files/<rootId>/<相对路径>）——查询串式会在相对解析时丢掉。
 import fs from 'node:fs';
 import { createLogger } from '../core/log.mjs';
-import { dirSignature, signatureMatches } from './manifest-stamp.mjs';
+import { dirSignature, signatureMatches, generatorFingerprint } from './manifest-stamp.mjs';
 import { live2dManifestFile, ensureManifestDir } from './manifest-cache.mjs';
 import path from 'node:path';
 import { encodePath } from '../assets/probe.mjs';
@@ -205,11 +205,15 @@ export function getLive2DModels(configFile, cfg, force) {
     try {
       const payload = JSON.parse(fs.readFileSync(file, 'utf8'));
       if (payload.version === LIVE2D_MANIFEST_VERSION && Array.isArray(payload.models)) {
-        // 与 spine 清单同口径：先比对目录签名，目录增删后自动重建（不必等 ?refresh=1）
-        if (signatureMatches(payload.dirStamps, cfg.path)) {
+        // 与 spine 清单同口径：两道判据 —— 生成者指纹（解析代码变）+ 目录签名（资源增删）
+        const gen = generatorFingerprint();
+        if (payload.generator !== gen) {
+          log.info('解析器已变化，清单失效重建', { id: cfg.id, from: payload.generator || null, to: gen });
+        } else if (signatureMatches(payload.dirStamps, cfg.path)) {
           return { models: payload.models, cached: true, ts: payload.ts };
+        } else {
+          log.info('目录已变化，清单失效重建', { id: cfg.id });
         }
-        log.info('目录已变化，清单失效重建', { id: cfg.id });
       }
     } catch {
       /* 缓存损坏则重扫 */
@@ -218,15 +222,20 @@ export function getLive2DModels(configFile, cfg, force) {
   const models = scanLive2DRootServer(cfg);
   const ts = Date.now();
   try {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
+    // 目录建一次就够（ensureManifestDir 内部就是 mkdir -p）。原先它前面还有一句
+    //   fs.mkdirSync(path.dirname(file)) —— 建的是同一个目录，重复调用，已删。
     ensureManifestDir(configFile);
-    fs.writeFileSync(file, JSON.stringify({
+    const body = JSON.stringify({
       version: LIVE2D_MANIFEST_VERSION,
       rootId: cfg.id,
       ts,
       dirStamps: dirSignature(cfg.path),   // 同上：目录签名供下次读清单时比对
+      generator: generatorFingerprint(),   // 解析器指纹：解析代码一改，清单自动失效
       models,
-    }), 'utf8');
+    });
+    // 与 spine 清单同口径：先写临时文件再 rename，避免并发读拿到半份 JSON
+    fs.writeFileSync(`${file}.tmp`, body, 'utf8');
+    fs.renameSync(`${file}.tmp`, file);
   } catch (e) {
     log.warn('清单写入失败（不影响使用）', { err: e.message });
   }

@@ -154,6 +154,8 @@ const SUITES = [
   { name: 'log', runner: 'node-test', file: 'test/log.test.mjs' },
   // 清单签名比对（含「根目录不存在=稳定状态」边界；P0 回归）
   { name: 'manifest-stamp', runner: 'node-test', file: 'test/manifest-stamp.test.mjs' },
+  // 清单的「生成者指纹」：改解析代码后落盘清单必须自动失效（否则改完代码界面还是旧数据）
+  { name: 'manifest-generator', runner: 'node-test', file: 'test/manifest-generator.test.mjs' },
   // 插件清单校验器自己的回归（契约 §九 effects / §9.6 同口径）：
   //   检查器"报通过"时没人会再回头看它；一旦它悄悄失去检测能力，所有插件都会"看起来合法"。
   //   样本在 test/fixtures/plugin-effects/，按 A7 行断言（门禁与运行期共用一份实现）。

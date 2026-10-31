@@ -122,3 +122,9 @@ docs/.trash/
 
 # 一次性等价/压测脚本：只在本地用来复验，不入库（结论写进 commit message 与文档）
 tool/.tmp-*
+
+# 插件自带依赖（venv / 三方包）：体积大且属外部资产，不入库（插件 README 记版本，部署端自行装）
+plugins/*/.deps/
+# Python 字节码缓存
+__pycache__/
+*.pyc
