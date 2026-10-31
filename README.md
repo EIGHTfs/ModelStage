@@ -181,6 +181,7 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.5.4 | 2026-10-31 | 插槽阶段抬到 S3：`toolbar.actions` 开放（`panel.group` 已开放；`panel.brand` / `panel.control.<key>` 仍 S5、`stage.overlay` 仍 S4）；顺序用例改为动态挑未开放样本 |
 | 0.5.3 | 2026-10-31 | 补设置键→控件反向映射：一个设置键可被多个控件绑定（值为控件 id 数组），外部改设置键会触发所有绑定控件重绘；tick 级合并去重（`__PANEL_REPAINT__` 可核对）；卸载后惰性跳过 |
 | 0.5.2 | 2026-10-31 | 清理老链：删除 `controlSections` / `mergePluginControls` / `normalizePluginSection` 等死路径（schema 179 行 + plugin-host 6 处），注册通路收敛为 `slots.register` 一条（`registerControls` 仅作兼容层）；顺带修 `mergeSlotControls` 的 onReject 默认值取值 bug |
 | 0.5.1 | 2026-10-31 | 插槽 owner props 补齐并改为 getter（settings / geometry / activeSurface / document）；新增 `spec.setting` 统一控件存值键（值直接落在清单声明键上，未声明则注册期拒绝）；`rebuildPanelFor` 拆成 5 个函数（111 行 → 全部 ≤50）；老链标 deprecated |

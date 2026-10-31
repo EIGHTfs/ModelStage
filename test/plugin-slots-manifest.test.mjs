@@ -56,15 +56,15 @@ test('目录匹配：精确名优先；占位符只吃一段非空名字（不�
   assert.equal(matchSlot('nope.slot'), null);
 });
 
-test('阶段：S2 的插槽在 S1 视角下未开放、在 S2（当前阶段）下开放', () => {
+test('阶段：panel.group（目录 S2）在 S1 视角下未开放、在 S2 起开放', () => {
   const groupSlot = matchSlot('panel.group.x');
   // **每个断言都显式注入阶段**，不依赖 CURRENT_STAGE ——
   //   否则"抬阶段"（S1→S2）会把这条用例变成假红/假绿，而那正是阶段推进时唯一该看的东西。
   assert.equal(isSlotOpen(groupSlot, 'S1'), false, 'S1 阶段下 panel.group 应未开放');
   assert.equal(isSlotOpen(groupSlot, 'S2'), true, 'S2 阶段下 panel.group 应开放');
-  // 当前阶段就是 S2（这条断言 CURRENT_STAGE 本身，抬阶段时它会明确提醒要一起改测试）
-  assert.equal(CURRENT_STAGE, 'S2');
-  assert.equal(isSlotOpen(groupSlot), true);
+  // 断言 CURRENT_STAGE 本身：抬阶段时这条会红，提醒"改了常量就得一起看测试"（本轮 S2→S3 正是它先报的）
+  assert.equal(CURRENT_STAGE, 'S3');
+  assert.equal(isSlotOpen(groupSlot), true, '当前阶段已过 S2，panel.group 必须开放');
   // S5 的插槽在 S4 仍未开放、S5 才开放
   assert.equal(isSlotOpen(matchSlot('panel.brand'), 'S4'), false);
   assert.equal(isSlotOpen(matchSlot('panel.brand'), 'S5'), true);
@@ -95,12 +95,18 @@ test('清单校验：未开放阶段的插槽 ⇒ slot-not-open（写明阶段�
   assert.match(errors[0].hint, /S5/);
 });
 
-test('**顺序**：未开放阶段必须**先于** risk 判定（toolbar.actions 不能被误报 risk-mismatch）', () => {
-  // toolbar.actions：目录 risk=append、stage=S3。这里故意声明 risk=replace（不一致）+ 当前阶段 S1
-  const r = validateSlotRegistration('toolbar.actions', ['toolbar.actions'], { risk: 'replace' });
+test('**顺序**：未开放阶段必须**先于** risk 判定（不能被误报 risk-mismatch）', () => {
+  // 动态挑一个"目录里仍未开放"的插槽，而不是写死某个名字 ——
+  //   写死的话每次抬阶段（S2→S3→S4…）这条都会因为"它开放了"而假红，而它验的其实是顺序。
+  const closed = SLOT_CATALOG.find((s) => s.stage > CURRENT_STAGE);
+  assert.ok(closed, '目录里必须仍存在未开放的插槽（否则这条用例失去意义，说明阶段已全开）');
+  const name = closed.name.replace(/<[^>]+>/, 'probe');   // 占位符换成具体名字
+  const wrongRisk = closed.risk === 'append' ? 'replace' : 'append';
+  // 故意用一个**与目录不一致**的 risk：若实现先判 risk，就会报 risk-mismatch —— 那正是要防的误导
+  const r = validateSlotRegistration(name, [name], { risk: wrongRisk });
   assert.equal(r.ok, false);
   assert.equal(r.error.why, 'slot-not-open', '阶段没到就该报 slot-not-open，不能报 risk-mismatch');
-  assert.equal(r.error.catalogStage, 'S3');
+  assert.equal(r.error.catalogStage, closed.stage);
 });
 
 // ─────────────────────────── ③ undeclared-slot ───────────────────────────
@@ -269,6 +275,6 @@ test('/api/plugins 下发 currentStage，且**取自 slot-catalog**（抬阶段�
     body.slotCatalog.some((s) => s.stage > body.currentStage),
     '目录里应仍有"未开放"的插槽 —— 否则说明有人把 currentStage 混进了目录 stage',
   );
-  // ③ localStorage 时代的前端常量已不需要：值只有这一份
-  assert.equal(body.currentStage, 'S2');
+  // ③ 前端那个"自己的阶段常量"已不需要：值只有这一份（抬阶段时这条会红，提醒同步）
+  assert.equal(body.currentStage, 'S3');
 });

@@ -18,7 +18,7 @@
 export const SLOT_STAGES = ['S1', 'S2', 'S3', 'S4', 'S5'];
 
 /** 当前实现阶段。改动这里等于"开放下一批插槽"，是**有意为之的开关**，不要让它随代码漂移 */
-export const CURRENT_STAGE = 'S2';
+export const CURRENT_STAGE = 'S3';
 
 /** 风险三档（设计 §三）：append 只追加 / replace 会替换原生内容 / shadow 会遮蔽原生界面 */
 export const SLOT_RISKS = ['append', 'replace', 'shadow'];
