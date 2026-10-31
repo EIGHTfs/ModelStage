@@ -12,10 +12,10 @@ import { resetStage, trackElementStage } from '../infra/ready.js';
 import { rendererSupports, setRendererSetting } from '../app/renderer-setting.js';
 import * as uiState from '../app/ui-state.js';
 import { stageLog, stageStatus } from '../app/status.js';
-import { PANEL_GROUPS, applyCapabilities, mergeSlotControls, selfCheck, settingKeyOf } from './schema.js';
+import { PANEL_GROUPS, applyCapabilities, applyKeyedControlReplacements, mergeSlotControls, selfCheck, settingKeyOf } from './schema.js';
 import { activeChain } from '../engine/effect-chain.js';
 import { mountPanel } from './view.js';
-import { syncPluginToolbar } from './toolbar.js';
+import { syncBrand, syncPluginToolbar } from './toolbar.js';
 import { applyDebugLog, applyHangGuard, applyMemoryGuard, applyShowStatus, connectShellControls, runSettingsAction } from './shell-controls.js';
 import { applyBackground, applyTheme, readViewSettings, saveViewSettings } from '../app/view-settings.js';
 import { bindBgGroupToggle, refreshBgSources } from './background-list.js';
@@ -651,6 +651,15 @@ function aggregatePanelGroups() {
 function syncToolbarPlugins(slotEntries) {
   const nav = document.getElementById('header-actions');
   if (!nav) return;
+  // 单值插槽：品牌名（后注册胜出，卸载回退到上一个）
+  syncBrand(document.getElementById('brand-title'), slotEntries);
+  // 被替换控件的 onAction：登记到同一个动作表（键是被替换后的**控件 id**）
+  for (const entry of slotEntries || []) {
+    if (!/^panel\.control\./.test(String(entry && entry.name || ''))) continue;
+    const target = String(entry.target || '');
+    const fn = entry.spec && entry.spec.onAction;
+    if (target && typeof fn === 'function') slotActions.set(target, { pluginId: entry.pluginId, fn });
+  }
   syncPluginToolbar(nav, slotEntries, {
     // 日志能力由这里注入（渲染器不能 import app 层，否则 context.js 会提前快照顶栏节点）
     log: (level, message, detail) => stageLog(level, message, detail),
@@ -807,7 +816,14 @@ function rebuildPanelFor(renderer) {
   }
   syncPluginEffects(host, pluginControls);
   registerSlotStorage(pluginControls);
-  const groups = filterByCapabilities(renderer, slotMerged, pluginControls, registeredEffects);
+  // 键值插槽：替换内置控件（按 target 找既有控件，替换后仍用原 id）
+  const replaced = applyKeyedControlReplacements(slotMerged.groups, slotEntries);
+  if (replaced.replaced) {
+    stageLog('info', `插件替换了 ${replaced.replaced} 个内置控件`, { source: 'plugin-slots' });
+  }
+  // 第一个参数必须是 **renderer**（filterByCapabilities 从它读 capabilities）；
+  //   替换后的分组通过 slotMerged 的副本带进去（曾经把两者传反，结果所有能力门控控件整片消失）
+  const groups = filterByCapabilities(renderer, { ...slotMerged, groups: replaced.groups }, pluginControls, registeredEffects);
   // 顶栏插件按钮：与面板同一次重建里同步（卸载后旧按钮随重建消失）
   syncToolbarPlugins(slotEntries);
   document.documentElement.dataset.pluginControls = String(merged.added + slotMerged.added);

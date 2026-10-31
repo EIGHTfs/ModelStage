@@ -28,6 +28,8 @@ function makeReg(opts = {}) {
     openStage: opts.openStage || 'S2',
     // 内置分组 id：注册表用它区分"引用内置组"与"插件新建组"（设计 §七·一）
     groupIds: opts.groupIds || ['motion', 'skin', 'play', 'filter', 'pma', 'runtime', 'theme', 'debug', 'settings'],
+    // 内置控件 id：键值插槽（panel.control.*）只能替换它们（不许静默新建）
+    builtinControlIds: opts.builtinControlIds || ['sharpness', 'ctl-filter-preset'],
     isInLoadWindow: opts.isInLoadWindow || (() => true),
   });
   return { reg, rejects };
@@ -154,6 +156,25 @@ test('键值插槽：spec.id 必须带 plugin.<pluginId>. 前缀（分组插槽�
   const ok = reg.register('p1', 'panel.control.plugin.p1.sharpness', { id: 'plugin.p1.sharpness' });
   assert.equal(typeof ok, 'function', 'key 含点也必须能匹配上目录里的 panel.control.<key>');
   assert.equal(reg.stats().total, 1);
+});
+
+test('键值插槽：目标必须是既有内置控件；两个插件抢同一控件时后注册者被拒并带双方', () => {
+  const { reg, rejects } = makeReg({
+    openStage: 'S5',
+    declaredByPlugin: {
+      p1: ['panel.control.plugin.p1.ctl-filter-preset'],
+      p2: ['panel.control.plugin.p2.ctl-filter-preset'],
+      p3: ['panel.control.plugin.p3.ctl-not-exist'],
+    },
+  });
+  // 目标不存在 ⇒ unknown-control（不许静默新建）
+  assert.equal(reg.register('p3', 'panel.control.plugin.p3.ctl-not-exist', { id: 'plugin.p3.x' }), null);
+  assert.equal(rejects.at(-1).code, 'unknown-control');
+  // p1 占位成功；p2 抢同一个内置控件 ⇒ 被拒，原因带双方
+  assert.equal(typeof reg.register('p1', 'panel.control.plugin.p1.ctl-filter-preset', { id: 'plugin.p1.preset' }), 'function');
+  assert.equal(reg.register('p2', 'panel.control.plugin.p2.ctl-filter-preset', { id: 'plugin.p2.preset' }), null);
+  assert.equal(rejects.at(-1).code, 'control-taken');
+  assert.match(rejects.at(-1).why, /p1/, '原因里要有先占位者的 pluginId');
 });
 
 test('stats 明细不含 spec 函数（可被序列化给测试/__SLOT_STATS__）', () => {

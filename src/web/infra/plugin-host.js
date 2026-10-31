@@ -1579,6 +1579,8 @@ const MIME_BY_EXT = {
       declaredByPlugin: declared,
       // 阶段只信服务端（currentStage）；字段缺失时 normalizeStage 回退 'S1'（过渡兜底）
       openStage: normalizeStage(data && data.currentStage),
+      // 内置控件 id：键值插槽（panel.control.*）只能指向它们（替换既有控件，不许静默新建）
+      builtinControlIds: new Set(PANEL_GROUPS.flatMap((g) => (g.controls || []).map((c) => String((c && c.id) || '')))),
       // 内置组 id：新建分组必须带 plugin.<pluginId>. 前缀（设计 §七·一）
       groupIds: new Set(PANEL_GROUPS.map((g) => String(g.id || ''))),
       // spec.setting 校验用：该插件清单里声明过的 settings 键

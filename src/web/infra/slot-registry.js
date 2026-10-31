@@ -72,6 +72,16 @@ export function createSlotRegistry(opts = {}) {
    *   渲染层永远不认的孤儿键（"改了没反应"类问题的源头）。
    */
   const settingsKeysOf = typeof opts.settingsKeysOf === 'function' ? opts.settingsKeysOf : () => [];
+  /**
+   * 内置面板控件的 id 集合（`panel.control.<key>` 的 key 只能指向它们）。
+   * 为什么要有它：替换类插槽**不允许静默新建控件**（那是分组插槽的职责）——
+   *   指向不存在的 id 时必须当场拒绝并说清，否则插件以为替换成功、用户什么也没看到。
+   */
+  /** 全局注册序号（单值插槽的"后注册胜出"依赖它） */
+  let seqCounter = 0;
+  const builtinControlIds = opts.builtinControlIds instanceof Set
+    ? opts.builtinControlIds
+    : new Set(opts.builtinControlIds || []);
 
   /** 目录项 + 编译后的匹配器（构造时算一次，注册期不重复编译） */
   const entries = catalog.map((e) => ({ ...e, matcher: compilePattern(e && e.name) }));
@@ -176,24 +186,68 @@ export function createSlotRegistry(opts = {}) {
    * @param {object} spec
    * @returns {{ok: true, id: string, order: number, label: string} | {ok: false}}
    */
-  function checkSpec(pid, slotName, spec) {
-    // spec.setting（可选）：统一"控件存值键"与"清单设置键"。
-    //   给了就必须是**该插件已声明**的键；没给则沿用 control id（兼容既有插件）。
-    const setting = String((spec && spec.setting) || '').trim();
-    if (setting) {
-      const declaredKeys = new Set((settingsKeysOf(pid) || []).map(String));
-      const prefix = `plugin.${pid}.`;
-      if (!declaredKeys.has(setting)) {
-        reject(pid, slotName, 'undeclared-setting',
-          `spec.setting「${setting}」不在该插件清单的 settings 里声明过（已声明：${[...declaredKeys].join(' / ') || '无'}）`);
-        return { ok: false };
-      }
-      if (!setting.startsWith(prefix)) {
-        reject(pid, slotName, 'bad-setting-prefix',
-          `spec.setting「${setting}」必须以 plugin.${pid}. 开头（设计 §8.3：插件设置键带插件前缀）`);
-        return { ok: false };
-      }
+  /**
+   * 键值插槽的目标控件校验：`panel.control.plugin.<pid>.<内置控件 id>`。
+   *
+   * 三条规则：
+   *   ① 后缀（目标 id）不能空
+   *   ② 目标必须是**既有内置控件** —— 键值插槽的语义是"替换"，不是"新建"（新建归分组插槽）
+   *   ③ 抢占按**目标控件**判，不是按 slot 名：两个插件的 key 天生不同，只有目标会撞
+   * @param {string} pid 插件 id
+   * @param {string} slotName 插槽名
+   * @param {string} prefix `plugin.<pid>.`
+   * @returns {{ok: true, target: string}|{ok: false}}
+   */
+  /**
+   * `spec.setting` 校验：给了就必须是**该插件清单里声明过的**键，且带 `plugin.<pid>.` 前缀。
+   * 为什么要在注册期拦：写错一个键名会得到"控件能点、值写进了没人读的孤儿键"，
+   *   表现为"改了没反应"，比直接报错难查得多。
+   * @param {string} pid 插件 id
+   * @param {string} slotName 插槽名（只为日志）
+   * @param {string} setting 设置键
+   * @returns {boolean} 是否通过
+   */
+  function checkSettingKey(pid, slotName, setting) {
+    const declaredKeys = new Set((settingsKeysOf(pid) || []).map(String));
+    if (!declaredKeys.has(setting)) {
+      reject(pid, slotName, 'undeclared-setting',
+        `spec.setting「${setting}」不在该插件清单的 settings 里声明过（已声明：${[...declaredKeys].join(' / ') || '无'}）`);
+      return false;
     }
+    if (!setting.startsWith(`plugin.${pid}.`)) {
+      reject(pid, slotName, 'bad-setting-prefix',
+        `spec.setting「${setting}」必须以 plugin.${pid}. 开头（设计 §8.3：插件设置键带插件前缀）`);
+      return false;
+    }
+    return true;
+  }
+
+  function checkKeyedTarget(pid, slotName, prefix) {
+    const raw = slotName.slice('panel.control.'.length);
+    const tail = raw.startsWith(prefix) ? raw.slice(prefix.length) : raw;
+    if (!tail) {
+      reject(pid, slotName, 'missing-target',
+        '键值插槽的目标控件 id 为空：应写成 panel.control.plugin.<pluginId>.<内置控件 id>');
+      return { ok: false };
+    }
+    if (!builtinControlIds.has(tail)) {
+      reject(pid, slotName, 'unknown-control',
+        `目标控件「${tail}」不在内置控件表里（替换只能指向既有控件；新建控件请用分组插槽 panel.group.*）`);
+      return { ok: false };
+    }
+    const holder = [...byPlugin.values()].flat().find((r) => String((r && r.target) || '') === tail);
+    if (holder) {
+      reject(pid, slotName, 'control-taken',
+        `内置控件「${tail}」已被插件「${holder.pluginId}」占位（后注册者被拒；先卸载或改用分组插槽新增控件）`);
+      return { ok: false };
+    }
+    return { ok: true, target: tail };
+  }
+
+  function checkSpec(pid, slotName, spec) {
+    // spec.setting（可选）：统一"控件存值键"与"清单设置键"（校验细节见 checkSettingKey）
+    const setting = String((spec && spec.setting) || '').trim();
+    if (setting && !checkSettingKey(pid, slotName, setting)) return { ok: false };
     // 分组 id 规则（设计 §七·一）：内置组直接用 id；插件新建分组必须带 plugin.<pluginId>. 前缀。
     //   放在注册期而不是渲染期：渲染期被拒时控件"登记成功却不显示"，插件作者会以为系统坏了。
     const gm = /^panel\.group\.(.+)$/.exec(slotName);
@@ -217,6 +271,12 @@ export function createSlotRegistry(opts = {}) {
     if (isKeyed && !id.startsWith(prefix)) {
       reject(pid, slotName, 'bad-id-prefix', `键值插槽的 spec.id「${id}」必须带插件前缀 ${prefix}（设计 §8.2）`);
       return { ok: false };
+    }
+    // 键值插槽：解析目标控件 + 抢占检测（细节见 checkKeyedTarget）
+    if (isKeyed) {
+      const keyed = checkKeyedTarget(pid, slotName, prefix);
+      if (!keyed.ok) return { ok: false };
+      return { ok: true, id, setting, target: keyed.target };
     }
     if (listOf(pid).some((r) => r.name === slotName && r.id === id)) {
       reject(pid, slotName, 'duplicate-id', `插槽「${slotName}」里已存在 id「${id}」`, { id });
@@ -258,7 +318,11 @@ export function createSlotRegistry(opts = {}) {
 
     const record = {
       pluginId: pid, name: slotName, id: shape.id, order: shape.order, label: shape.label,
+      // 全局注册序号：单值插槽（panel.brand）靠它判"谁是最后注册的那个"，
+      //   不能按 order（那是展示顺序）也不能按插件分组后的数组位置（跨插件会乱）
+      seq: (seqCounter += 1),
       setting: shape.setting || '',
+      target: shape.target || '',
       risk: allowed.catalogRisk, spec: spec || {},
       // 兼容层来的登记留个标记：排查"这个控件哪来的"时能一眼分清
       via: opts.implicitDeclare ? 'legacy-registerControls' : 'slots.register',
@@ -306,7 +370,7 @@ export function createSlotRegistry(opts = {}) {
       // 明细保留必要字段即可：spec 里可能有函数，不能直接序列化给测试
       entries: [...byPlugin].flatMap(([pid, list]) => list.map((r) => ({
         pluginId: pid, name: r.name, id: r.id, order: r.order, label: r.label, risk: r.risk,
-        setting: r.setting || '', via: r.via || 'slots.register',
+        setting: r.setting || '', seq: r.seq || 0, target: r.target || '', via: r.via || 'slots.register',
       }))),
       rejects: rejects.slice(),
     };
@@ -322,7 +386,7 @@ export function createSlotRegistry(opts = {}) {
   function renderEntries() {
     return [...byPlugin].flatMap(([pid, list]) => list.map((r) => ({
       pluginId: pid, name: r.name, id: r.id, order: r.order, label: r.label, risk: r.risk,
-      setting: r.setting || '', spec: r.spec || {},
+      setting: r.setting || '', target: r.target || '', seq: r.seq || 0, spec: r.spec || {},
     })));
   }
 

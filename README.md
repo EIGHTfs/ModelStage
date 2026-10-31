@@ -181,6 +181,7 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.5.7 | 2026-10-31 | 键值插槽 `panel.control.<key>` 与单值插槽 `panel.brand`：替换内置控件（保留其 id/能力键/设置键）、按目标判抢占、卸载原样恢复；品牌按全局注册序生效、卸载三级回退（上一个注册者 → 内置）、textContent 写入不解析标记 |
 | 0.5.6 | 2026-10-31 | 阶段抬到 S5：`panel.brand` 与 `panel.control.<key>` 开放；`stage.overlay` 改为 **S6 占位档**（尚未排期，不是第六阶段），判定逻辑零改动；阶段相关测试全部改为动态取样 |
 | 0.5.5 | 2026-10-31 | 顶栏声明式化 + `toolbar.actions` 插槽：内置 5 个按钮迁成声明表（id/aria/title 与旧 HTML 逐字一致）、插件按钮排在内置之后按 order 升序、图标仅收白名单图标名（拿不到则纯文本）、封顶 3 个 |
 | 0.5.4 | 2026-10-31 | 插槽阶段抬到 S3：`toolbar.actions` 开放（`panel.group` 已开放；`panel.brand` / `panel.control.<key>` 仍 S5、`stage.overlay` 仍 S4）；顺序用例改为动态挑未开放样本 |

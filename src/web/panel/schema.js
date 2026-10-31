@@ -463,6 +463,50 @@ export function applyCapabilities(groups, capabilities, options = {}) {
  * @param {{onReject?: (rej: object) => void}} [opts]
  * @returns {{groups: Array, added: number, rejected: number, capabilityKeys: string[]}}
  */
+/**
+ * 键值插槽 `panel.control.<key>`：**替换**已存在的内置控件（设计 §8.2）。
+ *
+ * 与分组插槽的分工：分组插槽"加控件"，键值插槽"换控件"——所以这里
+ *   · 只按 target（slot 名后缀）找**既有**控件，找不到就跳过（注册期已拒，这里不制造孤儿）
+ *   · 替换后仍用**原控件 id**：接线（WIRED_IDS）、能力键、禁用判定都按 id 走，
+ *     换 id 等于把这三处一起打断（那是"新建"不是"替换"）
+ * @param {Array} groups 已合并的（内置 + 分组插槽）控件表
+ * @param {Array} entries 插槽登记项
+ * @returns {{groups: Array, replaced: number}} 新数组，不改入参
+ */
+export function applyKeyedControlReplacements(groups, entries) {
+  const list = (Array.isArray(entries) ? entries : [])
+    .filter((e) => e && /^panel\.control\./.test(String(e.name || '')));
+  const out = (Array.isArray(groups) ? groups : []).map((g) => ({ ...g, controls: (g.controls || []).slice() }));
+  if (!list.length) return { groups: out, replaced: 0 };
+  let replaced = 0;
+  for (const entry of list) {
+    const target = String(entry.target || '');
+    if (!target) continue;
+    const desc = slotSpecToControl(entry, { settings: {} });
+    if (!desc) continue;
+    for (const g of out) {
+      const i = (g.controls || []).findIndex((c) => String((c && c.id) || '') === target);
+      if (i < 0) continue;
+      const base = g.controls[i];
+      // 合并口径：形状取插件的（选项集/类型可不同），身份与能力继承内置的（id / capabilityKey / settingKey）
+      g.controls[i] = {
+        ...base,
+        ...desc,
+        id: base.id,
+        label: String(entry.label || base.label || base.id),
+        pluginId: String(entry.pluginId || ''),
+        replacedBy: String(entry.pluginId || ''),
+        // 插件的 onAction 在装配层登记（这里只留一份引用，便于排障）
+        onAction: typeof (entry.spec && entry.spec.onAction) === 'function' ? entry.spec.onAction : base.onAction,
+      };
+      replaced += 1;
+      break;
+    }
+  }
+  return { groups: out, replaced };
+}
+
 export function mergeSlotControls(baseGroups, entries, opts = {}) {
   const base = Array.isArray(baseGroups) ? baseGroups : [];
   const list = Array.isArray(entries) ? entries : [];

@@ -73,6 +73,33 @@ export function mountToolbar(nav) {
  * @param {{onAction?: (entry:object, ev:MouseEvent) => void}} [opts]
  * @returns {{added:number, skipped:number}}
  */
+/**
+ * 单值插槽 `panel.brand`：换掉顶栏品牌名（**纯文本**，不做标记解析）。
+ *
+ * 生效模型："后注册者胜出"——按全局注册序号 seq 取最大的那条；
+ *   它的 disposer 执行后自然回退到**上一个**注册者（不是直接回内置），因为记录被移除后
+ *   重新算一遍"最大 seq"就落到前一条。一条都没有时用内置文本。
+ * @param {HTMLElement} el 品牌元素（#brand-title）
+ * @param {Array} entries 插槽登记项
+ * @param {{fallback?: string}} [opts]
+ * @returns {{text: string, pluginId: string|null}}
+ */
+export function syncBrand(el, entries, opts = {}) {
+  const fallback = String(opts.fallback || 'ModelStage');
+  if (!el) return { text: fallback, pluginId: null };
+  const list = (Array.isArray(entries) ? entries : [])
+    .filter((e) => e && String(e.name || '') === 'panel.brand')
+    .sort((a, b) => (Number(a.seq) || 0) - (Number(b.seq) || 0));
+  const top = list.length ? list[list.length - 1] : null;
+  const spec = (top && top.spec) || {};
+  // 文本取 spec.text / spec.label；用 textContent 写入（HTML 字符串会被当字面文本，不会解析）
+  const text = top ? String(spec.text != null ? spec.text : (spec.label != null ? spec.label : '')) : fallback;
+  el.textContent = text || fallback;
+  if (top) el.dataset.brandPlugin = String(top.pluginId || '');
+  else delete el.dataset.brandPlugin;
+  return { text: el.textContent, pluginId: top ? String(top.pluginId || '') : null };
+}
+
 export function syncPluginToolbar(nav, entries, opts = {}) {
   const log = typeof opts.log === 'function' ? opts.log : () => {};
   if (!nav) return { added: 0, skipped: 0 };
