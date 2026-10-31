@@ -313,6 +313,18 @@ export const TRANSPORT_CONTROLS = [
 export const PLUGIN_CONTROL_KINDS = ['segmented', 'toggle', 'button'];
 
 /**
+ * 插件控件 kind → 渲染层 kind 的**唯一映射点**。
+ *
+ * 为什么必须有这一层：插件契约用的是 `segmented / toggle / button`，
+ *   而渲染层（view.js 的 renderControl）认的是 `segmented / switch / actions / …`。
+ *   两套词汇直接撞的后果实测过：`toggle`/`button` 落到 view 的 default 分支，
+ *   渲染成一个空 `<p class="ctl-note">` —— 没有 data-ctl、没有 label，
+ *   表现就是"控件消失了"（置灰原因也一起丢了，违反契约 §9.3 的降级可见）。
+ * 新增 kind 时只改这里，两路（老接口 registerControls 与插槽）同时生效。
+ */
+const PLUGIN_KIND_TO_VIEW = { segmented: 'segmented', toggle: 'switch', button: 'actions' };
+
+/**
  * 校验并归一"插件提交的一节控件"。
  *
  * 分三级处置（契约 §9.2 / §9.3 的差别就在这儿）：
@@ -372,11 +384,15 @@ function normalizePluginControl(raw, ctx, rejects, section) {
       return null;
     }
     const registered = ctx.registeredEffects.has(id);
+    const viewKind = PLUGIN_KIND_TO_VIEW[kind] || kind;
     const optionTexts = kind === 'segmented' ? raw.options.map(String) : null;
   return ({
       // 归一成与内置控件同形的声明：渲染层完全按既有 kind 分派，不认"插件控件"这个概念
       id,
-      kind,
+      kind: viewKind,
+      // button 在渲染层是"动作组"（renderActions 遍历的是 ctl.buttons，不是 actions）
+      //   ⇒ 形状必须补成 buttons[]，否则渲染时读 undefined 抛错、落进 ctl-row-broken 兜底行
+      ...(viewKind === 'actions' ? { buttons: [String(raw.label || id)] } : {}),
       label: String(raw.label || id),
       // segmented 必须同时给 options 与 values：渲染层用 `ctl.values[i]` 当按钮的取值
       //   （契约 §9.2 的插件声明里只有 options，所以"选项文本即取值"这层翻译由宿主补 ——
@@ -781,7 +797,9 @@ function slotSpecToControl(entry, props) {
     return { kind: 'select', options, values: options.slice(), defaultValue: options[0] };
   }
   if (kind === 'button') {
-    return { kind: 'actions', actions: [{ text: String(out.label || entry.label || '执行'), value: String(entry.id) }] };
+    // 与老接口共用 PLUGIN_KIND_TO_VIEW 的结论（button → actions）；
+    //   形状按渲染层口径给 buttons[]（renderActions 遍历的是它）
+    return { kind: PLUGIN_KIND_TO_VIEW.button, buttons: [String(out.label || entry.label || '执行')] };
   }
   return null;
 }

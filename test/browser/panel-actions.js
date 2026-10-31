@@ -306,6 +306,10 @@ async function runControlInventory(C) {
       }
       gateMiss = gateMiss;
     } catch { gateMiss = ['<import-failed>']; }
+    // 插件控件**不在此列断言**：契约（schema.js:392）把插件控件的能力键强制写成控件自身 id，
+    //   于是"capabilityKey"这一类对它恒成立 —— 再加一条"插件控件必须分类"的断言是恒真断言，
+    //   红不了也保护不了任何东西（实测：任何插件控件都带 capabilityKey，2/2）。
+    //   真正需要盯的是"这个键到底声明了没有"，那件事在孤儿能力键那条里查（见 runWiredLists）。
     rec('控件分类门禁（hidden/能力键/白名单）', 'PANEL_GROUPS', '静态检查',
       '每个控件必须属于：hidden:true / capabilityKey / debugKey / RENDERER_INDEPENDENT 之一；漏标即失败',
       `漏标 ${gateMiss.length} 个${gateMiss.length ? '：' + gateMiss.join(',') : ''}；手动隐藏 ${hiddenIds.length} 个${hiddenIds.length ? '：' + hiddenIds.join(',') : ''}`,
@@ -328,23 +332,40 @@ async function runWiredLists(C, I) {
   //   所以"不可点"只该剩一种合法原因 —— 未接线（data-pending）；
   //   任何 disabled 却不是 pending 的项，说明有未声明能力被建了出来。
   const disabledAllPending = disabledEls.every((el) => el.dataset.pending === 'true');
-  // 未声明 ⇒ 不存在：面板里每个带 capabilityKey 的控件，其能力键必须出现在当前渲染器声明里
+  // 未声明 ⇒ 不存在：面板里每个带 capabilityKey 的控件，其能力键必须出现在当前生效的白名单里。
+  //   **遍历口径＝合并后（实际用于渲染）的分组**：插件控件也在表里，不会因为"静态 PANEL_GROUPS 里没有它"而天然免检。
+  //   白名单三源合并（少算一个都会假红）：
+  //     ① 渲染器自身声明 caps.settings
+  //     ② 已注册效果 registeredEffectIds()（装配期并进白名单）
+  //     ③ 插槽控件的能力键（mergeSlotControls 的 capabilityKeys —— 它并进的是 capabilities **副本**，
+  //        见 panel-settings.js:564-565，所以只读 state.currentRenderer.capabilities 会漏掉它）
+  //   跳过 disabled：契约 §9.3 要求"已声明但未注册成功"的控件置灰保留，那是合法态，不是孤儿。
   let orphanCapabilities = [];
+  let orphanScope = '未检查';
+  let orphanProbeOk = false;
   try {
-    const mod = await import('/panel/schema.js');
-    const caps = ((window.__WEB__.state && window.__WEB__.state.currentRenderer) || {}).capabilities || {};
-    const declared = new Set(caps.settings || []);
+    const { groups: mergedGroups, slotCapabilityKeys } = await readMergedGroups();
+    const web = window.__WEB__ || {};
+    const caps = ((web.state && web.state.currentRenderer) || {}).capabilities || {};
+    const host = (web.state && web.state.pluginHost) || null;
+    const registeredEffects = (host && typeof host.registeredEffectIds === 'function') ? host.registeredEffectIds() : [];
+    const declared = new Set([...(caps.settings || []), ...registeredEffects, ...slotCapabilityKeys]);
+    orphanCapabilities = findOrphanKeys(mergedGroups, declared);
+    // 判据自检：喂一条"未 disabled 且键未声明"的假控件，必须被捕到。
+    //   为什么要它：真实数据干净时，判据退化成"恒不报"也看不出来（红绿都一样）——
+    //   这条保证"下次有人把判据改坏"会当场变红，而不是悄悄失去检测能力。
+    const probeFound = findOrphanKeys([{ controls: [{ id: 'selfcheck.orphan', capabilityKey: 'selfcheck.undeclared' }] }], declared);
+    orphanProbeOk = probeFound.length === 1 && probeFound[0] === 'selfcheck.orphan:selfcheck.undeclared';
+    // DOM 漂移护栏：DOM 里出现的控件 id 必须都能在合并结果里找到 ——
+    //   找不到说明"测试重算"与"实际渲染"已不是同一份数据，那时孤儿结论也不可信。
     const byId = new Map();
-    for (const g of mod.PANEL_GROUPS || []) for (const c of g.controls || []) if (c && c.id) byId.set(c.id, c);
-    // DOM 里实际存在的控件 id（本文件没有 present，独立取一份，别依赖别处的变量）
+    for (const g of mergedGroups || []) for (const c of g.controls || []) if (c && c.id) byId.set(c.id, c);
     const domIds = [...new Set([...document.querySelectorAll('#right-panel [data-ctl]')]
       .map((n) => n.dataset.ctl).filter(Boolean))];
-    for (const id of domIds) {
-      const def = byId.get(id);
-      if (!def || typeof def.capabilityKey !== 'string' || !def.capabilityKey) continue;
-      if (!declared.has(def.capabilityKey)) orphanCapabilities.push(`${id}:${def.capabilityKey}`);
-    }
-  } catch { orphanCapabilities = []; }
+    const domUnknown = domIds.filter((id) => !byId.has(id));
+    if (domUnknown.length) orphanCapabilities.push(`<DOM 有但合并结果里没有：${domUnknown.join(',')}>`);
+    orphanScope = `合并口径 ${byId.size} 项 / DOM ${domIds.length} 项 / 声明 ${declared.size} 键`;
+  } catch (e) { orphanCapabilities = [`<合并失败：${(e && e.message) || e}>`]; }
   const footDisabled = footItems.every((el) => el.disabled && el.dataset.pending === 'true');
 
   // 手风琴组数不写死：取"按当前渲染器能力过滤后的实际组数"（页面写在 dataset.panelGroups）
@@ -352,12 +373,13 @@ async function runWiredLists(C, I) {
   rec('右栏控件清单（接线态）', '#right-panel button/select/input', '枚举',
     `${expectedGroups} 个手风琴（=能力过滤后的实际组数）；可点集合 === 已接线集合；未接线一律 disabled + data-pending`,
     `总计 ${rightItems.length}（手风琴 ${triggers.length} + 组内 ${nonTrigger.length}）；`
-    + `未声明能力却建出来的项=${orphanCapabilities.length}${orphanCapabilities.length ? '：' + orphanCapabilities.join(',') : ''}；`
+    + `未声明能力却建出来的项=${orphanCapabilities.length}${orphanCapabilities.length ? '：' + orphanCapabilities.join(',') : ''}`
+    + `（口径：${orphanScope}；判据自检=${orphanProbeOk ? '通过' : '失效'}）；`
     + `可点 ${enabledIds.join(',') || '(无)'}；已接线 ${declaredWired.join(',') || '(无)'}；`
     + `不可点 ${disabledEls.length} 个全带原因（pending/disabledReason）=${disabledAllPending}`,
     expectedGroups > 0 && triggers.length === expectedGroups && nonTrigger.length > 0
     && enabledIds.join(',') === declaredWired.join(',')
-    && disabledAllPending && orphanCapabilities.length === 0);
+    && disabledAllPending && orphanCapabilities.length === 0 && orphanProbeOk);
 
   // 底栏口径：与面板一致——可点集合必须等于「已接线的底栏控件」，其余 disabled + pending
   // 底栏控件数不写死：以 schema 的 TRANSPORT_CONTROLS 声明为唯一真相（增删控件时测试自动跟随）

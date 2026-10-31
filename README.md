@@ -181,6 +181,7 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.4.8 | 2026-10-31 | 修插件控件 kind 两套词汇缺映射（`toggle`/`button` 曾落进 `ctl-note` 空行，表现为"控件消失"，连正常态都不渲染）；新增唯一映射表 `PLUGIN_KIND_TO_VIEW` 并补 kind 映射完备性单测；孤儿能力键检查改合并口径（三源 declared + 跳过 disabled + DOM 漂移护栏 + 判据自检） |
 | 0.4.7 | 2026-10-31 | 插件插槽 S3-a：允许插件新建分组（id 强制 `plugin.<pluginId>.` 前缀、order 缺省 1000、排在内置组之后、与内置组同名允许并提示）；分组存在性判定由标题集合改为 id 优先/title 兜底；分组 id 规则前移到注册期（`bad-group-id`） |
 | 0.4.6 | 2026-10-31 | 插件插槽 S2-b2：阶段改读服务端 `currentStage`（删前端常量与两个自测开关）、`onAction` 派发（异常隔离）、`props.settings` 传当前值或声明默认值 |
 | 0.4.5 | 2026-10-31 | `/api/plugins` 下发 `currentStage`（与 `slotCatalog[i].stage` 是两个概念，不合并），消灭阶段的两处表达；补路由层用例（含"目录里必须仍有未开放插槽"这条防扁平化断言） |

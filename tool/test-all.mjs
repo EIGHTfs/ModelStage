@@ -198,6 +198,7 @@ const SUITES = [
   { name: 'env-num', runner: 'node-test', file: 'test/env-num.test.mjs' },
   // 插槽注册表的四类拒绝与顺序（设计 §4.2）：纯模块、DOM-free，毫秒级
   { name: 'slot-registry', runner: 'node-test', file: 'test/slot-registry.test.mjs' },
+  { name: 'plugin-kind-mapping', runner: 'node-test', file: 'test/plugin-kind-mapping.test.mjs' },
   // 引擎冒烟（3.8 ↔ 4.1 版本往返 + samplePixels().ratio + lastError 判据）：
   //   它验证的是"引擎能不能出画"，是所有交互套件的前置
   { name: 'engine-b1', wait: 4500 },
