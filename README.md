@@ -12,6 +12,9 @@
 | 内容类型 | **Spine**（3.6 / 3.7 / 3.8 / 4.1 运行时）· **Live2D**（Cubism 2 / 4） |
 | 资源形态 | **目录型**（散装 skel/atlas/贴图 或 model3.json）· **容器型**（Unity 资源包，由插件解包） |
 
+> **维护状态**：项目已进入**维护为主**阶段——修 bug、保持可用、跟进运行时版本；
+> 新增功能频率会明显降低。长期方向的探索性工作（例如 3D 支持）不在当前范围内。
+
 ---
 
 ## 主要能力
@@ -181,6 +184,7 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.5.24 | 2026-11-01 | 发布准备：补 `THIRD_PARTY_NOTICES.md`、README「合规状态」扩到 Live2D Cubism 与 pixi.js 并注明「服务端把运行时报给浏览器 = 分发行为」；补 author/keywords/bugs、清理 `files` 无效条目；去掉 `private` 以便发布；README 标注项目进入维护为主阶段 |
 | 0.5.23 | 2026-11-01 | 解包节点判据由「名字前缀」改为「结构形式」（`/^CAB-[0-9a-f]{32}$/i`，四处统一 + 防漂移单测）：`.resS` / `.resource`（FSB5 音频银行）不再被误当 serialized file；顺带修好两个包的不完整提取（假节点抛错曾中断循环，真节点没被处理）；测试套件 29 → 30 |
 | 0.5.22 | 2026-11-01 | `tool/lib/runtime-package.mjs` 的 `writeAtomic` 写前自建父目录（原子写函数不依赖调用方建目录）；`src/server/http/atomic-json.mjs` 核实后本就有 `ensureDir`，未改动 |
 | 0.5.21 | 2026-11-01 | 修 `document.files` 的 catalog 请求无超时：加 `DOC_FILES_TIMEOUT_MS = 6000` + `AbortSignal.timeout`，`pending` 清理移入 `finally`（挂起后可重试，不再永久占位），失败记 warn 含 rootId/url/reason |
@@ -240,8 +244,15 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 | **本项目自有代码** | **MIT**（见 [LICENSE](LICENSE)） | — |
 | **Boneview**（[仓库](https://github.com/souling01/spine-viewer-webgl)） | **无 LICENSE**（默认保留全部权利） | 仅**前端布局**参考；本项目代码 90% 以上自研，不含其代码 |
 | **Spine Runtimes** | 自定义协议 | 运行时源码**不入库**、需自备；**不受本项目 MIT 覆盖** |
+| **Live2D Cubism SDK** | Live2D Proprietary Software License | 运行时（`live2dcubismcore` 等）**不入库**、需自备；文件头自称 "Redistributable Code" 指可随应用分发，**不等于**可放进公开仓库再分发 |
+| **pixi.js** | MIT | 仅当自备的 Live2D 运行时目录内自带时存在；同样不入库 |
 
 > 本项目使用官方 Spine Runtimes（[Esoteric Software](https://esotericsoftware.com)），受 [Spine Runtimes License Agreement](https://esotericsoftware.com/spine-runtimes-license) 约束。集成预览可以，但每个使用 Spine 数据的终端用户仍需拥有 Spine 编辑器授权。
+
+**服务端把运行时报给浏览器 = 分发行为**：本项目会把使用者本地放置的运行时文件发给访问者（`/spine-runtimes/*` 等）。
+因此**部署为公开可访问的服务**时，请自行确认所用运行时的许可是否覆盖这一场景。
+
+完整的第三方组件清单与逐项说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 **仓库内不含任何游戏提取资源** —— 模型、纹理等素材均不入库，需自备。
 

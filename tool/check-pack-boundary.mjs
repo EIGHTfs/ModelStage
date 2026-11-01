@@ -52,10 +52,21 @@ const REQUIRED = [
 
 function pack() {
   const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ms-pack-'));
-  const out = execFileSync('npm', ['pack', '--pack-destination', outDir], {
+  // 为什么要清掉这些环境变量：
+  //   本脚本会被 npm 的生命周期调用（scripts.prepublishOnly）。跑 `npm publish --dry-run` 时，
+  //   npm 会往环境里塞 npm_config_dry_run=true；子进程会继承它 ⇒ 这里的 `npm pack` 也变成 dry-run，
+  //   于是**不产出 tgz**，第 61 行就抛「打包产物不存在」。表现为"dry-run 发布失败"，
+  //   而真正的打包本身没问题（实测：手动 `npm run check:pack` 能过）。
+  //   ⇒ 这里必须显式还原成"真打包"，否则门禁在 dry-run 场景下永远过不去。
+  const env = { ...process.env };
+  delete env.npm_config_dry_run;
+  delete env.npm_config_dry_run_only;
+  delete env.NPM_CONFIG_DRY_RUN;
+  const out = execFileSync('npm', ['pack', '--pack-destination', outDir, '--no-dry-run'], {
     cwd: ROOT,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
+    env,
   }).trim();
   const tgz = path.join(outDir, out.split('\n').pop().trim());
   if (!fs.existsSync(tgz)) throw new Error(`打包产物不存在：${tgz}`);

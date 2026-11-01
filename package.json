@@ -1,6 +1,6 @@
 {
   "name": "modelstage",
-  "version": "0.5.23",
+  "version": "0.5.24",
   "description": "Spine / Live2D 模型查看器：三级名册、两套渲染面共享相机与面板、UnityFS 资源包解包",
   "type": "module",
   "bin": {
@@ -33,15 +33,28 @@
     "config/diag-upload.example.json",
     "README.md",
     "LICENSE",
-    "!**/.trash/",
     "!**/.tmp-*",
-    "!**/*.bak"
+    "!**/*.bak",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "license": "MIT",
-  "private": true,
   "repository": {
     "type": "git",
     "url": "git+https://github.com/EIGHTfs/ModelStage.git"
   },
-  "homepage": "https://github.com/EIGHTfs/ModelStage#readme"
+  "homepage": "https://github.com/EIGHTfs/ModelStage#readme",
+  "author": "EIGHTfs",
+  "keywords": [
+    "spine",
+    "live2d",
+    "unityfs",
+    "assetbundle",
+    "viewer",
+    "model-viewer",
+    "cubism",
+    "animation"
+  ],
+  "bugs": {
+    "url": "https://github.com/EIGHTfs/ModelStage/issues"
+  }
 }
