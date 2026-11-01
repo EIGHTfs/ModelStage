@@ -29,6 +29,12 @@ const FORBIDDEN = [
   { re: /(^|\/)\.git\//, why: '版本库' },
   { re: /(^|\/)\.env/, why: '环境变量文件（可能含凭据）' },
   { re: /^package\/storage\//, why: '运行时数据目录' },
+  // 下面四条是 2026-11-01 补的：pack 里发现了测试/校验脚本，说明「整目录放行」会带进开发件。
+  { re: /(^|\/)test\//, why: '测试目录（用户不需要跑测试）' },
+  { re: /\.test\.(mjs|js|cjs)$/, why: '测试文件' },
+  { re: /\.map$/, why: 'sourcemap（体积是产物的数倍，且 sources 会带出构建机路径）' },
+  { re: /(^|\/)tool\/lib\/(check-|contract-|export-|cubism-core|spine-runtime|test-)/, why: '开发/校验工具（不是运行时依赖）' },
+  { re: /(^|\/)(cache-[a-z]+\/|uploads\/|logs\/)/, why: '缓存 / 用户内容 / 日志' },
 ];
 
 /**
@@ -45,6 +51,10 @@ const REQUIRED = [
   'package/tool/resolve-live2d-runtimes.mjs',  // data/live2d.mjs import
   'package/tool/lib/runtime-package.mjs',      // http/static.mjs import
   'package/tool/lib/runtime-guides.mjs',       // routes/data.mjs import
+  'package/tool/lib/bundle-probe-node.mjs',    // server/assets 用同一份预检实现（vm 沙箱）
+  'package/tool/lib/paths.mjs',                // bin 与多个脚本的 here() 来源
+  'package/tool/lib/spine-meta.mjs',           // data/model-meta.mjs import
+  'package/tool/lib/spine-motions.mjs',        // data/model-meta.mjs import
   'package/tool/spine-motion-rules.json',      // data/model-meta.mjs 按路径读
   'package/plugins/unity-live2d-bundle/plugin.json',
   'package/plugins/unity-spine-bundle/plugin.json',

@@ -1,6 +1,6 @@
 {
   "name": "modelstage",
-  "version": "0.5.24",
+  "version": "0.5.25",
   "description": "Spine / Live2D 模型查看器：三级名册、两套渲染面共享相机与面板、UnityFS 资源包解包",
   "type": "module",
   "bin": {
@@ -24,7 +24,12 @@
     "plugins/unity-spine-bundle/",
     "tool/parse-jsonc.mjs",
     "tool/resolve-live2d-runtimes.mjs",
-    "tool/lib/",
+    "tool/lib/bundle-probe-node.mjs",
+    "tool/lib/paths.mjs",
+    "tool/lib/runtime-guides.mjs",
+    "tool/lib/runtime-package.mjs",
+    "tool/lib/spine-meta.mjs",
+    "tool/lib/spine-motions.mjs",
     "tool/spine-motion-rules.json",
     "config/plugins.json",
     "config/models/",
