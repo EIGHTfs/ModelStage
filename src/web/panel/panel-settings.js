@@ -263,6 +263,16 @@ const docFilesCache = new Map();
 const docFilesPending = new Set();
 const docFilesStats = { lists: 0, repaints: 0 };
 
+/**
+ * 目录清单请求（/api/catalog）的超时上限（ms）。
+ *
+ * 取值理由：catalog 只列目录树、不读字节，实测正常在 300ms 内返回；6s 已留 20 倍余量，
+ *   又远小于"用户会以为面板卡住"的量级。**必须有上限**：该请求一旦挂起，
+ *   docFilesPending 里的键会一直占位 ⇒ 该条目的文件清单永远是 null，且**再也不会重试**。
+ * 与插件宿主里的其它超时保持同一量级（fetchCapacity 1.5s / worker 载 lib 8s / 解包看门狗 60s）。
+ */
+const DOC_FILES_TIMEOUT_MS = 6000;
+
 /** 把列举计数挂到 window（验收/排障可读；不写 dataset 以免污染快照） */
 function publishDocFilesStats() {
   try {
@@ -351,23 +361,28 @@ function safeVfsList(prefix) {
 function requestDocFiles(model, key) {
   if (docFilesPending.has(key)) return;
   docFilesPending.add(key);
-  const rootId = encodeURIComponent(String(model.rootId || ''));
-  const url = `/api/catalog?root=${rootId}`;
-  Promise.resolve()
-    .then(() => fetch(url, { headers: { accept: 'application/json' } }))
-    .then((r) => (r.ok ? r.json() : null))
-    .then((data) => {
+  // 原始 rootId 与编码后的 URL 都留：日志展示原文，请求用编码版，排障时不必反推
+  const rawRootId = String(model.rootId || '');
+  const url = `/api/catalog?root=${encodeURIComponent(rawRootId)}`;
+  // 用 async/await 而不是 then 链：**只有 finally 能保证"成功 / 失败 / 超时"三条路径都清 pending**
+  //   （原来的写法把 delete 塞在 then 与 catch 里，超时/挂起时根本不落地 ⇒ 永久占位、不再重试）
+  (async () => {
+    try {
+      const res = await fetch(url, {
+        headers: { accept: 'application/json' },
+        // 服务端挂起时浏览器可能几分钟不给响应；没有上限就等于"这个条目的清单永远没有"
+        signal: AbortSignal.timeout(DOC_FILES_TIMEOUT_MS),
+      });
+      if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { code: 'catalog-http' });
+      const data = await res.json();
       const list = Array.isArray(data && data.entries) ? data.entries : [];
       const hit = list.find((e) => String(e && (e.id || e.name)) === String(model.id || model.name));
-      if (!hit) return null;
+      // 没找到不算失败：目录树可能还没包含该条目（生成中），下次触发会再查一次
+      if (!hit) return;
       const names = [];
       if (hit.entry && hit.entry.name) names.push(String(hit.entry.name));
       for (const a of Array.isArray(hit.assets) ? hit.assets : []) if (a && a.name) names.push(String(a.name));
-      return names;
-    })
-    .then((names) => {
-      docFilesPending.delete(key);
-      if (!names) return;
+      if (!names.length) return;
       docFilesStats.lists += 1;
       docFilesCache.set(key, names);
       publishDocFilesStats();
@@ -379,8 +394,18 @@ function requestDocFiles(model, key) {
         //   派发到 document 收不到（DOM 事件路径上它到不了 window 监听）⇒ 重绘静默不生效。
         window.dispatchEvent(new CustomEvent(EVENTS.PLUGINS_LOADED, { detail: { reason: 'document-files' } }));
       }
-    })
-    .catch(() => { docFilesPending.delete(key); });
+    } catch (e) {
+      // 不静默：留一条可诊断记录（含 rootId 与原因）。文件清单保持 null，
+      //   pending 随后在 finally 释放 ⇒ 再次触发会**重新请求**，而不是永久禁用该条目。
+      const timedOut = !!e && (e.name === 'TimeoutError' || e.name === 'AbortError');
+      const reason = timedOut ? `超时（>${DOC_FILES_TIMEOUT_MS}ms）` : String((e && e.message) || e);
+      stageLog('warn', `目录清单获取失败：${String(model.name || model.id || '')}（${reason}）——该条目文件列表保持为空，可再次触发重试`, {
+        rootId: rawRootId, url, reason, timeoutMs: DOC_FILES_TIMEOUT_MS,
+      });
+    } finally {
+      docFilesPending.delete(key);
+    }
+  })();
 }
 
 /** 控件 id → 存值键（没有映射就是它自己） */

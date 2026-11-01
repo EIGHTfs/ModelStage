@@ -181,6 +181,7 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.5.21 | 2026-11-01 | 修 `document.files` 的 catalog 请求无超时：加 `DOC_FILES_TIMEOUT_MS = 6000` + `AbortSignal.timeout`，`pending` 清理移入 `finally`（挂起后可重试，不再永久占位），失败记 warn 含 rootId/url/reason |
 | 0.5.20 | 2026-10-31 | 全量审计后清理真实硬编码：插件清单 `depsDir` 改 `${MODELSTAGE_DEPS_DIR}` 占位符（换机只改 env）、删 `interpreter` 交给探测链、MIME 字面量各文件提常量、6 个脚本统一 `here(import.meta.url)`、清 5 处注释日期 |
 | 0.5.19 | 2026-10-31 | 分区编号 R1~R6 改为职责名（基础工具与统计发布 / 注册入口组装 / 装载与卸载回收 / 资源取用与解包 / 装载编排），六个文件 R 编号清零；分隔线按显示宽度 96 列对齐。拆分工作到此收口 |
 | 0.5.18 | 2026-10-31 | 去掉函数索引（43 条带行号条目，−113 行注释），换成 7 行模块地图 + 6 个分区概述（+46 行）；`plugin-host.js` 694 → 628 行，全部为注释改动；其余 5 个模块头部本无索引，未改动 |
