@@ -319,8 +319,14 @@ export function verifyIntegrity(buf, integrity, hashFn) {
  * @param {string|Buffer} content
  */
 function writeAtomic(file, content) {
-  const tmp = path.join(path.dirname(file), `.tmp-${process.pid}-${path.basename(file)}`);
+  const dir = path.dirname(file);
+  const tmp = path.join(dir, `.tmp-${process.pid}-${path.basename(file)}`);
   try {
+    // 先保证**目标文件的父目录**存在（不是临时文件那个目录 —— 两者相同，但意图要写清：
+    //   我们关心的是"落点能不能写"）。调用方目前恰好都建好了目录，但原子写函数不该依赖这件事：
+    //   任何人下次直接调它，不建目录就会在最前面那行 writeFileSync 收到 ENOENT。
+    //   recursive 幂等、无副作用，重复调用不抛错。
+    fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(tmp, content);
     fs.renameSync(tmp, file);
   } catch (e) {
