@@ -236,7 +236,54 @@ const ctx = {
  * @param {string} p
  * @param {URL} url
  */
+/**
+ * 版本号：读 package.json（它是版本号的唯一权威，与 bin 的 --version 同源）。
+ * 读不到时返回 'unknown' 而不是抛错 —— 探活端点不该因为包元信息缺失而 500。
+ */
+function readVersion() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+/**
+ * GET /api/health —— 探活端点（`web.sh status` 与外部监控用）。
+ *
+ * 为什么单独一条而不复用 /api/ready：ready 是"能否开始服务请求"的业务就绪信号
+ *   （要扫资源根、可能 503），而 health 只回答"进程活着吗、什么版本、数据在哪"。
+ *   两者语义不同，混一起会让监控在"资源根还没扫完"时误判进程已死。
+ *
+ * 只暴露排障必需的粗粒度信息：版本 / 运行时长 / 数据根绝对路径 / 插件数。
+ *   **不返回**配置内容、资源根清单、任何凭据或环境变量。
+ */
+function handleHealth(req, res, p) {
+  if (p !== '/api/health') return false;
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    sendJson(res, 405, { ok: false, error: '仅支持 GET' });
+    return true;
+  }
+  // 插件数：直接问数据层（与 /api/plugins 同源）。
+  //   早先这里写的是 ctx.providers()，但本函数没有 ctx 参数 —— 异常被 catch 吞成 0，
+  //   结果 health 永远报 plugins:0（实测 5 个插件时也报 0）。探活字段报假数比不报更糟，故改为同源直取。
+  let pluginCount = 0;
+  try {
+    pluginCount = (data.plugins.readPlugins() || []).length;
+  } catch { /* 插件系统未就绪也算 0，探活不该因此失败 */ }
+  sendJson(res, 200, {
+    ok: true,
+    uptimeSec: Math.round(process.uptime()),
+    version: readVersion(),
+    dataRoot: data.paths.dataRoot,
+    plugins: pluginCount,
+  });
+  return true;
+}
+
 function dispatch(req, res, p, url) {
+  // 探活放最前：它不该被其它路由的鉴权/副作用影响（也就不会因为那些逻辑出错而"连探活都挂"）
+  if (handleHealth(req, res, p)) return true;
   if (unpackRoutes(req, res, p, url)) return true;
   if (handleDiag(req, res, p, url, ctx)) return true;
   if (handleReady(req, res, p, url, ctx)) return true;
@@ -300,6 +347,21 @@ server.listen(PORT, '0.0.0.0', () => {
   log.info(`静态根 ${WEB_ROOT}`);
   log.info(`数据根 ${data.paths.dataRoot}${DATA_ROOT ? '（MODELSTAGE_DATA_ROOT 覆盖）' : '（默认=项目根）'}`);
   log.info('资源根已登记', { roots: data.config.readConfig().map((r) => `${r.id}=${r.name}`) });
+});
+
+// 监听失败要**说人话**：不处理的话用户看到的是 EADDRINUSE 原始堆栈（一大坨，且不说下一步做什么）。
+//   退出码用 2 而不是 1：1 留给"参数/配置错误"这类，端口占用是环境问题，靠退出码就能区分。
+server.on('error', (e) => {
+  const code = (e && e.code) || '';
+  if (code === 'EADDRINUSE') {
+    log.error(`端口 ${PORT} 已被占用：用 --port <其他端口> 换一个，或先停掉占用该端口的进程`);
+    log.error(`排查提示：lsof -i :${PORT}（macOS/Linux）或 netstat -ano | findstr :${PORT}（Windows）`);
+    process.exit(2);
+  }
+  // 其它监听错误（EACCES 权限不足、EADDRNOTAVAIL 地址不可用…）：保留原始信息，同样给出下一步
+  log.error(`监听端口 ${PORT} 失败：${(e && e.message) || e}`, { code });
+  log.error('可尝试：换一个端口（--port），或检查是否有权限监听该端口/该地址');
+  process.exit(2);
 });
 
 /**

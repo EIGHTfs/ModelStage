@@ -10,7 +10,7 @@
 //   --port <n>          → PORT
 //   --data-root <path>  → MODELSTAGE_DATA_ROOT
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
@@ -61,32 +61,62 @@ function parseArgs(argv) {
   return parsed;
 }
 
-const args = parseArgs(process.argv.slice(2));
-
-if (args.help) {
-  process.stdout.write(`${USAGE}\n`);
-  process.exit(0);
+/**
+ * 本文件是否被**直接执行**（而不是被别人 import）。
+ *
+ * 为什么必须判：`src/server/serve.mjs` 是"import 即 listen"的模块，
+ *   如果 bin 在顶层无条件 import 它，那么**任何人 import 这个 bin 都会把服务起起来**
+ *   （测试里想复用 parseArgs 也会意外监听端口）。
+ *
+ * 为什么用 realpath 而不是 path.resolve 比较：
+ *   `path.resolve` 只做字符串归一，不解析符号链接。而 npx / 全局安装时
+ *   `process.argv[1]` 是 `<bin 目录>/modelstage` 这个**符号链接**，
+ *   `import.meta.url` 却是真实文件路径 ⇒ 两者字符串永远不等 ⇒ 静默什么都不做（exit 0 但没有服务）。
+ *   这类"看着成功了其实没启动"最难查，所以两边都先 realpath 再比。
+ * @returns {boolean}
+ */
+function isDirectInvocation() {
+  try {
+    const entry = process.argv[1];
+    if (!entry) return false;                      // 例如 `node -e "..."`：没有入口文件
+    const selfPath = fileURLToPath(import.meta.url);
+    return realpathSync(selfPath) === realpathSync(entry);
+  } catch {
+    return false;                                   // argv[1] 指向不存在的文件等：按"不是直接执行"处理
+  }
 }
 
-if (args.version) {
+/**
+ * 真正的启动流程。**只在直接执行时调用** —— 被 import 时既不解析参数、也不起服务。
+ * @returns {Promise<void>}
+ */
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+
+  if (args.help) {
+  process.stdout.write(`${USAGE}\n`);
+  process.exit(0);
+  }
+
+  if (args.version) {
   // 用 fs 读而不是 `import pkg from './package.json' with { type: 'json' }`：
   //   import attributes 在 Node 20/22 之间行为不一致（实验特性），fs 读在任何版本都稳定
   const pkg = JSON.parse(readFileSync(PKG_PATH, 'utf8'));
   process.stdout.write(`${pkg.version}\n`);
   process.exit(0);
-}
+  }
 
-if (args.port !== null) {
+  if (args.port !== null) {
   // 端口必须能转成整数：serve.mjs 用的是 Number(process.env.PORT) || 8804，
   //   传个 "abc" 会静默回落到 8804 —— 看上去启动了、其实端口不是期望的那个，这里提前拦下
   if (!/^\d+$/.test(args.port)) fail(`--port 必须是整数，收到 ${args.port}`);
   process.env.PORT = args.port;
-}
+  }
 
-if (args.dataRoot) {
+  if (args.dataRoot) {
   // 转成绝对路径：serve.mjs 会把它当数据根拼日志与缓存路径，相对路径会随 cwd 漂移
   process.env.MODELSTAGE_DATA_ROOT = path.resolve(args.dataRoot);
-} else if (!process.env.MODELSTAGE_DATA_ROOT) {
+  } else if (!process.env.MODELSTAGE_DATA_ROOT) {
   // 没给 --data-root、也没有环境变量 ⇒ **装成包运行时落用户目录，不是包目录**。
   //
   // 为什么必须在这里注入、而不是改 serve.mjs 的默认值：
@@ -95,7 +125,13 @@ if (args.dataRoot) {
   //   日志、解包缓存、runtimes 全落进包目录：升级即丢，且包目录可能只读。
   //   ⇒ 只在 bin 层（包运行专用的入口）注入，仓库运行路径完全不受影响。
   process.env.MODELSTAGE_DATA_ROOT = path.join(os.homedir(), '.modelstage');
+  }
+
+  // 交给真正的服务入口：它是模块顶层直接 listen 的，import 即启动，无需再 await 返回值
+  await import('../src/server/serve.mjs');
 }
 
-// 交给真正的服务入口：它是模块顶层直接 listen 的，import 即启动，无需再 await 返回值
-await import('../src/server/serve.mjs');
+// 只有"直接跑这个文件"才启动服务；被 import 时只导出函数（测试可安全 import）
+if (isDirectInvocation()) await main();
+
+export { isDirectInvocation, main, parseArgs };
