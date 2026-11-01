@@ -189,6 +189,7 @@ const SUITES = [
   //   钉住判定顺序（slot-not-open 必须先于 risk-mismatch）、risk 以目录为准、
   //   逐项降级（插件不因一个拼错的插槽名整体消失）
   { name: 'plugin-slots-manifest', runner: 'node-test', file: 'test/plugin-slots-manifest.test.mjs' },
+  { name: 'bundle-node-name', runner: 'node-test', file: 'test/bundle-node-name.test.mjs' },
   // 运行时适配器（node vm 沙盒 / exec 子进程 + 帧协议）：
   //   钉住清单校验、真 spawn 往返、**超时必须真杀**、崩溃传播、僵尸检查 ——
   //   exec 通道的风险全在进程边界上，纯函数测不出来，必须由这套兜住。

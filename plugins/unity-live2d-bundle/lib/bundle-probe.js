@@ -169,7 +169,9 @@
     let got;
     try {
       parsed = NS.unityfs.parse(bytes);
-      const cab = parsed.nodes.find((n) => /^CAB-/.test(n.path));
+      // 结构判据（不是名字前缀）：CAB- + 32 位十六进制、无后缀。
+      //   .resS / .resource 也以 CAB- 开头，但都不是 serialized file（后者是 FSB5 音频银行）。
+      const cab = parsed.nodes.find((n) => /^CAB-[0-9a-f]{32}$/i.test(n.path));
       if (!cab) {
         return { ok: false, code: E.CODES.NO_CAB, error: '资源包里没有 CAB-* 节点（不是资产包）' };
       }

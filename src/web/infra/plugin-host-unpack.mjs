@@ -316,7 +316,10 @@ function classHistogramOf(bytes) {
     const ser = NS && NS.serialized;
     if (!ufs || !ser || typeof ufs.readHeader !== 'function' || !bytes || !bytes.length) return null;
     const head = ufs.readHeader(bytes);
-    const cab = (head.nodes || []).find((n) => /^CAB-/.test(n.path));
+    // 取 serialized file 节点：判据是**结构形式**（CAB- 后跟 32 位十六进制且无后缀），不能只看名字前缀 ——
+    //   `.resS`（裸资源流）与 `.resource`（魔数 FSB5 = FMOD 音频银行）同样以 CAB- 开头，
+    //   喂给 serialized 解析器会读到 2^60 量级的垃圾 fileSize。也不做"找不到就取第一个 CAB-*"的回退。
+    const cab = (head.nodes || []).find((n) => /^CAB-[0-9a-f]{32}$/i.test(n.path));
     if (!cab) return null;
     const parsed = ufs.parse(bytes);
     return histogramFromObjects(ser.parse(ufs.nodeBytes(parsed, cab.path)));

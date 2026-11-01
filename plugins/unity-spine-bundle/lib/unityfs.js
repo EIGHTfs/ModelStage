@@ -361,7 +361,10 @@
     let decompressedBytes = 0;
     let compressedBytes = 0;
     for (const b of h.blocks) { decompressedBytes += b.uncompressedSize; compressedBytes += b.compressedSize; }
-    const cab = h.nodes.find((n) => /CAB-/.test(n.path) && !/\.resS$/i.test(n.path));
+    // serialized file 节点的判据是**结构形式**：CAB- + 32 位十六进制、无后缀。
+    //   旧写法 `CAB- && !.resS` 漏掉了 `.resource`（魔数 FSB5 = FMOD 音频银行）——
+    //   把它当 serialized file 解会读到 2^60 量级的垃圾 fileSize。
+    const cab = h.nodes.find((n) => /^CAB-[0-9a-f]{32}$/i.test(n.path));
     const resS = h.nodes.find((n) => /\.resS$/i.test(n.path));
     // 压缩类型：每块的 flags 低 6 位（Unity 的 CompressionType）。
     //   为什么要在这里给出来：内存峰值**按压缩类型不同**（LZMA 实测是 LZ4 的 ~1.8 倍，见 index.js 的表），

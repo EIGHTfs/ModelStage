@@ -181,6 +181,7 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.5.23 | 2026-11-01 | 解包节点判据由「名字前缀」改为「结构形式」（`/^CAB-[0-9a-f]{32}$/i`，四处统一 + 防漂移单测）：`.resS` / `.resource`（FSB5 音频银行）不再被误当 serialized file；顺带修好两个包的不完整提取（假节点抛错曾中断循环，真节点没被处理）；测试套件 29 → 30 |
 | 0.5.22 | 2026-11-01 | `tool/lib/runtime-package.mjs` 的 `writeAtomic` 写前自建父目录（原子写函数不依赖调用方建目录）；`src/server/http/atomic-json.mjs` 核实后本就有 `ensureDir`，未改动 |
 | 0.5.21 | 2026-11-01 | 修 `document.files` 的 catalog 请求无超时：加 `DOC_FILES_TIMEOUT_MS = 6000` + `AbortSignal.timeout`，`pending` 清理移入 `finally`（挂起后可重试，不再永久占位），失败记 warn 含 rootId/url/reason |
 | 0.5.20 | 2026-10-31 | 全量审计后清理真实硬编码：插件清单 `depsDir` 改 `${MODELSTAGE_DEPS_DIR}` 占位符（换机只改 env）、删 `interpreter` 交给探测链、MIME 字面量各文件提常量、6 个脚本统一 `here(import.meta.url)`、清 5 处注释日期 |
