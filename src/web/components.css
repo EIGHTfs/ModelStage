@@ -271,6 +271,65 @@
   border-color: var(--color-primary);
 }
 
+/* ------------------------------------------------------------ 类型筛选胶囊行 */
+
+/**
+ * 类型胶囊行（搜索框与名册列表之间）。
+ *
+ * 两个必须的几何约束（设计稿 §4.1 与 §10.2）：
+ *   ① **自动换行、不横向滚动**：类型数量由数据决定（今天 3 种，将来可能更多），
+ *      横向滚动在 304px 的窄栏里几乎不可用；
+ *   ② **单行最小高度**：类型从 2 行回落到 1 行时，若容器随之变矮，下面的列表会"猛地往上一跳"。
+ *      给 min-height 兜住这一档，高度变化只发生在真的加了一整行时。
+ */
+.roster-type-filter {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 22px;            /* 单行高度：防列表因胶囊行消失/收缩而跳动 */
+  padding: 0 12px 8px;
+}
+
+.roster-type-filter[hidden] {
+  display: none;
+}
+
+/* 单个类型胶囊：复用 .mini-btn 的视觉语言（描边 + 底色），但高度更小、可换行 */
+.roster-type-chip,
+.roster-type-clear {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-muted);
+  color: var(--color-foreground);
+  font-size: 12px;
+  line-height: 20px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.roster-type-chip:hover,
+.roster-type-clear:hover {
+  background: var(--color-secondary);
+}
+
+/* 选中态：主色描边 + 主色底（与工具栏 aria-pressed 同一套语义，颜色浓度略低以免抢眼） */
+.roster-type-chip[aria-pressed='true'] {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 18%, transparent);
+  font-weight: 600;
+}
+
+/* 「清除」比胶囊更轻：它是辅助动作，不该和类型胶囊抢视觉权重 */
+.roster-type-clear {
+  border-style: dashed;
+  color: var(--color-muted-foreground, var(--color-foreground));
+  opacity: 0.85;
+}
+
 .roster-list {
   padding: 2px 0 8px;
 }

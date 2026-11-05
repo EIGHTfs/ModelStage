@@ -12,8 +12,10 @@
 
 import { createReveal } from './reveal.js';
 import { visibleChars } from './filter.js';
+import { deriveTypeCounts, filterCharsByType, typeKeyOf, usableTypeSelection } from './type-filter.js';
+import { typeLabel } from '../../shared/type-labels.mjs';
 import { snapshotRoster } from './snapshot.js';
-import { readSaved, saveState } from './persist.js';
+import { readSaved, saveState, readTypeFilter, saveTypeFilter } from './persist.js';
 import {
   createNameIndex, mergeNameTable, loadRootModels, loadRootNames, buildChars,
 } from './list.js';
@@ -43,6 +45,9 @@ function renderLimitPerGame() {
 
 /** 创建名册视图并挂到容器上；返回对外 API（供 main.js 与自动化验证使用） */
 export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSelect }) {
+  // 类型胶囊行：容器由 index.html 提供（#roster-type-filter），这里只取引用；
+  //   取不到（旧页面/单测）就整体降级为"没有类型筛选"，不影响名册其余功能。
+  const typeFilterEl = typeof document !== 'undefined' ? document.getElementById('roster-type-filter') : null;
   const state = {
     games: [],
     loaded: new Map(),
@@ -50,6 +55,12 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     expandedGames: new Set(),
     expandedChars: new Set(),
     keyword: '',
+    /**
+     * 类型筛选的选中集合（**存储原样**，可能含当前名册里已不存在的 key）。
+     * 为什么不在读入时就剪掉失效项：设计上要求"暂时消失的类型再出现时自动恢复选中"，
+     *   剪掉就丢了这条信息；渲染期用 usableTypeSelection 现算生效集合即可。
+     */
+    typeFilter: new Set(),
     selected: null,
     activeGame: null,
     /**
@@ -288,6 +299,43 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
   /** 单条变体的可搜索文本（资源名 / 目录名 / 角色名 / 服装名） */
   // ------------------------------------------------------------ 渲染
 
+  /**
+   * 渲染类型胶囊行（搜索框下方那一行）。
+   *
+   * 为什么不复用工具栏按钮：胶囊要自动换行、要带计数、要表达 aria-pressed 的选中态，
+   *   与 .mini-btn 的"单行操作按钮"定位不同；只复用它的视觉语言（描边+底色），类名单列。
+   * @param {Array<{key: string, count: number}>} counts 类型与计数（已按数量降序）
+   * @param {Set<string>} activeTypes 当前**生效**的选中集合（已剔除当前不存在的失效项）
+   */
+  function renderTypeFilter(counts, activeTypes) {
+    if (!typeFilterEl) return;
+    // 名册为空（一个类型都没有）⇒ 整行隐藏，不留一条空白（设计稿 §4.4）
+    if (!counts.length) {
+      typeFilterEl.hidden = true;
+      typeFilterEl.replaceChildren();
+      return;
+    }
+    typeFilterEl.hidden = false;
+    const nodes = counts.map(({ key, count }) => {
+      const chip = el('button', 'roster-type-chip', `${typeLabel(key)} ${count}`);
+      chip.type = 'button';
+      chip.dataset.typeKey = key;
+      chip.setAttribute('aria-pressed', activeTypes.has(key) ? 'true' : 'false');
+      chip.title = `只看 ${typeLabel(key)}（当前搜索下 ${count} 个变体）`;
+      return chip;
+    });
+    // 「清除」只在至少选 1 个时出现；不提供「全部」按钮（全部 = 全部取消选中）
+    if (activeTypes.size) {
+      const clear = el('button', 'roster-type-clear', '清除');
+      clear.type = 'button';
+      clear.dataset.role = 'clear-type-filter';
+      clear.setAttribute('aria-label', '清除类型筛选');
+      clear.title = '清除类型筛选（等价于不筛选）';
+      nodes.push(clear);
+    }
+    typeFilterEl.replaceChildren(...nodes);
+  }
+
   /** 渲染整棵树（只渲染可见部分；展开的角色才生成变体行） */
   function render() {
     counters.render += 1;
@@ -303,11 +351,26 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     let totalVariants = 0;
     let rendered = 0;
     let loadedGames = 0;
+    // 类型胶囊的计数口径 = **当前关键词下**的可见变体数（不含类型过滤本身的影响，见设计稿 §5.3）。
+    //   所以先算 counts（只吃 keyword），再算 activeTypes，最后才把类型过滤作用到列表上。
+    const typeCounts = deriveTypeCounts({ games: state.games, gameChars: state.gameChars, keyword: state.keyword });
+    const activeTypes = usableTypeSelection([...state.typeFilter], typeCounts.map((entry) => entry.key));
+    renderTypeFilter(typeCounts, activeTypes);
+    // 被类型过滤挡掉的变体数 / 留下来的变体数：只用于"当前筛选下没有条目"的提示文案
+    let hiddenByType = 0;
+    let keptVariants = 0;
 
     for (const game of state.games) {
       const status = gameStatus(game);
       if (status === 'ready') loadedGames += 1;
-      const chars = visibleChars(game, state);
+      const charsByKeyword = visibleChars(game, state);
+      const chars = filterCharsByType(charsByKeyword, activeTypes);
+      if (activeTypes.size) {
+        const visibleCount = charsByKeyword.reduce((n, c) => n + c.variants.length, 0);
+        const keptCount = chars.reduce((n, c) => n + c.variants.length, 0);
+        hiddenByType += visibleCount - keptCount;
+        keptVariants += keptCount;
+      }
       const open = state.expandedGames.has(game.key) || (searching && chars.length > 0);
 
       listEl.append(renderGameRow(game, {
@@ -346,6 +409,13 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
       if (!chars.length) {
         listEl.append(el('p', 'muted-hint tree-hint', searching ? '无匹配' : '该游戏没有可加载模型'));
       }
+    }
+
+    // 类型筛选把所有条目都挡掉时给一句可读提示，不留空白（设计稿 §10.2 第 1 条）。
+    //   不自动改用户的选择：解包完成后条目会从 unknown 跳到 spine/live2d，
+    //   这里只如实说明"被挡掉了多少个"，让用户自己决定是否取消筛选。
+    if (activeTypes.size && keptVariants === 0 && hiddenByType > 0) {
+      listEl.prepend(el('p', 'muted-hint tree-hint', `当前筛选下没有条目（${hiddenByType} 个已移到其它类型）`));
     }
 
     // 计数文案：全量已加载时用统一口径（N 游戏 / M 角色 / K 变体），否则标注已加载多少
@@ -434,6 +504,25 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
       activate(row);
     });
 
+    // 类型胶囊：事件委托（胶囊每次重渲染都会换新节点，逐个绑定会漏）
+    if (typeFilterEl) {
+      typeFilterEl.addEventListener('click', (event) => {
+        const button = event.target && event.target.closest ? event.target.closest('button') : null;
+        if (!button || !typeFilterEl.contains(button)) return;
+        if (button.dataset.role === 'clear-type-filter') {
+          state.typeFilter.clear();
+        } else {
+          const typeKey = button.dataset.typeKey;
+          if (!typeKey) return;
+          if (state.typeFilter.has(typeKey)) state.typeFilter.delete(typeKey);
+          else state.typeFilter.add(typeKey);
+        }
+        // 写失败静默（隐私模式/配额满）：筛选是增强，不能因此让页面报错
+        saveTypeFilter(state.typeFilter);
+        render();
+      });
+    }
+
     searchEl.addEventListener('input', () => {
       state.keyword = searchEl.value.trim().toLowerCase();
       // 搜索要全局数据：首次输入时把所有游戏补上（之后都走缓存，不再请求）
@@ -460,6 +549,8 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
    */
   function mount(roots, opts) {
     const restoreExpanded = !opts || opts.restoreExpanded !== false;
+    // 类型筛选：读存储原样恢复（失效项保留在集合里，渲染期再按当前类型集合筛掉）
+    state.typeFilter = new Set(readTypeFilter());
     // 同名根合并成一个游戏节点（照 char-tree.js：name 是归一 key）
     const byName = new Map();
     for (const root of roots) {

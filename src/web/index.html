@@ -90,6 +90,8 @@
     <input id="roster-search" type="search" autocomplete="off"
       placeholder="搜索角色 / 服装 / 变体…" aria-label="搜索角色、服装、变体" />
   </div>
+  <!-- 类型胶囊行：内容由 roster/view.js 渲染（名册为空时整行隐藏）；放搜索与列表之间 -->
+  <div id="roster-type-filter" class="roster-type-filter" role="group" aria-label="按内容类型筛选" hidden></div>
   <!-- 三级树：资源根 → 角色 → 变体（首次展开某根才请求该根的模型清单） -->
   <div id="roster-list" class="panel-body roster-list" role="tree" aria-label="角色库" aria-live="polite">
     <p class="muted-hint">正在读取资源根…</p>

@@ -212,6 +212,8 @@ const skip = (name, sel, expect, reason) => results.push({ name, sel, action: 's
   await section('跨根归并', () => runCrossRootMerge(C));
   for (const name of GAME_NAMES) await section(`游戏 ${name} 角色层`, () => runCharLayer(C, name));
   await section('搜索', () => runSearch(C));
+  // 类型筛选：胶囊渲染（①）、换行/最小高度（②）、点击→aria-pressed→列表（③）、存储恢复（④）
+  await section('类型筛选', () => runTypeFilter(C));
   await section('选中态', () => runSelection(C));
   await section('收起按钮', () => runCollapseButton(C));
   await section('顶栏模型库按钮', () => runTopbarLibrary(C));
@@ -529,6 +531,192 @@ async function runSearch(C) {
   }
 }
 
+
+/**
+ * runTypeFilter 的用例体：名册「内容类型」筛选胶囊行。
+ *
+ * 分级（每条只保留**浏览器才能验**的部分，逻辑面已由 test/roster-type-filter.test.mjs 覆盖）：
+ *   · ① 渲染：胶囊真的被渲染出来、文案含类型名与数字
+ *   · ② 布局几何：容器是 flex-wrap、有单行最小高度，注入假胶囊时行数增加（换行成立）
+ *   · ③ 事件链路：点击胶囊 → aria-pressed 翻转 → 列表里每行变体的 kind 都属于选中集合；再点取消 → 恢复
+ *   · ④ 存储持久化：切换后 localStorage 里确有该键；用同一份存储新起一个视图实例，选中态被恢复
+ */
+/** 变体行的类型徽标（只读 DOM，不读内部状态）；unknown 档在界面上是"资源包"徽标 */
+function typeFilterBadgeOf(row) {
+  const badge = row.querySelector('.tree-type');
+  if (!badge) return '';
+  const cls = [...badge.classList].find((name) => name.startsWith('tree-type-'));
+  return cls ? cls.replace('tree-type-', '') : '';
+}
+
+/** 用同一份存储新起一个视图实例，观察"存储 → 状态 → 渲染"的恢复链 */
+async function probeTypeFilterRestore(roots, sleep) {
+  const out = { stateTypes: null, chipKeys: [], pressed: [] };
+  const realHost = document.getElementById('roster-type-filter');
+  const savedHostId = realHost ? realHost.id : '';
+  let holder = null;
+  try {
+    // 新实例按 id 找容器：先让真容器让出 id，否则命中的还是它（断言就成了自证）
+    if (realHost) realHost.id = 'roster-type-filter--real';
+    const { createRosterView } = await import('/roster/view.js');
+    holder = document.createElement('div');
+    holder.id = 'roster-type-filter';
+    holder.style.cssText = 'position:fixed;left:-9999px;top:0;width:304px';
+    document.body.appendChild(holder);
+    const view = createRosterView({
+      listEl: document.createElement('div'),
+      countEl: document.createElement('span'),
+      searchEl: document.createElement('input'),
+      collapseBtn: document.createElement('button'),
+      onSelect: () => {},
+    });
+    await view.mount(roots, { restoreExpanded: false });
+    out.stateTypes = [...(view.state.typeFilter || [])];
+    try {
+      const firstGame = view.state.games[0];
+      if (firstGame) await view.ensureGameLoaded(firstGame);
+      view.render();
+      await sleep(80);
+      const chips = [...holder.querySelectorAll('.roster-type-chip')];
+      out.chipKeys = chips.map((chip) => chip.dataset.typeKey);
+      out.pressed = chips.filter((chip) => chip.getAttribute('aria-pressed') === 'true')
+        .map((chip) => chip.dataset.typeKey);
+    } catch { /* 数据没取到就只断言"存储 → 状态"这一段 */ }
+  } catch (error) {
+    out.stateTypes = `error: ${(error && error.message) || error}`;
+  } finally {
+    if (holder) holder.remove();
+    if (realHost) realHost.id = savedHostId;
+  }
+  return out;
+}
+
+/** 类型筛选 ①渲染 + ②布局几何 */
+async function runTypeFilterSurface(C) {
+  const { q, qa, rec, sleep } = C;
+  const host = q('#roster-type-filter');
+  const chips = qa('#roster-type-filter .roster-type-chip');
+  const texts = chips.map((chip) => chip.textContent.trim());
+  const derived = (window.__WEB__ && window.__WEB__.rosterSnapshot ? window.__WEB__.rosterSnapshot() : {}).typeFilter;
+  rec('类型胶囊渲染', '#roster-type-filter .roster-type-chip', '枚举',
+    '胶囊数量 ≥1，且每个胶囊文案含类型名与数字',
+    `count=${chips.length} texts=${JSON.stringify(texts)}`,
+    !!host && !host.hidden && chips.length >= 1 && texts.every((text) => /\S+\s+\d+$/.test(text)));
+  rec('类型胶囊与存储状态可读', 'window.__WEB__.rosterSnapshot().typeFilter', '读取',
+    '快照暴露 typeFilter 数组（断言不依赖内部实现细节）',
+    `typeFilter=${JSON.stringify(derived)}`, Array.isArray(derived));
+
+  const styles = getComputedStyle(host);
+  const heightOneLine = host.offsetHeight;
+  const fakes = [];
+  for (let index = 0; index < 12; index += 1) {
+    const fake = document.createElement('button');
+    fake.type = 'button';
+    fake.className = 'roster-type-chip';
+    fake.textContent = `假类型${index} 1`;
+    fake.dataset.fake = '1';
+    host.appendChild(fake);
+    fakes.push(fake);
+  }
+  await sleep(60);
+  const heightManyLines = host.offsetHeight;
+  fakes.forEach((node) => node.remove());
+  await sleep(60);
+  const heightBack = host.offsetHeight;
+  rec('胶囊行自动换行 + 最小高度', '#roster-type-filter', '注入 12 个假胶囊再移除',
+    'flex-wrap: wrap；含 min-height；胶囊变多时容器变高（换行），移除后回到原高度',
+    `flexWrap=${styles.flexWrap} minHeight=${styles.minHeight} 一行=${heightOneLine}px 多行=${heightManyLines}px 还原=${heightBack}px`,
+    styles.flexWrap === 'wrap' && parseFloat(styles.minHeight) > 0 && heightManyLines > heightOneLine);
+}
+
+/** 类型筛选 ③事件链路：点击 / 清除按钮 / 再点取消 */
+async function runTypeFilterClicks(C) {
+  const { q, qa, rec, sleep, clickChar } = C;
+  const chips = () => qa('#roster-type-filter .roster-type-chip');
+  // 类型过滤作用在变体上：先把角色展开，让变体行真的出现在 DOM 里
+  const charKeys = qa('[data-char-key].tree-char').slice(0, 40).map((row) => row.dataset.charKey);
+  for (const charKey of charKeys) {
+    try { clickChar(charKey); } catch { /* 行被重渲染掉了就跳过：有一部分变体出来就够断言 */ }
+  }
+  await sleep(200);
+
+  const firstChip = chips()[0];
+  if (!firstChip) {
+    rec('类型筛选点击', '#roster-type-filter .roster-type-chip', '点击', '至少有一个胶囊可点', '没有胶囊', false);
+    return null;
+  }
+  const firstKey = firstChip.dataset.typeKey;
+  const variantsBefore = qa('#roster-list [data-model-id]').length;
+  firstChip.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  await sleep(120);
+  const pressedAfterClick = chips().find((chip) => chip.dataset.typeKey === firstKey).getAttribute('aria-pressed');
+  const rowsAfter = qa('#roster-list [data-model-id]');
+  const expectedBadge = firstKey === 'unknown' ? 'bundle' : firstKey;
+  const allMatch = rowsAfter.length > 0 && rowsAfter.every((row) => typeFilterBadgeOf(row) === expectedBadge);
+  rec('点击胶囊后 aria-pressed 与列表一致', `.roster-type-chip[data-type-key="${firstKey}"]`, '点击一次',
+    `aria-pressed=true，且列表里每行变体的类型徽标都 = ${expectedBadge}`,
+    `aria-pressed=${pressedAfterClick} rows=${rowsAfter.length}（点前 ${variantsBefore}） badges=${JSON.stringify([...new Set(rowsAfter.map(typeFilterBadgeOf))])}`,
+    pressedAfterClick === 'true' && allMatch);
+
+  const clearBtn = q('#roster-type-filter [data-role="clear-type-filter"]');
+  rec('选中后出现「清除」按钮', '#roster-type-filter [data-role="clear-type-filter"]', '查询',
+    '至少选中 1 个类型时出现', clearBtn ? `存在（文本「${clearBtn.textContent.trim()}」）` : '不存在', !!clearBtn);
+
+  chips().find((chip) => chip.dataset.typeKey === firstKey)
+    .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  await sleep(120);
+  const rowsRestored = qa('#roster-list [data-model-id]').length;
+  const clearGone = !q('#roster-type-filter [data-role="clear-type-filter"]');
+  rec('再点一次取消筛选', '.roster-type-chip', '再点一次',
+    'aria-pressed 回 false、列表回到点前数量、清除按钮消失',
+    `rows=${rowsRestored}（点前 ${variantsBefore}）清除按钮消失=${clearGone}`,
+    rowsRestored === variantsBefore && clearGone);
+  return { variantsBefore };
+}
+
+/** 类型筛选 ④存储持久化：写入 + 新实例恢复（状态层 / 渲染层） */
+async function runTypeFilterPersistence(C) {
+  const { q, qa, rec, skip, sleep } = C;
+  const chips = () => qa('#roster-type-filter .roster-type-chip');
+  chips()[0].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  await sleep(120);
+  const savedRaw = localStorage.getItem('roster.typeFilter');
+  const savedList = savedRaw ? JSON.parse(savedRaw) : null;
+  const savedKey = Array.isArray(savedList) ? savedList[0] : undefined;
+  const currentKey = chips()[0] ? chips()[0].dataset.typeKey : undefined;
+  const written = Array.isArray(savedList) && savedList.length === 1 && savedList[0] === currentKey;
+
+  const roots = (window.__WEB__ && window.__WEB__.state && window.__WEB__.state.roots) || [];
+  const restored = await probeTypeFilterRestore(roots, sleep);
+  rec('切换后写入 localStorage', 'localStorage["roster.typeFilter"]', '点击一个胶囊后读取',
+    '值 = 该胶囊 typeKey 的单元素数组',
+    `saved=${savedRaw}`, written);
+  rec('新实例 mount 后从存储恢复选中（状态层）', 'view.state.typeFilter', '读存储 → mount',
+    '状态里含存储的 key（失效项也一并保留，渲染期再忽略）',
+    `state.typeFilter=${JSON.stringify(restored.stateTypes)}`,
+    Array.isArray(restored.stateTypes) && savedKey !== undefined && restored.stateTypes.includes(savedKey));
+  if (savedKey !== undefined && restored.chipKeys.includes(savedKey)) {
+    rec('恢复后的胶囊为选中态（渲染层）', '.roster-type-chip[aria-pressed="true"]', '新实例渲染后查询',
+      `typeKey=${savedKey} 的胶囊 aria-pressed=true`,
+      `chips=${JSON.stringify(restored.chipKeys)} pressed=${JSON.stringify(restored.pressed)}`,
+      restored.pressed.includes(savedKey));
+  } else {
+    skip('恢复后的胶囊为选中态（渲染层）', '.roster-type-chip', '新实例渲染后 aria-pressed=true',
+      `该游戏这次没取到数据（chips=${JSON.stringify(restored.chipKeys)}），渲染层断言跳过；状态层已断言`);
+  }
+
+  // 收尾：把筛选清空，避免影响后续段（后面的用例假设"未筛选"）
+  const clear = q('#roster-type-filter [data-role="clear-type-filter"]');
+  if (clear) { clear.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); await sleep(80); }
+}
+
+/** 「类型筛选」用例体：分段调用，避免单函数过长 */
+async function runTypeFilter(C) {
+  await runTypeFilterSurface(C);
+  const clicked = await runTypeFilterClicks(C);
+  if (!clicked) return;
+  await runTypeFilterPersistence(C);
+}
 
 /** runSelection 的用例体 */
 async function runSelection(C) {

@@ -25,6 +25,8 @@ export function snapshotRoster({ state, listEl, gameStatus }) {
     expandedGames: [...state.expandedGames],
     expandedChars: [...state.expandedChars],
     keyword: state.keyword,
+    /** 类型筛选的选中集合（**存储原样**，可能含当前名册里不存在的失效项） */
+    typeFilter: state.typeFilter ? [...state.typeFilter] : [],
     selected: state.selected,
     /** 最近一次"定位当前角色"的结果（visible / scrolled / skipped-user-scrolling / …） */
     lastReveal: state.lastReveal || null,
