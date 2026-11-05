@@ -46,7 +46,14 @@ async function dragOn({ root, head, list, vw, vh }, { moves, batches, dx, dy }) 
       bubbles: true, cancelable: true, pointerId: 21, pointerType: 'mouse', isPrimary: true,
       clientX: x, clientY: y, button: 0, buttons: 1,
     }));
-    const scrollBefore = Math.round(list.scrollTop);
+    // 采集完整滚动快照：只有 scrollTop 无法区分"位置被拖动改了"与"期间有新日志、容器自动跟到底"
+    const snapScroll = () => ({
+      scrollTop: Math.round(list.scrollTop),
+      scrollHeight: list.scrollHeight,
+      clientHeight: list.clientHeight,
+      maxScroll: Math.max(0, list.scrollHeight - list.clientHeight),
+    });
+    const scrollBeforeSnap = snapScroll();
     fire('pointerdown', sx, sy);
     const per = Math.max(1, Math.round(moves / batches));
     for (let b = 0; b < batches; b += 1) {
@@ -64,8 +71,10 @@ async function dragOn({ root, head, list, vw, vh }, { moves, batches, dx, dy }) 
       writes: Number(root.dataset.dragWrites),
       midInline,
       after: { transform: root.style.transform, left: root.style.left, top: root.style.top },
-      scrollBefore,
-      scrollAfter: Math.round(list.scrollTop),
+      scrollBefore: scrollBeforeSnap.scrollTop,
+      scrollAfter: snapScroll().scrollTop,
+      scrollBeforeSnap,
+      scrollAfterSnap: snapScroll(),
     };
   }
 
@@ -142,9 +151,23 @@ async function caseThrottleAndPersist(env, rec, helpers, drag) {
     !d1.after.transform && /px$/.test(d1.after.left || '') && !!saved && !!anchorNow
       && Math.abs(saved.left - Math.round(anchorNow.left)) <= 1 && Math.abs(saved.top - Math.round(anchorNow.top)) <= 1);
 
-  // ③ 拖动不改日志滚动位置
-  rec('③ 拖动不影响日志滚动', '.dbg-list', '拖动全程', 'scrollTop 前后相同',
-    `前=${d1.scrollBefore} 后=${d1.scrollAfter}`, d1.scrollBefore === d1.scrollAfter);
+  // ③ 拖动不得把日志滚动位置拉走
+  //   原判据是"scrollTop 前后相同"，但日志容器有**追加即自动跟到底**的行为
+  //   （src/web/debug/panel.js 的 scrollToBottom：scrollTop = scrollHeight）。
+  //   只要拖动的那几帧里恰有新日志到达，scrollTop 就会变大 —— 那是**产品按设计跟随**，
+  //   不是拖动改了滚动。实测复现：10 套串跑时 220→235（内容同时增长），单跑不复现。
+  //   现在按"期间是否新增内容"分两种前提，任何一种都不允许位置往回跳：
+  //     · 没有新日志 ⇒ scrollTop 必须一模一样
+  //     · 有新日志   ⇒ 只能仍在底部（scrollTop === maxScroll），且不许倒退
+  const grew = d1.scrollAfterSnap.scrollHeight - d1.scrollBeforeSnap.scrollHeight;
+  const atBottomAfter = d1.scrollAfterSnap.scrollTop === d1.scrollAfterSnap.maxScroll;
+  const notBackwards = d1.scrollAfter >= d1.scrollBefore;
+  const okScroll = grew === 0 ? d1.scrollBefore === d1.scrollAfter : (notBackwards && atBottomAfter);
+  rec('③ 拖动不影响日志滚动', '.dbg-list', '拖动全程',
+    '期间无新日志 ⇒ scrollTop 完全不变；有新日志 ⇒ 仍停在底部且不倒退（拖动不得把位置拉走/重置）',
+    `前=${d1.scrollBefore} 后=${d1.scrollAfter}；内容增长=${grew}px；`
+      + `前 maxScroll=${d1.scrollBeforeSnap.maxScroll} 后 maxScroll=${d1.scrollAfterSnap.maxScroll}；贴底=${atBottomAfter}；未倒退=${notBackwards}`,
+    okScroll);
 
   return d1;
 }

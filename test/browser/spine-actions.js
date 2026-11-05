@@ -359,13 +359,24 @@ async function measure(model) {
 
 /** 0. 舞台就绪（WebGL 上下文） */
 async function runStageReady(C) {
-  const { rec, stage } = C;
+  const { rec, stage, waitFor } = C;
 // -------------------------------------------------- 0. 舞台就绪（WebGL 上下文）
+  // 为什么先等信号：check-console 是"navigate → 固定等 WAIT_MS → 注入脚本"，
+  //   冷启动或整机负载高时 main.js 的 boot() 可能还没跑完 ⇒ dataset.stageContext 尚未写入，
+  //   直接读就是 stage=false / context=undefined（10 套串跑时实测出现过一次，单跑不复现）。
+  //   等"信号"而不是赌固定时长：boot() 的 try/catch 两个分支都会写这个 dataset，
+  //   所以它出现 ≙ 舞台初始化已有结论（webgl 或 none），此时再断言才有意义。
+  let waited = true;
+  try {
+    await waitFor(() => typeof document.documentElement.dataset.stageContext === 'string',
+      { timeoutMs: 15000, label: '舞台初始化（dataset.stageContext 写入）' });
+  } catch { waited = false; }
   const s = stage();
-  const ok = !!s && document.documentElement.dataset.stageContext === 'webgl';
+  const ctx = document.documentElement.dataset.stageContext;
+  const ok = !!s && ctx === 'webgl';
   rec('舞台/WebGL 上下文', '#stage-canvas', '读取',
     'stage 已创建且 context=webgl',
-    `stage=${!!s} context=${document.documentElement.dataset.stageContext}`,
+    `stage=${!!s} context=${ctx} 等待到信号=${waited}`,
     ok);
 
 }
