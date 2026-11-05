@@ -32,7 +32,7 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const silentLog = { debug() {}, info() {}, warn() {}, error() {} };
 
 /** 沙箱：临时数据根 + 本地 http server */
-const sandbox = { dataRoot: null, dirA: null, dirB: null, server: null, base: '' };
+const sandbox = { dataRoot: null, dirA: null, dirB: null, server: null, base: '', baselineRootCount: 0 };
 
 /** 最小 JSON 响应（与 serve.mjs 的 sendJson 同形：无缩进 + no-store） */
 function sendJson(res, status, body) {
@@ -63,11 +63,14 @@ before(async () => {
   fs.mkdirSync(path.join(sandbox.dataRoot, 'config'), { recursive: true });
   // 两条真实存在的根：dir-a 用来撞名（改名合并），dir-b 作为"另一个已存在的名字"的载体。
   //   注意配置文件的形状是 { "roots": [...] }（见 core/config.mjs 的 readConfig），不是裸数组。
+  //   基线根数从种子数据推导并存进 sandbox —— 断言里**不写死数量**，改种子也不用改断言。
+  const seedRoots = [
+    { id: 'alpha', name: 'Alpha', path: sandbox.dirA, enabled: true },
+    { id: 'beta', name: 'Beta', path: sandbox.dirB, enabled: true },
+  ];
+  sandbox.baselineRootCount = seedRoots.length;
   fs.writeFileSync(path.join(sandbox.dataRoot, 'config', 'resources.json'), JSON.stringify({
-    roots: [
-      { id: 'alpha', name: 'Alpha', path: sandbox.dirA, enabled: true },
-      { id: 'beta', name: 'Beta', path: sandbox.dirB, enabled: true },
-    ],
+    roots: seedRoots,
   }, null, 2));
 
   const data = createServerData({ root: PROJECT_ROOT, dataRoot: sandbox.dataRoot, log: silentLog });
@@ -245,7 +248,7 @@ test('⑦ remove：200 + 回到基线 + 落盘可读（不污染配置）', asyn
   const after = (await getRoots()).body;
   assert.equal(after.roots.length, before - 1, '删除后启用根数量应 -1');
   assert.equal(findRoot(after, sandbox.probeId), null, 'GET 里不该再有该根');
-  assert.equal(after.roots.length, 2, '应回到沙箱初始的两条根');
+  assert.equal(after.roots.length, sandbox.baselineRootCount, '应回到沙箱初始根数（数量从种子数据推导，不写死）');
 
   // 再删一次 ⇒ 404（幂等口径：不存在就是不存在，不静默成功）
   const again = await postRoots({ action: 'remove', id: sandbox.probeId });

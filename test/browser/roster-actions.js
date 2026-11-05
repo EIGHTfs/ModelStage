@@ -10,6 +10,14 @@
 //
 // 返回：{ total, failed, results:[{name, sel, action, expect, actual, ok}] }
 //
+// 分级说明（哪些迁走了、为什么剩下的必须浏览器）：
+//   · 搜索的**匹配语义** → test/roster-filter.test.mjs（filter.js 纯函数，第 1 级）
+//   · **持久化键名常量** → 同一份测试里的静态契约（第 3 级；ui-state.js 模块级碰 window，node 里 import 不了）
+//   · 留下：搜索接线冒烟（判据 ③ 事件链路）、localStorage 结构（判据 ④ 存储与持久化）、
+//     以及两条**合并语义**断言（"一级节点按 name 合并" / "角色跨根归并"）——
+//     合并逻辑在 list.js / view.js 里，其依赖链（../app/status.js、../app/ui-state.js）模块级就用 window，
+//     实测 import 直接抛 "window is not defined"，当前无法在 node 里测；要迁必须先抽纯函数（产品改动，另议）。
+//
 // 形态：整段包在自求值的 async IIFE 里（工具原样求值并 await），这样既能用 await，
 //   又能通过 `node --check test/roster-actions.js` 的语法检查（不依赖顶层 await）。
 //
@@ -180,9 +188,8 @@ const skip = (name, sel, expect, reason) => results.push({ name, sel, action: 's
  */
 
   // 基础上下文（其余 helper 由两个工厂提供；工厂内同名解构 ⇒ helper 体内一字不改）
-  // thinDataReason：数据不足的声明。**必须挂在 C 上**——赋值发生在顶层 helper（runSearch）里，
   //   而 IIFE 内用 let 声明的话 helper 看不见（非严格模式下会写成全局，IIFE 读到的仍是空串）。
-  const C = { sleep, q, qa, snap, click, results, rec, skip, thinDataReason: '' };
+  const C = { sleep, q, qa, snap, click, results, rec, skip };
   // 顺序有依赖：makeListHelpers 里的 charKeysOf 用到 makeBasicHelpers 提供的 gameOf ⇒ basic 必须先 assign
   Object.assign(C, makeBasicHelpers(C));   // rootsByName / until / domRows / gameOf / rosterSig / clickGame
   Object.assign(C, makeListHelpers(C));    // rootModelCounts / charKeysOf / clickChar / section
@@ -198,7 +205,7 @@ const skip = (name, sel, expect, reason) => results.push({ name, sel, action: 's
   const GAME_NAMES = await pickGameNames(C);
   C.GAME_NAMES = GAME_NAMES;   // 同时进 C：runXxx 内部要用全量列表
   if (GAME_NAMES.length < 2) {
-    skip('多游戏切换', '.tree-game', '至少 2 个游戏含角色行可切换',
+    skip('[前置] 多游戏切换', '.tree-game', '至少 2 个游戏含角色行可切换（对应断言：游戏 <名> 展开/折叠）',
       `配置里只有 ${GAME_NAMES.length} 个游戏能展开出角色行；产品要求支持多游戏，此环境不满足`);
   }
   for (const name of GAME_NAMES) await section(`游戏 ${name}`, () => runGameSwitch(C, name));
@@ -221,7 +228,6 @@ return JSON.stringify({
   failed: failures.length,
   skipped: results.filter((r) => r.skipped === true).length,
   // 只有"数据不足"那条真被跳过时才带原因：test-all 会把它显示成可读的 ⚠️ 说明
-  summary: C.thinDataReason ? { skipReason: C.thinDataReason } : {},
   failures,
   results,
 }, null, 1);
@@ -350,11 +356,13 @@ async function runInitialState(C) {
     nameSet.size === s.games.length && mergedOk && s.games.every((g) => g.status === 'idle'));
 
   if (s.games.length < 2) {
-    skip('多游戏切换', '.tree-game', '至少 2 个游戏可切换',
+    // 这两条是**能力前置**，对应断言是动态名（`游戏 <名> 展开` / `游戏 <名> 折叠`），
+    //   所以不冒充某个 rec 名，统一加 [前置] 前缀，避免读者按名字去找不存在的断言。
+    skip('[前置] 多游戏切换', '.tree-game', '至少 2 个游戏可切换（对应断言：游戏 <名> 展开/折叠）',
       `配置里只有 ${s.games.length} 个游戏；产品要求支持多游戏，此环境不满足`);
   }
   if (!s.games.some((g) => (g.roots || []).length >= 2)) {
-    skip('跨根归并', '.tree-game', '至少一个游戏由 ≥2 个根合并',
+    skip('角色跨根归并', '.tree-game', '至少一个游戏由 ≥2 个根合并',
       '配置里没有多根游戏；产品要求支持同游戏多根，此环境不满足');
   }
 }
@@ -435,12 +443,20 @@ async function runCharLayer(C, name) {
     await until(() => charKeysOf(name).length > 0, 15000);
     const allKeys = charKeysOf(name);
     const keys = allKeys.slice(0, 3);
-    // 相对断言：渲染出的角色行数必须等于快照里该游戏的角色数（不写死具体数量）
+    // 相对断言：渲染出的角色行数必须与快照里该游戏的角色数一致（不写死具体数量）。
+    //   必须考虑**渲染上限**：view.js 每个游戏最多渲染 renderLimitPerGame() 行，
+    //   大数据实例下"渲染数 < 快照数"是正常截断而不是漏渲染（此处曾因写死"两者相等"在 500+ 角色的实例上假红）。
+    //   本断言不写死产品默认值：配了上限就按 min(快照, 上限) 推导；没配就只断言"没超出快照、且至少渲染 1 行"。
     const expectChars = (gameOf(name) || {}).chars;
+    const cfgLimit = Number(window.__WEB_CONFIG__ && window.__WEB_CONFIG__.renderLimitPerGame);
+    const renderLimit = Number.isFinite(cfgLimit) && cfgLimit > 0 ? cfgLimit : null;
+    const rowsOk = allKeys.length >= 1 && (expectChars === undefined
+      ? true
+      : (renderLimit ? allKeys.length === Math.min(expectChars, renderLimit) : allKeys.length <= expectChars));
     rec(`游戏 ${name} 角色行数`, `[data-char-key].tree-char[game=${name}]`, '读取',
-      '角色行数 === 快照该游戏角色数，且至少 1 个可操作',
-      `渲染 ${allKeys.length} 个（快照 chars=${expectChars}），取前 ${keys.length} 个操作`,
-      allKeys.length >= 1 && (expectChars === undefined || allKeys.length === expectChars));
+      '角色行数 === min(快照该游戏角色数, 渲染上限)，且至少 1 个可操作',
+      `渲染 ${allKeys.length} 个（快照 chars=${expectChars}；${renderLimit ? `上限 ${renderLimit}` : '未配上限'}），取前 ${keys.length} 个操作`,
+      rowsOk);
     for (let i = 0; i < keys.length; i += 1) {
       const key = keys[i];
       const vBefore = domRows().variants;
@@ -473,20 +489,19 @@ async function runSearch(C) {
   };
   const firstGame = GAME_NAMES[0];
   if (!firstGame) {
-    skip('搜索框输入（中文名）', '#roster-search', '结果收窄且 >0（搜索时自动展开到变体）',
+    skip('F2 搜索接线（输入→结果变化 / 无匹配占位 / 清空复原）', '#roster-search', '结果收窄且 >0（搜索时自动展开到变体）',
       '配置里没有能展开出角色行的游戏，无法构造搜索场景');
     return;
   }
   clickGame(firstGame);
   await until(() => gameOf(firstGame).status === 'ready');
   const baseChars = qa('[data-char-key].tree-char').length;
-  const baseVariants = qa('[data-model-id]').length;
   // 关键词取自**当前渲染出来的第一个角色标题**（角色名是数据，不写死具体角色）：
   //   取前 2 个字做子串搜索，既保证能命中，又能验证"结果被收窄"。
   const firstTitle = ((qa('.tree-char-title')[0] || {}).textContent || '').trim();
   const kw = firstTitle.slice(0, Math.min(2, firstTitle.length));
   if (!kw) {
-    skip('搜索框输入（中文名）', '#roster-search', '结果收窄且 >0（搜索时自动展开到变体）',
+    skip('F2 搜索接线（输入→结果变化 / 无匹配占位 / 清空复原）', '#roster-search', '结果收窄且 >0（搜索时自动展开到变体）',
       '名册里没有可读的角色标题，无法构造搜索关键词');
   } else {
   await setKw(kw);
@@ -494,39 +509,24 @@ async function runSearch(C) {
   await waitStable(rosterSig, { timeoutMs: 3000, label: '界面稳定' });   // 原 sleep(400)
   const hitChars = qa('[data-char-key].tree-char').length;
   const hitVariants = qa('[data-model-id]').length;
-  const titles = qa('.tree-char-title').slice(0, 3).map((n) => n.textContent);
-  // 前置条件：展开态得**有足够多的角色行**，"搜索会把结果收窄"才是个有意义的命题。
-  //   实测过的假红：测试实例数据极稀时 baseChars 只有 2，一搜索反而**全量展开**命中 3 个（2→3 变多），
-  //   判据 hitChars < baseChars 不成立。那不是搜索坏了，是数据不足 —— 与 f3-reveal 的"可滚高度 0px"同类。
-  //   ⚠️ 只看 baseChars，**不能**把 baseVariants 当条件：真数据实例（117 个角色）搜索前同样没展开变体，
-  //      baseVariants 也是 0，用它会把数据充足的情况一并跳过（那是把门禁关掉，不是修判据）。
-  //   **判据本身不放宽**（仍要求 收窄且 >0 且 有变体），只在前置不成立时显式声明跳过。
-  const MIN_BASE_CHARS = 5;
-  const thinData = baseChars < MIN_BASE_CHARS;
-  if (thinData) {
-    const why = `当前实例展开态只有 baseChars=${baseChars} 个角色行（要求 ≥${MIN_BASE_CHARS}；baseVariants=${baseVariants}），`
-      + `无法验证"搜索收窄"`;
-    skip('搜索框输入（中文名）', '#roster-search', `input "${kw}"（取自第一个角色名）`,
-      `${why}；实测命中 角色 ${baseChars}→${hitChars}、变体 ${hitVariants}。真数据实例下该断言仍需通过`);
-    C.thinDataReason = why;   // 挂到上下文上，IIFE 汇总时才能读到（见 C 的声明处注释）
-  } else {
-    rec('搜索框输入（中文名）', '#roster-search', `input "${kw}"（取自第一个角色名）`, '结果收窄且 >0（搜索时自动展开到变体）',
-      `角色 ${baseChars}→${hitChars}，变体 ${hitVariants}，命中=${JSON.stringify(titles)}`,
-      hitChars > 0 && hitChars < baseChars && hitVariants > 0);
-  }
-  }
-
+  // 搜索的**匹配语义**（哪个关键词命中哪个角色/游戏、命中后要显示整组）已迁到
+  //   test/roster-filter.test.mjs（filter.js 纯函数，进默认门禁）。
+  //   这里只留一条**接线冒烟**：打字之后 DOM 结果真的变、无匹配有占位、清空能回到原样。
+  //   属判据 §二·③（浏览器事件链路）—— 静态扫描与纯函数都替代不了"输入事件 → 前端状态 → 重渲染"。
   await setKw('zzz不存在的角色zzz');
-  await waitStable(rosterSig, { timeoutMs: 3000, label: '界面稳定' });   // 原 sleep(300)
-  rec('搜索框无匹配', '#roster-search', 'input "zzz不存在的角色zzz"', '角色 0 且显示「无匹配」',
-    `角色=${qa('[data-char-key].tree-char').length} 无匹配文案=${q('#roster-list').textContent.includes('无匹配')}`,
-    qa('[data-char-key].tree-char').length === 0 && q('#roster-list').textContent.includes('无匹配'));
+  await waitStable(rosterSig, { timeoutMs: 3000, label: '界面稳定' });
+  const missRows = qa('[data-char-key].tree-char').length;
+  const missShown = q('#roster-list').textContent.includes('无匹配');
 
   await setKw('');
-  await waitStable(rosterSig, { timeoutMs: 3000, label: '界面稳定' });   // 原 sleep(300)
-  rec('搜索框清空', '#roster-search', 'input ""', '恢复搜索前条数',
-    `角色=${qa('[data-char-key].tree-char').length}（搜索前 ${baseChars}）`,
-    qa('[data-char-key].tree-char').length === baseChars);
+  await waitStable(rosterSig, { timeoutMs: 3000, label: '界面稳定' });
+  const clearedRows = qa('[data-char-key].tree-char').length;
+
+  rec('F2 搜索接线（输入→结果变化 / 无匹配占位 / 清空复原）', '#roster-search', `input「${kw}」→「zzz…」→ ""`,
+    '界面可见变化：有关键词时结果集变化；无匹配时 0 行且有「无匹配」占位；清空后回到搜索前行数',
+    `输入「${kw}」后 角色 ${baseChars}→${hitChars}、变体 ${hitVariants}；无匹配=${missRows} 行（占位=${missShown}）；清空后=${clearedRows} 行（搜索前 ${baseChars}）`,
+    hitChars !== baseChars && missRows === 0 && missShown && clearedRows === baseChars);
+  }
 }
 
 
@@ -535,7 +535,9 @@ async function runSelection(C) {
   const { sleep, q, qa, snap, click, rec, skip, rosterSig, clickChar } = C;
   const firstChar = q('[data-char-key].tree-char');
   if (!firstChar) {
-    skip('变体选中 A/B', '[data-model-id]', '同一角色下至少 2 个变体，可切换选中',
+    skip('变体选中 A', '[data-model-id]', '同一角色下至少 2 个变体，可切换选中',
+      '名册里没有角色行可展开（当前配置没有可用模型）');
+    skip('变体改选 B', '[data-model-id]', '同一角色下至少 2 个变体，可切换选中',
       '名册里没有角色行可展开（当前配置没有可用模型）');
     return;
   }
@@ -546,7 +548,9 @@ async function runSelection(C) {
   }
   const count = qa('[data-model-id]').length;
   if (count < 2) {
-    skip('变体选中 A/B', '[data-model-id]', '同一角色下至少 2 个变体，可切换选中',
+    skip('变体选中 A', '[data-model-id]', '同一角色下至少 2 个变体，可切换选中',
+      `该角色只有 ${count} 个变体（配置里没有多根/多版本同名角色）`);
+    skip('变体改选 B', '[data-model-id]', '同一角色下至少 2 个变体，可切换选中',
       `该角色只有 ${count} 个变体（配置里没有多根/多版本同名角色）`);
     return;
   }
@@ -736,8 +740,11 @@ async function runPersistKeys(C) {
   const { rec } = C;
   const raw = localStorage.getItem('modelstage.tree-state.v1');
   const parsed = raw ? JSON.parse(raw) : null;
-  rec('localStorage 键名', 'localStorage["modelstage.tree-state.v1"]', '读取',
-    '持久化键名保持稳定，结构含 games/chars/activeGame/lastByGame（activeGame 存游戏名）',
+  // 键名"是不是这个值、源码里有没有第二处定义"已迁到 test/roster-filter.test.mjs（静态契约，第 3 级）；
+  //   留在这里的是**只有浏览器能验**的部分（判据 §二·④ 存储与持久化）：
+  //   真实交互之后，localStorage 里确实写进了这个键、结构里确实有那四个字段。
+  rec('localStorage 持久化结构（写入实际发生）', 'localStorage["modelstage.tree-state.v1"]', '读取',
+    '真实交互后写入过该键，且结构含 games/chars/activeGame/lastByGame（activeGame 存游戏名）',
     parsed ? `keys=${Object.keys(parsed).join(',')} activeGame=${parsed.activeGame} lastByGame=${JSON.stringify(parsed.lastByGame)}` : '未写入',
     !!parsed && ['games', 'chars', 'activeGame', 'lastByGame'].every((k) => k in parsed));
 }

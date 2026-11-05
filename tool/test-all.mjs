@@ -157,6 +157,9 @@ const SUITES = [
   //   断言对象是"HTTP 响应 + 落盘结果"，起浏览器毫无必要；迁到 node 后进入默认门禁，
   //   从"平时只跑 --browser 才执行"变成每次 node --test 都跑。
   { name: 'roots-api', runner: 'node-test', file: 'test/roots-api.test.mjs' },
+  // 名册搜索匹配（filter.js 纯函数）+ 持久化键名（静态契约）：P2 从 roster-actions 迁出。
+  //   前者是"给定数据 + 关键词 ⇒ 哪些角色可见"，后者是"键名常量唯一且稳定"，都不需要浏览器。
+  { name: 'roster-filter', runner: 'node-test', file: 'test/roster-filter.test.mjs' },
   // 统一日志工厂（infra/log.js）的记录形状契约：纯 node、秒级，
   //   它是后续"适配层 → 分 3 批迁 stageStatus"的地基，形状一旦漂了后面全歪
   { name: 'log', runner: 'node-test', file: 'test/log.test.mjs' },
