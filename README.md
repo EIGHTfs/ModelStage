@@ -188,6 +188,7 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 | 0.5.25 | 2026-11-01 | 包体积收窄：`tool/lib/` 整目录放行改为 **6 个运行时文件**（其余 7 个是测试/校验/开发件，`check-perms` / `test-lock` / `test-report` / `contract-checks` / `export-bundle` / `cubism-core` / `spine-runtime`）；发布守卫新增四类禁止项（`test/`、`*.test.*`、`*.map`、开发工具、缓存/上传/日志）；包内 286 → 279 文件 |
 | 0.5.24 | 2026-11-01 | 发布准备：补 `THIRD_PARTY_NOTICES.md`、README「合规状态」扩到 Live2D Cubism 与 pixi.js 并注明「服务端把运行时报给浏览器 = 分发行为」；补 author/keywords/bugs、清理 `files` 无效条目；去掉 `private` 以便发布；README 标注项目进入维护为主阶段 |
 | 0.5.23 | 2026-11-01 | 解包节点判据由「名字前缀」改为「结构形式」（`/^CAB-[0-9a-f]{32}$/i`，四处统一 + 防漂移单测）：`.resS` / `.resource`（FSB5 音频银行）不再被误当 serialized file；顺带修好两个包的不完整提取（假节点抛错曾中断循环，真节点没被处理）；测试套件 29 → 30 |
+| 0.5.24 | 2026-11-05 | 浏览器测试迁移第 1 批：资源根 CRUD 的 7 条 HTTP 契约断言迁到 `test/roots-api.test.mjs`（浏览器侧只留 3 条交互断言 + 4 条冒烟）；顺带修 `409` 响应丢 `path`/`existing` 的透传缺陷（已补回归断言） |
 | 0.5.22 | 2026-11-01 | `tool/lib/runtime-package.mjs` 的 `writeAtomic` 写前自建父目录（原子写函数不依赖调用方建目录）；`src/server/http/atomic-json.mjs` 核实后本就有 `ensureDir`，未改动 |
 | 0.5.21 | 2026-11-01 | 修 `document.files` 的 catalog 请求无超时：加 `DOC_FILES_TIMEOUT_MS = 6000` + `AbortSignal.timeout`，`pending` 清理移入 `finally`（挂起后可重试，不再永久占位），失败记 warn 含 rootId/url/reason |
 | 0.5.20 | 2026-10-31 | 全量审计后清理真实硬编码：插件清单 `depsDir` 改 `${MODELSTAGE_DEPS_DIR}` 占位符（换机只改 env）、删 `interpreter` 交给探测链、MIME 字面量各文件提常量、6 个脚本统一 `here(import.meta.url)`、清 5 处注释日期 |

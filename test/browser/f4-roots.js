@@ -1,6 +1,12 @@
 // f4-roots.js —— F4 资源根管理 UI 的实测行为
 //
-// 覆盖：add / rename / toggle / remove 四个写入动作 + 三条错误路径（400/409/404）+ merged 语义
+// 覆盖：管理区展开 + 四个写操作各真实点一次的**界面可见变化** + 错误提示能显示
+//
+// 为什么这些断言必须留在浏览器（分级判据 §二·③ 浏览器事件链路）：
+//   HTTP 契约（add/rename/toggle/remove 的成功与失败分支、400/409/404、merged 语义、落盘结果）
+//   已迁到 test/roots-api.test.mjs（node --test，进默认门禁）。留在这里的只剩"点了之后界面有没有变":
+//   管理区展开、行内改名/启停按钮翻转、错误文案是否真的显示到 #root-msg ——
+//   这些只有"真实 DOM 事件 → 前端状态机 → 重渲染"跑起来才存在，静态扫描与 HTTP 断言都替代不了。
 //
 // 跨平台规范（重要）：
 //   · 脚本里**不出现任何硬编码绝对路径**：探针目录由调用方通过 URL query 传入
@@ -204,10 +210,9 @@ const f4Sig = () => ({
   //   拆成独立函数后必须用对象承载——否则函数内的赋值不回传，后续用例读到旧值，
   //   表现为「语法通过、total 也对，但某条用例行为悄悄变了」（最难发现的一类错）。
   const P = {
-    probeId: null,          // 探针根 id：F4① 写入；②③④⑤ 与清理读；清理末尾置回 null
-    probePath: null,        // 探针根路径：F4① 写入
-    groupsAfterAdd: null,   // 添加后的分组数：F4① 写入，F4③ 读
-    addFormOpened: false,   // 「选择目录」表单是否真的显示出来（F4① 的交互证据）
+    probeId: null,          // 探针根 id：冒烟·添加写入；冒烟·改名/启停与清理读；清理末尾置回 null
+    probePath: null,        // 探针根路径：冒烟·添加写入
+    addFormOpened: false,   // 「选择目录」表单是否真的显示出来（冒烟·添加的交互证据）
     skipReason: '',         // 前置自证结论：非空时 5 条用例逐条 skip（保持单条粒度）
   };
 
@@ -219,15 +224,13 @@ const f4Sig = () => ({
   if (P.skipReason) {
     // 环境缺数据时**逐条** skip，不合并成一条（历史病：整段包成 skipped 会让 5 条退化成 1 条）
     skip('F4 管理区展开', P.skipReason);
-    skip('F4① 添加资源根', P.skipReason);
-    skip('F4② 改名', P.skipReason);
-    skip('F4③ 改名命中同名 → merged', P.skipReason);
-    skip('F4④ 启停', P.skipReason);
+    skip('F4 冒烟·添加', P.skipReason);
+    skip('F4 冒烟·改名', P.skipReason);
+    skip('F4 冒烟·启停', P.skipReason);
   } else {
     await runManageExpand(C, P);
     await runAddRoot(C, P);
     await runRename(C, P);
-    await runRenameMerge(C, P);
     await runToggleEnabled(C, P);
   }
   // ⑤ 与清理在原代码里就在 else 之外（无探针根也要走：清理分支会如实记「未执行」）
@@ -331,16 +334,14 @@ async function runAddRoot(C, P) {
         const l = last();
         P.probeId = (l.data && l.data.changed && l.data.changed.root && l.data.changed.root.id) || null;
         P.probePath = (l.data && l.data.changed && l.data.changed.root && l.data.changed.root.path) || null;
-        P.groupsAfterAdd = Array.isArray(l.data && l.data.groups) ? l.data.groups.length : null;
         const afterIds = (await rootsAll()).map((r) => r.id);
         const inList = rows().some((r) => r.dataset.rootId === P.probeId);
-        rec('F4① 添加资源根', '#root-add-form', `填 ${probeBase} + 名字 → 提交`,
-          '后端 200，启用根数量 +1，管理列表出现新条目，提示「已添加」',
-          `请求体={"action":"add","path":"<f4probe>","name":"F4探针A"}；${sum(l)}；`
-            + `roots ${beforeIds.length}→${afterIds.length}；新 id=${P.probeId}；列表有条目=${inList}；`
-          + `目录浏览器已打开=${P.addFormOpened}；提示="${msg()}"`,
-          l.status === 200 && isProbe(P.probeId) && afterIds.length === beforeIds.length + 1
-            && inList && P.addFormOpened && /已添加/.test(msg()));
+        // 冒烟：只断言"点完之后界面真的有变化"（目录浏览器弹过 + 列表多出新行）。
+        //   接口层（200 / 根数 +1 / 落盘可读）在 test/roots-api.test.mjs 里断言，这里不重复同一事实。
+        rec('F4 冒烟·添加（界面出现新行）', '#root-add-form', `填 ${probeBase} + 名字 → 提交`,
+          '界面可见变化：目录浏览器打开过、提交后管理列表出现新行',
+          `新 id=${P.probeId}；列表有条目=${inList}；目录浏览器已打开=${P.addFormOpened}；roots ${beforeIds.length}→${afterIds.length}；提示="${msg()}"`,
+          isProbe(P.probeId) && inList && P.addFormOpened);
 }
 
 
@@ -366,99 +367,59 @@ async function runRename(C, P) {
         }, { timeoutMs: 6000, label: '改名结果落到 UI' });
         const title = rows().find((r) => r.dataset.rootId === P.probeId)
           .querySelector('[data-role="name"]').textContent;
-        const changed = (last().data && last().data.changed) || {};
-        rec('F4② 改名', `[data-root-id="${P.probeId}"] [data-role="rename"]`, '内联输入新名字 → 保存',
-          '后端 200 且 merged=false，条目显示新名字，提示「已改名为」',
-          `请求体={"action":"rename",id:"${P.probeId}",name:"F4探针A改名"}；${sum(last())}；`
-            + `行内显示="${title}"；提示="${msg()}"`,
-          last().status === 200 && /F4探针A改名/.test(title) && /已改名/.test(msg()) && !changed.merged);
-}
-
-
-/** F4 RenameMerge —— 从原巨型 IIFE 整体提出（用例代码逐字搬运，仅把跨段可变状态改为 P.xxx） */
-async function runRenameMerge(C, P) {
-  const { beforeRoots, f4Sig, last, mgr, msg, rec, rootsAll, skip, sum, waitStable } = C;
-      // ------------------------------------------------------------ ③ merged（改成已有名字）
-        // 目标名字取自真实根列表（不写死名字，配置里没有别的根就跳过）
-        const other = beforeRoots[0];
-        if (!other || !other.name) {
-          skip('F4③ 改名命中同名 → merged', '当前配置只有一条根，没有"另一个已存在的名字"可命中');
-        } else {
-          const rootsBefore = (await rootsAll()).length;
-          await mgr().submitRename(P.probeId, other.name);
-          await waitStable(f4Sig, { timeoutMs: 6000, label: '提交后 UI 落定' });
-          const l = last();
-          const changed = (l.data && l.data.changed) || {};
-          const groupsNow = Array.isArray(l.data && l.data.groups) ? l.data.groups.length : null;
-          const rootsNow = (await rootsAll()).length;
-          rec('F4③ 改名命中同名 → merged', `[data-root-id="${P.probeId}"]`, `改成已存在的「${other.name}」`,
-            '后端 changed.merged=true；界面提示「已合并到同名根」；归并后分组数 -1（启用根条数不变）',
-            `请求体={"action":"rename",id:"${P.probeId}",name:"<已有根名>"}；${sum(l)}；`
-              + `groups ${P.groupsAfterAdd}→${groupsNow}；启用 roots ${rootsBefore}→${rootsNow}；提示="${msg()}"`,
-            changed.merged === true && /已合并到同名根/.test(msg())
-              && P.groupsAfterAdd !== null && groupsNow === P.groupsAfterAdd - 1);
-        }
+        // 冒烟：只断言"行内名字真的变了"（merged 语义与落盘持久化已在 node HTTP 测试里断言）
+        rec('F4 冒烟·改名（行内名字变化）', `[data-root-id="${P.probeId}"] [data-role="rename"]`, '内联输入新名字 → 保存',
+          '界面可见变化：该行显示的名字变成新名字',
+          `行内显示="${title}"；提示="${msg()}"`,
+          /F4探针A改名/.test(title));
 }
 
 
 /** F4 ToggleEnabled —— 从原巨型 IIFE 整体提出（用例代码逐字搬运，仅把跨段可变状态改为 P.xxx） */
 async function runToggleEnabled(C, P) {
-  const { f4Sig, last, msg, rec, rootsAll, rows, sum, waitStable } = C;
+  const { f4Sig, last, msg, rec, rootsAll, rows, sum, waitFor, waitStable } = C;
       // ------------------------------------------------------------ ④ toggle
+        // 点前必须等到"这一行真的可点"：上一步改名会触发面板重建，重建窗口内的点击会打在已被替换的
+        //   节点上——表现为请求根本没发出（提示还停在上一条文案），很容易被误判成产品 bug。
+        await waitFor(() => rows().some((r) => r.dataset.rootId === P.probeId && r.querySelector('[data-role="toggle"]')),
+          { timeoutMs: 4000, label: '探针行可点' });
         const row = rows().find((r) => r.dataset.rootId === P.probeId);
         const labelBefore = row.querySelector('[data-role="toggle"]').textContent;
         row.querySelector('[data-role="toggle"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        // 点后等"文案真的翻转"（作为冒烟断言的终态），而不是只等签名稳定
+        await waitFor(() => {
+          const cur = rows().find((r) => r.dataset.rootId === P.probeId);
+          const btn = cur && cur.querySelector('[data-role="toggle"]');
+          return !!btn && btn.textContent.trim() === '启用';
+        }, { timeoutMs: 6000, label: '启停落到 UI' }).catch(() => {});
         await waitStable(f4Sig, { timeoutMs: 6000, label: '提交后 UI 落定' });
         const after = rows().find((r) => r.dataset.rootId === P.probeId);
         const enabledAttr = after ? after.dataset.enabled : 'gone';
         const labelAfter = after ? after.querySelector('[data-role="toggle"]').textContent : '';
-        rec('F4④ 启停', `[data-root-id="${P.probeId}"] [data-role="toggle"]`, `click（${labelBefore}→${labelAfter}）`,
-          '后端 200；条目仍留在列表（用 rootsAll 渲染）并标为已停用，按钮文案翻转',
-          `请求体={"action":"toggle",id:"${P.probeId}",enabled:false}；${sum(last())}；`
-            + `按钮 ${labelBefore}→${labelAfter}；行 enabled=${enabledAttr}；提示="${msg()}"`,
-          last().status === 200 && labelBefore === '停用' && labelAfter === '启用'
-            && enabledAttr === 'false' && /已停用/.test(msg()));
+        // 冒烟：只断言"界面翻转了"（enabled=false 的持久化与 rootsAll 口径已在 node HTTP 测试里断言）
+        rec('F4 冒烟·启停（按钮文案翻转）', `[data-root-id="${P.probeId}"] [data-role="toggle"]`, `click（${labelBefore}→${labelAfter}）`,
+          '界面可见变化：按钮文案「停用」→「启用」，该行标为已停用',
+          `按钮 ${labelBefore}→${labelAfter}；行 enabled=${enabledAttr}；提示="${msg()}"`,
+          labelBefore === '停用' && labelAfter === '启用' && enabledAttr === 'false');
 }
 
 
-/** F4 ErrorSurfacing —— 从原巨型 IIFE 整体提出（用例代码逐字搬运，仅把跨段可变状态改为 P.xxx） */
-async function runErrorSurfacing(C, P) {
-  const { beforeRoots, f4Sig, last, mgr, msg, rec, skip, waitStable } = C;
-    // ------------------------------------------------------------ ⑤ 三条错误路径（不依赖探针目录，始终执行）
-      const rel = await mgr().submitAdd('relative/dir');
-      await waitStable(f4Sig, { timeoutMs: 6000, label: '提交后 UI 落定' });
-      const relStatus = last().status; const relMsg = msg();
-      // 重复目录用真实根路径（从 GET 取，不写死）。
-      //   ⚠️ 必须挑**磁盘上确实存在**的根：服务端校验顺序是
-      //     「相对路径→400（write.mjs:408）→ 目录不存在→400（:409）→ 重复登记→409（:412-416）」，
-      //     路径不存在时永远先撞 400「目录不存在或不是目录」，409 那条**结构上不可达**。
-      //     测试实例（runtime/test-instance）正因根路径在磁盘上不存在而假红 —— 是数据不足，不是产品缺陷。
-      //   exists 由 GET /api/roots 现算给出，不自己猜。
-      const dupRoot = (beforeRoots || []).find((r) => r && r.path && r.exists !== false);
-      const dupPath = dupRoot && dupRoot.path;
-      let dup = null; let dupStatus = null; let dupMsg = 'skipped: 没有"磁盘上存在"的根可撞名';
-      if (dupPath) {
-        dup = await mgr().submitAdd(dupPath);
-        await waitStable(f4Sig, { timeoutMs: 6000, label: '提交后 UI 落定' });
-        dupStatus = last().status; dupMsg = msg();
-      }
-      const miss = await mgr().submitRemove('__nope__');
-      await waitStable(f4Sig, { timeoutMs: 6000, label: '提交后 UI 落定' });
-      const missStatus = last().status; const missMsg = msg();
-      // 首尾两条（相对路径 400 / 删不存在 404）任何时候都可验；中间那条（重复 409）依赖前置条件
-      const relAndMissOk = rel === false && relStatus === 400 && /绝对路径/.test(relMsg)
-        && miss === false && missStatus === 404 && /未找到/.test(missMsg);
-      if (!dupPath) {
-        C.dupSkipReason = `测试实例没有"磁盘上存在"的资源根可撞名（共 ${(beforeRoots || []).length} 条根，全部 exists=false），`
-          + `409 重复登记无法构造。已实测两条：相对路径→HTTP ${relStatus}“${relMsg}”；`
-          + `删不存在→HTTP ${missStatus}“${missMsg}”（这两条判据仍成立=${relAndMissOk}）`;
-        skip('F4⑤ 错误如实显示（400/409/404）', C.dupSkipReason);
-      } else {
-        rec('F4⑤ 错误如实显示（400/409/404）', '#root-msg', '相对路径 / 重复目录 / 删不存在',
-          '三条错误都把后端文案原样显示并带状态码：绝对路径(400)、已登记(409)、未找到(404)',
-          `相对路径→HTTP ${relStatus}“${relMsg}”；重复目录→HTTP ${dupStatus}“${dupMsg}”（撞名根 exists=${dupRoot.exists}）；删不存在→HTTP ${missStatus}“${missMsg}”`,
-          relAndMissOk && dup === false && dupStatus === 409 && /已登记/.test(dupMsg));
-      }
+/**
+ * 错误提示能显示（浏览器保留项，判据 §二·③ 事件链路）
+ *
+ * 三条状态码（400 相对路径 / 409 重复登记 / 404 目标不存在）与后端文案都已在
+ *   test/roots-api.test.mjs 断言；这里只回答另一个问题：**后端说错了，界面有没有把它显示出来**。
+ *   只发一条非法输入（相对路径）就够 —— 多条并不增加这层的信息量，只会让浏览器断言重复接口层。
+ */
+async function runErrorSurfacing(C) {
+  const { f4Sig, mgr, msg, rec, waitStable } = C;
+  const submitted = await mgr().submitAdd('relative/dir');
+  await waitStable(f4Sig, { timeoutMs: 6000, label: '提交后 UI 落定' });
+  const text = String(msg() || '');
+  rec('F4 错误提示能显示（#root-msg）', '#root-msg', '提交一条非法输入（相对路径）',
+    '界面可见变化：提示位出现后端文案（非空，且不是"已添加"这种成功文案）',
+    `提交返回=${submitted}；提示="${text}"`,
+    submitted === false && !!text.trim() && !/已添加/.test(text));
 }
 
 
@@ -471,11 +432,12 @@ async function runCleanup(C, P) {
       await waitStable(f4Sig, { timeoutMs: 6000, label: '提交后 UI 落定' });
       const afterIds = (await rootsAll()).map((r) => r.id);
       const gone = !rows().some((r) => r.dataset.rootId === P.probeId);
+      // 清理动作保留（不清理会污染用户配置）；断言只看"探针行消失"，落盘口径已迁 node HTTP 测试
       rec('F4 清理（删除探针根）', `[data-root-id="${P.probeId}"]`, '二次确认后删除',
-        '后端 200，条目消失，资源根数量回到测试前（不污染用户配置）',
+        '界面可见变化：探针行消失，资源根回到测试前（保护用户真实配置）',
         `请求体={"action":"remove",id:"${P.probeId}"}；${sum(last())}；`
           + `roots 回到 ${afterIds.length}（测试前 ${beforeIds.length}）；条目已消失=${gone}；提示="${msg()}"`,
-        afterIds.length === beforeIds.length && gone);
+        gone);
     } else {
       rec('F4 清理（删除探针根）', '#root-list', '未执行',
         '没有探针根就不删除任何东西（保护用户真实配置）',

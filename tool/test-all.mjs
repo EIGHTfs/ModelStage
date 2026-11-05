@@ -153,6 +153,10 @@ const SUITES = [
   // /api/catalog 的入参分流语义：缺 root ⇒ 400（带可用根清单）、未知根 ⇒ 404、合法根 ⇒ 200。
   //   曾经一律 404，导致"路径拼错"与"根不存在"在日志里不可区分
   { name: 'catalog-route', runner: 'node-test', file: 'test/catalog-route.test.mjs' },
+  // 资源根 CRUD 的 HTTP 契约（P1：从 test/browser/f4-roots.js 迁出）：
+  //   断言对象是"HTTP 响应 + 落盘结果"，起浏览器毫无必要；迁到 node 后进入默认门禁，
+  //   从"平时只跑 --browser 才执行"变成每次 node --test 都跑。
+  { name: 'roots-api', runner: 'node-test', file: 'test/roots-api.test.mjs' },
   // 统一日志工厂（infra/log.js）的记录形状契约：纯 node、秒级，
   //   它是后续"适配层 → 分 3 批迁 stageStatus"的地基，形状一旦漂了后面全歪
   { name: 'log', runner: 'node-test', file: 'test/log.test.mjs' },

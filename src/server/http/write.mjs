@@ -508,7 +508,14 @@ export function createWriteApi({ paths, config, models, names }) {
 
       // ---------- ③ 校验并算出目标状态（纯内存，失败则磁盘不动）----------
       const plan = planChange(action, payload, raw);
-      if (!plan.ok) return fail(plan.status, plan.error, plan.extra);
+      if (!plan.ok) {
+        // planChange 把 path / existing 这类补充字段放在**顶层**（不是 plan.extra），
+        //   这里要显式把除 status/error/ok 之外的字段都透传出去 ——
+        //   否则 409 的 existing、400 的 path 会在响应里变成 undefined，
+        //   前端想提示"已登记的是哪个根"时拿不到依据。
+        const { ok: _ok, status, error, ...extra } = plan;
+        return fail(status, error, extra);
+      }
 
       // ---------- ④ 备份（写盘前）----------
       let backup = null;
