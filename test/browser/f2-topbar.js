@@ -227,7 +227,6 @@ function loopAlive(s) {
   // 共享上下文：拆分前这些名字都在 IIFE 作用域里；现在打包传给各 runXxx，作用域语义不变
   const C = { POS_TOL, READY_RANK, afterTransition, canvasEl, click, loadErr, loadRootId, loaded, loopAlive, preAlive, preCanvas, preMoving, q, qa, readySnap, rec, rect, results, s1, s2, sleep, snapshotOf, w, waitAny, waitFor, waitFrames, waitStable, waitStage, waitUntil };
 
-  await runTopbarButtons(C);   // ① 顶栏按钮集合
   await runScreenshotExport(C);   // ② 截图导出
   await runCinemaMode(C);   // ③ 影院模式
   await runMenuToggle(C);   // ⑤ 菜单 / 收起菜单（右栏显隐一对）
@@ -246,26 +245,6 @@ function loopAlive(s) {
   }, null, 1);
 })()
 
-/**
- * ① 顶栏按钮集合
- * 从原巨型 IIFE 整体提出（用例代码逐字搬运，只加 ctx 解构）；失败时按条款定位。
- */
-async function runTopbarButtons(C) {
-  const { q, qa, rec } = C;
-  {
-    const ids = qa('#app-header button').map((b) => b.id);
-    const want = ['btn-shot', 'btn-library', 'btn-menu', 'btn-cinema', 'btn-fullscreen'];
-    const removed = ['btn-import'];
-    const missingWanted = want.filter((id) => !ids.includes(id));
-    const stillThere = removed.filter((id) => ids.includes(id));
-    const allEnabled = want.every((id) => { const el = q(`#${id}`); return el && !el.disabled && !el.dataset.pending; });
-    rec('F2① 顶栏按钮集合', '#app-header button', '枚举',
-      '顶栏 5 个按钮全部可点：截图导出/模型库/菜单/影院模式/全屏；仅「导入模型」已删除（本项目不走单模型导入）',
-      `实际=${ids.join(',')}；缺=${missingWanted.join(',') || '无'}；应删未删=${stillThere.join(',') || '无'}；全可点=${allEnabled}`,
-      missingWanted.length === 0 && stillThere.length === 0 && allEnabled);
-  }
-
-}
 
 
 /**

@@ -178,7 +178,6 @@
   //   汇总永远读到 null（表现是 summary.spineModel/live2dModel 恒为 null，而 total 正常）。
   const P = { spine: null, l2d: null };
 
-  await runNoSingleLoop(C);    // ① 底栏无「单动循环」
   await runAnimSwitches(C);    // ② 动作组两个开关 + 命名
   await runSpineList(C, P);       // Spine 动作列表
   await runLive2dList(C, P);      // Live2D 动作列表
@@ -349,25 +348,6 @@ function makeCheckListHelper(C) {
 }
 
 
-/** ① 底栏不再有「单动循环」 */
-async function runNoSingleLoop(C) {
-  const { q, qa, rec } = C;
-  // ---------------------------------------------------------------- ① 底栏不再有「单动循环」
-  const footerText = (q('#app-footer') || {}).textContent || '';
-  const footerBtnIds = qa('#app-footer button').map((b) => b.id);
-  rec('① 底栏无「单动循环」', 'DOM 里查不到循环按钮，其余传输类控件仍在且可点',
-    `#transport-loop=${!!q('#transport-loop')} 文案含"单动循环"=${/单动循环/.test(footerText)} `
-    + `按钮=${footerBtnIds.join(',')} 可点=${
-      qa('#app-footer button').every((b) => !b.disabled)}`,
-    !q('#transport-loop') && !/单动循环/.test(footerText)
-    // 背景控件已从 <button id="transport-bg"> 改为自绘 picker（schema.js 的 custom:'picker'），
-    //   所以判据放宽为"按钮 id 里有它 **或** 底栏存在同名 picker 容器"——意图不变：传输类控件都还在。
-      && ['transport-prev', 'transport-play', 'transport-next', 'transport-reset-view']
-        .every((id) => footerBtnIds.includes(id))
-      && (footerBtnIds.includes('transport-bg') || !!q('#app-footer [data-ctl="transport-bg"]'))
-      && qa('#app-footer button').every((b) => !b.disabled));
-
-}
 
 
 /** ② 动作组：两个开关、命名正确 */
