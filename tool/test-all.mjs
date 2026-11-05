@@ -160,6 +160,13 @@ const SUITES = [
   // 名册搜索匹配（filter.js 纯函数）+ 持久化键名（静态契约）：P2 从 roster-actions 迁出。
   //   前者是"给定数据 + 关键词 ⇒ 哪些角色可见"，后者是"键名常量唯一且稳定"，都不需要浏览器。
   { name: 'roster-filter', runner: 'node-test', file: 'test/roster-filter.test.mjs' },
+  // 顶栏内置按钮的契约表（P4：从 f2-topbar 的"按钮集合"断言迁出）：断言对象是 TOOLBAR_ACTIONS 表，
+  //   不是 DOM；点了之后有什么变化属事件链路，仍留在浏览器。
+  { name: 'toolbar-contract', runner: 'node-test', file: 'test/toolbar-contract.test.mjs' },
+  // 右侧面板的契约级事实（P3：从 panel-actions 迁出）：控件 id 唯一性与命名、底栏 id 约定、
+  //   分组标题集合、控件分类门禁、接线键唯一性、禁用样式只绑 data-pending。
+  //   断言对象全是 schema 导出表与 CSS 规则，不需要起浏览器。
+  { name: 'panel-contract', runner: 'node-test', file: 'test/panel-contract.test.mjs' },
   // 统一日志工厂（infra/log.js）的记录形状契约：纯 node、秒级，
   //   它是后续"适配层 → 分 3 批迁 stageStatus"的地基，形状一旦漂了后面全歪
   { name: 'log', runner: 'node-test', file: 'test/log.test.mjs' },

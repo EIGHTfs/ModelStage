@@ -185,6 +185,7 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 | 版本 | 日期 | 要点 |
 |---|---|---|
 | 0.5.26 | 2026-11-01 | 对齐成熟包的四项：`bin` 加 realpath 直接执行判据（import 不再起服务）、`serve.mjs` 加 EADDRINUSE 人话提示（退出码 2）、新增 `/api/health`（`web.sh status` 优先用它、旧实例回落首页码）、`web.sh` 日志 5MB 轮转（先 stop 再轮转、只留 1 份）；顺带修 health 的 `plugins` 恒为 0（引用了不存在的 ctx） |
+| 0.5.26 | 2026-11-05 | 浏览器测试分级迁移（批次 3/5）：panel-actions 的 6 条契约断言迁为静态测试 `test/panel-contract.test.mjs`（断言对象是 schema 导出表与 CSS 规则，不起浏览器）；分组标题由写死 9 个改为 schema 推导；套件 32 → 33 |
 | 0.5.25 | 2026-11-01 | 包体积收窄：`tool/lib/` 整目录放行改为 **6 个运行时文件**（其余 7 个是测试/校验/开发件，`check-perms` / `test-lock` / `test-report` / `contract-checks` / `export-bundle` / `cubism-core` / `spine-runtime`）；发布守卫新增四类禁止项（`test/`、`*.test.*`、`*.map`、开发工具、缓存/上传/日志）；包内 286 → 279 文件 |
 | 0.5.24 | 2026-11-01 | 发布准备：补 `THIRD_PARTY_NOTICES.md`、README「合规状态」扩到 Live2D Cubism 与 pixi.js 并注明「服务端把运行时报给浏览器 = 分发行为」；补 author/keywords/bugs、清理 `files` 无效条目；去掉 `private` 以便发布；README 标注项目进入维护为主阶段 |
 | 0.5.23 | 2026-11-01 | 解包节点判据由「名字前缀」改为「结构形式」（`/^CAB-[0-9a-f]{32}$/i`，四处统一 + 防漂移单测）：`.resS` / `.resource`（FSB5 音频银行）不再被误当 serialized file；顺带修好两个包的不完整提取（假节点抛错曾中断循环，真节点没被处理）；测试套件 29 → 30 |

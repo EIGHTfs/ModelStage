@@ -6,6 +6,16 @@
 //   3. 已接线控件（模型库 / 全屏 / 左栏收起）各操作一次并记录变化；
 //   4. 区域 rect 与控件计数一并回传，供几何回归对照。
 //
+// 分级说明（每条留下的断言属于判据 §二 的哪一类；契约级事实已迁 test/panel-contract.test.mjs）：
+//   ①（渲染产物）右栏控件清单（接线态）/ 底栏控件清单（接线态）/ 默认值已落到引擎 /
+//      视图设置与真实状态一致 / 禁用控件删除线 / 分组标题对照 / 孤儿能力键（合并口径）
+//      —— 这些都是"页面真跑起来之后 DOM 与引擎里是什么"，静态扫描替代不了
+//   ②（布局几何）右栏 rect / 播放条 rect / 区域不遮挡 / 已接线：左栏收起（位移）
+//   ③（事件链路）手风琴展开折叠 / 未接线控件点击无反应 / 可点控件必须有效 /
+//      底栏未接线点击无反应 / 已接线：顶栏模型库、全屏
+//   已迁出（第 3 级：源码/契约表）：控件分类门禁（四类之一）、分组标题集合与顺序、
+//      控件 id 唯一性与命名、底栏 id 约定、接线键唯一性、禁用样式（CSS 只绑 data-pending）
+//
 // 用法（项目根执行；地址由参数给，脚本内不写死）：
 //   node tool/check-console.mjs http://127.0.0.1:8804/ --script test/panel-actions.js
 //   加 --json 拿机器可读结果；退出码 0 = 零错误且脚本无异常。
@@ -282,42 +292,13 @@ async function runControlInventory(C) {
   const disabledEls = nonTrigger.filter((el) => el.disabled);
   const enabledIds = [...new Set(enabledEls.map(ctlIdOf).filter(Boolean))].sort();
   const declaredWired = [...new Set(((window.__WEB__ && window.__WEB__.panelWired) || []))].sort();
-  // ---- 门禁：每个控件必须显式归到三层优先级之一，否则"永远显示"会静默发生
-  //   ① hidden:true（手动隐藏） ② capabilityKey / debugKey（自动按声明） ③ RENDERER_INDEPENDENT（与渲染器无关）
-  //   漏标 ⇒ 本断言失败（这正是"靠人肉维护"最容易漏的地方，用测试钉死它）
-    let gateMiss = [];
-    let hiddenIds = [];
-    // mod 要在 try 之外声明：I 需要把它交给后续子步骤（B 段用 mod 校验能力键），
-    //   而 try 块内 const 出了块就不可见。
-    let mod = null;
-    try {
-      mod = await import('/panel/schema.js');
-      const indep = new Set(mod.RENDERER_INDEPENDENT || []);
-      const allControls = (mod.PANEL_GROUPS || []).flatMap((g) => (g.controls || []).filter((c) => c && c.id));
-      for (const c of allControls) {
-        if (c.hidden === true) { hiddenIds.push(c.id); continue; }
-        if (typeof c.capabilityKey === 'string' && c.capabilityKey) continue;
-        if (typeof c.debugKey === 'string' && c.debugKey) continue;
-        if (indep.has(c.id)) continue;
-        gateMiss.push(c.id);
-      }
-      gateMiss = gateMiss;
-    } catch { gateMiss = ['<import-failed>']; }
-    // 插件控件**不在此列断言**：契约（schema.js:392）把插件控件的能力键强制写成控件自身 id，
-    //   于是"capabilityKey"这一类对它恒成立 —— 再加一条"插件控件必须分类"的断言是恒真断言，
-    //   红不了也保护不了任何东西（实测：任何插件控件都带 capabilityKey，2/2）。
-    //   真正需要盯的是"这个键到底声明了没有"，那件事在孤儿能力键那条里查（见 runWiredLists）。
-    rec('控件分类门禁（hidden/能力键/白名单）', 'PANEL_GROUPS', '静态检查',
-      '每个控件必须属于：hidden:true / capabilityKey / debugKey / RENDERER_INDEPENDENT 之一；漏标即失败',
-      `漏标 ${gateMiss.length} 个${gateMiss.length ? '：' + gateMiss.join(',') : ''}；手动隐藏 ${hiddenIds.length} 个${hiddenIds.length ? '：' + hiddenIds.join(',') : ''}`,
-      // 说明：原先此处还断言 `hiddenIds.includes('ctl-mix-mode')`（钉住"混合模式开关以 hidden 形式存在"）。
-      //   混合过渡改由「播放 → 混合时长」一个滑块控制后，该控件已按需求**移除**，
-      //   钉住它存在的断言随之删除；此处不是为让测试变绿而放宽判据，其余门禁原样保留。
-      gateMiss.length === 0);
+  // 控件分类门禁（hidden / capabilityKey / debugKey / RENDERER_INDEPENDENT）**已迁出**：
+  //   它只读 schema 的导出表，与"页面渲染出什么"无关 ⇒ 现由 test/panel-contract.test.mjs 守。
+  //   这里不再保留同一事实（迁一条删一条）。
 
 
   // I 是「一次枚举的结果」，交给后续子步骤只读消费
-  return { rightItems, triggers, footItems, nonTrigger, enabledEls, disabledEls, enabledIds, declaredWired, mod };
+  return { rightItems, triggers, footItems, nonTrigger, enabledEls, disabledEls, enabledIds, declaredWired };
 }
 
 
@@ -403,7 +384,10 @@ async function runDefaultValues(C, I) {
   const { triggers } = I;
   // 分组标题与声明口径对照
   const titles = triggers.map((t) => t.textContent.trim());
-  const expectTitles = ['动作', '皮肤', '播放', '滤镜', 'PMA 预乘', '运行时', '主题背景', '调试绘制', '设置'];
+  // 期望值从 schema **现取**，不写死标题：标题集合与顺序的契约由 test/panel-contract.test.mjs 守，
+  //   这里只回答渲染层的问题——"页面上渲染出来的标题与声明是否一致"（多一个/少一个/顺序变了都算不平）。
+  const schemaMod = await import('/panel/schema.js');
+  const expectTitles = (schemaMod.PANEL_GROUPS || []).map((g) => String(g.title || ''));
   // 视图与引擎必须一致：每个已接线控件声明的默认值，启动后必须已经落到舞台设置里
     const defaults = (window.__WEB__ && window.__WEB__.panelDefaults) || null;
     const st = window.__WEB__ && window.__WEB__.stage;
