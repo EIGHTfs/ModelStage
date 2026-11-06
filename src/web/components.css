@@ -271,6 +271,39 @@
   border-color: var(--color-primary);
 }
 
+/* ------------------------------------------------------------ 文件清单失败提示 */
+
+/**
+ * 「清单获取失败 · 点击重试」提示。
+ *
+ * 为什么用绝对定位叠加、而不是在面板里插一行：
+ *   右栏是固定宽度的一列控件，插入一行会把下面所有控件整体下移（提示出现/消失各跳一次），
+ *   属于"为了报错反而制造一个视觉故障"。这里贴在右栏顶部、**不参与布局**，
+ *   出现与消失都不会挤动控件；它只在失败期间存在，重试成功即移除。
+ * 位置：.panel 本身是 position:fixed ⇒ 相对它定位；top 用头部高度（41px）之下，避免盖住标题。
+ */
+.doc-files-hint {
+  position: absolute;
+  top: calc(41px + 6px);
+  right: 8px;
+  max-width: calc(100% - 16px);
+  z-index: 5;
+  padding: 4px 10px;
+  border: 1px dashed var(--color-border);
+  border-radius: 999px;
+  background: var(--color-card);
+  color: var(--color-muted-foreground, var(--color-foreground));
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 25%);
+}
+
+.doc-files-hint:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
 /* ------------------------------------------------------------ 类型筛选胶囊行 */
 
 /**

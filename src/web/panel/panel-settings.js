@@ -261,7 +261,13 @@ const slotDeclaredDefaultById = new Map();
 
 const docFilesCache = new Map();
 const docFilesPending = new Set();
-const docFilesStats = { lists: 0, repaints: 0 };
+const docFilesStats = { lists: 0, repaints: 0, failures: 0 };
+/**
+ * 失败记录：key → { reason, at, timedOut }。
+ * 为什么单独存一份而不是只加计数：提示行要显示"哪一条、因为什么失败"，
+ *   而且重试成功后必须能把它清掉（只留计数会永远显示"失败过"）。
+ */
+const docFilesFailures = new Map();
 
 /**
  * 目录清单请求（/api/catalog）的超时上限（ms）。
@@ -277,7 +283,11 @@ const DOC_FILES_TIMEOUT_MS = 6000;
 function publishDocFilesStats() {
   try {
     if (typeof window === 'undefined') return;
-    window.__DOC_FILES__ = { lists: docFilesStats.lists, repaints: docFilesStats.repaints, cached: docFilesCache.size };
+    window.__DOC_FILES__ = {
+      lists: docFilesStats.lists, repaints: docFilesStats.repaints, cached: docFilesCache.size,
+      // 失败次数（只增）：用来回答"到底请求了多少次失败"这个排障问题；前三个键语义不变
+      failures: docFilesStats.failures,
+    };
   } catch { /* 无 window 忽略 */ }
 }
 
@@ -318,6 +328,8 @@ function docFilesKeyOf(model) {
  * @returns {string[]|null} 未就绪返回 null
  */
 function docFilesOf(model) {
+  // 每次读取都同步一次提示行：换文档、成功后、失败后三种状态下提示都不会残留/迟到
+  renderDocFilesHint(model);
   if (!model) return null;
   const key = docFilesKeyOf(model);
   if (docFilesCache.has(key)) return docFilesCache.get(key).slice();
@@ -358,6 +370,65 @@ function safeVfsList(prefix) {
  *   而 document 是 getter、必须同步出值 —— 所以这里"先记 pending、拿到再回填 + 重建一次"。
  * @param {object} model 条目 @param {string} key 缓存键
  */
+/**
+ * 清单失败时的**内联提示**（宿主自己的 UI，不弹 toast / 不弹 modal）。
+ *
+ * 位置与呈现：绝对定位叠加在右栏顶部（.panel 本身是 position:fixed，绝对定位相对它），
+ *   **不参与布局** ⇒ 提示出现/消失都不会挤动下方控件（这是刻意的：插一行会把整列控件往下推）。
+ * 文案区分"超时"与"其它失败"：前者用户知道"再点一次可能就好"，后者往往是服务端/网络问题。
+ */
+const DOC_FILES_HINT_ID = 'doc-files-retry';
+
+/** 失败原因 → 人话（超时/取消都是"没等到"，其余给通用文案，具体原因仍在日志里） */
+function docFilesFailText(reason) {
+  const text = String(reason || '');
+  if (/超时|Timeout|Abort/i.test(text)) return '清单获取失败（超时）';
+  return '清单获取失败';
+}
+
+/**
+ * 画/刷/藏 那一行提示（幂等：没有失败就移除，有失败就复用同一个节点）。
+ * @param {object|null} model 当前文档（用于重试时定位条目）
+ */
+function renderDocFilesHint(model) {
+  try {
+    const host = dom.panelBody && dom.panelBody.parentElement;   // 右栏 <aside class="panel">
+    if (!host) return;
+    const key = model ? docFilesKeyOf(model) : '';
+    const failure = key ? docFilesFailures.get(key) : null;
+    let node = document.getElementById(DOC_FILES_HINT_ID);
+    if (!failure) { if (node) node.remove(); return; }
+    if (!node) {
+      node = document.createElement('button');
+      node.id = DOC_FILES_HINT_ID;
+      node.type = 'button';
+      node.className = 'doc-files-hint';
+      host.appendChild(node);
+    }
+    node.textContent = `${docFilesFailText(failure.reason)} · 点击重试`;
+    node.title = `原因：${failure.reason}（不会再自动重试）`;
+    // 点击重试：清缓存/pending/失败记录后**复用同一条请求路径**（不新开请求链路）
+    node.onclick = () => { retryDocFiles(model); };
+  } catch { /* 提示是增强：任何一步失败都不影响面板 */ }
+}
+
+/**
+ * 点击重试：清掉该条目的缓存与 pending，再走 requestDocFiles。
+ *
+ * 为什么重试也要清缓存：失败路径本来就不写缓存，但"半截成功后又被判失败"这类情况
+ *   可能留下旧值；清掉能保证重试拿到的就是服务端当前结果。
+ * @param {object} model
+ */
+function retryDocFiles(model) {
+  if (!model) return;
+  const key = docFilesKeyOf(model);
+  docFilesFailures.delete(key);
+  docFilesCache.delete(key);
+  docFilesPending.delete(key);
+  renderDocFilesHint(model);
+  requestDocFiles(model, key);
+}
+
 function requestDocFiles(model, key) {
   if (docFilesPending.has(key)) return;
   docFilesPending.add(key);
@@ -385,7 +456,9 @@ function requestDocFiles(model, key) {
       if (!names.length) return;
       docFilesStats.lists += 1;
       docFilesCache.set(key, names);
+      docFilesFailures.delete(key);       // 成功即清失败态：提示行随之消失
       publishDocFilesStats();
+      renderDocFilesHint(model);
       // 清单就绪 ⇒ 面板重建一次，让插件的 render 拿到真实清单（与插件装载走同一条重建链）
       if (state.panel) {
         docFilesStats.repaints += 1;
@@ -402,6 +475,12 @@ function requestDocFiles(model, key) {
       stageLog('warn', `目录清单获取失败：${String(model.name || model.id || '')}（${reason}）——该条目文件列表保持为空，可再次触发重试`, {
         rootId: rawRootId, url, reason, timeoutMs: DOC_FILES_TIMEOUT_MS,
       });
+      // 用户可见性：把"失败了、可以再试"直接摆在文件区（面板顶部叠加一行），
+      //   **不做自动重试** —— 自动重试会把"服务端持续挂"伪装成"慢一点但能出来"。
+      docFilesFailures.set(key, { reason, at: Date.now(), timedOut });
+      docFilesStats.failures += 1;
+      publishDocFilesStats();
+      renderDocFilesHint(model);
     } finally {
       docFilesPending.delete(key);
     }
@@ -446,11 +525,17 @@ function slotPropsFor(entry) {
     get document() {
       const m = state.selectedModel;
       if (!m) return null;
+      const files = docFilesOf(m);
+      // filesError / retryFiles 与 files 同批给出：插件既能显示"为什么空"，也能自己接一个重试入口，
+      //   而不必猜宿主内部状态（两者都只是**读**与**复用**宿主已有请求路径，不新开链路）。
+      const failure = docFilesFailures.get(docFilesKeyOf(m)) || null;
       return {
         rootId: m.rootId ? String(m.rootId) : null,
         rel: m.rel ? String(m.rel) : null,
         kind: m.kind ? String(m.kind) : (m.container ? 'bundle' : null),
-        files: docFilesOf(m),
+        files,
+        filesError: failure ? String(failure.reason) : null,
+        retryFiles: () => retryDocFiles(m),
       };
     },
     /** 插件写设置也走面板同一条通道（校验 → 生效 → 落盘） */

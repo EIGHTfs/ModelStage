@@ -185,6 +185,7 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 | 版本 | 日期 | 要点 |
 |---|---|---|
 | 0.5.26 | 2026-11-01 | 对齐成熟包的四项：`bin` 加 realpath 直接执行判据（import 不再起服务）、`serve.mjs` 加 EADDRINUSE 人话提示（退出码 2）、新增 `/api/health`（`web.sh status` 优先用它、旧实例回落首页码）、`web.sh` 日志 5MB 轮转（先 stop 再轮转、只留 1 份）；顺带修 health 的 `plugins` 恒为 0（引用了不存在的 ctx） |
+| 0.5.30 | 2026-11-07 | 文件清单失败可见化：右栏内联浮层「清单获取失败（超时）· 点击重试」（绝对定位、不挤动控件）+ `__DOC_FILES__.failures` 计数，**不做自动重试**；`props.document` 增 `filesError` / `retryFiles` 供插件复用 |
 | 0.5.29 | 2026-11-07 | 两处「静默放弃」型超时兜底改为开口说话：就绪阶段超时区分 `no-observation` / `not-interactive` / `cancelled`（仅全程无观测才判 failed，已有画面绝不改阶段）；解包 worker 就绪超时补六种结局与诊断事件（对外仍 resolve 布尔）；新增 `ready-track` 套件守「漏标 interactive」回归 |
 | 0.5.28 | 2026-11-05 | 名册类型筛选：左栏搜索框下方「类型胶囊」按内容类型过滤（动态派生、多选并集、与关键词交集、计数按当前搜索、`unknown` 归「待解包」、自动换行不折叠、选中态持久化）；类型显示名单一来源 `src/shared/type-labels.mjs` |
 | 0.5.27 | 2026-11-05 | 测试分级迁移 P4：底栏「单动循环」断言判为已覆盖**整条删除**（缺口改由 schema 表断言补）、顶栏按钮集合 → `test/toolbar-contract.test.mjs`（断言 import 的 TOOLBAR_ACTIONS / 图标白名单 / 插件上限）；两个浏览器脚本共删 41 行，套件 33 → 34 |
