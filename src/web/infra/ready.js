@@ -38,6 +38,11 @@ import { fetchWithRetry } from './api.js';
 //   又不会让就绪信号明显滞后。
 const FLUSH_DEBOUNCE_MS = 400;
 
+/** 轮询超时记录的保留条数（环形）：只留最近若干条，长时间运行不堆积 */
+const TRACK_STOP_KEEP = 20;
+/** 同一阶段同一结局的告警限频（ms）：换模型可能反复超时，不能让同一句话刷屏 */
+const TRACK_WARN_WINDOW_MS = 10000;
+
 const st = {
   stages: {},          // stage → { state, at, detail?, reason? }
   rev: 0,              // 本地 rev（服务端才是权威；这里供 __WEB__.ready() 立即可读）
@@ -50,6 +55,11 @@ const st = {
   fails: 0,            // 上报失败次数（限频记日志，不刷屏）
   lastFailAt: 0,
   lastFail: null,   // {at,name,msg,attempts}：一次失败就能看出是网络层还是超时（排障唯一途径）
+  // 轮询跟踪的"结束记录"（环形，最近 TRACK_STOP_KEEP 条）：
+  //   超时不再静默——每条都留下 阶段 / 等多久 / 最后观测到什么 / 属于哪种结局，
+  //   由 stats().trackStops 暴露（与 lastFail 同一条诊断面，不新造日志体系）。
+  trackStops: [],
+  trackWarnAt: new Map(),   // `${stage}:${outcome}` → 上次告警时间（限频用）
 };
 
 /**
@@ -140,7 +150,12 @@ export function resetStages(names, opts) {
  *   上报次数 / 待发条数 / 本地 rev / 因 in-flight 被跳过的次数 / 失败次数 / 是否在飞
  */
 export function stats() {
-  return { flushes: st.flushes, pending: st.pending.size, rev: st.rev, dropped: st.dropped, fails: st.fails, inflight: st.inflight, lastFail: st.lastFail };
+  return {
+    flushes: st.flushes, pending: st.pending.size, rev: st.rev, dropped: st.dropped, fails: st.fails,
+    inflight: st.inflight, lastFail: st.lastFail,
+    // 轮询跟踪的结束记录（含超时与外部取消）：排障时先看这里，再看阶段本身
+    trackStops: st.trackStops.slice()
+  };
 }
 
 /** 页面内直读快照（契约 §5.1）：ready() 全量，ready('model') 单阶段 */
@@ -251,6 +266,41 @@ export function flushNow() {
 }
 
 /**
+ * 记录一次"跟踪结束"（超时 / 外部取消），并做限频告警。
+ *
+ * 为什么必须分三种结局（混成一句"超时"会把排错方向带偏）：
+ *   · 'no-observation' —— 全程**没有任何观测**（未挂载、帧数恒 0、元素始终不存在）⇒ 这才是真的"没来"
+ *   · 'not-interactive' —— 有观测但没到 interactive 门槛（已 painted/settled、动作数 0 等）⇒ "到了但不够"
+ *   · 'cancelled' —— 被调用方主动 stop() 取消 ⇒ **不是超时**，不告警、绝不判失败
+ *
+ * 落点选择：本模块与 diag 分离是既定契约（见文件头），所以这里不发明新日志，
+ *   而是把记录挂到**既有诊断面** stats() 上（页面侧 `__WEB__.readyStats()` 可读），
+ *   并配一条限频 console.warn 给看控制台的人。
+ *
+ * @param {{stage:string, outcome:'no-observation'|'not-interactive'|'cancelled',
+ *          waitedMs:number, timeoutMs:number, state:string|null, last:object}} rec
+ */
+function recordTrackStop(rec) {
+  const entry = { at: Date.now(), ...rec };
+  st.trackStops.push(entry);
+  if (st.trackStops.length > TRACK_STOP_KEEP) st.trackStops.shift();
+  if (entry.outcome === 'cancelled') return entry;   // 外部取消：不是异常，保持安静
+  const key = `${entry.stage}:${entry.outcome}`;
+  const lastAt = st.trackWarnAt.get(key) || 0;
+  const now = entry.at;
+  if (now - lastAt > TRACK_WARN_WINDOW_MS) {
+    st.trackWarnAt.set(key, now);
+    try {
+      if (typeof console !== 'undefined' && console.warn) {
+        console.warn(`[ready] ${entry.stage} 阶段 ${entry.waitedMs}ms 未达 interactive（${entry.outcome}）`
+          + `：当前 ${entry.state || 'pending'}，最后观测 ${JSON.stringify(entry.last || {})}`);
+      }
+    } catch { /* 忽略 */ }
+  }
+  return entry;
+}
+
+/**
  * 跟踪「模型」阶段的三级状态（契约 §2.2）。
  *
  * 判据（**不用像素采样**）：
@@ -265,57 +315,57 @@ export function trackModelStage(opts) {
   const { kind, id, canvas, getFrames, getActions } = opts || {};
   const timeoutMs = Number(opts && opts.timeoutMs) || 8000;
   const t0 = Date.now();
-  let stopped = false;
   const base = { kind: kind || null, id: id || null };
   // 换模型（或第一次装载）时重新起算 model 阶段：
   //   否则上一轮的 interactive 会被新模型继承，"等 painted"在新模型上永远不会重新发生。
   const prevId = st.stages.model && st.stages.model.detail ? st.stages.model.detail.id : null;
   if (prevId !== base.id) resetStage('model');
 
-  const mountedNow = () => {
-    const el = canvas || null;
-    if (!el || el.isConnected !== true) return false;
-    const w = Math.max(el.width || 0, el.clientWidth || 0);
-    const h = Math.max(el.height || 0, el.clientHeight || 0);
-    return w > 0 && h > 0;
-  };
-  const frames = () => {
-    try { return Number(getFrames && getFrames()) || 0; } catch { return 0; }
-  };
-  const actions = () => {
-    try { return Number(getActions && getActions()) || 0; } catch { return 0; }
-  };
+  const mountedNow = () => canvasMounted(canvas);
+  const frames = () => safeCount(getFrames);
+  const actions = () => safeCount(getActions);
 
   // 严格按 mounted → painted → interactive 推进（契约 §2.2）：
   //   interactive 不得越过 painted —— 动作清单在装载完成瞬间就可能非空，
   //   若不拦住，会在"一帧都还没画"时报 interactive，等于把分级做成了摆设。
   let painted = false;
+  // 最后一次观测到的值：超时时它是"卡在哪一步"的唯一证据（帧数/动作数/是否挂载）
+  const lastSeen = { mounted: false, frames: 0, actions: 0 };
+  // 收尾：done=正常达标 / timeout=等到了上限 / cancelled=被调用方主动取消。
+  //   判失败的条件 = 全无观测 **且** 阶段还没到 painted（模型画布不该缺席，所以允许判失败）。
+  const finisher = createTrackFinisher({
+    stage: 'model', t0, timeoutMs,
+    last: () => ({ ...base, ...lastSeen, painted }),
+    currentState: () => (st.stages.model ? st.stages.model.state : null),
+    allowFail: () => (RANK[st.stages.model ? st.stages.model.state : null] || 0) < RANK.painted,
+    failDetail: () => ({ ...base, ...lastSeen }),
+    failReason: (waitedMs) => `模型 ${timeoutMs}ms 内无任何观测（画布未挂载 / 已绘帧数 0；已等 ${waitedMs}ms）`,
+  });
+  const finish = finisher.finish;
+  const isStopped = finisher.isStopped;
   const tick = () => {
-    if (stopped) return;
-    if (mountedNow()) markStage('model', 'mounted', { ...base });
+    if (isStopped()) return;
+      lastSeen.mounted = mountedNow();
+    if (lastSeen.mounted) markStage('model', 'mounted', { ...base });
     const f = frames();
+    lastSeen.frames = f;
     if (!painted && f >= 1) {
       painted = true;
       markStage('model', 'painted', { ...base, frames: f });
     }
     const a = actions();
+    lastSeen.actions = a;
     if (painted && a > 0) {
       markStage('model', 'interactive', { ...base, frames: f, actions: a });
-      stop();
+      finish('done');
       return;
     }
-    if (Date.now() - t0 > timeoutMs) { stop(); return; }
+    if (Date.now() - t0 > timeoutMs) { finish('timeout'); return; }
     setTimeout(tick, MODEL_POLL_MS);
   };
 
-  function stop() {
-    if (stopped) return;
-    stopped = true;
-    scheduleFlush(); // 走合并窗口：装载完成会连标多个阶段，立刻发会撞上模型文件的连接占用
-  }
-
   tick();
-  return stop;
+  return () => finish('cancelled');
 }
 
 /**
@@ -340,6 +390,53 @@ function safeProbe(fn) {
   } catch (e) {
     return { ok: false, detail: { probeError: String((e && e.message) || e).slice(0, 80) } };
   }
+}
+
+/**
+ * 造一个"跟踪收尾器"：三个 track* 共用的结局记录逻辑。
+ *
+ * 抽出来的原因：三段代码的收尾几乎一样（记录 → 是否判失败 → 合并上报），
+ *   分开写会让每个 track 函数都超出单函数代码行上限，而且三处判断容易走偏。
+ *
+ * @param {{stage:string, t0:number, timeoutMs:number, last:()=>object,
+ *          currentState:()=>string|null, allowFail:()=>boolean,
+ *          failDetail:()=>object, failReason:(waitedMs:number)=>string}} spec
+ * @returns {{finish:(kind:'done'|'timeout'|'cancelled')=>void, isStopped:()=>boolean}}
+ */
+function createTrackFinisher(spec) {
+  let stopped = false;
+  const finish = (kind) => {
+    if (stopped) return;
+    stopped = true;
+    if (kind !== 'done') {
+      const waitedMs = Date.now() - spec.t0;
+      const stateNow = spec.currentState();
+      const last = spec.last();
+      const observed = last && (last.connected === true || last.mounted === true
+        || Number(last.frames) > 0 || Number(last.actions) > 0 || last.seen === true);
+      const outcome = kind === 'cancelled' ? 'cancelled' : (observed ? 'not-interactive' : 'no-observation');
+      recordTrackStop({ stage: spec.stage, outcome, waitedMs, timeoutMs: spec.timeoutMs, state: stateNow, last });
+      // 只有"什么都没观测到"且调用方允许判失败时才标 failed —— 已有画面时绝不撒谎
+      if (outcome === 'no-observation' && spec.allowFail()) {
+        markStage(spec.stage, 'failed', { ...spec.failDetail(), waitedMs }, spec.failReason(waitedMs));
+      }
+    }
+    scheduleFlush();
+  };
+  return { finish, isStopped: () => stopped };
+}
+
+/** 画布是否已挂载且有非零尺寸（模型阶段 mounted 的判据：detached/0 尺寸都不算挂上） */
+function canvasMounted(canvas) {
+  if (!canvas || canvas.isConnected !== true) return false;
+  const w = Math.max(canvas.width || 0, canvas.clientWidth || 0);
+  const h = Math.max(canvas.height || 0, canvas.clientHeight || 0);
+  return w > 0 && h > 0;
+}
+
+/** 读一个计数型探针（抛错按 0 处理：探针异常不能把跟踪器带崩） */
+function safeCount(read) {
+  try { return Number(read && read()) || 0; } catch { return 0; }
 }
 
 /** 元素当前包围盒的紧凑表示（两次采样相等 ⇒ 布局稳定） */
@@ -371,21 +468,36 @@ export function trackElementStage(opts) {
   const { name, el } = opts || {};
   const timeoutMs = Number(opts && opts.timeoutMs) || 8000;
   const t0 = Date.now();
-  let stopped = false;
   let prevBox = null;
   let stableHits = 0;
+  // 最后观测：元素是否在文档里、包围盒、是否有动画、是否被挡住、探针结论
+  const lastSeen = { connected: false, box: null, animating: null, blocked: null, probeOk: null };
 
-  const stop = () => { if (!stopped) { stopped = true; scheduleFlush(); } };
+  // DOM 阶段默认**不判失败**：元素不存在可能是正常配置（如未开调试日志时的调试面板），
+  //   把它标成失败是另一种撒谎；只留可归因记录。调用方要"缺席即失败"时显式传 failOnNoObservation。
+  const finisher = createTrackFinisher({
+    stage: name, t0, timeoutMs,
+    last: () => ({ ...(opts && opts.detail ? opts.detail : {}), ...lastSeen }),
+    currentState: () => (st.stages[name] ? st.stages[name].state : null),
+    allowFail: () => opts && opts.failOnNoObservation === true
+      && (RANK[st.stages[name] ? st.stages[name].state : null] || 0) < RANK.mounted,
+    failDetail: () => ({ ...(opts && opts.detail ? opts.detail : {}), ...lastSeen }),
+    failReason: (waitedMs) => `${timeoutMs}ms 内元素未挂载（${name}；已等 ${waitedMs}ms）`,
+  });
+  const { finish, isStopped } = finisher;
 
   const tick = () => {
-    if (stopped) return;
+    if (isStopped()) return;
+    lastSeen.connected = !!(el && el.isConnected === true);
     if (!el || el.isConnected !== true) {
-      if (Date.now() - t0 > timeoutMs) stop(); else setTimeout(tick, 80);
+      if (Date.now() - t0 > timeoutMs) finish('timeout'); else setTimeout(tick, 80);
       return;
     }
     markStage(name, 'mounted', opts && opts.detail ? { ...opts.detail } : null);
     const box = boxOf(el);
     const busy = animating(el);
+    lastSeen.box = box;
+    lastSeen.animating = busy;
     if (!busy && box && box === prevBox) stableHits += 1; else stableHits = 0;
     prevBox = box;
     // 连续两次采样都稳定且无动画 ⇒ 视为布局/动画稳定
@@ -394,17 +506,19 @@ export function trackElementStage(opts) {
       // interactive 可在通用判据之外再加该阶段自己的条件（如"声明内的控件都构建了"）：
       //   探针返回 {ok, detail}；不 ok 就继续等，绝不为了"报绿"放宽。
       const probe = opts && typeof opts.interactiveProbe === 'function' ? safeProbe(opts.interactiveProbe) : { ok: true, detail: {} };
-      if (!blocked(el) && probe.ok) {
+      lastSeen.probeOk = probe.ok;
+      lastSeen.blocked = blocked(el);
+      if (!lastSeen.blocked && probe.ok) {
         markStage(name, 'interactive', { ...(opts && opts.detail ? opts.detail : {}), ...(probe.detail || {}), box });
-        stop();
+        finish('done');
         return;
       }
     }
-    if (Date.now() - t0 > timeoutMs) { stop(); return; }
+    if (Date.now() - t0 > timeoutMs) { finish('timeout'); return; }
     setTimeout(tick, ELEMENT_POLL_MS);
   };
   tick();
-  return stop;
+  return () => finish('cancelled');
 }
 
 /**
@@ -418,15 +532,39 @@ export function trackElementWhenReady(opts) {
   const t0 = Date.now();
   let inner = null;
   let stopped = false;
+  // 元素是否曾经出现过：没出现过 = 'no-observation'（连跟踪都没开始），
+  //   出现过则由内层 trackElementStage 自己记录（它才知道卡在哪一步）。
+  let seen = false;
+
+  const finish = (kind) => {
+    if (stopped) return;
+    stopped = true;
+    if (inner) { inner(); return; }   // 交给内层收尾（它会记录自己那份）
+    if (kind !== 'done') {
+      const stateNow = st.stages[name] ? st.stages[name].state : null;
+      const outcome = kind === 'cancelled' ? 'cancelled' : (seen ? 'not-interactive' : 'no-observation');
+      recordTrackStop({
+        stage: name, outcome, waitedMs: Date.now() - t0, timeoutMs, state: stateNow,
+        last: { selector, seen },
+      });
+      if (outcome === 'no-observation' && opts && opts.failOnNoObservation === true
+        && (RANK[stateNow] || 0) < RANK.mounted) {
+        markStage(name, 'failed', { ...(opts.detail || {}), selector, waitedMs: Date.now() - t0 },
+          `${timeoutMs}ms 内未找到元素 ${selector}（${name}）`);
+      }
+    }
+    scheduleFlush();
+  };
+
   const tryStart = () => {
     if (stopped || inner) return;
     const el = document.querySelector(selector);
-    if (el) { inner = trackElementStage({ ...opts, name, el }); return; }
-    if (Date.now() - t0 > timeoutMs) { stopped = true; return; }
+    if (el) { seen = true; inner = trackElementStage({ ...opts, name, el }); return; }
+    if (Date.now() - t0 > timeoutMs) { finish('timeout'); return; }
     setTimeout(tryStart, MODEL_POLL_MS);
   };
   tryStart();
-  return () => { stopped = true; if (inner) inner(); };
+  return () => { if (inner) { stopped = true; inner(); return; } finish('cancelled'); };
 }
 
 /** 标记模型阶段失败（带可读原因，测试可立即报错而不必等超时） */

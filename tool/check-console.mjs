@@ -28,6 +28,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -50,6 +51,8 @@ const argOf = (name, def) => {
   return i >= 0 && argv[i + 1] ? argv[i + 1] : def;
 };
 const flag = (name) => argv.includes(name);
+// 临时 profile 目录名前缀：基目录取 os.tmpdir()，不写死平台临时路径
+const PROFILE_DIR_PREFIX = 'check-console-profile-';
 const WAIT_MS = Number(argOf('--wait', '3000'));
 const SCRIPT_FILE = argOf('--script', null);
 // 结果落盘路径：stdout 在本机（SMB 挂载 + 管道捕获）实测**偶发丢输出** ——
@@ -72,15 +75,16 @@ if (CONSOLE_LOCK.tookOver) {
   console.warn(`⚠ 接管陈旧锁（原持有者 ${describeLockHolder(CONSOLE_LOCK.holder)}）${why}`);
 }
 releaseLockOnExit(CONSOLE_LOCK);
-// 清理历史残留的 profile 目录：每次运行会建 /tmp/check-console-profile-<pid>，
+// 清理历史残留的 profile 目录：每次运行会在**系统临时目录**建 check-console-profile-<pid>，
 //   进程被 Ctrl-C / kill 时不会自己删。只删**持有者已死**的那些（别误删正在跑的）。
-for (const name of fs.readdirSync('/tmp').filter((n) => n.startsWith('check-console-profile-'))) {
-  const pid = Number(name.slice('check-console-profile-'.length));
+//   基目录取 os.tmpdir()：不在代码里写死平台临时路径（Windows/macOS 也成立）。
+for (const name of fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith(PROFILE_DIR_PREFIX))) {
+  const pid = Number(name.slice(PROFILE_DIR_PREFIX.length));
   if (!Number.isInteger(pid) || pid <= 0) continue;
   let alive = false;
   try { process.kill(pid, 0); alive = true; } catch { alive = false; }
   if (alive) continue;
-  try { fs.rmSync(path.join('/tmp', name), { recursive: true, force: true }); } catch { /* 删不掉不影响运行 */ }
+  try { fs.rmSync(path.join(os.tmpdir(), name), { recursive: true, force: true }); } catch { /* 删不掉不影响运行 */ }
 }
 
 const SHOT = argOf('--shot', null);
@@ -106,17 +110,28 @@ function findChrome() {
       }
     }
   } catch { /* 目录不存在就跳过 */ }
-  cands.push('/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome');
+  // 先用上面扫描到的（pwviewer/browsers 下的）结果；这里不列写死的系统绝对路径
   for (const c of cands) if (fs.existsSync(c)) return c;
-  // 最后退回 PATH 查找（which 不存在时静默）
-  for (const name of ['chrome-headless-shell', 'chromium', 'google-chrome']) {
+  // 再退回 PATH 查找：显式指定用 CHROME_BIN / CHROME_DIR，其余一律按 PATH
+  const names = ['chrome-headless-shell', 'chromium', 'chromium-browser', 'google-chrome'];
+  for (const name of names) {
     try {
       const p = execFileSync('which', [name], { encoding: 'utf8' }).trim();
       if (p) return p;
-    } catch { /* 没找到 */ }
+    } catch { /* which 不可用或没找到：继续 PATH 目录扫描 */ }
+  }
+  // PATH 目录逐个查（不依赖 which 是否存在）
+  for (const dir of String(process.env.PATH || '').split(path.delimiter)) {
+    if (!dir) continue;
+    for (const name of names) {
+      const p = path.join(dir, name);
+      try { if (fs.existsSync(p)) return p; } catch { /* 不可读就跳过 */ }
+    }
   }
   return null;
 }
+
+/** 临时 profile 目录名前缀：基目录取 os.tmpdir()，不写死平台路径 */
 
 const CHROME = findChrome();
 if (!CHROME) {
@@ -217,7 +232,7 @@ const responses = [];  // {status, url} 供 Network 证据
 
 async function main() {
   const port = 9788;
-  const profile = `/tmp/check-console-profile-${process.pid}`;
+  const profile = path.join(os.tmpdir(), `${PROFILE_DIR_PREFIX}${process.pid}`);
   const chrome = spawn(CHROME, [
     '--headless', '--no-sandbox', '--disable-gpu',
     `--remote-debugging-port=${port}`, '--window-size=1920,1080',

@@ -203,34 +203,106 @@ function onWorkerProgress(m) {
  * @param {string} providerId
  * @returns {Promise<object|null>}
  */
+/** worker 载插件 lib 的就绪上限（ms）。**不要为了少报警而调大**：超时是要暴露问题，不是掩盖。 */
+const WORKER_READY_TIMEOUT_MS = 8000;
+
+/**
+ * 取（或建）某个 provider 的 worker；建不起来返回 null（调用方回落同步解包）。
+ *
+ * 三种结局必须分开（这是"可不可用"之外、事后能不能归因的关键）：
+ *   · 'ready-provider'     worker 就绪且声明了 provider ⇒ 可用
+ *   · 'ready-no-provider'  worker 就绪但没声明 provider ⇒ 不可用（**正常结论，不是错误**）
+ *   · 'timeout' / 'worker-error' / 'worker-construct-failed' / 'no-files' ⇒ 不可用**且带原因**
+ * 原因记在 `entry.readyReason`（结构化），并走既有 diag/日志通道打一条，外部契约不变
+ *   （`entry.ready` 仍是 Promise<entry|null>，调用方照旧用真假判断）。
+ * @param {string} providerId
+ * @returns {Promise<object|null>}
+ */
 function ensureUnpackWorker(providerId) {
   if (workerPool.has(providerId)) return workerPool.get(providerId).ready;
   const files = filesOfProvider(providerId);
-  const entry = { worker: null, ready: null, seq: 0, pending: new Map() };
+  const entry = { worker: null, ready: null, seq: 0, pending: new Map(), readyReason: null };
   workerPool.set(providerId, entry);
+
+  /** 记录结局：结构化 + 一条可读诊断（成功也记，便于区分"没 provider"和"压根没起来"） */
+  const settle = (code, message, extra) => {
+    const reason = { code, message, at: Date.now(), ...(extra || {}) };
+    entry.readyReason = reason;
+    try {
+      emit('unpack.worker-ready', {
+        providerId, code, ok: code === 'ready-provider', message,
+        waitedMs: reason.waitedMs != null ? reason.waitedMs : null,
+        hasProvider: extra && extra.hasProvider != null ? extra.hasProvider : null,
+      });
+    } catch { /* 打点失败不影响解包 */ }
+    // 不可用且不是"正常结论"（无 provider）时给人一句 warn：这才是排障入口
+    if (code !== 'ready-provider' && code !== 'ready-no-provider') {
+      try { say.warn(`解包 worker 不可用（${providerId}）：${message}`); } catch { /* 忽略 */ }
+    }
+    return reason;
+  };
+
   entry.ready = (async () => {
-    if (typeof Worker !== 'function' || !files || !files.length) return null;
+    const readyT0 = Date.now();
+    if (typeof Worker !== 'function') {
+      settle('worker-construct-failed', '当前环境没有 Worker 构造器（老浏览器 / 沙箱禁用）');
+      return null;
+    }
+    if (!files || !files.length) {
+      settle('no-files', `插件 ${providerId} 的清单里没有 files[]（无从载入 lib）`);
+      return null;
+    }
     let worker;
     // 静态托管的映射是 src/web/ → 站点根（实测：/app/model-actions.js 可用），
     //   所以 src/web/plugin/unpack-worker.js 的 URL 就是 /plugin/unpack-worker.js
-    try { worker = new Worker(new URL('/plugin/unpack-worker.js', import.meta.url)); } catch { return null; }
+    try { worker = new Worker(new URL('/plugin/unpack-worker.js', import.meta.url)); } catch (e) {
+      settle('worker-construct-failed', `Worker 构造失败：${(e && e.message) || e}`);
+      return null;
+    }
     entry.worker = worker;
-    const ok = await new Promise((resolve) => {
-      const timer = setTimeout(() => resolve(false), 8000);   // 载 lib 超时 ⇒ 判不可用
+    // 结局对象：{status:'ready', hasProvider} | {status:'timeout'} | {status:'error', message}
+    const outcome = await new Promise((resolve) => {
+      const timer = setTimeout(() => resolve({ status: 'timeout' }), WORKER_READY_TIMEOUT_MS);
       worker.addEventListener('message', (ev) => {
         const m = ev.data || {};
-        if (m.t === 'ready') { clearTimeout(timer); resolve(!!m.hasProvider); }
+        if (m.t === 'ready') { clearTimeout(timer); resolve({ status: 'ready', hasProvider: !!m.hasProvider }); }
         else if (m.t === 'progress') onWorkerProgress(m);
         else if (m.t === 'done' || m.t === 'fail') {
           const p = entry.pending.get(m.id);
           if (p) { entry.pending.delete(m.id); p(m); }
         }
       });
-      worker.addEventListener('error', () => { clearTimeout(timer); resolve(false); });
+      worker.addEventListener('error', (ev) => {
+        clearTimeout(timer);
+        resolve({ status: 'error', message: (ev && ev.message) || 'worker error 事件（脚本加载失败 / CSP / 语法错误）' });
+      });
       // files 元素已带插件目录（unity-live2d-bundle/lib/xxx.js），故 base 到 /plugins/
       worker.postMessage({ t: 'init', base: new URL('/plugins/', import.meta.url).href, files });
     });
-    if (!ok) { try { worker.terminate(); } catch { /* 忽略 */ } entry.worker = null; return null; }
+    const waitedMs = Date.now() - readyT0;
+    if (outcome.status === 'timeout') {
+      settle('timeout', `worker 未在 ${WORKER_READY_TIMEOUT_MS}ms 内 ready（lib 加载慢 / 事件循环被占 / worker 脚本未加载）`,
+        { waitedMs, files: files.length });
+      try { worker.terminate(); } catch { /* 忽略 */ }
+      entry.worker = null;
+      return null;
+    }
+    if (outcome.status === 'error') {
+      settle('worker-error', `worker 报错：${outcome.message}`, { waitedMs, files: files.length });
+      try { worker.terminate(); } catch { /* 忽略 */ }
+      entry.worker = null;
+      return null;
+    }
+    if (!outcome.hasProvider) {
+      // 正常结论：worker 起来了，但该插件没声明 provider（不该继续用它解包）
+      settle('ready-no-provider', 'worker 已就绪但未声明 provider（plugin.json 的 provides 为空？）',
+        { waitedMs, hasProvider: false });
+      try { worker.terminate(); } catch { /* 忽略 */ }
+      entry.worker = null;
+      return null;
+    }
+    settle('ready-provider', `worker 就绪（${WORKER_READY_TIMEOUT_MS}ms 上限内，用时 ${waitedMs}ms）`,
+      { waitedMs, hasProvider: true });
     return entry;
   })();
   return entry.ready;

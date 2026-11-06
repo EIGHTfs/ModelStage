@@ -7,7 +7,7 @@
 //
 // 做什么：
 //   1. 清理：结束本工具此前起的 chrome（按 user-data-dir 前缀精确匹配，绝不误杀别的浏览器），
-//      再删除 /tmp/check-console-profile-* 目录；
+//      再删除「系统临时目录」下的 check-console-profile-* 目录；
 //   2. 自检服务：GET 首页不通就调用项目自带 web.sh start；
 //   3. 串行跑 SUITES（一次一套，避免并发争 GPU/端口把结果搅乱）；
 //   4. 汇总：每套 failed/total/problems，任一 failed>0 则退出码 1。
@@ -36,7 +36,8 @@ import { here } from './lib/paths.mjs';
 const HERE = here(import.meta.url);
 const REPO_ROOT = path.resolve(HERE, '..');
 const PROJECT = path.resolve(HERE, '..');
-const PROFILE_PREFIX = '/tmp/check-console-profile-';
+// 临时 profile 目录前缀：基目录取 os.tmpdir()，与 tool/check-console.mjs 用同一规则
+const PROFILE_PREFIX = path.join(os.tmpdir(), 'check-console-profile-');
 /** 单套超时：正常一套 10～60s，180s 足够；超时视为"未产出结果"并重试一次 */
 const SUITE_TIMEOUT_MS = Number(process.env.TEST_SUITE_TIMEOUT_MS) > 0
   ? Number(process.env.TEST_SUITE_TIMEOUT_MS)
@@ -131,6 +132,8 @@ const SUITES = [
   // VirtualFS 纯模块（注册/命中/归一化/revoke/重复注册/懒创建缓存/统计口径）：
   //   它是插件资源进渲染层的唯一通道，纯函数秒级，必须是契约级保护而非交互套件的副产品
   { name: 'vfs', runner: 'node-test', file: 'test/vfs.test.mjs' },
+  // 就绪阶段跟踪：超时必须留下可归因记录、且不能把"已有画面"判成失败（纯 node，假画布）
+  { name: 'ready-track', runner: 'node-test', file: 'test/ready-track.test.mjs' },
   // 名册类型筛选（纯函数：类型派生 / 计数口径 / 多选并集 / 与关键词交集 / 持久化收敛）
   { name: 'roster-type-filter', runner: 'node-test', file: 'test/roster-type-filter.test.mjs' },
   // 事件名常量：防"批量重命名把协议字符串改坏"（真发生过，静默失效）
@@ -509,11 +512,11 @@ function killStaleChrome() {
 function cleanProfiles() {
   let removed = 0;
   let dirs = [];
-  try { dirs = fs.readdirSync('/tmp').filter((d) => d.startsWith(path.basename(PROFILE_PREFIX))); } catch { dirs = []; } // dsh-skip-residue
+  try { dirs = fs.readdirSync(os.tmpdir()).filter((d) => d.startsWith(path.basename(PROFILE_PREFIX))); } catch { dirs = []; }
   for (const d of dirs) {
-    const full = path.join('/tmp', d);
+    const full = path.join(os.tmpdir(), d);
     if (keepProfiles) continue;
-    try { fs.rmSync(full, { recursive: true, force: true }); removed += 1; } catch { /* 占用中跳过 */ } // dsh-skip-residue
+    try { fs.rmSync(full, { recursive: true, force: true }); removed += 1; } catch { /* 占用中跳过（下次再清） */ }
   }
   return removed;
 }
