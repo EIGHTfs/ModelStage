@@ -20,6 +20,12 @@ import { Worker } from 'node:worker_threads';
 
 const WORKER_URL = new URL('./unpack-worker.mjs', import.meta.url);
 
+// worker 单次解包的默认超时。
+//   语义：**worker 活着但不响应**的上限（卡住），不是"崩溃检测"——崩溃由 exit 事件立即结算。
+//   为什么 120s：最大的包（几十 MB + LZMA 解压 + 贴图解码）实测在 30~60s 量级，
+//     留一倍余量避免正常慢包被误杀；更长的等待意味着真卡住，继续等没有收益。
+const DEFAULT_TIMEOUT_MS = 120_000;
+
 /**
  * @param {{
  *   rootDir: string,
@@ -30,7 +36,10 @@ const WORKER_URL = new URL('./unpack-worker.mjs', import.meta.url);
 export function createUnpackWorkerClient(opts) {
   const rootDir = opts && opts.rootDir;
   if (!rootDir) throw new Error('createUnpackWorkerClient: rootDir 必填');
-  const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : 120000;
+  // workerUrl 可注入：仅用于测试「worker 启动即崩溃」这条路径。
+  //   生产调用方不传 ⇒ 用模块级常量，行为与改动前逐字一致。
+  const workerUrl = (opts && opts.workerUrl) || WORKER_URL;
+  const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : DEFAULT_TIMEOUT_MS;
   const log = typeof opts.log === 'function' ? opts.log : () => {};
 
   /** @type {Worker|null} */
@@ -101,22 +110,28 @@ export function createUnpackWorkerClient(opts) {
 
   function ensureWorker() {
     if (worker) return worker;
-    const w = new Worker(WORKER_URL, { workerData: { rootDir } });
+    const w = new Worker(workerUrl, { workerData: { rootDir } });
     w.on('message', onMessage);
     w.on('error', (e) => {
       // worker 自己抛未捕获异常 ⇒ 该次请求 reject、句柄置空、下次重建
       failCurrent('unpack worker crashed', (e && e.message) || e);
       worker = null;
     });
-    w.on('exit', (code) => {
+    w.on('exit', (code, signal) => {
       // 只有"它仍是当前句柄"才算意外退出：超时/close 路径会先把 worker 置空再 terminate，
       //   所以这里判断句柄归属比维护一个全局 terminating 标志更硬 —— 不依赖 exit 与 finally 的先后。
       const wasCurrent = worker === w;
       if (wasCurrent) worker = null;
       if (!wasCurrent) return;
-      if (code !== 0) {
-        failCurrent('unpack worker exited unexpectedly', `exit code ${code}`);
-        log('warn', `解包 worker 异常退出（code ${code}），已丢弃句柄，下次请求将重建`);
+      // 为什么 code === 0 也要让在途请求失败：worker 正常走完生命周期就不会再回消息了，
+      //   不 reject 的话这个请求要白等到 120s 超时，而且报出来的是"timeout"——
+      //   把"已退出"误报成"卡住"，排查方向直接跑偏（这两类要分开）。
+      //   没有在途请求时 failCurrent 内部会早退，所以这里无条件调用是安全的。
+      const hadPending = Boolean(current);
+      failCurrent('unpack worker 已退出', `code=${code === null ? 'null' : code}, signal=${signal || 'none'}`);
+      // 日志只在"异常退出"或"有请求被牵连"时打，避免正常退出刷日志
+      if (code !== 0 || hadPending) {
+        log('warn', `解包 worker 已退出（code=${code === null ? 'null' : code}, signal=${signal || 'none'}），已丢弃句柄，下次请求将重建`);
       }
     });
     worker = w;
@@ -149,7 +164,7 @@ export function createUnpackWorkerClient(opts) {
         Promise.resolve(dead && dead.terminate && dead.terminate()).catch(() => undefined);
         // 清理该 fp 的残留临时目录（writeResult 的 .tmp-<fp>-* 命名规则）
         cleanupTmp(fp);
-        reject(new Error(`unpack worker timeout after ${timeoutMs}ms（本次解包未完成，已终止并重建 worker）`));
+        reject(new Error(`unpack worker 无响应：超过 ${timeoutMs}ms 未返回（worker 仍在运行但卡住了，已终止并重建；与「worker 已退出」是两类问题）`));
       }, timeoutMs);
       current = { id, resolve, reject, timer, onProgress: typeof opts.onProgress === 'function' ? opts.onProgress : null };
       try {
