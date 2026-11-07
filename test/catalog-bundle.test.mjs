@@ -42,9 +42,9 @@ function detectContainer(abs) {
   }
 }
 
-test('递归：多层目录下的容器也能列出（nikke_2 的包在第二层）', () => {
+test('递归：多层目录下的容器也能列出（nikke_2 的包在第二层）', async () => {
   if (!fs.existsSync(NIKKE_ROOT)) return;   // 样本不在本机：skip
-  const r = data.catalog.listCatalog('nikke_2');
+  const r = await data.catalog.listCatalog('nikke_2');
   assert.equal(r.status, 200);
   const entries = r.body.entries || [];
   assert.equal(entries.length, 3, `nikke_2 应列出 3 条容器，实际 ${entries.length}`);
@@ -57,10 +57,10 @@ test('递归：多层目录下的容器也能列出（nikke_2 的包在第二层
   }
 });
 
-test('回归：根层平铺的容器仍被全部列出（数量从磁盘现算，不写死）', () => {
+test('回归：根层平铺的容器仍被全部列出（数量从磁盘现算，不写死）', async () => {
   const cfg = data.config.readConfig().find((r) => r.id === 'azurlane_bundle');
   if (!cfg || !fs.existsSync(cfg.path)) return;
-  const r = data.catalog.listCatalog('azurlane_bundle');
+  const r = await data.catalog.listCatalog('azurlane_bundle');
   const entries = r.body.entries || [];
   // 断言的意图是"根层平铺的包没被递归改动漏掉"，**不是**"总数永远是某个数字"：
   //   用户往这个根里加文件、或放进子目录后，硬编码的数量断言会变成假红（已实际发生过：19 → 94）。
@@ -82,7 +82,7 @@ test('回归：根层平铺的容器仍被全部列出（数量从磁盘现算�
   assert.ok(flatContainers.length > 0, '该根层至少应有一个 UnityFS 容器才具回归意义');
 });
 
-test('多插件时 kind 一律为 null，原因写在 capabilityNotes（warnings 不再承载）', () => {
+test('多插件时 kind 一律为 null，原因写在 capabilityNotes（warnings 不再承载）', async () => {
   const cfg = data.config.readConfig().find((r) => r.id === 'azurlane_bundle');
   if (!cfg || !fs.existsSync(cfg.path)) return;
 
@@ -90,7 +90,7 @@ test('多插件时 kind 一律为 null，原因写在 capabilityNotes（warnings
     .filter((p) => Array.isArray(p.fileKinds) && p.fileKinds.includes('bundle'));
   if (providers.length < 2) return;   // 只有单插件时不适用本用例
 
-  const r = data.catalog.listCatalog('azurlane_bundle');
+  const r = await data.catalog.listCatalog('azurlane_bundle');
   for (const e of r.body.entries || []) {
     assert.equal(e.kind, null, `多插件并存时 kind 必须为 null（否则会被错标成某一类内容），实际 ${e.kind}`);
   }
@@ -100,7 +100,7 @@ test('多插件时 kind 一律为 null，原因写在 capabilityNotes（warnings
   assert.deepEqual(r.body.warnings, [], 'warnings 不该再有内容（能力说明已拆到 capabilityNotes）');
 });
 
-test('单插件时 kind 仍取插件声明（live2d 现状零变化）', () => {
+test('单插件时 kind 仍取插件声明（live2d 现状零变化）', async () => {
   const fakePlugins = {
     readPlugins: () => [{
       id: 'unity-live2d-bundle',
@@ -122,7 +122,7 @@ test('单插件时 kind 仍取插件声明（live2d 现状零变化）', () => {
   assert.equal(entry.kind, 'live2d', '条目 kind 应继承插件声明');
 });
 
-test('深度上限：超深目录只停止深入，同层其它容器仍要扫到（不得整体中断）', () => {
+test('深度上限：超深目录只停止深入，同层其它容器仍要扫到（不得整体中断）', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'catalog-depth-'));
   try {
     // 每层各放一个容器：根层 + 6 层子目录
@@ -146,7 +146,7 @@ test('深度上限：超深目录只停止深入，同层其它容器仍要扫�
   }
 });
 
-test('命中上限：到顶即停并带回原因（不静默截断）', () => {
+test('命中上限：到顶即停并带回原因（不静默截断）', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'catalog-hits-'));
   try {
     for (let i = 0; i < 5; i += 1) writeFakeBundle(path.join(tmp, `pkg-${i}`));
@@ -159,7 +159,7 @@ test('命中上限：到顶即停并带回原因（不静默截断）', () => {
   }
 });
 
-test('只对未知扩展名读魔数：已知普通文件一次都不打开', () => {
+test('只对未知扩展名读魔数：已知普通文件一次都不打开', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'catalog-ext-'));
   try {
     // 这些扩展名都在 KNOWN_FILE_EXT 里 ⇒ 不该被探魔数（哪怕内容伪装成 UnityFS）
@@ -177,7 +177,7 @@ test('只对未知扩展名读魔数：已知普通文件一次都不打开', ()
   }
 });
 
-test('byDir 按目录聚合（给"按 dirSignature 缓存"留的钩子）', () => {
+test('byDir 按目录聚合（给"按 dirSignature 缓存"留的钩子）', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'catalog-bydir-'));
   try {
     writeFakeBundle(path.join(tmp, 'root-pkg'));

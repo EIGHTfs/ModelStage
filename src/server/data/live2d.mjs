@@ -14,6 +14,8 @@ import { live2dManifestFile, ensureManifestDir } from './manifest-cache.mjs';
 import path from 'node:path';
 import { encodePath } from '../assets/probe.mjs';
 import { resolveLive2DRuntimes } from '../../../tool/resolve-live2d-runtimes.mjs';
+// 进度节流：与 Spine 侧共用同一份实现
+import { createProgressThrottle } from './scan-progress.mjs';
 
 /** 本模块日志（统一形状 {at,level,tag,msg,detail}） */
 const log = createLogger('live2d');
@@ -176,10 +178,30 @@ function modelsInDir(root, absDir, relPath, entries) {
 }
 
 /** 扫描一个资源根里的全部 Live2D 模型。 */
-export function scanLive2DRootServer(root) {
+export async function scanLive2DRootServer(root, opts = {}) {
   const models = [];
+  // 进度回调可选：不传时与改动前逐字一致（现有调用方不传）
+  const throttle = typeof opts.onProgress === 'function'
+    ? createProgressThrottle({ onProgress: opts.onProgress, kind: 'live2d', rootId: root.id })
+    : null;
+  let dirsScanned = 0;
 
-  function walk(absDir, relPath) {
+  // 分片让出：与 spine 侧同一套策略（每 20 个目录或每 50ms），理由见 spine.mjs 里的注释
+  const yieldToEventLoop = () => new Promise((resolve) => setImmediate(resolve));
+  const YIELD_DIRS = 20;
+  const YIELD_MS = 50;
+  let sinceYieldDirs = 0;
+  let lastYieldAt = Date.now();
+  async function maybeYield() {
+    sinceYieldDirs += 1;
+    if (sinceYieldDirs >= YIELD_DIRS || Date.now() - lastYieldAt >= YIELD_MS) {
+      sinceYieldDirs = 0;
+      lastYieldAt = Date.now();
+      await yieldToEventLoop();
+    }
+  }
+
+  async function walk(absDir, relPath) {
     let entries;
     try {
       entries = fs.readdirSync(absDir, { withFileTypes: true });
@@ -188,10 +210,18 @@ export function scanLive2DRootServer(root) {
     }
     const found = modelsInDir(root, absDir, relPath, entries);
     models.push(...found.models);
-    for (const d of found.dirs) walk(d.full, relPath ? `${relPath}/${d.name}` : d.name);
+    dirsScanned += 1;
+    if (throttle) {
+      throttle.bump({ scanned: models.length, dirs: dirsScanned, currentPath: relPath, dirCompleted: true });
+    }
+    await maybeYield();
+    for (const d of found.dirs) {
+      await walk(d.full, relPath ? `${relPath}/${d.name}` : d.name);
+    }
   }
 
-  walk(root.path, '');
+  await walk(root.path, '');
+  if (throttle) throttle.flush();
   return models;
 }
 
@@ -199,7 +229,7 @@ export function scanLive2DRootServer(root) {
  * 取 Live2D 模型列表（带落盘缓存，逻辑与 Spine 的 getModels 一致）。
  * 为什么缓存：天命之子有 2000+ 角色目录，每次刷新全量扫描会明显变慢。
  */
-export function getLive2DModels(configFile, cfg, force) {
+export async function getLive2DModels(configFile, cfg, force, onProgress, onStart) {
   const file = live2dModelsFile(configFile, cfg.id);
   if (!force && fs.existsSync(file)) {
     try {
@@ -219,7 +249,10 @@ export function getLive2DModels(configFile, cfg, force) {
       /* 缓存损坏则重扫 */
     }
   }
-  const models = scanLive2DRootServer(cfg);
+  const models = await scanLive2DRootServer(cfg, {
+    ...(onProgress ? { onProgress } : {}),
+    ...(typeof onStart === 'function' ? { onStart } : {}),
+  });
   const ts = Date.now();
   try {
     // 目录建一次就够（ensureManifestDir 内部就是 mkdir -p）。原先它前面还有一句
@@ -266,7 +299,7 @@ export function createLive2d(p) {
     live2dModelsFile: (rootId) => live2dModelsFile(p.configFile, rootId),
     buildLive2DModel,
     scanLive2DRootServer,
-    getLive2DModels: (cfg, force) => getLive2DModels(p.configFile, cfg, force),
+    getLive2DModels: (cfg, force, onProgress, onStart) => getLive2DModels(p.configFile, cfg, force, onProgress, onStart),
     getLive2DRuntimeFiles,
   };
 }

@@ -16,6 +16,8 @@ import {
 } from './manifest-cache.mjs';
 import path from 'node:path';
 import { MIME, encodePath, parseAtlasPages } from '../assets/probe.mjs';
+// 进度节流：与单飞层共用同一份实现（P0 起扫描可见进度，节流规则见设计 §5.1）
+import { createProgressThrottle } from './scan-progress.mjs';
 
 
 
@@ -143,9 +145,25 @@ export function buildModelServer(root, relPath, baseName, skel, atlas, dirFiles,
  * 必须先建完再建模型：某模型的第 2 页可能位于尚未遍历到的兄弟目录里；
  * 同名文件保留先遇到的（与原版匹配顺序一致）。
  */
-export function indexRootFiles(root) {
+export async function indexRootFiles(root, opts = {}) {
   const fileIndex = new Map();
-  (function indexDir(absDir, relPath) {
+  // 建索引同样是**同步遍历**，在 bd2（431 个目录）上实测占 4.3s。
+  //   不在这里让出的话，这段时间里一帧进度都发不出去（前端会以为卡死）。
+  //   让出策略与 walk 一致：每 20 个目录 或 每 50ms。
+  const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null;
+  let sinceYield = 0;
+  let lastYieldAt = Date.now();
+  let dirsIndexed = 0;
+  async function maybeYield() {
+    sinceYield += 1;
+    if (sinceYield >= 20 || Date.now() - lastYieldAt >= 50) {
+      sinceYield = 0;
+      lastYieldAt = Date.now();
+      if (onProgress) onProgress({ dirs: dirsIndexed });
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  }
+  async function indexDir(absDir, relPath) {
     let entries;
     try {
       entries = fs.readdirSync(absDir, { withFileTypes: true });
@@ -163,7 +181,9 @@ export function indexRootFiles(root) {
         continue;
       }
       if (e.isDirectory()) {
-        indexDir(full, childRel);
+        dirsIndexed += 1;
+        await indexDir(full, childRel);
+        await maybeYield();
         continue;
       }
       const key = e.name.toLowerCase();
@@ -177,7 +197,8 @@ export function indexRootFiles(root) {
         });
       }
     }
-  })(root.path, '');
+  }
+  await indexDir(root.path, '');
   return fileIndex;
 }
 
@@ -245,21 +266,69 @@ export function groupModelsInDir(root, relPath, files, fileIndex, deps) {
  * 递归扫描一个资源根，收集所有可加载模型。
  * 不同资源根层级不统一（BD2 两层、Mod 三层含 char/npc 分类层），
  * 一律递归到「含骨架+图集的目录」为止，不做针对层级的特殊分支。
- * 全同步实现：本地磁盘操作，同步遍历比异步更简单，也避免 HTTP 处理函数需要 async。
+ * 分片让出的**异步**实现：`collectDirEntries` / `indexRootFiles` 用的是同步 readdir，
+ *   整棵树的遍历会占满一个事件循环切片 —— 期间 res.write 的数据发不出去（实测 433 帧全挤在末尾 2ms）。
+ *   所以每 20 个目录或每 50ms `await setImmediate` 让出一次，进度帧才真的能"边扫边到"。
+ *   注意：这里**没有**用异步 readdir（fs.promises），因为同步 readdir 单次更快、
+ *   且 CIFS 上并发 readdir 收益不明显；分片让出已足够让出 CPU 给 IO 回调。
  */
-export function scanRootServer(root, deps) {
+export async function scanRootServer(root, deps) {
   const models = [];
-  const fileIndex = indexRootFiles(root);
+  // 进度回调是**可选**的：不传就与改动前逐字一致（现有调用方与测试都不传）。
+  //   节流放在这里而不是调用方，因为只有这里同时知道"已扫到第几个目录"和"累计多少模型"。
+  //   **必须定义在建索引之前** —— indexRootFiles 的 onProgress 要引用它（否则 TDZ ReferenceError）。
+  const throttle = deps && typeof deps.onProgress === 'function'
+    ? createProgressThrottle({ onProgress: deps.onProgress, kind: 'spine', rootId: root.id })
+    : null;
+  const fileIndex = await indexRootFiles(root, {
+    onProgress: throttle
+      ? () => throttle.bump({ scanned: models.length, dirs: 0, currentPath: '(建索引)', dirCompleted: false })
+      : undefined,
+  });
+  let dirsScanned = 0;
 
-  function walk(absDir, relPath) {
-    const { files, dirs } = collectDirEntries(absDir, relPath, deps);
-    models.push(...groupModelsInDir(root, relPath, files, fileIndex, deps));
-    for (const d of dirs) {
-      walk(d.full, relPath ? `${relPath}/${d.name}` : d.name);
+  /**
+   * 让出事件循环。
+   *
+   * 为什么必须有：`collectDirEntries` 用的是同步 readdir，整个 walk 会在**一个事件循环切片**里跑完
+   *   ⇒ 期间 `res.write` 只进内核缓冲、一帧都发不出去（实测 433 帧全挤在扫描结束后 2ms 内涌出）。
+   *   每积累一点工作量就 `await setImmediate`，把控制权还给 IO 回调，帧才真的能"边扫边到"。
+   * 为什么用 setImmediate 而不是 setTimeout(0)：setImmediate 在 check 阶段就跑，
+   *   没有 setTimeout 的最小 1ms 计时器开销；扫描一次要让出几百次时这个差别不小。
+   */
+  const yieldToEventLoop = () => new Promise((resolve) => setImmediate(resolve));
+
+  // 让出判据：每 20 个目录 **或** 每 50ms，先到就先让出一次。
+  //   只看目录数不够 —— 遇到单个巨大目录时目录数不变但耗时在涨；只看时间不够 —— 空目录树会几乎不让出。
+  const YIELD_DIRS = 20;
+  const YIELD_MS = 50;
+  let sinceYieldDirs = 0;
+  let lastYieldAt = Date.now();
+  async function maybeYield() {
+    sinceYieldDirs += 1;
+    if (sinceYieldDirs >= YIELD_DIRS || Date.now() - lastYieldAt >= YIELD_MS) {
+      sinceYieldDirs = 0;
+      lastYieldAt = Date.now();
+      await yieldToEventLoop();
     }
   }
 
-  walk(root.path, '');
+  async function walk(absDir, relPath) {
+    const { files, dirs } = collectDirEntries(absDir, relPath, deps);
+    models.push(...groupModelsInDir(root, relPath, files, fileIndex, deps));
+    dirsScanned += 1;
+    if (throttle) {
+      throttle.bump({ scanned: models.length, dirs: dirsScanned, currentPath: relPath, dirCompleted: true });
+    }
+    await maybeYield();
+    for (const d of dirs) {
+      await walk(d.full, relPath ? `${relPath}/${d.name}` : d.name);
+    }
+  }
+
+  await walk(root.path, '');
+  // 补发最后一帧：保证前端拿到的最终计数与返回的 models.length 一致，而不是停在某个中间值
+  if (throttle) throttle.flush();
   return models;
 }
 
@@ -274,7 +343,7 @@ export function invalidateCaches(configFile, rootId) {
 }
 
 /** 取模型列表（优先读落盘清单，缺失或 force 时才扫描）。同步实现。 */
-export function getSpineModels(configFile, root, force, deps) {
+export async function getSpineModels(configFile, root, force, deps) {
   const f = spineFile(configFile, root.id);
 
   if (!force && fs.existsSync(f)) {
@@ -298,7 +367,15 @@ export function getSpineModels(configFile, root, force, deps) {
     }
   }
 
-  const models = scanRootServer(root, deps);
+  // 在真正开始扫描前通知一次 —— 让"首帧到达"不必等 indexRootFiles 那一步（同步建索引，实测 4s+）
+  if (deps && typeof deps.onStart === 'function') {
+    deps.onStart();
+    // **必须紧接着让出一次**：res.write 只是把数据放进 Node 的输出缓冲，
+    //   真正写到 socket 要等事件循环的下一个 tick。而下一步 indexRootFiles 是同步的（实测 4.6s），
+    //   不让出的话首帧照样要等到扫描启动才到达 —— 那样 onStart 就白加了。
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  const models = await scanRootServer(root, deps);
   const payload = {
     rootId: root.id,
     rootName: root.name,
@@ -326,11 +403,15 @@ export function getSpineModels(configFile, root, force, deps) {
  */
 export function createSpineModels(p, deps) {
   return {
-    getSpineModels: (root, force) => getSpineModels(p.configFile, root, force, deps),
+    // 第三个参数是**每次调用的额外 deps**（目前只有 onProgress）：与既有 deps 合并即可，
+    //   不传时逐字等同于旧行为。(p.configFile/root/force/deps 都在闭包里)
+    getSpineModels: (root, force, extraDeps) => getSpineModels(
+      p.configFile, root, force, extraDeps ? { ...deps, ...extraDeps } : deps,
+    ),
     spineFile: (rootId) => spineFile(p.configFile, rootId),
     invalidateCaches: (rootId) => invalidateCaches(p.configFile, rootId),
     buildModelServer,
-    scanRootServer: (root) => scanRootServer(root, deps),
+    scanRootServer: (root) => scanRootServer(root, deps),   // 返回 Promise（已 async 化）
     resolveIconUrl,
   };
 }

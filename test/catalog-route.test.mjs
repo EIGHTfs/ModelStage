@@ -26,7 +26,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const data = createServerData({ root: ROOT, dataRoot: ROOT });
 
 /** 直调一次路由，返回 { status, body }；路由没处理则 status=null */
-function callCatalog(search) {
+async function callCatalog(search) {
   let captured = null;
   const res = {};
   const ctx = {
@@ -38,7 +38,7 @@ function callCatalog(search) {
     toRootView: (x) => x,
     readBody: () => { throw new Error('本用例不该走 readBody'); },
   };
-  const handled = handleData({ method: 'GET' }, res, '/api/catalog', new URL(`http://x/api/catalog${search}`), ctx);
+  const handled = await handleData({ method: 'GET' }, res, '/api/catalog', new URL(`http://x/api/catalog${search}`), ctx);
   // 注意：这里**不断言 handled === true**。apiAsync 的 catalog 分支是 `return sendJson(...)`，
   //   而 sendJson 返回 undefined ⇒ handleData 最终会 return false。
   //   属既有小瑕疵（与 JSDoc 的 @returns 是否已处理 不一致），但不影响功能：
@@ -48,8 +48,8 @@ function callCatalog(search) {
   return captured;
 }
 
-test('缺 root 参数 → 400（不是 404），并给出可用根清单', () => {
-  const r = callCatalog('');
+test('缺 root 参数 → 400（不是 404），并给出可用根清单', async () => {
+  const r = await callCatalog('');
   assert.equal(r.status, 400);
   assert.equal(r.body.ok, false);
   assert.match(r.body.error, /缺少 root/);
@@ -57,30 +57,30 @@ test('缺 root 参数 → 400（不是 404），并给出可用根清单', () =>
   assert.ok(r.body.known.length > 0, 'known 不该为空（本机有资源根）');
 });
 
-test('root 为空串 → 400（与缺参同义）', () => {
-  const r = callCatalog('?root=');
+test('root 为空串 → 400（与缺参同义）', async () => {
+  const r = await callCatalog('?root=');
   assert.equal(r.status, 400);
   assert.match(r.body.error, /缺少 root/);
 });
 
-test('root 只有空白 → 400（trim 后为空）', () => {
-  const r = callCatalog('?root=%20%20');
+test('root 只有空白 → 400（trim 后为空）', async () => {
+  const r = await callCatalog('?root=%20%20');
   assert.equal(r.status, 400);
   assert.match(r.body.error, /缺少 root/);
 });
 
-test('给了一个不存在的根 → 404（语义不变：资源不存在）', () => {
-  const r = callCatalog('?root=no-such-root-xyz');
+test('给了一个不存在的根 → 404（语义不变：资源不存在）', async () => {
+  const r = await callCatalog('?root=no-such-root-xyz');
   assert.equal(r.status, 404);
   assert.match(r.body.error, /未找到资源根/);
 });
 
-test('给一个真实的根 → 200 且 entries 非空', () => {
+test('给一个真实的根 → 200 且 entries 非空', async () => {
   const roots = data.config.readConfig();
   assert.ok(roots.length > 0, '本机应至少有一个资源根');
   // 挑一个确实存在的根（exists 为真是扫描出来的；这里用配置里的第一个，
   //   若它恰好不在盘上，listCatalog 仍会 200 但 entries 为空 —— 那种情况跳过断言）
-  const r = callCatalog(`?root=${encodeURIComponent(roots[0].id)}`);
+  const r = await callCatalog(`?root=${encodeURIComponent(roots[0].id)}`);
   assert.equal(r.status, 200);
   assert.ok(Array.isArray(r.body.entries), 'entries 应是数组');
 });
@@ -105,8 +105,8 @@ function catalogWithRoot(rootPath) {
   return catalog.listCatalog('probe-root');
 }
 
-test('根路径不存在 → 200 + rootWarning 说"路径不存在"，且不带绝对路径', () => {
-  const r = catalogWithRoot('/no/such/dir-for-catalog-test');
+test('根路径不存在 → 200 + rootWarning 说"路径不存在"，且不带绝对路径', async () => {
+  const r = await catalogWithRoot('/no/such/dir-for-catalog-test');
   assert.equal(r.status, 200, '路径坏掉仍应是 200（否则前端只能显示"加载失败"）');
   assert.equal(r.body.count, 0);
   assert.equal(typeof r.body.rootWarning, 'string');
@@ -115,12 +115,12 @@ test('根路径不存在 → 200 + rootWarning 说"路径不存在"，且不带�
   assert.ok(!r.body.rootWarning.includes('/no/such/dir'), '文案不许带绝对路径（那是排障信息，进日志）');
 });
 
-test('根路径指向一个文件（不是目录）→ rootWarning 说"不是目录"', () => {
+test('根路径指向一个文件（不是目录）→ rootWarning 说"不是目录"', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'catalog-root-file-'));
   const filePath = path.join(tmp, 'a-file.txt');
   fs.writeFileSync(filePath, 'x');
   try {
-    const r = catalogWithRoot(filePath);
+    const r = await catalogWithRoot(filePath);
     assert.equal(r.status, 200);
     assert.match(r.body.rootWarning, /不是目录/);
   } finally {
@@ -128,10 +128,10 @@ test('根路径指向一个文件（不是目录）→ rootWarning 说"不是目
   }
 });
 
-test('根路径正常但扫不到条目 → rootWarning 说"没有任何模型条目"（与路径问题文案不同）', () => {
+test('根路径正常但扫不到条目 → rootWarning 说"没有任何模型条目"（与路径问题文案不同）', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'catalog-root-empty-'));
   try {
-    const r = catalogWithRoot(tmp);
+    const r = await catalogWithRoot(tmp);
     assert.equal(r.status, 200);
     assert.equal(r.body.count, 0);
     assert.match(r.body.rootWarning, /没有任何模型条目/);
@@ -141,20 +141,20 @@ test('根路径正常但扫不到条目 → rootWarning 说"没有任何模型�
   }
 });
 
-test('rootId 不存在 → 仍 404，且不带 rootWarning 字段', () => {
-  const r = callCatalog('?root=definitely-not-a-root');
+test('rootId 不存在 → 仍 404，且不带 rootWarning 字段', async () => {
+  const r = await callCatalog('?root=definitely-not-a-root');
   assert.equal(r.status, 404);
   assert.equal(r.body.rootWarning, undefined, '404 分支不该有 rootWarning（那是 200 才有的字段）');
 });
 
-test('真实的根且能扫到东西 → rootWarning 为 null', () => {
+test('真实的根且能扫到东西 → rootWarning 为 null', async () => {
   const roots = data.config.readConfig();
   // 挑一个真的在盘上、且能列出条目的根；找不到就跳过（本机资源根可能是空的）
   const alive = roots.find((x) => {
     try { return fs.existsSync(x.path); } catch { return false; }
   });
   if (!alive) return;
-  const r = callCatalog(`?root=${encodeURIComponent(alive.id)}`);
+  const r = await callCatalog(`?root=${encodeURIComponent(alive.id)}`);
   assert.equal(r.status, 200);
   if (r.body.count > 0) assert.equal(r.body.rootWarning, null, '扫到条目时不该有根级警告');
   else assert.match(String(r.body.rootWarning), /没有任何模型条目/, '空根应给出"没有条目"的根级警告');
@@ -164,13 +164,13 @@ test('真实的根且能扫到东西 → rootWarning 为 null', () => {
 // 锁两件事：① 健康的根 warnings 必须是空数组 ② 有问题的根也只走 rootIssues，warnings 仍为空。
 // 为什么留空数组而不是删字段：旧消费方（读 warnings 后直接 .map/.join）拿到 undefined 会炸。
 
-test('健康的根：warnings 为空数组，能力说明只在 capabilityNotes', () => {
+test('健康的根：warnings 为空数组，能力说明只在 capabilityNotes', async () => {
   const roots = data.config.readConfig();
   const alive = roots.find((x) => {
     try { return fs.existsSync(x.path); } catch { return false; }
   });
   if (!alive) return;
-  const r = callCatalog(`?root=${encodeURIComponent(alive.id)}`);
+  const r = await callCatalog(`?root=${encodeURIComponent(alive.id)}`);
   assert.equal(r.status, 200);
   assert.deepEqual(r.body.warnings, [], `warnings 必须是空数组，实际 ${JSON.stringify(r.body.warnings)}`);
   // 能力说明（"有 N 个能解包资源包的插件…"）与根无关：有多个 provider 时必然出现在 capabilityNotes
@@ -181,8 +181,8 @@ test('健康的根：warnings 为空数组，能力说明只在 capabilityNotes'
   }
 });
 
-test('有问题的根：根级问题只进 rootIssues，warnings 仍为空数组', () => {
-  const r = catalogWithRoot('/no/such/dir-for-warnings-test');
+test('有问题的根：根级问题只进 rootIssues，warnings 仍为空数组', async () => {
+  const r = await catalogWithRoot('/no/such/dir-for-warnings-test');
   assert.equal(r.status, 200);
   assert.equal(r.body.count, 0);
   assert.ok(Array.isArray(r.body.rootIssues) && r.body.rootIssues.length > 0, '根级问题必须写进 rootIssues');

@@ -414,3 +414,25 @@ dirSignature 只覆盖「根 + 第一层子目录」（readdirSync 非递归）
 4 验收 P1（10.4 大根实测 + 一次重启）
 5 清理（P2）
 ```
+
+## 十六、实施记录（P0 已完成）
+
+```
+P0-a（进度通道）首版完成后，验收发现一个致命事实：
+  433 帧全部在扫描结束后的 2ms 内到达（首帧 @24709ms）——「写了 res.write」≠「客户端收到了」
+  根因：扫描是同步递归（readdirSync），事件循环被占满，res.write 只进内核缓冲
+  ⇒ 同步实现下"进度可见"不成立；单飞表也因此从未真正生效（并发请求只是被阻塞）
+
+P0-a2 修法（已落地）：
+  · indexRootFiles / scanRootServer / scanLive2DRootServer 皆改 async，每 20 目录或 50ms await setImmediate
+  · onStart 之后**立刻 await 一次 setImmediate**（否则 start 帧同样被后续同步块压在缓冲里）
+  · async 级联：getSpineModels / getLive2DModels / catalog 的 listCatalog / routes 的 handleData / serve 的 dispatch
+  · 5 个测试补 await/async 适配
+
+实测（改后，bd2 431 条）：
+  首帧 0s ｜ progress 分布在 8s→31s ｜ done 32s ｜ 并发两连接扫描次数 = 1 且 B 收到 progress
+  不带 stream 的响应：字段与顺序一致，字节数完全相同（时间戳字段除外的既有差异）
+
+已知代价：
+  · catalog-route 单套从几十秒涨到 ~116s（12 个用例都真实扫目录 + 让出）
+  · 单飞表在 async 之后才真正开始生效（之前靠事件循环阻塞"碰巧"只扫一次）

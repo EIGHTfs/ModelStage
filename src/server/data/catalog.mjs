@@ -764,7 +764,7 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
    * @returns {{entries: Array, warnings: string[], scanErrors: Error[],
    *            cachedAll: boolean, pathProblem: string|null}}
    */
-  function scanRootEntries(cfg) {
+  async function scanRootEntries(cfg) {
     const entries = [];
     const warnings = [];
     /** 扫描过程中抛的错（用于判断 rootWarning 该说"扫不动"还是"真的空"） */
@@ -775,7 +775,7 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
     const pathProblem = inspectRootPath(cfg.path);
 
     try {
-      const scan = spine.getSpineModels(cfg, false);
+      const scan = await spine.getSpineModels(cfg, false);
       for (const m of scan.models) entries.push(toSpineEntry(cfg, m));
       if (scan.cached !== true) cachedAll = false;
     } catch (e) {
@@ -783,7 +783,7 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
       warnings.push(`spine 扫描失败：${e.message}`);
     }
     try {
-      const scan = live2d.getLive2DModels(cfg, false);
+      const scan = await live2d.getLive2DModels(cfg, false);
       for (const lm of scan.models) entries.push(toLive2DEntry(cfg, lm));
       if (scan.cached !== true) cachedAll = false;
     } catch (e) {
@@ -801,14 +801,14 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
     return { entries, warnings, scanErrors, cachedAll, pathProblem, skipped: bundle.skipped };
   }
 
-  function listCatalog(rootId) {
+  async function listCatalog(rootId) {
     const t0 = performance.now();
     const cfg = config.readConfig().find((r) => r.id === rootId);
     if (!cfg) {
       // 形状与其它接口的错误体保持一致；按约定这里用 404（资源根不存在）
       return { status: 404, body: { error: `未找到资源根: ${rootId}` } };
     }
-    const { entries, warnings, scanErrors, cachedAll, pathProblem, skipped } = scanRootEntries(cfg);
+    const { entries, warnings, scanErrors, cachedAll, pathProblem, skipped } = await scanRootEntries(cfg);
     const { sawStale } = assembleEntryStates(cfg, entries);
     // §八 触发来源（三选一，别混成一条）：这一根里只要有一条是"旧结论作废"排进来的，
     //   就说明这轮探测是**能力变化**引起的（fingerprint）；否则是清单重建引起的（catalog）。

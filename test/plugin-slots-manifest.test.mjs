@@ -28,7 +28,7 @@ import { handleData } from '../src/server/routes/data.mjs';
 
 // ─────────────────────────── 目录本身 ───────────────────────────
 
-test('目录：第一版五项齐全，字段齐全且取值合法', () => {
+test('目录：第一版五项齐全，字段齐全且取值合法', async () => {
   const names = SLOT_CATALOG.map((s) => s.name);
   assert.deepEqual(names, [
     'panel.brand',
@@ -45,7 +45,7 @@ test('目录：第一版五项齐全，字段齐全且取值合法', () => {
   }
 });
 
-test('目录匹配：精确名优先；占位符只吃一段非空名字（不带点/斜杠）', () => {
+test('目录匹配：精确名优先；占位符只吃一段非空名字（不带点/斜杠）', async () => {
   assert.equal(matchSlot('panel.brand').name, 'panel.brand');
   assert.equal(matchSlot('panel.group.设置').name, 'panel.group.<groupId>');
   // key 形状按 §8.2 是 `plugin.<pluginId>.<key>`（含点）⇒ 占位符必须允许点，否则这条永远匹配不上
@@ -57,7 +57,7 @@ test('目录匹配：精确名优先；占位符只吃一段非空名字（不�
   assert.equal(matchSlot('nope.slot'), null);
 });
 
-test('阶段：panel.group（目录 S2）在 S1 视角下未开放、在 S2 起开放', () => {
+test('阶段：panel.group（目录 S2）在 S1 视角下未开放、在 S2 起开放', async () => {
   const groupSlot = matchSlot('panel.group.x');
   // **每个断言都显式注入阶段**，不依赖 CURRENT_STAGE ——
   //   否则"抬阶段"（S1→S2）会把这条用例变成假红/假绿，而那正是阶段推进时唯一该看的东西。
@@ -75,7 +75,7 @@ test('阶段：panel.group（目录 S2）在 S1 视角下未开放、在 S2 起�
 
 // ─────────────────────────── ① unknown-slot ───────────────────────────
 
-test('清单校验：目录里没有的插槽名 ⇒ unknown-slot，且不进 slots', () => {
+test('清单校验：目录里没有的插槽名 ⇒ unknown-slot，且不进 slots', async () => {
   const { slots, errors } = validateDeclaredSlots(['no.such.slot']);
   assert.deepEqual(slots, []);
   assert.equal(errors.length, 1);
@@ -86,7 +86,7 @@ test('清单校验：目录里没有的插槽名 ⇒ unknown-slot，且不进 sl
 
 // ─────────────────────────── ② slot-not-open ───────────────────────────
 
-test('清单校验：未开放阶段的插槽 ⇒ slot-not-open（写明阶段），且不进 slots', () => {
+test('清单校验：未开放阶段的插槽 ⇒ slot-not-open（写明阶段），且不进 slots', async () => {
   // 动态挑一个"目录里仍未开放"的插槽：写死某个名字的话，每次抬阶段都会因它开放了而假红
   const closed = SLOT_CATALOG.find((x) => x.stage > CURRENT_STAGE);
   assert.ok(closed, '目录里必须仍存在未开放的插槽（否则这条用例失去意义）');
@@ -99,7 +99,7 @@ test('清单校验：未开放阶段的插槽 ⇒ slot-not-open（写明阶段�
   assert.match(errors[0].hint, new RegExp(closed.stage));
 });
 
-test('**顺序**：未开放阶段必须**先于** risk 判定（不能被误报 risk-mismatch）', () => {
+test('**顺序**：未开放阶段必须**先于** risk 判定（不能被误报 risk-mismatch）', async () => {
   // 动态挑一个"目录里仍未开放"的插槽，而不是写死某个名字 ——
   //   写死的话每次抬阶段（S2→S3→S4…）这条都会因为"它开放了"而假红，而它验的其实是顺序。
   const closed = SLOT_CATALOG.find((s) => s.stage > CURRENT_STAGE);
@@ -115,7 +115,7 @@ test('**顺序**：未开放阶段必须**先于** risk 判定（不能被误报
 
 // ─────────────────────────── ③ undeclared-slot ───────────────────────────
 
-test('注册校验：清单没声明 ⇒ undeclared-slot（只有注册期判得出来）', () => {
+test('注册校验：清单没声明 ⇒ undeclared-slot（只有注册期判得出来）', async () => {
   // panel.brand 已在 S5 开放（注入 S5），但清单没声明
   const r = validateSlotRegistration('panel.brand', [], { currentStage: 'S5' });
   assert.equal(r.ok, false);
@@ -125,7 +125,7 @@ test('注册校验：清单没声明 ⇒ undeclared-slot（只有注册期判得
 
 // ─────────────────────────── ④ risk-mismatch ───────────────────────────
 
-test('注册校验：risk 与目录不一致 ⇒ risk-mismatch，**同时带目录值与声明值**', () => {
+test('注册校验：risk 与目录不一致 ⇒ risk-mismatch，**同时带目录值与声明值**', async () => {
   const r = validateSlotRegistration('panel.brand', ['panel.brand'], { currentStage: 'S5', risk: 'append' });
   assert.equal(r.ok, false);
   assert.equal(r.error.why, 'risk-mismatch');
@@ -134,7 +134,7 @@ test('注册校验：risk 与目录不一致 ⇒ risk-mismatch，**同时带目�
   assert.match(r.error.hint, /replace/);
 });
 
-test('注册校验：risk 一致（或省略 ⇒ 按目录）时通过', () => {
+test('注册校验：risk 一致（或省略 ⇒ 按目录）时通过', async () => {
   const explicit = validateSlotRegistration('panel.brand', ['panel.brand'], { currentStage: 'S5', risk: 'replace' });
   assert.equal(explicit.ok, true);
   assert.equal(explicit.entry.name, 'panel.brand');
@@ -145,7 +145,7 @@ test('注册校验：risk 一致（或省略 ⇒ 按目录）时通过', () => {
 
 // ─────────────────────────── 老插件零改动 ───────────────────────────
 
-test('老插件：没有 slots / settings 字段 ⇒ 空数组 + 零错误（不报错、不拒绝）', () => {
+test('老插件：没有 slots / settings 字段 ⇒ 空数组 + 零错误（不报错、不拒绝）', async () => {
   for (const raw of [undefined, null, []]) {
     const s = validateDeclaredSlots(raw);
     assert.deepEqual(s.slots, []);
@@ -156,14 +156,14 @@ test('老插件：没有 slots / settings 字段 ⇒ 空数组 + 零错误（不
   }
 });
 
-test('逐项降级：合法项保留、非法项只进 errors（插件不会被整体拒绝）', () => {
+test('逐项降级：合法项保留、非法项只进 errors（插件不会被整体拒绝）', async () => {
   const { slots, errors } = validateDeclaredSlots(['panel.group.x', 'no.such.slot', 'panel.brand'], 'S5');
   assert.deepEqual(slots, ['panel.group.x', 'panel.brand'], '合法项必须保留');
   assert.equal(errors.length, 1, '只有非法那一项进 errors');
   assert.equal(errors[0].why, 'unknown-slot');
 });
 
-test('坏形状：slots 不是数组 ⇒ 一条 bad-shape，不抛异常', () => {
+test('坏形状：slots 不是数组 ⇒ 一条 bad-shape，不抛异常', async () => {
   const r = validateDeclaredSlots('panel.brand');
   assert.deepEqual(r.slots, []);
   assert.equal(r.errors[0].why, 'bad-shape');
@@ -175,7 +175,7 @@ test('坏形状：slots 不是数组 ⇒ 一条 bad-shape，不抛异常', () =>
 
 // ─────────────────────────── settings（enum / boolean） ───────────────────────────
 
-test('settings：enum 与 boolean 两种合法声明通过，字段被归一', () => {
+test('settings：enum 与 boolean 两种合法声明通过，字段被归一', async () => {
   assert.deepEqual(SETTING_TYPES, ['enum', 'boolean']);
   const { settings, errors } = validateDeclaredSettings([
     { key: 'sharpness', type: 'enum', label: '清晰度', options: ['关', '轻', '强'], default: '轻' },
@@ -188,7 +188,7 @@ test('settings：enum 与 boolean 两种合法声明通过，字段被归一', (
   assert.deepEqual(settings[1], { key: 'premultiply', type: 'boolean', label: 'premultiply', default: false });
 });
 
-test('settings：非法声明逐项降级（bad-type / bad-options / bad-default / duplicate-key）', () => {
+test('settings：非法声明逐项降级（bad-type / bad-options / bad-default / duplicate-key）', async () => {
   const { settings, errors } = validateDeclaredSettings([
     { key: 'a', type: 'number' },                                  // 第一版不支持
     { key: 'b', type: 'enum', options: ['只有一个'] },               // options 太少
@@ -203,7 +203,7 @@ test('settings：非法声明逐项降级（bad-type / bad-options / bad-default
   assert.deepEqual(whys, ['bad-default', 'bad-default', 'bad-options', 'bad-shape', 'bad-type', 'duplicate-key']);
 });
 
-test('settings：key 必须以 plugin.<pluginId>. 开头（why=key-prefix）', () => {
+test('settings：key 必须以 plugin.<pluginId>. 开头（why=key-prefix）', async () => {
   // 不带前缀 ⇒ 拒绝（能力键白名单是全局合并的，撞名不可调试）
   const bad = validateDeclaredSettings([{ key: 'sharpness', type: 'boolean' }], 'demo');
   assert.deepEqual(bad.settings, []);
@@ -227,7 +227,7 @@ test('settings：key 必须以 plugin.<pluginId>. 开头（why=key-prefix）', (
   assert.equal(legacy.settings[0].key, 'sharpness');
 });
 
-test('settings：非数组 ⇒ bad-shape，不抛异常', () => {
+test('settings：非数组 ⇒ bad-shape，不抛异常', async () => {
   const r = validateDeclaredSettings({ key: 'x' });
   assert.deepEqual(r.settings, []);
   assert.equal(r.errors[0].why, 'bad-shape');
@@ -238,24 +238,24 @@ test('settings：非数组 ⇒ bad-shape，不抛异常', () => {
 // 回归：模板串转义写错（`[^\\\\s]`）时，正则等价于"不是反斜杠且不是字母 s"，
 //   于是任何名字含 s 的插槽都被判 unknown-slot —— settings / skin 这两个内置分组名首当其冲，
 //   表现为 S2 一开放就整组被拒，而错误信息只说"未知插槽"，极难往转义上想。
-test('matchSlot：名字含字母 s 的占位符插槽必须匹配（转义回归）', () => {
+test('matchSlot：名字含字母 s 的占位符插槽必须匹配（转义回归）', async () => {
   for (const name of ['panel.group.settings', 'panel.group.skin', 'panel.group.motion']) {
     assert.ok(matchSlot(name), `${name} 应匹配到目录项`);
   }
 });
 
-test('matchSlot：键值插槽允许带点（plugin.<id>.<key>）', () => {
+test('matchSlot：键值插槽允许带点（plugin.<id>.<key>）', async () => {
   assert.ok(matchSlot('panel.control.plugin.p1.sharpness'));
 });
 
-test('matchSlot：目录里没有的名字仍然返回 null（别把占位符放宽成万能匹配）', () => {
+test('matchSlot：目录里没有的名字仍然返回 null（别把占位符放宽成万能匹配）', async () => {
   assert.equal(matchSlot('nope'), null);
   assert.equal(matchSlot('panel.group.'), null);
 });
 
 // ─────────────────────────── /api/plugins 下发（阶段单一来源） ───────────────────────────
 
-test('/api/plugins 下发 currentStage，且**取自 slot-catalog**（抬阶段忘同步会立刻红）', () => {
+test('/api/plugins 下发 currentStage，且**取自 slot-catalog**（抬阶段忘同步会立刻红）', async () => {
   let captured = null;
   const ctx = {
     // sendJson 返回 true：apiBasics 靠它的返回值告诉 handleData"这条我已处理"
@@ -263,7 +263,7 @@ test('/api/plugins 下发 currentStage，且**取自 slot-catalog**（抬阶段�
     // 只给 /api/plugins 用得到的两条（readPlugins / roleIndex）
     data: { plugins: { readPlugins: () => [], roleIndex: () => ({}) } },
   };
-  const handled = handleData({ method: 'GET' }, {}, '/api/plugins', new URL('http://x/api/plugins'), ctx);
+  const handled = await handleData({ method: 'GET' }, {}, '/api/plugins', new URL('http://x/api/plugins'), ctx);
 
   assert.equal(handled, true, '/api/plugins 应被 apiBasics 处理');
   assert.equal(captured.code, 200);

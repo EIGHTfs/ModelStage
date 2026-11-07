@@ -32,25 +32,25 @@ function makeSandbox() {
   };
 }
 
-test('generatorFingerprint：8 位十六进制且可重复', () => {
+test('generatorFingerprint：8 位十六进制且可重复', async () => {
   const a = generatorFingerprint();
   const b = generatorFingerprint();
   assert.match(a, /^[0-9a-f]{8}$/);
   assert.equal(a, b, '同一份代码两次调用必须一致（否则每次请求都会重建）');
 });
 
-test('spine：清单 generator 与当前不一致 ⇒ 判为需重建，并写回当前指纹', () => {
+test('spine：清单 generator 与当前不一致 ⇒ 判为需重建，并写回当前指纹', async () => {
   const s = makeSandbox();
   try {
     const manifestFile = path.join(s.tmp, 'config', 'models', 'spine.r1.json');
     // 先正常生成一份（拿到 dirStamps 的形状），再把 generator 改坏
-    getSpineModels(s.configFile, s.cfg, false);
+    await getSpineModels(s.configFile, s.cfg, false);
     const seeded = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
     assert.equal(seeded.generator, generatorFingerprint(), '首次生成就该写入当前指纹');
     seeded.generator = 'deadbeef';
     fs.writeFileSync(manifestFile, JSON.stringify(seeded));
 
-    const r = getSpineModels(s.configFile, s.cfg, false);
+    const r = await getSpineModels(s.configFile, s.cfg, false);
     assert.equal(r.cached, false, 'generator 不一致必须重建，不能命中旧清单');
     const after = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
     assert.equal(after.generator, generatorFingerprint(), '重建后要写回当前指纹');
@@ -59,28 +59,28 @@ test('spine：清单 generator 与当前不一致 ⇒ 判为需重建，并写�
   }
 });
 
-test('spine：generator 一致 ⇒ 命中缓存（cached:true）', () => {
+test('spine：generator 一致 ⇒ 命中缓存（cached:true）', async () => {
   const s = makeSandbox();
   try {
-    getSpineModels(s.configFile, s.cfg, false);          // 首次：生成
-    const r = getSpineModels(s.configFile, s.cfg, false); // 第二次：应命中
+    await getSpineModels(s.configFile, s.cfg, false);          // 首次：生成
+    const r = await getSpineModels(s.configFile, s.cfg, false); // 第二次：应命中
     assert.equal(r.cached, true);
   } finally {
     s.cleanup();
   }
 });
 
-test('live2d：清单 generator 不一致 ⇒ 重建并写回当前指纹（两套口径一致）', () => {
+test('live2d：清单 generator 不一致 ⇒ 重建并写回当前指纹（两套口径一致）', async () => {
   const s = makeSandbox();
   try {
     const manifestFile = path.join(s.tmp, 'config', 'models', 'live2d.r1.json');
-    getLive2DModels(s.configFile, s.cfg, false);
+    await getLive2DModels(s.configFile, s.cfg, false);
     const seeded = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
     assert.equal(seeded.generator, generatorFingerprint());
     seeded.generator = 'deadbeef';
     fs.writeFileSync(manifestFile, JSON.stringify(seeded));
 
-    const r = getLive2DModels(s.configFile, s.cfg, false);
+    const r = await getLive2DModels(s.configFile, s.cfg, false);
     assert.equal(r.cached, false, 'live2d 也必须按同一判据失效');
     const after = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
     assert.equal(after.generator, generatorFingerprint());
@@ -89,27 +89,27 @@ test('live2d：清单 generator 不一致 ⇒ 重建并写回当前指纹（两�
   }
 });
 
-test('live2d：generator 一致 ⇒ 命中缓存（cached:true）', () => {
+test('live2d：generator 一致 ⇒ 命中缓存（cached:true）', async () => {
   const s = makeSandbox();
   try {
-    getLive2DModels(s.configFile, s.cfg, false);
-    const r = getLive2DModels(s.configFile, s.cfg, false);
+    await getLive2DModels(s.configFile, s.cfg, false);
+    const r = await getLive2DModels(s.configFile, s.cfg, false);
     assert.equal(r.cached, true);
   } finally {
     s.cleanup();
   }
 });
 
-test('老清单没有 generator 字段 ⇒ 视为不一致（升级后第一次请求自动重建）', () => {
+test('老清单没有 generator 字段 ⇒ 视为不一致（升级后第一次请求自动重建）', async () => {
   const s = makeSandbox();
   try {
     const manifestFile = path.join(s.tmp, 'config', 'models', 'spine.r1.json');
-    getSpineModels(s.configFile, s.cfg, false);
+    await getSpineModels(s.configFile, s.cfg, false);
     const seeded = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
     delete seeded.generator;                       // 模拟升级前写下的老清单
     fs.writeFileSync(manifestFile, JSON.stringify(seeded));
 
-    const r = getSpineModels(s.configFile, s.cfg, false);
+    const r = await getSpineModels(s.configFile, s.cfg, false);
     assert.equal(r.cached, false, '缺 generator 的老清单必须重建（否则升级后永远读旧数据）');
     assert.equal(JSON.parse(fs.readFileSync(manifestFile, 'utf8')).generator, generatorFingerprint());
   } finally {

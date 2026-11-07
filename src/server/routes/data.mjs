@@ -17,6 +17,12 @@ import { live2dGuide } from '../../../tool/lib/runtime-guides.mjs';
 import { readRatioEnv } from '../core/env-num.mjs';
 // 插槽目录（S1-a）：与校验同源，见 plugins/slot-catalog.mjs
 import { SLOT_CATALOG, CURRENT_STAGE } from '../plugins/slot-catalog.mjs';
+// 扫描进度：单飞表 + NDJSON 帧写出（P0；设计 §4.6/§5/§6）
+import { createScanRunner, streamScanFrames } from '../data/scan-progress.mjs';
+
+// 扫描单飞表：**模块级一份**（不是每请求一份）—— 单飞的意义就是"同一时刻同一个根只扫一次"。
+//   P1 的 JSONL 存储会原样复用这张表（设计 §4.6）。
+const scanRunner = createScanRunner();
 
 /** 资源根 / 插件 / 品牌 / 前端配置 */
 function apiBasics(ctx, res, p) {
@@ -69,7 +75,7 @@ function apiBasics(ctx, res, p) {
 }
 
 /** 目录 / 模型清单 / 名表 / 配置导出 / 目录浏览 */
-function apiData(ctx, res, p, url) {
+async function apiData(ctx, res, p, url) {
   const { data, sendJson, browseDir } = ctx;
   if (p === '/api/tree') {
     const r = data.tree.listTree(url.searchParams.get('root') || '', url.searchParams.get('path') || '');
@@ -84,19 +90,69 @@ function apiData(ctx, res, p, url) {
     const force = url.searchParams.get('refresh') === '1';
     const cfg = data.config.readConfig().find((r) => r.id === rootId);
     if (!cfg) return sendJson(res, 400, { error: `未找到资源根: ${rootId}` });
-    try {
-      const isSpine = p === '/api/spine/models';
-      const r = isSpine ? data.spine.getSpineModels(cfg, force) : data.live2d.getLive2DModels(cfg, force);
-      return sendJson(res, 200, {
-        root: { id: cfg.id, name: cfg.name },
-        count: r.models.length,
-        cached: r.cached,
-        scannedAt: new Date(r.ts).toISOString(),
-        models: r.models,
-      });
-    } catch (e) {
-      return sendJson(res, 500, { error: `${p === '/api/spine/models' ? 'Spine 扫描失败' : 'Live2D 扫描失败'}: ${e.message}` });
+    const isSpine = p === '/api/spine/models';
+    // 不带 stream=1：仍走原来的 sendJson —— 这段响应必须**逐字节不变**（验收 ①）
+    if (url.searchParams.get('stream') !== '1') {
+      try {
+        const r = isSpine ? await data.spine.getSpineModels(cfg, force) : await data.live2d.getLive2DModels(cfg, force);
+        return sendJson(res, 200, {
+          root: { id: cfg.id, name: cfg.name },
+          count: r.models.length,
+          cached: r.cached,
+          scannedAt: new Date(r.ts).toISOString(),
+          models: r.models,
+        });
+      } catch (e) {
+        return sendJson(res, 500, { error: `${p === '/api/spine/models' ? 'Spine 扫描失败' : 'Live2D 扫描失败'}: ${e.message}` });
+      }
     }
+
+    // ── stream=1：NDJSON 逐帧写进度。模型数据仍走上面的 JSON 接口（P0 只发进度，见设计 §6.3）
+    const kind = isSpine ? 'spine' : 'live2d';
+    const startedAt = Date.now();
+    const joined = scanRunner.startOrJoin({
+      kind,
+      rootId: cfg.id,
+      run: (onProgress, onStart) => (isSpine
+        ? data.spine.getSpineModels(cfg, force, { onProgress, onStart })
+        : data.live2d.getLive2DModels(cfg, force, onProgress, onStart)),
+    });
+    // 加入已有扫描时，把当前快照立刻推给这个新连接（设计 §4.6：后续请求不必等下一次节流）
+    if (joined.joined && joined.progress) {
+      setImmediate(() => {
+        try { joined.emitter.emit('progress', joined.progress); } catch { /* 订阅者可能已走 */ }
+      });
+    }
+    // **不 await**：这是一条长连接（扫描结束时才 res.end()），调用方不该被它挂住。
+    //   若改成 await，handleData 就得变 async —— 而它的调用方写的是 `if (handleData(...))`，
+    //   Promise 恒真会让**所有请求都被它认领**（这是个真实踩到过的坑，见本文件末尾注释）。
+    streamScanFrames({
+      res,
+      emitter: joined.emitter,
+      buildStartFrame: () => ({
+        type: 'start',
+        kind,
+        rootId: cfg.id,
+        rootPath: cfg.path,
+        startedAt: new Date(startedAt).toISOString(),
+      }),
+      buildDoneFrame: (result) => ({
+        type: 'done',
+        count: result && result.models ? result.models.length : 0,
+        cached: false,
+        elapsedMs: Date.now() - startedAt,
+      }),
+      buildCachedFrame: (result) => ({
+        type: 'cached',
+        count: result && result.models ? result.models.length : 0,
+        ts: result && result.ts,
+      }),
+    }).catch((e) => {
+      // 帧写出阶段出意外（例如 header 已发再抛）：尽量收尾，别留下半开连接
+      try { res.end(); } catch { /* 已断开 */ }
+      if (ctx.log && ctx.log.warn) ctx.log.warn('扫描进度流写出异常', { root: cfg.id, err: (e && e.message) || e });
+    });
+    return true;
   }
   if (p === '/api/names') return apiNames(ctx, res, url);
   // /api/config/export 与 /api/config/import 同属配置组，见 routes/config.mjs（此处不重复实现）
@@ -137,7 +193,7 @@ function apiNames(ctx, res, url) {
 }
 
 /** 需要按需 import 的三条（catalog / bundle probe / model meta） */
-function apiAsync(ctx, req, res, p, url) {
+async function apiAsync(ctx, req, res, p, url) {
   const { data, sendJson } = ctx;
   const done = (r) => sendJson(res, r.status, r.body);
   const fail = (label) => (e) => sendJson(res, 500, { ok: false, error: `${label}: ${e.message}` });
@@ -157,7 +213,7 @@ function apiAsync(ctx, req, res, p, url) {
       const known = data.config.readConfig().map((r) => r.id);
       return sendJson(res, 400, { ok: false, error: '缺少 root 参数（?root=<资源根 id>）', known });
     }
-    return done(data.catalog.listCatalog(rootId));
+    return done(await data.catalog.listCatalog(rootId));
   }
   if (p === '/api/bundle/probe') {
     data.bundleProbe.probeBundle(url.searchParams.get('root') || '', url.searchParams.get('path') || '')
@@ -289,7 +345,7 @@ function serveLive2DLib(ctx, req, res, p) {
  * @param {object} ctx 需要 data/fs/path/sendJson/sendFile/resolveSafe/browseDir/toRootView/writeApi/readBody
  * @returns {boolean} 是否已处理
  */
-export function handleData(req, res, p, url, ctx) {
+export async function handleData(req, res, p, url, ctx) {
   const { sendJson, readBody, writeApi } = ctx;
 
   // 资源根写操作（增 / 删 / 改名 / 启停）：校验 → 备份 → 写 → 失效缓存
@@ -303,8 +359,10 @@ export function handleData(req, res, p, url, ctx) {
     return true;
   }
   if (apiBasics(ctx, res, p)) return true;
-  if (apiData(ctx, res, p, url)) return true;
-  if (apiAsync(ctx, req, res, p, url)) return true;
+  // await：apiData 内部要等扫描（async 化后），但**返回的仍是 boolean** ——
+  //   不能写成 `if (apiData(...))`（Promise 恒真会让所有 /api 请求都被它认领，上一轮踩过）
+  if (await apiData(ctx, res, p, url)) return true;
+  if (await apiAsync(ctx, req, res, p, url)) return true;
   if (serveModelFile(ctx, req, res, p, url)) return true;
   if (serveIcon(ctx, req, res, p)) return true;
   if (serveAvatar(ctx, req, res, p)) return true;

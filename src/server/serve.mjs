@@ -281,7 +281,7 @@ function handleHealth(req, res, p) {
   return true;
 }
 
-function dispatch(req, res, p, url) {
+async function dispatch(req, res, p, url) {
   // 探活放最前：它不该被其它路由的鉴权/副作用影响（也就不会因为那些逻辑出错而"连探活都挂"）
   if (handleHealth(req, res, p)) return true;
   if (unpackRoutes(req, res, p, url)) return true;
@@ -294,7 +294,8 @@ function dispatch(req, res, p, url) {
   if (handleBackgrounds(req, res, p, ctx)) return true;
   // 条目状态（写读一体）：必须在 handleData 之前认领，否则 /api/ 前缀兜底会当未知接口 404
   if (handleEntries(req, res, p, url, ctx)) return true;
-  if (handleData(req, res, p, url, ctx)) return true;
+  // handleData 已 async 化（内部要等扫描）：必须 await，否则 Promise 恒真会让所有请求都被它认领
+  if (await handleData(req, res, p, url, ctx)) return true;
   if (staticRoutes.serveAssets(req, res, p)) return true;
   if (res.headersSent) return true;
   if (p.startsWith('/api/')) {
@@ -306,7 +307,7 @@ function dispatch(req, res, p, url) {
   return true;
 }
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   // 长连接（SSE）不计入活跃度：它一挂几分钟，计入就等于"服务永远忙"
   const longLived = url.pathname.includes('/stream');
@@ -324,7 +325,7 @@ const server = http.createServer((req, res) => {
     res.on('close', done);
   }
   try {
-    dispatch(req, res, url.pathname, url);
+    await dispatch(req, res, url.pathname, url);
   } catch (e) {
     log.error('请求处理异常', { err: (e && e.stack) ? e.stack : String(e) });
     try {

@@ -80,7 +80,7 @@ function makeHarness(rootDir, states) {
   return {
     catalog,
     setProviders: (next) => { providers = next; },
-    read: () => catalog.listCatalog('probe-root').body,
+    read: async () => (await catalog.listCatalog('probe-root')).body,
     /** 取走当前待探测队列（取走即清空，用例之间互不影响） */
     queued: () => catalog.takeProbeKeys(),
   };
@@ -100,14 +100,14 @@ function containerEntry(body) {
   return e;
 }
 
-test('结论带指纹：同一版插件下重复读取仍是 unsupported，且不排队重探（读侧不变）', () => {
+test('结论带指纹：同一版插件下重复读取仍是 unsupported，且不排队重探（读侧不变）', async () => {
   const root = makeRoot();
   try {
     const states = createEntryStates({ file: '', log: () => {} });
     const h = makeHarness(root, states);
 
     // 第一次读：没有记录 ⇒ unknown
-    const e0 = dirEntry(h.read());
+    const e0 = dirEntry(await h.read());
     assert.equal(e0.support.state, 'unknown', '从没试过必须是 unknown（不许猜）');
     assert.ok(e0.stateKey, 'catalog 要给条目带 stateKey，供上报侧复用');
 
@@ -119,7 +119,7 @@ test('结论带指纹：同一版插件下重复读取仍是 unsupported，且�
       assetFingerprint: assetFingerprintOf(e0.size),
     });
 
-    const body = h.read();
+    const body = await h.read();
     const e1 = dirEntry(body);
     assert.equal(e1.support.state, 'unsupported', '确定性失败要在读侧升格成 unsupported（S4 读侧）');
     assert.match(String(e1.support.detail && e1.support.detail.message), /骨架/);
@@ -132,12 +132,12 @@ test('结论带指纹：同一版插件下重复读取仍是 unsupported，且�
   }
 });
 
-test('插件升级（指纹变）⇒ support 回 unknown + 容器条目进待探测队列（S6 / INV-D6）', () => {
+test('插件升级（指纹变）⇒ support 回 unknown + 容器条目进待探测队列（S6 / INV-D6）', async () => {
   const root = makeRoot();
   try {
     const states = createEntryStates({ file: '', log: () => {} });
     const h = makeHarness(root, states);
-    const e0 = dirEntry(h.read());
+    const e0 = dirEntry(await h.read());
 
     states.put(e0.stateKey, {
       result: 'failed', reason: 'asset-dependency', message: '美术依赖包：包内没有骨架',
@@ -145,14 +145,14 @@ test('插件升级（指纹变）⇒ support 回 unknown + 容器条目进待探
       providerFingerprint: providerFingerprintOf(PROVIDERS_V1),
       assetFingerprint: assetFingerprintOf(e0.size),
     });
-    assert.equal(dirEntry(h.read()).support.state, 'unsupported', '前置：升级前是 unsupported');
+    assert.equal(dirEntry(await h.read()).support.state, 'unsupported', '前置：升级前是 unsupported');
     h.queued();   // 清掉前置读取排下的容器项，避免干扰下面的断言
 
     // 换成 v2 ⇒ 指纹变了（"插件升级"）
     assert.notEqual(providerFingerprintOf(PROVIDERS_V2), providerFingerprintOf(PROVIDERS_V1), '两版指纹必须不同');
     h.setProviders(PROVIDERS_V2);
 
-    const body = h.read();
+    const body = await h.read();
     const e2 = dirEntry(body);
     assert.equal(e2.support.state, 'unknown', '能力变过 ⇒ 旧结论不再可信，必须回 unknown（S6）');
     assert.equal(e2.loadResult, null, '过期结论不该继续当"最近一次装载结果"展示');
@@ -168,12 +168,12 @@ test('插件升级（指纹变）⇒ support 回 unknown + 容器条目进待探
   }
 });
 
-test('存量 null 指纹（老记录/接线漏过）⇒ 视为过期，不得永久豁免规则①', () => {
+test('存量 null 指纹（老记录/接线漏过）⇒ 视为过期，不得永久豁免规则①', async () => {
   const root = makeRoot();
   try {
     const states = createEntryStates({ file: '', log: () => {} });
     const h = makeHarness(root, states);
-    const e0 = dirEntry(h.read());
+    const e0 = dirEntry(await h.read());
 
     // 模拟"上一版没接指纹"写下的记录：providerFingerprint 为 null
     states.put(e0.stateKey, {
@@ -181,7 +181,7 @@ test('存量 null 指纹（老记录/接线漏过）⇒ 视为过期，不得永
     }, { providerFingerprint: null, assetFingerprint: null });
     assert.equal(states.get(e0.stateKey).loadResult.providerFingerprint, null, '前置：这条记录确实没指纹');
 
-    const body = h.read();
+    const body = await h.read();
     assert.equal(dirEntry(body).support.state, 'unknown', 'null 指纹 = 过期 ⇒ 回 unknown（不能因为"没记录指纹"就放行）');
     assert.ok(h.queued().includes(containerEntry(body).stateKey), '容器条目必须进待探测队列');
   } finally {
@@ -194,12 +194,12 @@ test('存量 null 指纹（老记录/接线漏过）⇒ 视为过期，不得永
  *   探测写回一条带**当前指纹**的结论之后，再列一次同一根，该条目**不该**再进待探测队列。
  *   这比"跑一轮实测看计数"更可靠：它把判据钉在代码里，任何让 probe 失效的改法都会红。
  */
-test('探测结论带上当前指纹后 ⇒ 该容器不再进待探测队列（S10 的机制）', () => {
+test('探测结论带上当前指纹后 ⇒ 该容器不再进待探测队列（S10 的机制）', async () => {
   const root = makeRoot();
   try {
     const states = createEntryStates({ file: '', log: () => {} });
     const h = makeHarness(root, states);
-    const body = h.read();
+    const body = await h.read();
     const box = containerEntry(body);
 
     // 第一次列：容器"从没结论" ⇒ 进队列
@@ -212,14 +212,14 @@ test('探测结论带上当前指纹后 ⇒ 该容器不再进待探测队列（
     });
 
     // 第二次列：已有匹配指纹的结论 ⇒ 不再排队（否则每次列表都要重探一遍，S10 就失效）
-    const again = h.read();
+    const again = await h.read();
     assert.ok(!h.queued().includes(containerEntry(again).stateKey), '结论有效时不得重复排队');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('上报路由 contextFor 必须带两个指纹（第三条链路的接线）', () => {
+test('上报路由 contextFor 必须带两个指纹（第三条链路的接线）', async () => {
   const contextFor = createContextFor({
     providers: () => PROVIDERS_V1,
     // catalog 侧没扫过这根时是空对象，这里按真实行为给空
