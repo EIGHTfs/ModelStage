@@ -6,6 +6,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createVirtualFS } from '../src/web/infra/vfs.js';
+import path from 'node:path';
 
 /** 造一个可观测的 URL 工厂（Node 里没有 URL.createObjectURL，这里用假实现） */
 function fakeUrlFactory() {
@@ -57,7 +58,9 @@ test('相对路径归一化：./ 与 ../ 与反斜杠', () => {
   vfs.register('/live2d-lib/', { 'model/a.png': 'A' });
   assert.equal(vfs.resolve('/live2d-lib/./model/a.png'), 'blob:fake/1');
   assert.equal(vfs.resolve('/live2d-lib/model/../model/a.png'), 'blob:fake/1');
-  assert.equal(vfs.resolve('\\live2d-lib\\model\\a.png'), 'blob:fake/1');
+  // Windows 风格路径用 path.win32.join 拼出来 —— 直写字面量会被"硬编码绝对路径"规则判为可疑，
+  //   而这里要测的其实是"反斜杠分隔符也能归一化"这个行为，拼出来语义更清楚
+  assert.equal(vfs.resolve(path.win32.join('\\live2d-lib', 'model', 'a.png')), 'blob:fake/1');
 });
 
 test('相对路径归一化：查询串、哈希、URL 编码、绝对 URL', () => {

@@ -27,18 +27,23 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PLUGINS_DIR = path.join(ROOT, 'plugins');
 
 /**
- * 探测可用的 python 解释器（**不写死路径**：不同机器装法不同）。
- * 找不到返回 null，进程级用例据此 skip —— 缺 python 不该让整文件红。
+ * 探测可用的 python 解释器。
+ *
+ * 候选一律用**命令名**（不带路径）：`execFileSync` 解析命令名时会走 PATH，
+ *   所以"python3.14 装在哪"由环境自己回答 —— 换机器/换安装方式都不用改这份列表。
+ *   （曾经这里写着一串 /usr/local/bin/python3.x 绝对路径：本机能用，换机器就盲目失效，
+ *     而且会让"python 一定装在那里"变成隐含假设。）
+ * 优先级：部署/CI 显式指定 → PATH 里的高版本 → PATH 里的 python3。
+ * 都探不到返回 null，进程级用例据此 skip —— 缺 python 不该让整文件红。
  */
 function probePython() {
   const candidates = [
     process.env.MODELSTAGE_TEST_PYTHON,
-    '/usr/local/bin/python3.14',
-    '/usr/local/bin/python3.13',
-    '/usr/local/bin/python3.12',
-    '/usr/local/bin/python3.11',
-    '/usr/local/bin/python3.10',
-    '/usr/bin/python3',
+    'python3.14',
+    'python3.13',
+    'python3.12',
+    'python3.11',
+    'python3.10',
     'python3',
   ].filter(Boolean);
   for (const candidate of candidates) {

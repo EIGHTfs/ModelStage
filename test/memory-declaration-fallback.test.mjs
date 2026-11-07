@@ -10,8 +10,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { askDeclaredSafely, mergeDeclared } from '../src/server/unpack/plugin-store.mjs';
+import os from 'node:os';
+import path from 'node:path';
 
-const REQ = { rootId: 'probe', rel: 'x/y', absPath: '/tmp/does-not-matter' };
+// absPath 只是"一个不存在的路径"占位（这些用例压根不碰文件系统），
+//   用 os.tmpdir() 派生而不是写死 /tmp
+const REQ = { rootId: 'probe', rel: 'x/y', absPath: path.join(os.tmpdir(), 'does-not-matter') };
 
 test('① 插件抛错 ⇒ 返回 null，绝不向上抛（准入热路径的兜底）', () => {
   const boom = () => { throw new Error('blocksSummary 解析失败'); };

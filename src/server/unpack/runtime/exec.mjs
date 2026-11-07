@@ -162,6 +162,30 @@ function expandPlaceholder(value, opts = {}) {
  * @param {object} meta 插件清单
  * @returns {string} 解释器路径或命令名
  */
+/** PATH 里的目录（空段过滤掉：空串会让 path.join 拼出当前目录，那是安全隐患） */
+function pathDirs() {
+  return String(process.env.PATH || '').split(path.delimiter).filter(Boolean);
+}
+
+/**
+ * 按**名字**在 PATH 里找可执行文件，返回绝对路径；找不到返回 null。
+ *
+ * 为什么不能写一串"常见安装路径"：那样换机器（或换 Node/Python 安装方式）就失效，
+ *   而且会让"这个解释器一定在 /usr/local/bin"变成隐含假设 —— 这正是要被消灭的形态。
+ *   PATH 是运行时的权威，问它就行。
+ * @param {string} binaryName 不带路径的命令名（如 'python3.14'）
+ * @returns {string|null}
+ */
+function findInPath(binaryName) {
+  for (const dir of pathDirs()) {
+    const candidate = path.join(dir, binaryName);
+    try {
+      if (fs.existsSync(candidate)) return candidate;
+    } catch { /* 该 PATH 目录不可读：跳过，继续下一个 */ }
+  }
+  return null;
+}
+
 let interpreterProbeCache = null;
 function resolveInterpreter(meta) {
   // ① 环境变量最优先（部署期覆盖，便于换机/换版本而不改清单）
@@ -171,14 +195,16 @@ function resolveInterpreter(meta) {
   const declared = meta && meta.interpreter ? String(meta.interpreter) : '';
   if (declared) return declared;
   if (interpreterProbeCache) return interpreterProbeCache;
-  // 候选按"新到旧"排：新版本装的依赖不保证能在旧版本里 import
-  for (const candidate of ['/usr/local/bin/python3.14', '/usr/local/bin/python3.10', '/usr/bin/python3']) {
-    try {
-      if (fs.existsSync(candidate)) {
-        interpreterProbeCache = candidate;
-        return candidate;
-      }
-    } catch { /* 继续下一个 */ }
+  // ③ 按名字在 PATH 里探（**不写死任何安装位置**）。
+  //   候选集合**严格沿用**改动前的那三个（python3.14 → python3.10 → python3），
+  //   按"新到旧"排：新版本装的依赖不保证能在旧版本里 import。
+  //   只扩大候选集合（比如补上 3.13/3.12/3.11）会改变"选中哪个解释器"这个结果，本批要求行为不变，故不加。
+  for (const binaryName of ['python3.14', 'python3.10', 'python3']) {
+    const found = findInPath(binaryName);
+    if (found) {
+      interpreterProbeCache = found;
+      return found;
+    }
   }
   // 都没探到 ⇒ 交给 PATH（spawn 会报 ENOENT，错误信息里带命令名，够定位）
   interpreterProbeCache = 'python3';
@@ -218,6 +244,9 @@ class ExecWorker {
     if (this.ready) return this.ready;
     this.ready = new Promise((resolve, reject) => {
       const interpreter = resolveInterpreter(this.meta);
+      // 记一行解释器路径：spawn 失败（ENOENT / 版本不对 / 依赖没装）时，日志里能直接看到
+      //   "用哪个 python 起的"——否则只能从报错反推，多绕一圈。
+      if (this.log) this.log('info', `exec worker 使用解释器：${interpreter}`, { plugin: this.pluginId || null });
       const entryAbs = path.join(this.pluginDir, String(this.meta.entry || 'worker.py'));
       if (!fs.existsSync(entryAbs)) {
         this.ready = null;

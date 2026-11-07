@@ -185,6 +185,7 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 | 版本 | 日期 | 要点 |
 |---|---|---|
 | 0.5.26 | 2026-11-01 | 对齐成熟包的四项：`bin` 加 realpath 直接执行判据（import 不再起服务）、`serve.mjs` 加 EADDRINUSE 人话提示（退出码 2）、新增 `/api/health`（`web.sh status` 优先用它、旧实例回落首页码）、`web.sh` 日志 5MB 轮转（先 stop 再轮转、只留 1 份）；顺带修 health 的 `plugins` 恒为 0（引用了不存在的 ctx） |
+| 0.5.32 | 2026-11-07 | 清掉全量审计的 13 条 `paths/hardcoded-absolute-path` blocker（**全量审计 blocker 归零**）：解释器/node 探测改为「命令名 + PATH 查找」、测试夹具路径改为 `os.tmpdir()` 派生、Windows 路径用 `path.win32.join` 拼出；`exec.mjs` 增加 spawn 前的解释器日志（排障用） |
 | 0.5.31 | 2026-11-07 | 清单扫描进度可见化（P0）：扫描器产出 start/progress/done 帧，`?stream=1` 返回 NDJSON；**扫描改 async 分片让出**（否则帧全压在缓冲里，首帧从 24.7s 降到 0s）；扫描单飞真正生效；不带 stream 的响应保持不变 |
 | 0.5.30 | 2026-11-07 | 文件清单失败可见化：右栏内联浮层「清单获取失败（超时）· 点击重试」（绝对定位、不挤动控件）+ `__DOC_FILES__.failures` 计数，**不做自动重试**；`props.document` 增 `filesError` / `retryFiles` 供插件复用 |
 | 0.5.29 | 2026-11-07 | 两处「静默放弃」型超时兜底改为开口说话：就绪阶段超时区分 `no-observation` / `not-interactive` / `cancelled`（仅全程无观测才判 failed，已有画面绝不改阶段）；解包 worker 就绪超时补六种结局与诊断事件（对外仍 resolve 布尔）；新增 `ready-track` 套件守「漏标 interactive」回归 |

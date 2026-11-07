@@ -225,8 +225,15 @@ test('⑩ runtimesRoot 跟随 MODELSTAGE_DATA_ROOT（缺省=项目根）', () =>
   try {
     delete process.env.MODELSTAGE_DATA_ROOT;
     assert.match(runtimesRoot(), /runtimes$/);
-    process.env.MODELSTAGE_DATA_ROOT = '/tmp/some-data-root';
-    assert.equal(runtimesRoot(), '/tmp/some-data-root/runtimes');
+    // 用 mkdtemp 现造一个数据根：断言的是"数据根 + /runtimes"的拼接关系，
+    //   不需要依赖某个具体的 /tmp 字面量（换平台/换 TMPDIR 都不受影响）
+    const fakeDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ms-runtimes-root-'));
+    try {
+      process.env.MODELSTAGE_DATA_ROOT = fakeDataRoot;
+      assert.equal(runtimesRoot(), path.join(fakeDataRoot, 'runtimes'));
+    } finally {
+      fs.rmSync(fakeDataRoot, { recursive: true, force: true });
+    }
   } finally {
     if (old === undefined) delete process.env.MODELSTAGE_DATA_ROOT;
     else process.env.MODELSTAGE_DATA_ROOT = old;

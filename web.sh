@@ -63,15 +63,24 @@ rotate_log_if_needed() {
 }
 ENTRY="$PROJECT_ROOT/src/server/serve.mjs"
 
-# node 路径按实际环境探测（NAS 重启后 /var/packages 路径可能失效，不能写死）
+# node 路径：**只问 PATH**，不再列"常见安装位置"。
+#   为什么去掉那串候选：写死的安装路径在换机器/换安装方式（套件升级、nvm、便携包）后全部失效，
+#   而且会让"node 一定在 /usr/local/bin"变成隐含假设。PATH 是运行时的权威。
+#   找不到就给可读错误并指出下一步 —— 不静默降级到某个可能不存在的路径。
 probe_bin() {
-  for p in "$(command -v node 2>/dev/null)" /usr/local/bin/node /usr/bin/node \
-           /var/packages/DeepSeekHarness-NAS/target/.local/bin/node; do
-    [ -n "${p:-}" ] && [ -x "$p" ] && { printf '%s' "$p"; return 0; }
-  done
+  local found
+  found="$(command -v node 2>/dev/null)"
+  if [ -n "${found}" ] && [ -x "${found}" ]; then
+    printf '%s' "${found}"
+    return 0
+  fi
   return 1
 }
-NODE="$(probe_bin)" || { echo "错误: 找不到 node"; exit 1; }
+NODE="$(probe_bin)" || {
+  echo "错误: PATH 里找不到可执行的 node" >&2
+  echo "排查: 1) 确认已安装 Node 22+  2) echo \$PATH 看它所在目录在不在  3) 或临时用 NODE=/path/to/node bash web.sh start" >&2
+  exit 1
+}
 
 running_pid() {
   local pid
