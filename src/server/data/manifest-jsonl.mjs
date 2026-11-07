@@ -13,16 +13,13 @@
 //   ③ 打开一次 + writeSync 多次，不要每条 open/close（431 条模型 = 431 次 open 是不可接受的开销）
 //
 // 行格式（设计 §4.2）：
-//   首行 meta   {"_":"meta","v":1,"kind","rootId","ts","generator","dirStamps","complete":false}
+//   首行 meta   {"_":"meta","rootId","ts","generator","dirStamps","complete":false}
 //   数据行       {"t":"m","k":"<模型 id>","v":{…}}
 //   末行 complete {"t":"meta","k":"complete","v":{"count":N,"ts":T}}   ← last-wins
 // 同一 key 重复出现 ⇒ 后写覆盖先写（重扫时不必先删旧行）
 
 import fs from 'node:fs';
 import path from 'node:path';
-
-/** 格式版本。将来改行结构时靠它区分；读到不认识的高版本按"未完成"处理（宁可重扫）。 */
-const FORMAT_VERSION = 1;
 
 /** 同一进程内的 tmp 序号：保证"每次扫描的 tmp 唯一" */
 let tmpSeq = 0;
@@ -34,7 +31,8 @@ const BAD_LINE_RATIO_LIMIT = 0.01;
  * 打开一个清单写入器。
  *
  * @param {string} base 不带扩展名的路径（如 `…/config/models/spine.bd2`）
- * @param {object} meta 首行要写的元信息：{kind, rootId, ts, generator, dirStamps}
+ * @param {object} meta 首行要写的元信息：{rootId, ts, generator, dirStamps}
+ *   （**不含 kind**：清单是可分发数据，渲染器类型由读取方按来源判断）
  * @returns {{
  *   append: (model: object) => void,
  *   finish: (count: number) => {bytes: number, file: string},
@@ -72,10 +70,10 @@ export function openManifestWriter(base, meta) {
 
   fd = fs.openSync(tmpFile, 'w');
   // 首行 meta：complete:false 起始 —— 读侧看到 false 就知道"这份还没写完"
+  // meta 行**不写 kind**：清单是可分发的数据，不应该带"这是哪种渲染器"的标签；
+  //   前端需要的类型由 catalog 读取时按来源盖章（值域仍是 'spine' / 'live2d'）。
   writeLine({
     _: 'meta',
-    v: FORMAT_VERSION,
-    kind: meta.kind,
     rootId: meta.rootId,
     ts: meta.ts,
     generator: meta.generator,
@@ -180,21 +178,22 @@ function readJsonlFile(jsonlFile) {
 
   // 坏行过多 ⇒ 判损坏（设计 §4.4）。少量坏行（截断尾巴）可容忍。
   const tooManyBad = totalLines > 0 && badLines / totalLines > BAD_LINE_RATIO_LIMIT;
-  const meta = metaRow
+  // 认头条件（**不再有版本字段**）：`_ === 'meta'` 且带 rootId / generator / dirStamps。
+  //   缺任一 ⇒ 判不完整、走重建（宁可重扫，不拿来历不明的结构当结果）。
+  const meta = (metaRow && metaRow._ === 'meta' && metaRow.rootId
+    && metaRow.generator !== undefined && metaRow.dirStamps !== undefined)
     ? {
-      kind: metaRow.kind,
       rootId: metaRow.rootId,
       ts: metaRow.ts,
       generator: metaRow.generator,
       dirStamps: metaRow.dirStamps,
-      // 版本不认识 ⇒ 按未完成处理（宁可重扫，不拿来历不明的结构当结果）
-      complete: metaRow.v === FORMAT_VERSION,
+      complete: true,   // 头部自洽；整体完整性由下面的三条件判定
     }
     : null;
 
-  // complete 判定：首行版本对 + 末行 complete 存在 + 末行 count 与实际条数一致
+  // complete 判定 = **三条件**：meta 头存在 + complete 末行存在 + 末行 count === 实际条数
   const countMatches = completeRow && completeRow.v && Number(completeRow.v.count) === byKey.size;
-  const complete = Boolean(meta && meta.complete && countMatches && !tooManyBad);
+  const complete = Boolean(meta && countMatches && !tooManyBad);
 
   return {
     format: 'jsonl',
@@ -215,7 +214,6 @@ function readJsonFile(jsonFile) {
     return {
       format: 'json',
       meta: {
-        kind: null,
         rootId: payload.rootId || null,
         ts: payload.ts || null,
         generator: payload.generator || null,
@@ -263,4 +261,4 @@ export function readManifest(base) {
   return { format: 'none', meta: null, models: [], complete: false, badLines: 0, bytes: 0 };
 }
 
-export { FORMAT_VERSION, BAD_LINE_RATIO_LIMIT };
+export { BAD_LINE_RATIO_LIMIT };

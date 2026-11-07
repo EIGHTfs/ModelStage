@@ -185,6 +185,7 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 | 版本 | 日期 | 要点 |
 |---|---|---|
 | 0.5.26 | 2026-11-01 | 对齐成熟包的四项：`bin` 加 realpath 直接执行判据（import 不再起服务）、`serve.mjs` 加 EADDRINUSE 人话提示（退出码 2）、新增 `/api/health`（`web.sh status` 优先用它、旧实例回落首页码）、`web.sh` 日志 5MB 轮转（先 stop 再轮转、只留 1 份）；顺带修 health 的 `plugins` 恒为 0（引用了不存在的 ctx） |
+| 0.5.35 | 2026-11-08 | 名册冷启动只加载「上次所用模型」所在的那一个根（其余展开才加载）；扫描期间流式吐出模型（首模型从 24~30s 降到 8.5s）；扫描并发上限=1 + FIFO 排队；清单 schema 统一为 `{rootId, ts, count, generator, dirStamps, models}`（**去掉 kind / version / rootName / rootPath**，渲染器类型改由 catalog 读取时盖章） |
 | 0.5.34 | 2026-11-07 | 清单存储支持 JSONL（**默认仍为 JSON，原行为不变**，`MODELSTAGE_MANIFEST_FORMAT=jsonl` 可选启用），两种格式都能读、切换不需迁移；修掉两条并发竞态：写入用唯一 tmp 名（避免被失效清理误删导致 rename ENOENT）、单飞下沉到清单扫描本体（先占位再启动，4 并发只扫一次） |
 | 0.5.33 | 2026-11-07 | 名册扫描进度可见（P0 前端）：展开游戏时订阅 `?stream=1` 的 NDJSON 帧，状态位实时显示「已读取 N 条 / M 个目录」；无进展超 `SCAN_STALL_MS`（10s，单一来源）显示「疑似卡住 + 当前路径」并可重试；多根游戏用基线累加保证计数**单调不减** |
 | 0.5.32 | 2026-11-07 | 清掉全量审计的 13 条 `paths/hardcoded-absolute-path` blocker（**全量审计 blocker 归零**）：解释器/node 探测改为「命令名 + PATH 查找」、测试夹具路径改为 `os.tmpdir()` 派生、Windows 路径用 `path.win32.join` 拼出；`exec.mjs` 增加 spawn 前的解释器日志（排障用） |

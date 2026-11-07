@@ -90,3 +90,47 @@ export function saveTypeFilter(keys) {
     return false;
   }
 }
+
+/**
+ * 「上次所用模型」指针的存储键。
+ *
+ * 为什么单独存一份（不复用 lastByGame）：冷启动要能**只加载一个根**，就必须知道模型属于哪个根；
+ *   而 lastByGame 只记"游戏名 → 模型 id"，同一个游戏常有 2~3 个根，光靠它无法定位到根。
+ * 结构：{ rootId: string, kind: string|null, modelId: string, at: number }
+ */
+export const LAST_MODEL_KEY = 'roster.lastModel';
+
+/** 读上次所用模型指针（形状不对当没有：宁可回到"什么都不加载"，也不要拿半截数据去扫） */
+export function readLastModel() {
+  try {
+    const raw = localStorage.getItem(LAST_MODEL_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    const rootId = typeof parsed.rootId === 'string' ? parsed.rootId : '';
+    const modelId = typeof parsed.modelId === 'string' ? parsed.modelId : '';
+    if (!rootId || !modelId) return null;
+    return { rootId, modelId, kind: typeof parsed.kind === 'string' ? parsed.kind : null, at: Number(parsed.at) || 0 };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 记下这次所用的模型（供下次冷启动"只加载它所在的那一个根"）。
+ * 写失败静默：这只是加速启动的增强，不能影响选中本身。
+ * @param {{rootId?: string, kind?: string|null, modelId?: string}|null} model 变体里的 model 对象
+ */
+export function saveLastModel(model) {
+  try {
+    const rootId = model && model.rootId ? String(model.rootId) : '';
+    const modelId = model && (model.id || model.name) ? String(model.id || model.name) : '';
+    if (!rootId || !modelId) return false;
+    localStorage.setItem(LAST_MODEL_KEY, JSON.stringify({
+      rootId, kind: model.kind ? String(model.kind) : null, modelId, at: Date.now(),
+    }));
+    return true;
+  } catch {
+    return false;
+  }
+}

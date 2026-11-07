@@ -19,7 +19,7 @@ import { visibleChars } from './filter.js';
 import { deriveTypeCounts, filterCharsByType, typeKeyOf, usableTypeSelection } from './type-filter.js';
 import { typeLabel } from '../../shared/type-labels.mjs';
 import { snapshotRoster } from './snapshot.js';
-import { readSaved, saveState, readTypeFilter, saveTypeFilter } from './persist.js';
+import { readSaved, saveState, readTypeFilter, saveTypeFilter, readLastModel, saveLastModel } from './persist.js';
 import {
   createNameIndex, mergeNameTable, loadRootModels, loadRootNames, buildChars,
 } from './list.js';
@@ -217,6 +217,33 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
    * @param {object} root
    * @returns {Promise<object>} 该根的加载状态条目（ready / error）
    */
+  /**
+   * 显式加载一个游戏（用户点「未加载 · 点击加载」/「加载失败 · 重试」/ 展开该行时调用）。
+   *
+   * 只动这个游戏自己的根：不碰其它游戏，也不做任何预取 —— 这是"页面加载不扇出"的关键落点。
+   * @param {string} gameKey
+   * @param {{reset?: boolean}} [opts] reset=true 时先清掉该游戏各根的加载状态与扫描去重标记（重试用）
+   */
+  async function loadGame(gameKey, opts = {}) {
+    const game = state.games.find((g) => g.key === gameKey);
+    if (!game) return;
+    if (opts.reset) {
+      for (const root of game.roots) {
+        state.loaded.delete(root.id);
+        state.scannedRoots.delete(root.id);
+        state.scanBaseline.delete(game.key);
+        const cur = state.scan.get(root.id);
+        if (cur && cur.controller) { try { cur.controller.abort(); } catch { /* 已结束 */ } }
+        state.scan.delete(root.id);
+      }
+    }
+    state.expandedGames.add(game.key);
+    render();
+    try { await ensureGameLoaded(game); } catch { /* 失败由 error 状态与行上的「重试」承载 */ }
+    render();
+    saveState(state);
+  }
+
   /** 某根属于哪个游戏（状态行按游戏显示，扫描按根进行） */
   function gameOfRoot(root) {
     return state.games.find((g) => g.roots.some((r) => r.id === root.id)) || null;
@@ -416,6 +443,9 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
   function gameStatus(game) {
     const entries = game.roots.map((r) => state.loaded.get(r.id));
     if (entries.some((e) => e && e.status === 'loading')) return 'loading';
+    // 部分加载也算 ready：冷启动只按"上次模型的根"加载一个根，此时游戏已经有数据可展示，
+    //   若还报 idle 就会在行上显示「未加载」（明明有 247 个角色）。缺的那些根等用户展开时再补。
+    if (entries.some((e) => e && e.status === 'ready')) return 'ready';
     if (entries.some((e) => !e || e.status === 'idle')) return 'idle';
     if (entries.every((e) => e && e.status === 'error')) return 'error';
     return 'ready';
@@ -555,6 +585,11 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
         listEl.append(el('p', 'error-banner', `加载失败：${game.roots.map((r) => r.id).join(', ')}`));
         continue;
       }
+      if (status === 'idle') {
+        // 恢复展开态但没加载（启动不预取）⇒ 明确告诉用户"要点一下"，而不是假装没有模型
+        listEl.append(el('p', 'muted-hint tree-hint', '未加载 · 点这一行的「点击加载」'));
+        continue;
+      }
 
       totalChars += chars.length;
       const limit = renderLimitPerGame(); // 每次渲染读一次：改配置后刷新即生效
@@ -640,6 +675,8 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     const game = state.games.find((g) => g.key === gameKey);
     state.selected = { modelId, gameKey, gameName: game ? game.name : null, charKey };
     state.activeGame = game ? game.name : state.activeGame;
+    // 记「上次所用模型」指针（rootId/kind/modelId）：下次冷启动只加载它所在的那一个根
+    try { saveLastModel((modelById.get(modelId) || {}).model || null); } catch { /* 指针只是加速启动 */ }
     render();
     state.lastReveal = reveal.revealActive(); // 选中后把这一行滚到可视区（已可见/用户正在滚都会跳过）
     saveState(state);
@@ -698,6 +735,15 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
       });
     }
 
+    // 游戏行的「未加载 · 点击加载」/「加载失败 · 重试」：事件委托，且不能顺带折叠/展开这一行
+    listEl.addEventListener('click', (event) => {
+      const target = event.target && event.target.closest ? event.target.closest('[data-game-load], [data-game-retry]') : null;
+      if (!target) return;
+      event.preventDefault();
+      event.stopPropagation();
+      loadGame(target.dataset.gameLoad || target.dataset.gameRetry, { reset: !!target.dataset.gameRetry });
+    });
+
     // 扫描状态行上的〔重试〕：事件委托（行会被重建，逐个绑会漏）
     listEl.addEventListener('click', (event) => {
       const button = event.target && event.target.closest ? event.target.closest('[data-scan-retry]') : null;
@@ -755,13 +801,10 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
 
     bindEvents();
     render();
-    // 恢复展开的游戏要补加载数据（用户上次就是展开的）
-    if (restoreExpanded) {
-      for (const key of [...state.expandedGames]) {
-        const game = state.games.find((g) => g.key === key);
-        if (game) ensureGameLoaded(game);
-      }
-    }
+    // **不再**在启动时把"上次展开的游戏"全部加载：
+    //   那等于页面一开就把所有资源根拉一遍（每个根一次全量扫描，串行排队 ⇒ 排在后面的必然超时）。
+    //   恢复的展开态只保留"展开"这个视觉状态，数据等用户点这一行/点「加载」时再取。
+    //   （启动唯一允许的主动加载在 restoreLast：只针对上次活跃的那**一个**游戏）
   }
 
   /** 从存档里取出"上次选中的变体 id"：优先按活跃游戏取，其次旧格式单个 id，最后取任一非空值 */
@@ -854,6 +897,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
       if (!hit) continue;
       state.selected = { modelId, gameKey: game.key, gameName: game.name, charKey: hit.charKey };
       state.activeGame = game.name;
+      try { saveLastModel(hit.variant && hit.variant.model ? hit.variant.model : null); } catch { /* 忽略 */ }
       // 不展开的话目标行根本没渲染出来，高亮也就无从显示
       state.expandedGames.add(game.key);
       state.expandedChars.add(hit.charKey);
@@ -872,34 +916,38 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
    * @returns {Promise<{restored: boolean, modelId?: string, reason?: string}>}
    */
   async function restoreLast() {
-    const saved = readSaved();
-    const modelId = targetModelId(saved);
-    if (!modelId) return { restored: false, reason: 'no-saved' };
+    // 冷启动加载策略（唯一允许的启动加载）：
+    //   读「上次所用模型」指针 → **只加载它所在的那一个根** → 展开并定位到它。
+    //   没有指针 ⇒ 一个根都不扫（只渲染游戏列表，行上显示「未加载 · 点击加载」）。
+    //   有指针但失败 ⇒ 该游戏行显示「加载失败 · 重试」，不影响其它游戏。
+    const pointer = readLastModel();
+    if (!pointer) return { restored: false, reason: 'no-pointer' };
 
-    // 活跃游戏先试（多数命中在第一个），再按顺序找其余游戏
-    const ordered = [...state.games];
-    const active = ordered.find((g) => g.name === saved.activeGame);
-    if (active) ordered.unshift(...ordered.splice(ordered.indexOf(active), 1));
+    const game = state.games.find((g) => g.roots.some((r) => r.id === pointer.rootId));
+    if (!game) return { restored: false, reason: 'root-gone', rootId: pointer.rootId };
+    const root = game.roots.find((r) => r.id === pointer.rootId);
 
-    for (const game of ordered) {
-      await ensureGameLoaded(game);
-      const hit = findVariant(game, modelId);
-      if (!hit) continue;
-      state.expandedGames.add(game.key);
-      state.expandedChars.add(hit.charKey);
-      state.selected = { modelId, gameKey: game.key, gameName: game.name, charKey: hit.charKey };
-      state.activeGame = game.name;
-      render();
-      // 自动恢复同样把恢复到的那一行滚进视野；但用户若正在滚动就不会抢（守卫在 revealActive 里）
-      state.lastReveal = reveal.revealActive();
-      saveState(state); // 顺带把旧格式迁移成 lastByGame（saveState 只写 lastByGame）
-      if (typeof onSelect === 'function') onSelect(modelById.get(modelId)?.model || null);
-      return { restored: true, modelId, gameKey: game.key, charKey: hit.charKey };
+    try {
+      await ensureRootLoaded(root);         // 只有这一个根（1 次 catalog + 1 条进度流）
+    } catch {
+      return { restored: false, reason: 'load-failed', rootId: pointer.rootId };
     }
-    // 存档里的模型已不存在：清掉半状态，保持空舞台
-    state.selected = null;
+    rebuildGameChars(game);
+    state.expandedGames.add(game.key);
+
+    const hit = findVariant(game, pointer.modelId);
+    if (!hit) {
+      render();
+      saveState(state);
+      return { restored: false, reason: 'model-gone', rootId: pointer.rootId };
+    }
+    state.expandedChars.add(hit.charKey);
+    state.selected = { modelId: pointer.modelId, gameKey: game.key, gameName: game.name, charKey: hit.charKey };
+    state.activeGame = game.name;
     render();
-    return { restored: false, reason: 'missing', modelId };
+    state.lastReveal = reveal.revealActive();
+    saveState(state);
+    return { restored: true, modelId: pointer.modelId, rootId: pointer.rootId, gameKey: game.key };
   }
 
   /**
@@ -926,7 +974,6 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     try { applyEntryState(hit.model, st); } catch { /* 单行重画失败不影响数据 */ }
     return true;
   }
-
   return {
     mount, state, snapshot, render, ensureGameLoaded, selectById, listVariants, variantsOf,
     setEntryState,

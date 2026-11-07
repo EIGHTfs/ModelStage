@@ -18,6 +18,8 @@ import { resolveLive2DRuntimes } from '../../../tool/resolve-live2d-runtimes.mjs
 import { createProgressThrottle } from './scan-progress.mjs';
 // P1：清单改 JSONL（边扫边写）+ 双读兼容
 import { openManifestWriter, readManifest } from './manifest-jsonl.mjs';
+// 并发上限 + 让路提示（同 spine，理由见 scan-queue.mjs 顶部）
+import { acquireScanSlot, releaseScanSlot, isInteractiveBusy } from './scan-queue.mjs';
 
 /** 本模块日志（统一形状 {at,level,tag,msg,detail}） */
 const log = createLogger('live2d');
@@ -25,7 +27,6 @@ const log = createLogger('live2d');
 const rtLog = createLogger('live2d-runtimes');
 
 /** Live2D 清单缓存的格式版本（结构变更时 +1，旧缓存自动失效重扫） */
-const LIVE2D_MANIFEST_VERSION = 1;
 /** 运行时库文件清单缓存（探测一次即复用） */
 let live2dRuntimeFilesCache = null;
 
@@ -129,7 +130,6 @@ export function buildLive2DModel(root, relPath, defName, cubism) {
 
   return {
     id: `live2d-${root.id}-${(relPath || '.').replace(/\//g, '_')}`,
-    kind: 'live2d',
     cubism,
     name,
     srcDir: relPath,
@@ -152,6 +152,7 @@ export function buildLive2DModel(root, relPath, defName, cubism) {
 
 /** 扫一个目录：识别 Cubism 4（*.model3.json）优先于 Cubism 2（model.json）。 */
 function modelsInDir(root, absDir, relPath, entries) {
+  // 同步（回退理由同 spine.collectDirEntries：异步化在 CIFS 上更慢）
   const dirs = [];
   const files = new Map(); // 文件名 -> { name, size }
   for (const e of entries) {
@@ -189,6 +190,7 @@ export async function scanLive2DRootServer(root, opts = {}) {
   let dirsScanned = 0;
 
   // 分片让出：与 spine 侧同一套策略（每 20 个目录或每 50ms），理由见 spine.mjs 里的注释
+  // setImmediate 而不是 setTimeout(0)：后者在负载下实际延迟可达几十 ms，扫描让出上千次会累积成数倍劣化（实测 24s→169s）
   const yieldToEventLoop = () => new Promise((resolve) => setImmediate(resolve));
   const YIELD_DIRS = 20;
   const YIELD_MS = 50;
@@ -196,7 +198,9 @@ export async function scanLive2DRootServer(root, opts = {}) {
   let lastYieldAt = Date.now();
   async function maybeYield() {
     sinceYieldDirs += 1;
-    if (sinceYieldDirs >= YIELD_DIRS || Date.now() - lastYieldAt >= YIELD_MS) {
+    // 让路：有交互请求时再多让一点，但幅度有限（理由见 spine.mjs 同处注释）
+    const busy = isInteractiveBusy();
+    if (sinceYieldDirs >= (busy ? 12 : YIELD_DIRS) || Date.now() - lastYieldAt >= (busy ? 25 : YIELD_MS)) {
       sinceYieldDirs = 0;
       lastYieldAt = Date.now();
       await yieldToEventLoop();
@@ -242,7 +246,7 @@ export async function scanLive2DRootServer(root, opts = {}) {
  */
 const live2dInflight = new Map();
 
-export async function getLive2DModels(configFile, cfg, force, onProgress, onStart) {
+export async function getLive2DModels(configFile, cfg, force, onProgress, onStart, onModel) {
   const key = `live2d:${cfg.id}`;
   const existing = live2dInflight.get(key);
   if (existing) return existing;
@@ -251,14 +255,14 @@ export async function getLive2DModels(configFile, cfg, force, onProgress, onStar
   let settleReject;
   const gate = new Promise((resolve, reject) => { settleResolve = resolve; settleReject = reject; });
   live2dInflight.set(key, gate);
-  doGetLive2DModels(configFile, cfg, force, onProgress, onStart)
+  doGetLive2DModels(configFile, cfg, force, onProgress, onStart, onModel)
     .then(settleResolve, settleReject)
     .finally(() => { if (live2dInflight.get(key) === gate) live2dInflight.delete(key); });
   return gate;
 }
 
 /** 真正干活的实现（单飞包装见上面的 getLive2DModels） */
-async function doGetLive2DModels(configFile, cfg, force, onProgress, onStart) {
+async function doGetLive2DModels(configFile, cfg, force, onProgress, onStart, onModel) {
   const base = live2dManifestBase(configFile, cfg.id);
   // 与 spine 同口径：默认 .json，env=jsonl 才写 JSONL（两种都能读）
   const wantJsonl = String(process.env.MODELSTAGE_MANIFEST_FORMAT || 'json').toLowerCase() === 'jsonl';
@@ -288,20 +292,32 @@ async function doGetLive2DModels(configFile, cfg, force, onProgress, onStart) {
   ensureManifestDir(configFile);
 
   const writer = wantJsonl
-    ? openManifestWriter(base, { kind: 'live2d', rootId: cfg.id, ts, generator, dirStamps })
+    ? openManifestWriter(base, { rootId: cfg.id, ts, generator, dirStamps })
     : null;
+
+  // 并发上限（同 spine）：全局只允许 1 个根在扫
+  await acquireScanSlot(`live2d:${cfg.id}`);
 
   let models;
   try {
     models = await scanLive2DRootServer(cfg, {
       ...(onProgress ? { onProgress } : {}),
       ...(typeof onStart === 'function' ? { onStart } : {}),
-      ...(writer ? { onModel: (m) => writer.append(m) } : {}),
+      ...((writer || typeof onModel === 'function')
+        ? {
+          onModel: (m) => {
+            if (writer) writer.append(m);
+            if (typeof onModel === 'function') onModel(m);
+          },
+        }
+        : {}),
     });
     if (writer) writer.finish(models.length);
   } catch (e) {
     if (writer) writer.abort();
     throw e;
+  } finally {
+    releaseScanSlot();
   }
 
   if (wantJsonl) {
@@ -312,12 +328,14 @@ async function doGetLive2DModels(configFile, cfg, force, onProgress, onStart) {
   // 回退：只写 .json（旧格式）
   try {
     const file = `${base}.json`;
+    // 清单头与 spine 完全一致（见 docs：v 是唯一的格式版本字段；kind 一律不写进清单，
+    //   由 catalog 读取时盖章；rootName/rootPath 无消费方已移除）
     const body = JSON.stringify({
-      version: LIVE2D_MANIFEST_VERSION,
       rootId: cfg.id,
       ts,
-      dirStamps,
+      count: models.length,
       generator,
+      dirStamps,
       models,
     });
     fs.writeFileSync(`${file}.tmp`, body, 'utf8');
@@ -352,7 +370,7 @@ export function createLive2d(p) {
     live2dModelsFile: (rootId) => live2dModelsFile(p.configFile, rootId),
     buildLive2DModel,
     scanLive2DRootServer,
-    getLive2DModels: (cfg, force, onProgress, onStart) => getLive2DModels(p.configFile, cfg, force, onProgress, onStart),
+    getLive2DModels: (cfg, force, onProgress, onStart, onModel) => getLive2DModels(p.configFile, cfg, force, onProgress, onStart, onModel),
     getLive2DRuntimeFiles,
   };
 }

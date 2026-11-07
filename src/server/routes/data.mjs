@@ -113,9 +113,10 @@ async function apiData(ctx, res, p, url) {
     const joined = scanRunner.startOrJoin({
       kind,
       rootId: cfg.id,
-      run: (onProgress, onStart) => (isSpine
-        ? data.spine.getSpineModels(cfg, force, { onProgress, onStart })
-        : data.live2d.getLive2DModels(cfg, force, onProgress, onStart)),
+      // onModel：扫描每产出一条模型就转发成 model 帧 —— 这是"首模型早出现"的关键
+      run: (onProgress, onStart, onModel) => (isSpine
+        ? data.spine.getSpineModels(cfg, force, { onProgress, onStart, onModel })
+        : data.live2d.getLive2DModels(cfg, force, onProgress, onStart, onModel)),
     });
     // 加入已有扫描时，把当前快照立刻推给这个新连接（设计 §4.6：后续请求不必等下一次节流）
     if (joined.joined && joined.progress) {

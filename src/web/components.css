@@ -282,6 +282,34 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* 游戏行的「未加载 · 点击加载」/「加载失败 · 重试」：与扫描〔重试〕同一尺寸语言 */
+.tree-game-load,
+.tree-game-retry {
+  height: 20px;
+  padding: 0 6px;
+  margin-left: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-muted);
+  color: var(--color-muted-foreground, var(--color-foreground));
+  font-size: 11px;
+  line-height: 18px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tree-game-load:hover,
+.tree-game-retry:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.tree-game-retry {
+  border-style: dashed;
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
 /* 〔重试〕：只在"疑似卡住/失败"时出现，尺寸压到 20px，避免把游戏行撑高 */
 .tree-scan-retry {
   height: 20px;

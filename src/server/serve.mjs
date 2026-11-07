@@ -31,6 +31,8 @@ import { createLogger } from './core/log.mjs';
 import { createUnpackStore } from './unpack/plugin-store.mjs';
 import { createUnpackRoutes } from './unpack/routes.mjs';
 import { handleData } from './routes/data.mjs';
+// 扫描并发上限与让路提示（P0 退化修复）；serve 只负责把"在途请求数"同步进去
+import { noteRequestStart, noteRequestEnd } from './data/scan-queue.mjs';
 import { handleConfig } from './routes/config.mjs';
 import { handleDiag } from './routes/diag.mjs';
 import { handleReady } from './routes/ready.mjs';
@@ -313,12 +315,14 @@ const server = http.createServer(async (req, res) => {
   const longLived = url.pathname.includes('/stream');
   if (!longLived) {
     activity.inflight += 1;
+    noteRequestStart();   // 同一个事实同步给扫描调度（它据此让路）
     activity.lastRequestAt = Date.now();
     let counted = true;
     const done = () => {
       if (!counted) return;      // close 与 finish 都会来，只减一次
       counted = false;
       activity.inflight -= 1;
+      noteRequestEnd();     // 必须与 noteRequestStart 成对（放在同一个 done 回调里）
       activity.lastRequestAt = Date.now();
     };
     res.on('finish', done);

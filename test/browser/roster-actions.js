@@ -712,6 +712,20 @@ async function runTypeFilterPersistence(C) {
 
 /** 「类型筛选」用例体：分段调用，避免单函数过长 */
 async function runTypeFilter(C) {
+  // 类型胶囊由「已加载角色」的 kind 统计而来；名册冷启动不主动扫描任何根，
+  // 只有当浏览器里存着「上次所用模型」指针时才会恢复并自动加载那一个根。
+  // 所以：有已加载角色就继续断言胶囊；没有就跳过（不替产品去点加载、更不写死某个资源根）。
+  const chipsLoaded = C.qa('[data-char-key].tree-char').length > 0;
+  if (!chipsLoaded) {
+    const pointer = (() => { try { return localStorage.getItem('roster.lastModel'); } catch { return null; } })();
+    C.skip('类型胶囊渲染', '#roster-type-filter .roster-type-chip',
+      '需要有已加载角色才能统计类型（冷启动只在有 roster.lastModel 指针时自动加载；'
+      + `当前指针=${pointer ? '存在' : '不存在'}、已加载角色=0）`);
+    C.skip('胶囊行自动换行 + 最小高度', '#roster-type-filter', '同上：无胶囊可测换行与高度');
+    C.skip('类型筛选点击', '#roster-type-filter .roster-type-chip', '同上：无胶囊可点');
+    C.skip('localStorage 持久化结构（写入实际发生）', 'localStorage', '同上：无胶囊可写');
+    return;
+  }
   await runTypeFilterSurface(C);
   const clicked = await runTypeFilterClicks(C);
   if (!clicked) return;

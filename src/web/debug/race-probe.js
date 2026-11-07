@@ -19,13 +19,30 @@
     if (v !== last) { last = v; trajectory.push(v); }
   }, 30);
 
-  const click = async (kw, root) => {
-    const input = q('#roster-search');
-    input.value = kw;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    for (let i = 0; i < 140 && qa('[data-model-id]').length === 0; i += 1) await sleep(150);
-    await sleep(250);
-    const row = qa('[data-model-id]').find((n) => n.dataset.rootId === root);
+  // 取样不写死任何资源根/模型名：从**页面当前已加载的数据**里各找一条 Spine 与 Live2D。
+  //   页面没有已加载角色时，先点第一个游戏的「加载」（这是用户在页面上的等价动作，不是硬编码）。
+  const pickSample = async () => {
+    if (qa('[data-model-id]').length === 0) {
+      const loadBtn = q('#roster-list .tree-game button');
+      if (loadBtn) loadBtn.click();
+      for (let i = 0; i < 600 && qa('[data-model-id]').length === 0; i += 1) await sleep(100);
+    }
+    const rows = qa('[data-model-id]');
+    const labelOf = (row) => (row.textContent || '');
+    const spineRow = rows.find((row) => /\bspine\b/i.test(labelOf(row)));
+    const live2dRow = rows.find((row) => /live2d/i.test(labelOf(row)));
+    const idOf = (row) => (row ? { modelId: row.dataset.modelId, rootId: row.dataset.rootId || '' } : null);
+    return { spine: idOf(spineRow), live2d: idOf(live2dRow) };
+  };
+
+  const clickById = async (ref) => {
+    if (!ref || !ref.modelId) return false;
+    let row = qa('[data-model-id]').find((n) => n.dataset.modelId === ref.modelId);
+    if (!row) {                                  // 行被折叠/重渲染过：展开一次再找
+      const game = q(`[data-game-key].tree-game`);
+      if (game) game.click();
+      for (let i = 0; i < 60 && !row; i += 1) { await sleep(100); row = qa('[data-model-id]').find((n) => n.dataset.modelId === ref.modelId); }
+    }
     if (!row) return false;
     row.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     return true;
@@ -41,16 +58,22 @@
     return +w.stage.samplePixels().ratio.toFixed(4);
   };
 
-  const L = ['abeikelongbi', 'azurlane'];
-  const S = ['aijier', 'azurlane_spine'];
+  const sample = await pickSample();
+  if (!sample.spine || !sample.live2d) {
+    clearInterval(watch);
+    return { failed: 1, rounds: [], skipped: true,
+      reason: `页面里找不到同一批已加载数据中的 Spine 与 Live2D 各一条（spine=${JSON.stringify(sample.spine)} live2d=${JSON.stringify(sample.live2d)}）` };
+  }
+  const L = sample.live2d;
+  const S = sample.spine;
   const rounds = [];
   for (const gap of [60, 150, 300]) {
     for (const pair of [[L, S, 'spine'], [S, L, 'live2d']]) {
       const [first, second, wantMode] = pair;
       trajectory.length = 0;
-      const a = await click(first[0], first[1]);
+      const a = await clickById(first);
       await sleep(gap);
-      const b = await click(second[0], second[1]);
+      const b = await clickById(second);
       // 等到切换真正落定（首次装载 Live2D 要按需加载运行时库，固定 sleep 会误判成"还在 loading"）
       for (let i = 0; i < 120 && stageEl.getAttribute('data-stage-mode') === 'loading'; i += 1) await sleep(150);
       await sleep(1200);
@@ -58,7 +81,7 @@
       const ratio = await contentRatio();
       rounds.push({
         gapMs: gap,
-        lastClick: second[1],
+        lastClick: second.modelId,
         clicked: [a, b],
         mode: stageEl.getAttribute('data-stage-mode'),
         wantMode,

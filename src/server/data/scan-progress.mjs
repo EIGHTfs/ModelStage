@@ -126,6 +126,8 @@ export function createScanRunner() {
         },
         // onStart：让扫描函数在"确认要扫、但还没开始走目录"时就能把首帧推出去
         () => emitter.emit('start'),
+        // onModel：每产出一条模型就广播（真正的"首模型早出现"靠这一条）
+        (model) => emitter.emit('model', model),
       ))
       .then((result) => {
         entry.done = true;
@@ -193,6 +195,7 @@ export function streamScanFrames({ res, buildStartFrame, emitter, buildDoneFrame
 
   function finish(finalFrame) {
     if (settled) return;
+    flushModels();
     settled = true;
     if (finalFrame) writeFrame(finalFrame);
     if (!clientGone) {
@@ -203,8 +206,11 @@ export function streamScanFrames({ res, buildStartFrame, emitter, buildDoneFrame
   // 客户端断开：只标记并清理监听，**不动扫描**
   res.on('close', () => {
     clientGone = true;
+    if (modelFlushTimer) { clearTimeout(modelFlushTimer); modelFlushTimer = null; }
+    modelBuffer = [];   // 断开后不再攒（扫描继续，但没人收）
     emitter.removeListener('start', onStart);
     emitter.removeListener('progress', onProgress);
+    emitter.removeListener('model', onModel);
     emitter.removeListener('done', onDone);
     emitter.removeListener('error', onError);
     // 扫描本身由单飞表驱动，与这条连接无关 ⇒ 这里什么都不做就是"扫描继续"
@@ -214,6 +220,39 @@ export function streamScanFrames({ res, buildStartFrame, emitter, buildDoneFrame
   //   （设计 §5.3 要求"start 必有 progress 跟随"）。改为在**第一条 progress 到来时**补发 ——
   //   那时扫描一定真的在跑。
   let startSent = false;
+
+  // ── model 帧的批量 flush ──
+  // 为什么不每条都 res.write：一帧 ~200~500 字节，431 条就是 431 次 write；
+  //   而 res.write 每次都有 JS↔C++ 往返与 socket 缓冲开销。攒一小批再写，次数降到 1/20。
+  // 为什么还要 200ms 上限：只有"攒够 20 条"的话，扫到一个小目录（3 条）后如果 5 秒没新模型，
+  //   首模型就要再等 5 秒 —— 计时器保证"最多晚 200ms 就发出去"。
+  const MODEL_FLUSH_COUNT = 20;
+  const MODEL_FLUSH_MS = 200;
+  let modelBuffer = [];
+  let modelFlushTimer = null;
+  let modelFramesSent = 0;
+
+  function flushModels() {
+    if (modelFlushTimer) { clearTimeout(modelFlushTimer); modelFlushTimer = null; }
+    if (!modelBuffer.length) return;
+    const batch = modelBuffer;
+    modelBuffer = [];
+    for (const model of batch) {
+      writeFrame({ type: 'model', model });
+      modelFramesSent += 1;
+    }
+  }
+
+  function onModel(model) {
+    if (clientGone) return;
+    modelBuffer.push(model);
+    if (modelBuffer.length >= MODEL_FLUSH_COUNT) {
+      flushModels();
+      return;
+    }
+    if (!modelFlushTimer) modelFlushTimer = setTimeout(flushModels, MODEL_FLUSH_MS);
+  }
+
   // start 的**首选**触发点：调用方在"确认缓存未命中、马 上要开始扫描"时主动 emit('start')。
   //   为什么不能只靠"第一条 progress 才发"：扫描前还有一步 `indexRootFiles`（建全根索引）是同步的，
   //   在实测 bd2（431 条）上它占了 4.19s —— 那样首帧仍然要等 4s+，达不到"<2s 可见"的目标。
@@ -230,6 +269,7 @@ export function streamScanFrames({ res, buildStartFrame, emitter, buildDoneFrame
     writeFrame({ type: 'progress', ...snap });
   }
   function onDone(result) {
+    flushModels();   // 收尾前把缓冲里的模型全部发出（否则最后 <20 条会丢）
     // 缓存命中：一条 cached 帧后结束（不逐条发，也不发 start/progress）
     if (result && result.cached) {
       finish(buildCachedFrame ? buildCachedFrame(result) : { type: 'cached', count: result.models ? result.models.length : 0, ts: result.ts });
@@ -242,6 +282,7 @@ export function streamScanFrames({ res, buildStartFrame, emitter, buildDoneFrame
     finish(buildDoneFrame ? buildDoneFrame(result) : { type: 'done', count: result && result.models ? result.models.length : 0, cached: false });
   }
   function onError(error) {
+    flushModels();
     finish({
       type: 'error',
       message: (error && error.message) || String(error),
@@ -253,6 +294,7 @@ export function streamScanFrames({ res, buildStartFrame, emitter, buildDoneFrame
 
   emitter.on('start', onStart);
   emitter.on('progress', onProgress);
+  emitter.on('model', onModel);
   emitter.on('done', onDone);
   emitter.on('error', onError);
 

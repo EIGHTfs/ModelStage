@@ -74,8 +74,24 @@ export function renderGameRow(game, view) {
     row.append(el('span', 'tree-badge', rootIds[0] || ''));
   }
 
+  // 状态位：ready/loading 是原有口径；idle（从没展开过）与 error 各给一个**显式入口**。
+  //   为什么不自动加载：一次性把 9 个根全拉一遍 = 9 次全量扫描（几分钟），页面会像"什么都打不开"。
+  //   加载只能由用户动作触发（展开这一行 / 点这两个按钮）。
   if (view.status === 'ready') row.append(el('span', 'tree-count', `${view.charCount} 角色`));
   else if (view.status === 'loading') row.append(el('span', 'tree-count', '加载中…'));
+  else if (view.status === 'error') {
+    const retry = el('button', 'tree-game-retry', '加载失败 · 重试');
+    retry.type = 'button';
+    retry.dataset.gameRetry = game.key;
+    retry.title = '重新请求这个游戏的资源根清单';
+    row.append(retry);
+  } else {
+    const load = el('button', 'tree-game-load', '未加载 · 点击加载');
+    load.type = 'button';
+    load.dataset.gameLoad = game.key;
+    load.title = '展开时才加载（避免一次拉全部资源根）';
+    row.append(load);
+  }
   return row;
 }
 

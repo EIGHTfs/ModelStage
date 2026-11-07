@@ -20,6 +20,8 @@ import { MIME, encodePath, parseAtlasPages } from '../assets/probe.mjs';
 import { createProgressThrottle } from './scan-progress.mjs';
 // P1：清单改 JSONL（边扫边写）+ 双读兼容
 import { openManifestWriter, readManifest } from './manifest-jsonl.mjs';
+// 并发上限 + 让路提示（P0 退化修复：9 根并发扫描会把事件循环切碎）
+import { acquireScanSlot, releaseScanSlot, isInteractiveBusy } from './scan-queue.mjs';
 
 
 
@@ -175,13 +177,13 @@ export async function indexRootFiles(root, opts = {}) {
     for (const e of entries) {
       if (e.name.startsWith('.')) continue;
       const full = path.join(absDir, e.name);
-      const childRel = relPath ? `${relPath}/${e.name}` : e.name;
       let st;
       try {
         st = fs.statSync(full);
       } catch {
         continue;
       }
+      const childRel = relPath ? `${relPath}/${e.name}` : e.name;
       if (e.isDirectory()) {
         dirsIndexed += 1;
         await indexDir(full, childRel);
@@ -204,14 +206,27 @@ export async function indexRootFiles(root, opts = {}) {
   return fileIndex;
 }
 
+
+/**
+ * 限流地并发执行异步任务，**保持结果顺序**。
+ * @template T, R
+ * @param {T[]} items
+ * @param {number} limit 同时进行的上限
+ * @param {(item: T, index: number) => Promise<R>} fn
+ * @returns {Promise<R[]>}
+ */
 /** 读一个目录的文件与子目录清单（文件附带版本/assetKey/PMA 探测结果）。 */
 export function collectDirEntries(absDir, relPath, deps) {
+  // 保持**同步** readdir/stat（已实测：改 fs.promises 会因 libuv 线程池只有 4 个线程、
+  //   而上万次小 stat 的跨线程调度开销 >> 同步阻塞成本，单根扫描从 32.87s 劣化到 43.3s）。
+  //   要真正解决"单 tick 阻塞几十 ms"，方向是 worker_threads（见 docs/待办），不是异步化 IO。
   let entries;
   try {
     entries = fs.readdirSync(absDir, { withFileTypes: true });
   } catch {
     return { files: [], dirs: [] };
   }
+
   const files = [];
   const dirs = [];
   for (const e of entries) {
@@ -235,6 +250,8 @@ export function collectDirEntries(absDir, relPath, deps) {
       size: st.size,
       // 该文件相对资源根的路径（贴图可能来自其他目录，故每个文件各自记录）
       relPath: relPath ? `${relPath}/${e.name}` : e.name,
+      // detect* 仍在 assets/probe.mjs（同步读文件头，本批不在范围内改动）；
+      //   它只对 skel/json/atlas 调用（每目录 1~3 次），不是"每个文件都做"，影响远小于 stat。
       spineVersion: ext === '.skel' ? deps.detectSkelVersion(full)
         : ext === '.json' ? deps.detectJsonVersion(full) : null,
       assetKey: ext === '.atlas' ? deps.detectAtlasKey(full) : null,
@@ -298,6 +315,8 @@ export async function scanRootServer(root, deps) {
    * 为什么用 setImmediate 而不是 setTimeout(0)：setImmediate 在 check 阶段就跑，
    *   没有 setTimeout 的最小 1ms 计时器开销；扫描一次要让出几百次时这个差别不小。
    */
+  // setImmediate 而不是 setTimeout(0)：实测 setTimeout 在负载下实际延迟可达几十 ms，
+  //   而扫描要让出上千次 ⇒ 单根扫描从 24s 恶化到 169s（7 倍）。setImmediate 在同一 tick 的 check 阶段跑，代价小得多。
   const yieldToEventLoop = () => new Promise((resolve) => setImmediate(resolve));
 
   // 让出判据：每 20 个目录 **或** 每 50ms，先到就先让出一次。
@@ -308,7 +327,12 @@ export async function scanRootServer(root, deps) {
   let lastYieldAt = Date.now();
   async function maybeYield() {
     sinceYieldDirs += 1;
-    if (sinceYieldDirs >= YIELD_DIRS || Date.now() - lastYieldAt >= YIELD_MS) {
+    // 让路：有交互请求时**再**多让一点，但幅度有限（实测把阈值压到 5/10 会让扫描慢 7 倍，
+    //   而 P95 只从 984ms 降到 765ms —— 得不偿失）。真正能压住最大值的是非阻塞 IO，不是更频繁让出。
+    const busy = isInteractiveBusy();
+    const dirThreshold = busy ? 12 : YIELD_DIRS;
+    const msThreshold = busy ? 25 : YIELD_MS;
+    if (sinceYieldDirs >= dirThreshold || Date.now() - lastYieldAt >= msThreshold) {
       sinceYieldDirs = 0;
       lastYieldAt = Date.now();
       await yieldToEventLoop();
@@ -434,9 +458,27 @@ async function doGetSpineModels(configFile, root, force, deps) {
   // 边扫边写：writer 在 run 内创建、与这次扫描同生命周期 —— 单飞保证同一 key 只有一个 writer。
   //   同步 append 是微秒级（几十~几百字节），不会像目录遍历那样长时间占住事件循环。
   const writer = wantJsonl
-    ? openManifestWriter(base, { kind: 'spine', rootId: root.id, ts, generator, dirStamps })
+    ? openManifestWriter(base, { rootId: root.id, ts, generator, dirStamps })
     : null;
-  const scanDeps = writer ? { ...deps, onModel: (m) => writer.append(m) } : deps;
+  // onModel 双路：一路喂 writer（边扫边写清单），一路喂 deps.onModel（→ emitter → 流式 model 帧）。
+  //   两条路互不影响：没有 writer（json 回退模式）时照样能流式吐模型。
+  const upstreamOnModel = deps && typeof deps.onModel === 'function' ? deps.onModel : null;
+  const scanDeps = (writer || upstreamOnModel)
+    ? {
+      ...deps,
+      onModel: (m) => {
+        if (writer) writer.append(m);
+        if (upstreamOnModel) upstreamOnModel(m);
+      },
+    }
+    : deps;
+
+  // 并发上限：全局同时只允许 1 个根在扫，其余 FIFO 排队。
+  //   为什么必须在扫描**之前**排队：9 根并发时如果都开始扫，事件循环会被切碎到
+  //   连静态文件都拿不到（实测 /plugins/*.js P95 984ms、9 个 catalog 里 6 个 120s 超时）。
+  await acquireScanSlot(`spine:${root.id}`, (position) => {
+    if (deps && typeof deps.onQueued === 'function') deps.onQueued(position);
+  });
 
   let models;
   try {
@@ -446,6 +488,9 @@ async function doGetSpineModels(configFile, root, force, deps) {
     // 失败只 abort：正式 .jsonl 保持上一次的完整版本（tmp 留着供排查）
     if (writer) writer.abort();
     throw e;
+  } finally {
+    // 必须成对释放（放 finally）：扫描抛错不能把槽位永久占死，否则后续请求永久排队
+    releaseScanSlot();
   }
 
   if (wantJsonl) {
@@ -454,7 +499,10 @@ async function doGetSpineModels(configFile, root, force, deps) {
   }
 
   // 回退：只写 .json（旧格式，一次性序列化 —— 这个分支本来就不支持"边扫边写"）
-  const payload = { rootId: root.id, rootName: root.name, rootPath: root.path, ts, count: models.length, dirStamps, generator, models };
+  // 清单头**与 live2d 完全一致**：{ v, rootId, ts, count, generator, dirStamps, models }。
+  //   rootName/rootPath 已移除（grep 过：只有写入方、没有消费方）；
+  //   kind 一律不写进清单（前端需要的类型由 catalog 读取时盖章）。
+  const payload = { rootId: root.id, ts, count: models.length, generator, dirStamps, models };
   const f = `${base}.json`;
   fs.writeFileSync(`${f}.tmp`, JSON.stringify(payload), 'utf8');
   fs.renameSync(`${f}.tmp`, f);
