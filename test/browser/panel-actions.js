@@ -692,18 +692,18 @@ async function runWired(C) {
 
   // 3b 左栏「收起」：只清空树展开态，面板保留
   const roster = window.__WEB__.rosterSnapshot();
-  const gameRow = q('[data-game-key].tree-game');
-  if (gameRow) {
-    click(gameRow);
+  const groupRow = q('[data-group-key].tree-game');
+  if (groupRow) {
+    click(groupRow);
     // 这一步只想验证「左栏收起」把展开态清空，判据是展开态、不是角色行：
     //   名册冷启动不加载任何游戏（只恢复上次所用模型所在的那个根），未加载的游戏展开后本来就 0 行
-    await waitFor(() => window.__WEB__.rosterSnapshot().expandedGames.length > 0,
+    await waitFor(() => window.__WEB__.rosterSnapshot().expandedGroups.length > 0,
       { timeoutMs: 6000, label: '名册展开态生效' });
   }
-  const expandedBefore = window.__WEB__.rosterSnapshot().expandedGames.length;
+  const expandedBefore = window.__WEB__.rosterSnapshot().expandedGroups.length;
   click(q('#btn-collapse'));
-  await waitFor(() => window.__WEB__.rosterSnapshot().expandedGames.length === 0, { timeoutMs: 3000, label: '名册全部折叠' });   // 原 sleep(200)：等折叠落到状态
-  const expandedAfter = window.__WEB__.rosterSnapshot().expandedGames.length;
+  await waitFor(() => window.__WEB__.rosterSnapshot().expandedGroups.length === 0, { timeoutMs: 3000, label: '名册全部折叠' });   // 原 sleep(200)：等折叠落到状态
+  const expandedAfter = window.__WEB__.rosterSnapshot().expandedGroups.length;
   rec('已接线：左栏收起', '#btn-collapse', 'click', '展开数 N→0，面板保留',
     `展开游戏 ${expandedBefore}→${expandedAfter}，面板隐藏=${panel.classList.contains('is-hidden')}`,
     expandedAfter === 0 && !panel.classList.contains('is-hidden'));

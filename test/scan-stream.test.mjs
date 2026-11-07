@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 
 import {
   aggregateScanSnapshots, createScanMonitor, formatScanStatus, mergeScanBaseline,
-  readNdjsonStream, resolveGamePhase, scanNeedsRetry, scanStreamUrl, shouldDeferCatalogFailure,
+  readNdjsonStream, resolveGroupPhase, scanNeedsRetry, scanStreamUrl, shouldDeferCatalogFailure,
 } from '../src/web/roster/scan-stream.js';
 import { SCAN_STALL_MS, resolveScanStallMs } from '../src/shared/scan-limits.mjs';
 
@@ -191,18 +191,18 @@ test('多根聚合：没有活跃扫描时返回 null（交给正常渲染，不
 
 test('单一真相：扫描还活着时，无论 catalog 那边报什么，行状态只能是 scanning', () => {
   // 现场事故：catalog 超时把 entry 标成 error，而进度流仍在推进 ⇒ 行上同时出现「扫描中」与「加载失败」
-  assert.equal(resolveGamePhase({ scan: { phase: 'scanning', scanned: 89 }, rootStates: ['error'] }), 'scanning');
-  assert.equal(resolveGamePhase({ scan: { phase: 'scanning', scanned: 89 }, rootStates: ['error', 'error'] }), 'scanning');
-  assert.equal(resolveGamePhase({ scan: { phase: 'scanning' }, rootStates: ['loading'] }), 'scanning');
+  assert.equal(resolveGroupPhase({ scan: { phase: 'scanning', scanned: 89 }, rootStates: ['error'] }), 'scanning');
+  assert.equal(resolveGroupPhase({ scan: { phase: 'scanning', scanned: 89 }, rootStates: ['error', 'error'] }), 'scanning');
+  assert.equal(resolveGroupPhase({ scan: { phase: 'scanning' }, rootStates: ['loading'] }), 'scanning');
   // 流没在跑时才轮到 catalog 的状态说话
-  assert.equal(resolveGamePhase({ scan: null, rootStates: ['error'] }), 'error');
-  assert.equal(resolveGamePhase({ scan: { phase: 'stalled' }, rootStates: ['error'] }), 'stalled');
-  assert.equal(resolveGamePhase({ scan: { phase: 'failed' }, rootStates: ['error'] }), 'error');
+  assert.equal(resolveGroupPhase({ scan: null, rootStates: ['error'] }), 'error');
+  assert.equal(resolveGroupPhase({ scan: { phase: 'stalled' }, rootStates: ['error'] }), 'stalled');
+  assert.equal(resolveGroupPhase({ scan: { phase: 'failed' }, rootStates: ['error'] }), 'error');
   // 正常态
-  assert.equal(resolveGamePhase({ scan: null, rootStates: ['ready', 'idle'] }), 'ready');
-  assert.equal(resolveGamePhase({ scan: null, rootStates: ['loading'] }), 'loading');
-  assert.equal(resolveGamePhase({ scan: null, rootStates: ['idle'] }), 'idle');
-  assert.equal(resolveGamePhase({ scan: null, rootStates: [] }), 'idle');
+  assert.equal(resolveGroupPhase({ scan: null, rootStates: ['ready', 'idle'] }), 'ready');
+  assert.equal(resolveGroupPhase({ scan: null, rootStates: ['loading'] }), 'loading');
+  assert.equal(resolveGroupPhase({ scan: null, rootStates: ['idle'] }), 'idle');
+  assert.equal(resolveGroupPhase({ scan: null, rootStates: [] }), 'idle');
 });
 
 test('catalog 失败暂缓判死：只有"扫描流仍在推进"才等，stalled/failed/结束都不等', () => {

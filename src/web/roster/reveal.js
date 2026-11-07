@@ -13,7 +13,7 @@ export const SCROLL_IDLE_MS = 800;
 /**
  * 创建定位控制器。
  * @param {{listEl: HTMLElement, getState: () => object, render: () => void}} deps
- *   getState 返回名册状态（expandedGames / expandedChars / selected）
+ *   getState 返回名册状态（expandedGroups / expandedChars / selected）
  *   render   重新渲染整棵树（展开父级后需要它把目标行画出来）
  */
 export function createReveal({ listEl, getState, render }) {
@@ -46,8 +46,8 @@ export function createReveal({ listEl, getState, render }) {
     if (!selected || !selected.modelId) return 'no-selection';
     // ③ 折叠时先展开父级：没渲染出这一行，后面也就无从滚起
     let expanded = false;
-    if (selected.gameKey && !state.expandedGames.has(selected.gameKey)) {
-      state.expandedGames.add(selected.gameKey);
+    if (selected.groupKey && !state.expandedGroups.has(selected.groupKey)) {
+      state.expandedGroups.add(selected.groupKey);
       expanded = true;
     }
     if (selected.charKey && !state.expandedChars.has(selected.charKey)) {
@@ -68,10 +68,5 @@ export function createReveal({ listEl, getState, render }) {
     return 'scrolled';
   }
 
-  /** 只读：最近一次用户滚动距今毫秒（断言用） */
-  function sinceUserScroll() {
-    return Date.now() - lastUserScrollAt;
-  }
-
-  return { revealActive, markUserScroll, attachUserScrollListeners, sinceUserScroll };
+  return { revealActive, markUserScroll, attachUserScrollListeners };
 }

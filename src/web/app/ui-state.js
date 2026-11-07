@@ -283,7 +283,7 @@ export function setDebugCollapsed(collapsed) {
   try { saveViewSettings({ debug: next }); return true; } catch { return false; }
 }
 
-// ---------------------------------------------------------------- 名册键代理（结构不动）
+// ---------------------------------------------------------------- 名册键代理（键名不动）
 /**
  * 右栏背景「二级列表」当前展开的组（'solid' | 'custom' | ''）。
  *

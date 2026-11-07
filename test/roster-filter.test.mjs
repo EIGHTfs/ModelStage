@@ -49,18 +49,18 @@ function makeFixture() {
     title: '角色乙 CharB',
     variants: [makeVariant('model_b_00', 'SrcB', { name: '角色乙', costume: '皮肤一' })],
   };
-  const game = { key: 'game:GameA', name: 'GameA', roots: [{ id: 'root-a' }, { id: 'root-a-2' }] };
-  return { game, chars: [charA, charB], charA, charB };
+  const group = { key: 'group:GameA', name: 'GameA', roots: [{ id: 'root-a' }, { id: 'root-a-2' }] };
+  return { group, chars: [charA, charB], charA, charB };
 }
 
 /** 造 state（只带 filter.js 需要的两个字段） */
 function makeState(fixture, keyword) {
-  return { gameChars: new Map([[fixture.game.key, { chars: fixture.chars }]]), keyword };
+  return { groupChars: new Map([[fixture.group.key, { chars: fixture.chars }]]), keyword };
 }
 
 test('① 角色名命中 ⇒ 该角色整组可见（变体一个不少）', () => {
   const f = makeFixture();
-  const visible = visibleChars(f.game, makeState(f, '角色甲'));
+  const visible = visibleChars(f.group, makeState(f, '角色甲'));
   assert.deepEqual(visible.map((c) => c.key), [f.charA.key], '只应命中角色甲');
   assert.equal(visible[0].variants.length, f.charA.variants.length,
     '整组可见：全部变体都要在（不能只剩命中的那个）');
@@ -70,20 +70,20 @@ test('② 变体命中 ⇒ 也显示整组（模型名 / 目录 / 中文名 / �
   const f = makeFixture();
   // 变体 2 没有名表项，命中点只有 model.name —— 命中的是"变体"，但返回的是整组
   for (const keyword of ['model_a_01', 'srca', '默认']) {
-    const visible = visibleChars(f.game, makeState(f, keyword));
+    const visible = visibleChars(f.group, makeState(f, keyword));
     assert.deepEqual(visible.map((c) => c.key), [f.charA.key], `关键词「${keyword}」应命中角色甲这一组`);
     assert.equal(visible[0].variants.length, f.charA.variants.length,
       `关键词「${keyword}」命中后仍应显示整组全部变体`);
   }
   // 反例自证：无关关键词必须一个都不返回（否则上面的"命中"没有判别力）
-  assert.deepEqual(visibleChars(f.game, makeState(f, 'zzz-no-such-keyword-zzz')), []);
+  assert.deepEqual(visibleChars(f.group, makeState(f, 'zzz-no-such-keyword-zzz')), []);
 });
 
 test('③ 游戏名 / 资源根 id 命中 ⇒ 显示该游戏全部角色', () => {
   const f = makeFixture();
   const allKeys = f.chars.map((c) => c.key);
-  for (const keyword of [f.game.name.toLowerCase(), f.game.roots[1].id]) {
-    const visible = visibleChars(f.game, makeState(f, keyword));
+  for (const keyword of [f.group.name.toLowerCase(), f.group.roots[1].id]) {
+    const visible = visibleChars(f.group, makeState(f, keyword));
     assert.deepEqual(visible.map((c) => c.key), allKeys,
       `关键词「${keyword}」应显示该游戏全部角色（游戏名与根 id 都算命中）`);
   }
@@ -91,7 +91,7 @@ test('③ 游戏名 / 资源根 id 命中 ⇒ 显示该游戏全部角色', () =
 
 test('④ 空关键词 ⇒ 全显示（不过滤）', () => {
   const f = makeFixture();
-  assert.deepEqual(visibleChars(f.game, makeState(f, '')).map((c) => c.key), f.chars.map((c) => c.key));
+  assert.deepEqual(visibleChars(f.group, makeState(f, '')).map((c) => c.key), f.chars.map((c) => c.key));
 });
 
 test('⑤ variantSearchText：小写归一，且覆盖 model.name / srcDir / 中文名 / 服装', () => {

@@ -176,11 +176,11 @@ const layoutSig = () => ({ pos: rows().map((el) => Math.round(rectOf(el).top)).j
   // ---------------------------------------------------------------- 造一个长列表
   // 挑"变体最多"的游戏，展开它 + 它所有角色（不加载模型，只渲染行）
   const snap0 = rv.snapshot();
-  const target = snap0.games.slice().sort((a, b) => b.variants - a.variants)[0];
-  const game = rv.state.games.find((g) => g.key === target.key);
-  await rv.ensureGameLoaded(game);
-  rv.state.expandedGames.add(game.key);
-  const entry = rv.state.gameChars.get(game.key);
+  const target = snap0.groups.slice().sort((a, b) => b.variants - a.variants)[0];
+  const group = rv.state.groups.find((g) => g.key === target.key);
+  await rv.ensureGroupLoaded(group);
+  rv.state.expandedGroups.add(group.key);
+  const entry = rv.state.groupChars.get(group.key);
   for (const c of entry.chars) rv.state.expandedChars.add(c.key);
   rv.render();
   // 等展开后的列表布局落定（原 sleep(200)）
@@ -210,13 +210,13 @@ const layoutSig = () => ({ pos: rows().map((el) => Math.round(rectOf(el).top)).j
       total: results.length,
       failed: 0,
       skipped: results.filter((x) => x.skipped).length,
-      summary: { game: target.name, renderedVariants: all.length, overflow, skipReason: why },
+      summary: { group: target.name, renderedVariants: all.length, overflow, skipReason: why },
       results,
     }, null, 1);
   }
 
   // 共享上下文：拆分前这些名字都在 IIFE 作用域里；现在打包传给各 runXxx，作用域语义不变
-  const C = { READY_RANK, afterTransition, all, box, entry, game, inView, layoutSig, listEl, overflow, readySnap, rec, rectOf, results, rows, rv, sleep, snap0, snapshotOf, target, w, waitAny, waitFor, waitFrames, waitStable, waitStage };
+  const C = { READY_RANK, afterTransition, all, box, entry, group, inView, layoutSig, listEl, overflow, readySnap, rec, rectOf, results, rows, rv, sleep, snap0, snapshotOf, target, w, waitAny, waitFor, waitFrames, waitStable, waitStage };
 
   await runSelectReveal(C);   // ① 选中 → 滚进视口
   await runUserScrollGuard(C);   // ② 用户正在滚动 → 不抢
@@ -226,7 +226,7 @@ const layoutSig = () => ({ pos: rows().map((el) => Math.round(rectOf(el).top)).j
   return JSON.stringify({
     total: results.length,
     failed: results.filter((x) => !x.ok).length,
-    summary: { game: target.name, renderedVariants: rows().length, overflow },
+    summary: { group: target.name, renderedVariants: rows().length, overflow },
     results,
   }, null, 1);
 })()
@@ -335,7 +335,7 @@ async function runUserScrollGuard(C) {
  * 从原巨型 IIFE 整体提出（用例代码逐字搬运，只加 ctx 解构）；失败时按条款定位。
  */
 async function runCollapsedReveal(C) {
-  const { entry, game, inView, rec, results, rows, rv, sleep, waitStable } = C;
+  const { entry, group, inView, rec, results, rows, rv, sleep, waitStable } = C;
   {
     // 守卫的 800ms 冷静窗口没有对外信号，但"窗口是否已过"**可以用产品自己的结论探测**：
     //   反复调 revealActive() 直到它不再返回 skipped-user-scrolling（上限 3s），并记录真实耗时。
@@ -366,7 +366,7 @@ async function runCollapsedReveal(C) {
     const charWithVariants = entry.chars.find((c) => c.variants.length > 0);
     const variant = charWithVariants.variants[0];
     const modelId = variant.model.id;
-    rv.state.selected = { modelId, gameKey: game.key, gameName: game.name, charKey: charWithVariants.key };
+    rv.state.selected = { modelId, groupKey: group.key, groupName: group.name, charKey: charWithVariants.key };
     const reveal = rv.revealActive();
     // 不能换：revealActive() 的"展开 + 滚动"是产品内部异步链，**没有对外完成信号**。
     //   实测尝试过等终态（expandedChars 含该角色 且 行已进视口）→ 5s 超时（该判据不成立，会误判）；
@@ -392,16 +392,16 @@ async function runCollapsedReveal(C) {
  * 从原巨型 IIFE 整体提出（用例代码逐字搬运，只加 ctx 解构）；失败时按条款定位。
  */
 async function runRestoreOnBoot(C) {
-  const { entry, game, inView, layoutSig, listEl, rec, rows, rv, sleep, waitStable } = C;
+  const { entry, group, inView, layoutSig, listEl, rec, rows, rv, sleep, waitStable } = C;
   {
     // 造一份存档：只记"上次选中的变体"，展开态留空（等价于首次进入）
     const withVariants = entry.chars.filter((c) => c.variants.length > 0);
     const charWithVariants = withVariants[withVariants.length - 1]; // 取列表最后一个角色：滚动到顶时它必然在视口外
     const modelId = charWithVariants.variants[0].model.id;
     localStorage.setItem('modelstage.tree-state.v1', JSON.stringify({
-      games: [], chars: [], activeGame: game.name, lastByGame: { [game.name]: modelId },
+      groups: [], chars: [], activeGroup: group.name, lastByGroup: { [group.name]: modelId },
     }));
-    rv.state.expandedGames.clear();
+    rv.state.expandedGroups.clear();
     rv.state.expandedChars.clear();
     rv.state.selected = null;
     rv.render();

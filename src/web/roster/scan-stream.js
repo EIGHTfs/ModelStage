@@ -291,7 +291,7 @@ export function aggregateScanSnapshots(snaps, baseline) {
  *        scan = aggregateScanSnapshots(...) 的返回值；rootStates = 每个根的 entry.status
  * @returns {'scanning'|'stalled'|'loading'|'error'|'ready'|'idle'}
  */
-export function resolveGamePhase({ scan, rootStates } = {}) {
+export function resolveGroupPhase({ scan, rootStates } = {}) {
   const states = Array.isArray(rootStates) ? rootStates.filter(Boolean) : [];
   const phase = scan && scan.phase ? String(scan.phase) : '';
   // 流在推进：无论 catalog 那边报什么，行状态只能是扫描中

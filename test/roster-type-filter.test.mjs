@@ -14,26 +14,26 @@ import {
 import { TYPE_LABELS, UNKNOWN_TYPE_KEY, typeLabel } from '../src/shared/type-labels.mjs';
 
 /**
- * 造一份最小名册：games + gameChars（结构与 roster/list.js 的 buildChars 输出同形）。
+ * 造一份最小名册：groups + groupChars（结构与 roster/list.js 的 buildChars 输出同形）。
  * @param {Array<{key: string, variants: Array<{id: string, kind: string|null, name?: string}>}>} spec
  */
 function makeRoster(spec) {
-  const games = [];
-  const gameChars = new Map();
-  spec.forEach((game, index) => {
-    const gameKey = game.key || `game:${index}`;
-    games.push({ key: gameKey, name: gameKey, roots: [{ id: `root-${index}` }] });
-    const chars = game.chars || [{
+  const groups = [];
+  const groupChars = new Map();
+  spec.forEach((group, index) => {
+    const groupKey = group.key || `group:${index}`;
+    groups.push({ key: groupKey, name: groupKey, roots: [{ id: `root-${index}` }] });
+    const chars = group.chars || [{
       key: `char-${index}`,
       title: `char-${index}`,
-      variants: (game.variants || []).map((variant) => ({
+      variants: (group.variants || []).map((variant) => ({
         model: { id: variant.id, name: variant.name || variant.id, kind: variant.kind, srcDir: '' },
         nm: null,
       })),
     }];
-    gameChars.set(gameKey, { chars, stats: { miss: 0 } });
+    groupChars.set(groupKey, { chars, stats: { miss: 0 } });
   });
-  return { games, gameChars };
+  return { groups, groupChars };
 }
 
 const countOf = (counts, key) => (counts.find((entry) => entry.key === key) || { count: 0 }).count;
@@ -107,7 +107,7 @@ test('过滤语义：空选中不过滤；单选/多选取并集', () => {
   const roster = makeRoster([{
     variants: [{ id: 'a', kind: 'spine' }, { id: 'b', kind: 'live2d' }, { id: 'c', kind: null }],
   }]);
-  const chars = roster.gameChars.get('game:0').chars;
+  const chars = roster.groupChars.get('group:0').chars;
 
   assert.equal(filterCharsByType(chars, new Set()), chars);          // 同一引用：不过滤
   assert.equal(filterCharsByType(chars, []).length, 1);
@@ -123,9 +123,9 @@ test('过滤语义：空选中不过滤；单选/多选取并集', () => {
   assert.deepEqual(allTypes[0].variants.map((v) => v.model.id), ['a', 'b', 'c']);
 });
 
-test('过滤不修改原数据（渲染层只读 state.gameChars）', () => {
+test('过滤不修改原数据（渲染层只读 state.groupChars）', () => {
   const roster = makeRoster([{ variants: [{ id: 'a', kind: 'spine' }, { id: 'b', kind: 'live2d' }] }]);
-  const chars = roster.gameChars.get('game:0').chars;
+  const chars = roster.groupChars.get('group:0').chars;
   const before = chars[0].variants.length;
   filterCharsByType(chars, new Set(['spine']));
   assert.equal(chars[0].variants.length, before);
@@ -136,7 +136,7 @@ test('与关键词取交集：关键词把整组挡掉时，类型过滤也救�
   const roster = makeRoster([{
     variants: [{ id: 'sakura', kind: 'spine' }, { id: 'yuki', kind: 'live2d' }],
   }]);
-  const chars = roster.gameChars.get('game:0').chars;
+  const chars = roster.groupChars.get('group:0').chars;
   // 关键词 "sakura" 命中第一个变体 ⇒ 整组可见（filter.js 的角色整组判定）
   const keywordVisible = chars.filter((c) => c.variants.some((v) => v.model.id.includes('sakura')));
   const typed = filterCharsByType(keywordVisible, new Set(['live2d']));

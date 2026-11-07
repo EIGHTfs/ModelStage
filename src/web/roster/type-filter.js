@@ -34,16 +34,16 @@ export function typeKeyOf(variant) {
  * scope 参数是为将来扩维度（如按资源根）预留的：当前只消费 keyword，新增维度时只加 scope 字段，
  *   不动本函数的排序/计数逻辑（设计稿 §5.4）。
  *
- * @param {{games: object[], gameChars: Map, keyword?: string,
+ * @param {{groups: object[], groupChars: Map, keyword?: string,
  *          scope?: {keyword?: string}}} input
  * @returns {Array<{key: string, count: number}>} 按数量降序，并列按 key 字典序（稳定）
  */
-export function deriveTypeCounts({ games, gameChars, keyword = '', scope = null }) {
+export function deriveTypeCounts({ groups, groupChars, keyword = '', scope = null }) {
   const effectiveKeyword = String((scope && scope.keyword) != null ? scope.keyword : keyword || '').toLowerCase();
   const counts = new Map();
-  for (const game of games || []) {
+  for (const group of groups || []) {
     // 复用关键词过滤的同一口径（角色整组判定），保证"数字"与"列表可见性"不会两套算法
-    const chars = visibleChars(game, { gameChars, keyword: effectiveKeyword });
+    const chars = visibleChars(group, { groupChars, keyword: effectiveKeyword });
     for (const char of chars) {
       for (const variant of char.variants || []) {
         const typeKey = typeKeyOf(variant);
@@ -60,7 +60,7 @@ export function deriveTypeCounts({ games, gameChars, keyword = '', scope = null 
  * 按选中类型过滤角色（并把每个角色的变体裁到命中集合）。
  *
  * 语义：selectedTypes 为空 ⇒ 不过滤（等于"全部"）；否则 = 并集（命中任一选中类型即保留）。
- * 注意返回的是**新数组/新角色对象**，不改动 state.gameChars 里的原对象（渲染层只读）。
+ * 注意返回的是**新数组/新角色对象**，不改动 state.groupChars 里的原对象（渲染层只读）。
  *
  * @param {object[]} chars 角色数组（每个带 variants）
  * @param {Set<string>|string[]} selectedTypes

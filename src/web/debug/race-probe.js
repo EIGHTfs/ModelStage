@@ -10,7 +10,7 @@
   const qa = (s) => [...document.querySelectorAll(s)];
   const w = window.__WEB__;
   const stageEl = q('#stage');
-  for (let i = 0; i < 80 && qa('[data-game-key]').length === 0; i += 1) await sleep(150);
+  for (let i = 0; i < 80 && qa('[data-group-key]').length === 0; i += 1) await sleep(150);
 
   const trajectory = [];
   let last = '__init__';
@@ -39,8 +39,8 @@
     if (!ref || !ref.modelId) return false;
     let row = qa('[data-model-id]').find((n) => n.dataset.modelId === ref.modelId);
     if (!row) {                                  // 行被折叠/重渲染过：展开一次再找
-      const game = q(`[data-game-key].tree-game`);
-      if (game) game.click();
+      const group = q(`[data-group-key].tree-game`);
+      if (group) group.click();
       for (let i = 0; i < 60 && !row; i += 1) { await sleep(100); row = qa('[data-model-id]').find((n) => n.dataset.modelId === ref.modelId); }
     }
     if (!row) return false;

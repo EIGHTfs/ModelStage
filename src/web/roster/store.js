@@ -1,35 +1,41 @@
 // roster/store.js —— 名册**唯一状态持有者**（状态收口）
 //
-// 为什么要有它：名册原先有 7 份状态（loaded / scan / gameChars / expandedGames /
+// 为什么要有它：名册原先有 7 份状态（loaded / scan / groupChars / expandedGroups /
 //   expandedChars / selected / scanBaseline）分散在 mount、ensureRootLoaded、trackScanProgress、
-//   loadGame、ensureGameLoaded、rebuildGameChars、restoreLast、render 里各自直接改写。
+//   loadGroup、ensureGroupLoaded、rebuildGroupChars、restoreLast、render 里各自直接改写。
 //   写入点一多，任何新功能（例如"增量加条目"）都会变成第 8、9 个写入点，行为难以推理。
 //
 // 约定：
 //   · **只有本文件可以写 state 的字段**；外部（view.js / snapshot.js）只读。
-//   · 所有变更走下面的动作方法；每次变更后调用一次 onChange（视图据此合并渲染）。
-//   · 动作保持"最小原子"：一个动作只做一件事，不夹带 UI 逻辑（渲染由 onChange 触发）。
+//   · 所有变更走下面的动作方法；动作保持"最小原子"：只改状态，不夹带 UI 逻辑。
+//   · 渲染时机分两种（别假设"改完就一定会重画"）：
+//       ① 改结构/活跃分组的动作（setRoots / setActiveGroup）内部调 notify → 视图的 onChange；
+//       ② 其余动作**不** notify —— 由调用方在合适的时机自己补一次渲染（名册走 rAF 合批的 scheduleRender）。
+//     为什么②不统一 notify：加载期一条路径会连改十几次状态，每次 notify 就是十几次整树重绘；
+//       合批是名册首屏性能的关键（见 infra/schedule.js 文件头）。
 
 /**
- * @param {{buildChars: Function, onChange?: () => void}} deps
- *        buildChars(models, nameIndex, gameName) ⇒ { chars, stats }（由 view.js 注入，避免本文件依赖构建细节）
+ * @param {{buildChars: Function, nameIndex?: Map, onChange?: () => void}} deps
+ *        buildChars(models, nameIndex, groupName) ⇒ { chars, stats }（由 view.js 注入，避免本文件依赖构建细节）
+ *        nameIndex 名表索引（同样由 view.js 注入）：本文件要"写完 models 就重算角色树"，
+ *          而归并需要它 —— 让 store 自己持有，调用方就不必每次记得传
  */
-export function createRosterStore({ buildChars, onChange } = {}) {
+export function createRosterStore({ buildChars, nameIndex, onChange } = {}) {
   const state = {
     /** 按 name 合并后的游戏列表（结构：{ key, name, roots[] }） */
-    games: [],
+    groups: [],
     /** rootId → { status, models, source, error, promise, pendingCatalogRetry } */
     loaded: new Map(),
-    /** rootId → { monitor, controller, game }（扫描进行中的根） */
+    /** rootId → { monitor, controller, group }（扫描进行中的根） */
     scan: new Map(),
-    /** gameKey → { chars, stats }（跨根归并后的角色树） */
-    gameChars: new Map(),
-    expandedGames: new Set(),
+    /** groupKey → { chars, stats }（跨根归并后的角色树） */
+    groupChars: new Map(),
+    expandedGroups: new Set(),
     expandedChars: new Set(),
     selected: null,
     keyword: '',
     typeFilter: new Set(),
-    /** gameKey → { scanned, dirs }（多根逐根扫描时的计数基线） */
+    /** groupKey → { scanned, dirs }（多根逐根扫描时的计数基线） */
     scanBaseline: new Map(),
     /** 当前活跃的**分组**名（注意：语义是"分组"，不假设它一定是游戏） */
     activeGroup: null,
@@ -50,6 +56,26 @@ export function createRosterStore({ buildChars, onChange } = {}) {
   /** 读：某根的加载条目（不存在返回 null，不隐式创建） */
   const rootEntry = (rootId) => state.loaded.get(String(rootId)) || null;
 
+  /**
+   * 跨根归并该组的角色树（内部实现，`setRootModels` 与公开动作 `rebuildChars` 共用一份）。
+   *
+   * 只收 `status === 'ready'` 的根：还在 loading / 已 error 的根不参与归并，
+   *   否则半截数据会先被画出来（用户看到角色数忽多忽少）。
+   * @param {string} groupKey
+   */
+  function rebuildCharsFor(groupKey) {
+    const group = state.groups.find((g) => g.key === String(groupKey));
+    if (!group) return null;
+    const models = [];
+    for (const root of group.roots) {
+      const entry = state.loaded.get(root.id);
+      if (entry && entry.status === 'ready') models.push(...(entry.models || []));
+    }
+    const built = buildChars(models, nameIndex, group.name);
+    state.groupChars.set(group.key, built);
+    return built;
+  }
+
   const actions = {
     state,
 
@@ -57,28 +83,23 @@ export function createRosterStore({ buildChars, onChange } = {}) {
     /**
      * 重建游戏列表（按 name 合并同名根）。
      * @param {Array} roots /api/roots 的 roots
-     * @returns {Array} 合并后的 games
+     * @returns {Array} 合并后的 groups
      */
     setRoots(roots) {
       const byName = new Map();
       for (const root of Array.isArray(roots) ? roots : []) {
         const name = root.name || root.id;
-        if (!byName.has(name)) byName.set(name, { key: `game:${name}`, name, roots: [] });
+        if (!byName.has(name)) byName.set(name, { key: `group:${name}`, name, roots: [] });
         byName.get(name).roots.push(root);
       }
-      state.games = [...byName.values()];
+      state.groups = [...byName.values()];
       notify();
-      return state.games;
-    },
-
-    /** 某游戏对象（按 key） */
-    gameOf(gameKey) {
-      return state.games.find((g) => g.key === gameKey) || null;
+      return state.groups;
     },
 
     /** 某根所属的游戏 */
-    gameOfRoot(rootId) {
-      return state.games.find((g) => g.roots.some((r) => r.id === rootId)) || null;
+    groupOfRoot(rootId) {
+      return state.groups.find((g) => g.roots.some((r) => r.id === rootId)) || null;
     },
 
     // ---------------------------------------------------------------- 根的加载状态
@@ -105,6 +126,12 @@ export function createRosterStore({ buildChars, onChange } = {}) {
 
     /**
      * 写某根的模型清单（权威全量）。
+     *
+     * **写完自动重算该根所属组的角色树**（派生状态跟着源状态走）。
+     *   为什么在这里而不是让调用方各自记得调 rebuildChars：调用方一多必然漏 ——
+     *   实测过一次：restoreLast 那条路径漏了归并 ⇒ 加载完成后行上 0 角色、
+     *   收起再展开才出现（第二次走的是另一条会归并的路径）。把重算钉在唯一的
+     *   写入入口上，新增调用方就不可能再漏。
      * @param {string} rootId
      * @param {Array} models
      * @param {{authoritative?: boolean, source?: string}} [opts]
@@ -116,6 +143,9 @@ export function createRosterStore({ buildChars, onChange } = {}) {
       entry.models = Array.isArray(models) ? models : [];
       if (opts.source) entry.source = String(opts.source);
       if (opts.authoritative !== false) entry.status = 'ready';
+      // 就绪状态已落地，此刻归并才拿得到这份 models（rebuildChars 只收 status==='ready' 的根）
+      const group = actions.groupOfRoot(id);
+      if (group) rebuildCharsFor(group.key);
     },
 
     // ---------------------------------------------------------------- 扫描
@@ -131,52 +161,46 @@ export function createRosterStore({ buildChars, onChange } = {}) {
       return state.scan.get(String(rootId)) || null;
     },
 
-    setScanBaseline(gameKey, base) {
-      state.scanBaseline.set(String(gameKey), base);
+    setScanBaseline(groupKey, base) {
+      state.scanBaseline.set(String(groupKey), base);
     },
 
-    getScanBaseline(gameKey) {
-      return state.scanBaseline.get(String(gameKey)) || null;
+    getScanBaseline(groupKey) {
+      return state.scanBaseline.get(String(groupKey)) || null;
     },
 
-    clearScanBaseline(gameKey) {
-      state.scanBaseline.delete(String(gameKey));
+    clearScanBaseline(groupKey) {
+      state.scanBaseline.delete(String(groupKey));
     },
 
     // ---------------------------------------------------------------- 角色树
     /**
-     * 用该游戏各根**已就绪**的模型重建角色树（跨根归并）。
-     * @param {string} gameKey
-     * @param {{nameIndex?: Map}} [opts] 名表索引（不传则用注入的默认值由调用方提供）
+     * 用该组各根**已就绪**的模型重建角色树（跨根归并）。
+     *
+     * 正常流程里不需要手动调：`setRootModels` 写完就会自动重算（见那里的注释）。
+     *   留成公开动作是为了"幂等兜底"：某些路径上模型早已就绪、本次没有新的写入
+     *   （例如重复展开一个已加载的组），调用方仍可显式要求"确保已归并"。
+     * @param {string} groupKey
      * @returns {object|null} { chars, stats }
      */
-    rebuildChars(gameKey, opts = {}) {
-      const game = state.games.find((g) => g.key === String(gameKey));
-      if (!game) return null;
-      const models = [];
-      for (const root of game.roots) {
-        const entry = state.loaded.get(root.id);
-        if (entry && entry.status === 'ready') models.push(...(entry.models || []));
-      }
-      const built = buildChars(models, opts.nameIndex, game.name);
-      state.gameChars.set(game.key, built);
-      return built;
+    rebuildChars(groupKey) {
+      return rebuildCharsFor(groupKey);
     },
 
     // ---------------------------------------------------------------- 展开态
-    toggleGame(gameKey) {
-      const key = String(gameKey);
-      const next = !state.expandedGames.has(key);
-      if (next) state.expandedGames.add(key); else state.expandedGames.delete(key);
+    toggleGroup(groupKey) {
+      const key = String(groupKey);
+      const next = !state.expandedGroups.has(key);
+      if (next) state.expandedGroups.add(key); else state.expandedGroups.delete(key);
       return next;
     },
 
-    expandGame(gameKey) {
-      state.expandedGames.add(String(gameKey));
+    expandGroup(groupKey) {
+      state.expandedGroups.add(String(groupKey));
     },
 
     collapseAll() {
-      state.expandedGames.clear();
+      state.expandedGroups.clear();
       state.expandedChars.clear();
     },
 
@@ -192,16 +216,16 @@ export function createRosterStore({ buildChars, onChange } = {}) {
     },
 
     /** 恢复持久化里的展开态（只保留仍存在的游戏） */
-    restoreExpanded({ games, chars }) {
-      const keys = new Set(state.games.map((g) => g.key));
-      for (const key of games || []) if (keys.has(key)) state.expandedGames.add(key);
+    restoreExpanded({ groups, chars }) {
+      const keys = new Set(state.groups.map((g) => g.key));
+      for (const key of groups || []) if (keys.has(key)) state.expandedGroups.add(key);
       for (const key of chars || []) state.expandedChars.add(key);
     },
 
     // ---------------------------------------------------------------- 选中 / 关键词 / 筛选
     /**
      * 写选中项。
-     * @param {{modelId:string, gameKey:string, gameName:string|null, charKey:string}|null} payload
+     * @param {{modelId:string, groupKey:string, groupName:string|null, charKey:string}|null} payload
      */
     selectModel(payload) {
       state.selected = payload || null;
@@ -229,7 +253,7 @@ export function createRosterStore({ buildChars, onChange } = {}) {
 
     // ---------------------------------------------------------------- 分组 / 订阅标记 / 探测 / 定位
     /**
-     * 写"当前活跃分组"（分组名，不是 gameKey）。
+     * 写"当前活跃分组"（分组名，不是 groupKey）。
      * @param {string|null} name
      */
     setActiveGroup(name) {

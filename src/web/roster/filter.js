@@ -20,12 +20,12 @@ export function charMatches(c, kw) {
 }
 
 /** 某游戏在搜索下可见的角色（未加载的游戏不参与过滤） */
-export function visibleChars(game, state) {
-  const entry = state.gameChars.get(game.key);
+export function visibleChars(group, state) {
+  const entry = state.groupChars.get(group.key);
   if (!entry) return [];
   const kw = state.keyword;
   if (!kw) return entry.chars;
-  const gameHit = String(game.name).toLowerCase().includes(kw)
-    || game.roots.some((r) => String(r.id).toLowerCase().includes(kw));
+  const gameHit = String(group.name).toLowerCase().includes(kw)
+    || group.roots.some((r) => String(r.id).toLowerCase().includes(kw));
   return gameHit ? entry.chars : entry.chars.filter((c) => charMatches(c, kw));
 }

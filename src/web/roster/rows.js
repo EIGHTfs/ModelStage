@@ -54,17 +54,17 @@ function arrowEl(open) {
  * 一级：游戏行（按资源根配置的 name 合并后的节点）。
  * 一个游戏可能由多个资源根供给（碧蓝航线 = 3 个根），所以徽标显示根数量、title 列出具体根 id，
  * 数据属性 data-root-ids 供自动化断言核对"这些根都在同一个游戏节点下"。
- * @param {{key: string, name: string, roots: object[]}} game
+ * @param {{key: string, name: string, roots: object[]}} group
  * @param {{open: boolean, status: string, charCount: number}} view
  */
-export function renderGameRow(game, view) {
-  const rootIds = game.roots.map((r) => r.id);
-  const row = rowBase('tree-game', { gameKey: game.key, rootIds: rootIds.join(',') });
+export function renderGroupRow(group, view) {
+  const rootIds = group.roots.map((r) => r.id);
+  const row = rowBase('tree-game', { groupKey: group.key, rootIds: rootIds.join(',') });
   row.setAttribute('aria-expanded', String(view.open));
   if (view.open) row.classList.add('is-open');
 
   row.append(arrowEl(view.open));
-  row.append(el('span', 'tree-game-name', game.name));
+  row.append(el('span', 'tree-game-name', group.name));
   // 多根时标注根数（单根不标注，避免噪音）
   if (rootIds.length > 1) {
     const badge = el('span', 'tree-badge', `${rootIds.length} 根`);
@@ -86,13 +86,13 @@ export function renderGameRow(game, view) {
   else if (view.status === 'error') {
     const retry = el('button', 'tree-game-retry', '加载失败 · 重试');
     retry.type = 'button';
-    retry.dataset.gameRetry = game.key;
+    retry.dataset.groupRetry = group.key;
     retry.title = '重新请求这个游戏的资源根清单';
     row.append(retry);
   } else {
     const load = el('button', 'tree-game-load', '未加载 · 点击加载');
     load.type = 'button';
-    load.dataset.gameLoad = game.key;
+    load.dataset.groupLoad = group.key;
     load.title = '展开时才加载（避免一次拉全部资源根）';
     row.append(load);
   }
@@ -101,12 +101,12 @@ export function renderGameRow(game, view) {
 
 /**
  * 二级：角色行（头像 + 显示名 + 原名标签 + 变体数）。
- * @param {object} game
+ * @param {object} group
  * @param {object} c 角色（title/baseName/iconUrl/variants）
  * @param {boolean} open
  */
-export function renderCharRow(game, c, open) {
-  const row = rowBase('tree-char', { charKey: c.key, gameKey: game.key });
+export function renderCharRow(group, c, open) {
+  const row = rowBase('tree-char', { charKey: c.key, groupKey: group.key });
   row.setAttribute('aria-expanded', String(open));
   if (open) row.classList.add('is-open');
 
@@ -134,16 +134,16 @@ export function renderCharRow(game, c, open) {
 /**
  * 三级：变体行（类型标签 + 服装名/目录名 + 原名后缀）。
  * 行上带 data-root-id：证明同一角色节点下确实聚合了来自不同资源根的变体。
- * @param {object} game
+ * @param {object} group
  * @param {object} c
  * @param {{model: object, nm: object|null}} v
  * @param {string|null} selectedId 当前选中的模型 id
  */
-export function renderVariantRow(game, c, v, selectedId) {
+export function renderVariantRow(group, c, v, selectedId) {
   const m = v.model;
   const { text, origName } = variantText(m, v.nm);
   const row = rowBase('tree-variant', {
-    modelId: m.id, gameKey: game.key, charKey: c.key, rootId: m.rootId || '',
+    modelId: m.id, groupKey: group.key, charKey: c.key, rootId: m.rootId || '',
   });
 
   const isSelected = selectedId === m.id;

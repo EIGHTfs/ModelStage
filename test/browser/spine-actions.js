@@ -470,8 +470,8 @@ async function runUiPath(C) {
   let target = qa('[data-char-key].tree-char')[0] || null;
   if (!target) {
     // 依次尝试展开各个游戏节点（哪个先出角色行就用哪个）——不假定"第一个游戏一定有角色"
-    const games = qa('[data-game-key].tree-game');
-    for (const g of games.slice(0, 4)) {
+    const groups = qa('[data-group-key].tree-game');
+    for (const g of groups.slice(0, 4)) {
       if (g.getAttribute('aria-expanded') !== 'true') g.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       try {
         await waitFor(() => qa('[data-char-key].tree-char').length > 0,

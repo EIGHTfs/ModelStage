@@ -191,8 +191,8 @@ const skip = (name, sel, expect, reason) => results.push({ name, sel, action: 's
   // 基础上下文（其余 helper 由两个工厂提供；工厂内同名解构 ⇒ helper 体内一字不改）
   //   而 IIFE 内用 let 声明的话 helper 看不见（非严格模式下会写成全局，IIFE 读到的仍是空串）。
   const C = { sleep, q, qa, snap, click, results, rec, skip };
-  // 顺序有依赖：makeListHelpers 里的 charKeysOf 用到 makeBasicHelpers 提供的 gameOf ⇒ basic 必须先 assign
-  Object.assign(C, makeBasicHelpers(C));   // rootsByName / until / domRows / gameOf / rosterSig / clickGame
+  // 顺序有依赖：makeListHelpers 里的 charKeysOf 用到 makeBasicHelpers 提供的 groupOf ⇒ basic 必须先 assign
+  Object.assign(C, makeBasicHelpers(C));   // rootsByName / until / domRows / groupOf / rosterSig / clickGroup
   Object.assign(C, makeListHelpers(C));    // rootModelCounts / charKeysOf / clickChar / section
 
   // 编排里也要用 section（分段执行器）—— 它由工厂提供，取到本地更直观
@@ -206,15 +206,15 @@ const skip = (name, sel, expect, reason) => results.push({ name, sel, action: 's
   // 挑出「能展开出角色行」的游戏名（数据不同，不写死名字）
   //   ⚠️ 必须在「初始态」段**之后**：那一段会点击/展开游戏来核对一级节点合并，
   //   挑选逻辑依赖那之后的可控状态（原文件就是这个顺序，拆函数时容易把声明提到前面而改变时序）。
-  const GAME_NAMES = await pickGameNames(C);
-  C.GAME_NAMES = GAME_NAMES;   // 同时进 C：runXxx 内部要用全量列表
-  if (GAME_NAMES.length < 2) {
+  const GROUP_NAMES = await pickGroupNames(C);
+  C.GROUP_NAMES = GROUP_NAMES;   // 同时进 C：runXxx 内部要用全量列表
+  if (GROUP_NAMES.length < 2) {
     skip('[前置] 多游戏切换', '.tree-game', '至少 2 个游戏含角色行可切换（对应断言：游戏 <名> 展开/折叠）',
-      `配置里只有 ${GAME_NAMES.length} 个游戏能展开出角色行；产品要求支持多游戏，此环境不满足`);
+      `配置里只有 ${GROUP_NAMES.length} 个游戏能展开出角色行；产品要求支持多游戏，此环境不满足`);
   }
-  for (const name of GAME_NAMES) await section(`游戏 ${name}`, () => runGameSwitch(C, name));
+  for (const name of GROUP_NAMES) await section(`游戏 ${name}`, () => runGroupSwitch(C, name));
   await section('跨根归并', () => runCrossRootMerge(C));
-  for (const name of GAME_NAMES) await section(`游戏 ${name} 角色层`, () => runCharLayer(C, name));
+  for (const name of GROUP_NAMES) await section(`游戏 ${name} 角色层`, () => runCharLayer(C, name));
   await section('搜索', () => runSearch(C));
   // 类型筛选：胶囊渲染（①）、换行/最小高度（②）、点击→aria-pressed→列表（③）、存储恢复（④）
   await section('类型筛选', () => runTypeFilter(C));
@@ -265,15 +265,15 @@ async function until(fn, ms = 30000) {
 }
 
 const domRows = () => ({
-  games: qa('[data-game-key].tree-game').length,
+  groups: qa('[data-group-key].tree-game').length,
   chars: qa('[data-char-key].tree-char').length,
   variants: qa('[data-model-id]').length,
 });
-const gameOf = (name) => snap().games.find((g) => g.name === name);
+const groupOf = (name) => snap().groups.find((g) => g.name === name);
 // 界面稳定签名：行数 + 各游戏状态 + 展开态（任一变 ⇒ UI 还在重排）
-const rosterSig = () => ({ rows: domRows(), games: snap().games.map((g) => g.status).join(','), ex: snap().expandedGames.length, ec: snap().expandedChars.length });
-const clickGame = (name) => {
-  const el = q(`[data-game-key="${gameOf(name).key}"].tree-game`);
+const rosterSig = () => ({ rows: domRows(), groups: snap().groups.map((g) => g.status).join(','), ex: snap().expandedGroups.length, ec: snap().expandedChars.length });
+const clickGroup = (name) => {
+  const el = q(`[data-group-key="${groupOf(name).key}"].tree-game`);
   if (!el) throw new Error(`找不到游戏行 ${name}`);
   click(el);
 };
@@ -282,16 +282,16 @@ const clickGame = (name) => {
  *   用来区分"根路径失效/未解包（模型数 0）"和"各根角色名不重叠（都有模型但名字不同）"。
  * @param {string[]} rootIds
  */
-  return { rootsByName, until, domRows, gameOf, rosterSig, clickGame };
+  return { rootsByName, until, domRows, groupOf, rosterSig, clickGroup };
 }
 
 /**
  * 计数/点击/分段执行 helper：根下模型数、角色 key 枚举、角色行点击、
  * section（段内抛错记成失败项、不中断后续段 —— 既有行为，拆分后仍保留）。
- * ⚠️ 依赖 makeBasicHelpers 的 gameOf（charKeysOf 里按 gameKey 过滤）⇒ basic 必须先 assign。
+ * ⚠️ 依赖 makeBasicHelpers 的 groupOf（charKeysOf 里按 groupKey 过滤）⇒ basic 必须先 assign。
  */
 function makeListHelpers(C) {
-  const { q, qa, click, rec, gameOf } = C;
+  const { q, qa, click, rec, groupOf } = C;
 async function rootModelCounts(rootIds) {
   const out = {};
   for (const id of rootIds) {
@@ -304,7 +304,7 @@ async function rootModelCounts(rootIds) {
 }
 
 const charKeysOf = (name) => qa('[data-char-key].tree-char')
-  .filter((r) => r.dataset.gameKey === gameOf(name).key)
+  .filter((r) => r.dataset.groupKey === groupOf(name).key)
   .map((r) => r.dataset.charKey);
 const clickChar = (key) => {
   const el = q(`[data-char-key="${key}"].tree-char`);
@@ -325,18 +325,18 @@ async function section(title, fn) {
  *   "展开后角色行出现"必然失败 —— 那是数据差异，不是功能缺陷。
  *   另外：必须先在折叠状态下数角色行、再折叠回去，让后续段从"未展开"的可控状态开始。
  */
-async function pickGameNames(C) {
+async function pickGroupNames(C) {
   // waitStable 属 wait-ready 生成块（文件顶层）⇒ 直接可见，不要从 C 解构
-  const { snap, clickGame, until, gameOf, charKeysOf, rosterSig } = C;
+  const { snap, clickGroup, until, groupOf, charKeysOf, rosterSig } = C;
   const picked = [];
-  for (const g of snap().games) {
+  for (const g of snap().groups) {
     if (picked.length >= 2) break;
     try {
-      clickGame(g.name);
-      await until(() => ['ready', 'error'].includes(gameOf(g.name).status));
+      clickGroup(g.name);
+      await until(() => ['ready', 'error'].includes(groupOf(g.name).status));
       const hasChars = charKeysOf(g.name).length > 0;      // 必须在折叠**之前**数
       // 折叠回去，让后续段从"未展开"的可控状态开始
-      if (snap().expandedGames.includes(gameOf(g.name).key)) clickGame(g.name);
+      if (snap().expandedGroups.includes(groupOf(g.name).key)) clickGroup(g.name);
       await waitStable(rosterSig, { timeoutMs: 3000, label: '挑选游戏后界面稳定' });
       if (hasChars) picked.push(g.name);
     } catch { /* 该游戏展开失败就跳过它 */ }
@@ -350,63 +350,63 @@ async function pickGameNames(C) {
 async function runInitialState(C) {
   const { snap, rec, skip, rootsByName } = C;
   const s = snap();
-  const names = s.games.map((g) => g.name);
+  const names = s.groups.map((g) => g.name);
   // 不写死游戏数量（用户会增删资源根）：校验"按 name 合并"这条语义本身。
   //   但"至少 2 个游戏""至少一个多根游戏"是**产品要支持的结构**，缺了要明确 skip 并说明配置不满足。
-  const nameSet = new Set(s.games.map((g) => g.name));
+  const nameSet = new Set(s.groups.map((g) => g.name));
   const expectByName = await rootsByName();
-  const mergedOk = s.games.every((g) => (g.roots || []).length === (expectByName[g.name] || 0));
+  const mergedOk = s.groups.every((g) => (g.roots || []).length === (expectByName[g.name] || 0));
   rec('一级节点按 name 合并', '.tree-game', '读取',
     '每个游戏名唯一（同名根合并成一个节点）；每个节点的根数 = /api/roots 里同 name 的根数；初始未加载',
-    `games=${names.join(' / ')}（去重后 ${nameSet.size} 个）；各节点根数=${JSON.stringify(s.games.map((g) => [g.name, (g.roots || []).length]))}；期望=${JSON.stringify(expectByName)}；status=${s.games.map((g) => g.status).join('/')}`,
-    nameSet.size === s.games.length && mergedOk && s.games.every((g) => g.status === 'idle'));
+    `groups=${names.join(' / ')}（去重后 ${nameSet.size} 个）；各节点根数=${JSON.stringify(s.groups.map((g) => [g.name, (g.roots || []).length]))}；期望=${JSON.stringify(expectByName)}；status=${s.groups.map((g) => g.status).join('/')}`,
+    nameSet.size === s.groups.length && mergedOk && s.groups.every((g) => g.status === 'idle'));
 
-  if (s.games.length < 2) {
+  if (s.groups.length < 2) {
     // 这两条是**能力前置**，对应断言是动态名（`游戏 <名> 展开` / `游戏 <名> 折叠`），
     //   所以不冒充某个 rec 名，统一加 [前置] 前缀，避免读者按名字去找不存在的断言。
     skip('[前置] 多游戏切换', '.tree-game', '至少 2 个游戏可切换（对应断言：游戏 <名> 展开/折叠）',
-      `配置里只有 ${s.games.length} 个游戏；产品要求支持多游戏，此环境不满足`);
+      `配置里只有 ${s.groups.length} 个游戏；产品要求支持多游戏，此环境不满足`);
   }
-  if (!s.games.some((g) => (g.roots || []).length >= 2)) {
+  if (!s.groups.some((g) => (g.roots || []).length >= 2)) {
     skip('角色跨根归并', '.tree-game', '至少一个游戏由 ≥2 个根合并',
       '配置里没有多根游戏；产品要求支持同游戏多根，此环境不满足');
   }
 }
 
 
-/** runGameSwitch 的用例体 */
-async function runGameSwitch(C, name) {
-  const { sleep, snap, click, rec, until, domRows, gameOf, rosterSig, clickGame } = C;
+/** runGroupSwitch 的用例体 */
+async function runGroupSwitch(C, name) {
+  const { sleep, snap, click, rec, until, domRows, groupOf, rosterSig, clickGroup } = C;
     const before = domRows();
-    clickGame(name);
-    await until(() => ['ready', 'error'].includes(gameOf(name).status));
-    const g = gameOf(name);
+    clickGroup(name);
+    await until(() => ['ready', 'error'].includes(groupOf(name).status));
+    const g = groupOf(name);
     const after = domRows();
-    rec(`游戏 ${name} 展开`, `[data-game-key="${g.key}"].tree-game`, 'click', 'status=ready，角色行出现',
+    rec(`游戏 ${name} 展开`, `[data-group-key="${g.key}"].tree-game`, 'click', 'status=ready，角色行出现',
       `roots=${g.roots.join('+')} sources=${g.sources.join('+')} chars=${g.chars} variants=${g.variants} 角色行 ${before.chars}→${after.chars}`,
       g.status === 'ready' && after.chars > before.chars && g.variants > 0);
 
-    clickGame(name);
+    clickGroup(name);
     await waitStable(rosterSig, { timeoutMs: 3000, label: '界面稳定' });   // 原 sleep(150)
-    rec(`游戏 ${name} 折叠`, `[data-game-key="${g.key}"].tree-game`, 'click', '该游戏不在 expandedGames',
-      `expandedGames=${JSON.stringify(snap().expandedGames)} 角色行=${domRows().chars}`,
-      !snap().expandedGames.includes(g.key));
+    rec(`游戏 ${name} 折叠`, `[data-group-key="${g.key}"].tree-game`, 'click', '该游戏不在 expandedGroups',
+      `expandedGroups=${JSON.stringify(snap().expandedGroups)} 角色行=${domRows().chars}`,
+      !snap().expandedGroups.includes(g.key));
 }
 
 
 /** runCrossRootMerge 的用例体 */
 async function runCrossRootMerge(C) {
-  const { sleep, q, qa, snap, click, rec, skip, until, gameOf, rosterSig, clickGame, rootModelCounts, charKeysOf, clickChar } = C;
+  const { sleep, q, qa, snap, click, rec, skip, until, groupOf, rosterSig, clickGroup, rootModelCounts, charKeysOf, clickChar } = C;
   // 不依赖具体角色名：在**多根游戏**里逐个尝试，找第一个"变体来自 ≥2 个根"的角色。
   //   这测的是归并能力本身；找不到说明配置里没有跨根角色（skip，不算失败）。
-  const multi = snap().games.find((g) => (g.roots || []).length >= 2) || null;
+  const multi = snap().groups.find((g) => (g.roots || []).length >= 2) || null;
   if (!multi) {
     skip('角色跨根归并', '[data-model-id]', '同一角色节点下聚合来自不同资源根的变体',
       '配置里没有多根游戏；产品要求支持同游戏多根，此环境不满足');
     return;
   }
-  clickGame(multi.name);
-  await until(() => gameOf(multi.name).status === 'ready');
+  clickGroup(multi.name);
+  await until(() => groupOf(multi.name).status === 'ready');
   const keys = charKeysOf(multi.name);
   let found = null;
   let scanned = 0;
@@ -435,17 +435,17 @@ async function runCrossRootMerge(C) {
     `变体 ${found.variants.length} 个，来源根=${found.roots.join('+')}：${found.variants.map((v) => `${v.dataset.rootId}/${v.textContent.trim().slice(0, 18)}`).join(' | ')}`,
     found.variants.length >= 2 && found.roots.length >= 2);
   clickChar(found.key);
-  clickGame(multi.name);
+  clickGroup(multi.name);
   await waitStable(rosterSig, { timeoutMs: 3000, label: '界面稳定' });   // 原 sleep(150)
 }
 
 
 /** runCharLayer 的用例体 */
 async function runCharLayer(C, name) {
-  const { sleep, q, snap, click, rec, until, domRows, gameOf, rosterSig, clickGame, charKeysOf, clickChar } = C;
+  const { sleep, q, snap, click, rec, until, domRows, groupOf, rosterSig, clickGroup, charKeysOf, clickChar } = C;
     // 只在"确实未展开"时点击，并等角色行真的渲染出来（status=ready ≠ 行已渲染）
-    if (!snap().expandedGames.includes(gameOf(name).key)) clickGame(name);
-    await until(() => gameOf(name).status === 'ready');
+    if (!snap().expandedGroups.includes(groupOf(name).key)) clickGroup(name);
+    await until(() => groupOf(name).status === 'ready');
     await until(() => charKeysOf(name).length > 0, 15000);
     const allKeys = charKeysOf(name);
     const keys = allKeys.slice(0, 3);
@@ -453,13 +453,13 @@ async function runCharLayer(C, name) {
     //   必须考虑**渲染上限**：view.js 每个游戏最多渲染 renderLimitPerGame() 行，
     //   大数据实例下"渲染数 < 快照数"是正常截断而不是漏渲染（此处曾因写死"两者相等"在 500+ 角色的实例上假红）。
     //   本断言不写死产品默认值：配了上限就按 min(快照, 上限) 推导；没配就只断言"没超出快照、且至少渲染 1 行"。
-    const expectChars = (gameOf(name) || {}).chars;
+    const expectChars = (groupOf(name) || {}).chars;
     const cfgLimit = Number(window.__WEB_CONFIG__ && window.__WEB_CONFIG__.renderLimitPerGame);
     const renderLimit = Number.isFinite(cfgLimit) && cfgLimit > 0 ? cfgLimit : null;
     const rowsOk = allKeys.length >= 1 && (expectChars === undefined
       ? true
       : (renderLimit ? allKeys.length === Math.min(expectChars, renderLimit) : allKeys.length <= expectChars));
-    rec(`游戏 ${name} 角色行数`, `[data-char-key].tree-char[game=${name}]`, '读取',
+    rec(`游戏 ${name} 角色行数`, `[data-char-key].tree-char[group=${name}]`, '读取',
       '角色行数 === min(快照该游戏角色数, 渲染上限)，且至少 1 个可操作',
       `渲染 ${allKeys.length} 个（快照 chars=${expectChars}；${renderLimit ? `上限 ${renderLimit}` : '未配上限'}），取前 ${keys.length} 个操作`,
       rowsOk);
@@ -479,28 +479,28 @@ async function runCharLayer(C, name) {
       rec(`角色 ${name}#${i + 1} 折叠`, `[data-char-key="${key}"].tree-char`, 'click', '变体行回落到展开前、aria-expanded=false',
         `变体行 ${vAfter}→${domRows().variants} aria-expanded=${exp2}`, domRows().variants === vBefore && exp2 === 'false');
     }
-    clickGame(name);
+    clickGroup(name);
     await waitStable(rosterSig, { timeoutMs: 3000, label: '界面稳定' });   // 原 sleep(150)
 }
 
 
 /** runSearch 的用例体 */
 async function runSearch(C) {
-  const { sleep, q, qa, snap, rec, skip, until, gameOf, rosterSig, clickGame, GAME_NAMES } = C;
+  const { sleep, q, qa, snap, rec, skip, until, groupOf, rosterSig, clickGroup, GROUP_NAMES } = C;
   const input = q('#roster-search');
   const setKw = async (kw) => {
     input.value = kw;
     input.dispatchEvent(new Event('input', { bubbles: true }));
     await waitStable(rosterSig, { timeoutMs: 3000, label: '界面稳定' });   // 原 sleep(500)
   };
-  const firstGame = GAME_NAMES[0];
-  if (!firstGame) {
+  const firstGroup = GROUP_NAMES[0];
+  if (!firstGroup) {
     skip('F2 搜索接线（输入→结果变化 / 无匹配占位 / 清空复原）', '#roster-search', '结果收窄且 >0（搜索时自动展开到变体）',
       '配置里没有能展开出角色行的游戏，无法构造搜索场景');
     return;
   }
-  clickGame(firstGame);
-  await until(() => gameOf(firstGame).status === 'ready');
+  clickGroup(firstGroup);
+  await until(() => groupOf(firstGroup).status === 'ready');
   const baseChars = qa('[data-char-key].tree-char').length;
   // 关键词取自**当前渲染出来的第一个角色标题**（角色名是数据，不写死具体角色）：
   //   取前 2 个字做子串搜索，既保证能命中，又能验证"结果被收窄"。
@@ -511,7 +511,7 @@ async function runSearch(C) {
       '名册里没有可读的角色标题，无法构造搜索关键词');
   } else {
   await setKw(kw);
-  await until(() => snap().games.every((g) => ['ready', 'error'].includes(g.status)), 40000);
+  await until(() => snap().groups.every((g) => ['ready', 'error'].includes(g.status)), 40000);
   await waitStable(rosterSig, { timeoutMs: 3000, label: '界面稳定' });   // 原 sleep(400)
   const hitChars = qa('[data-char-key].tree-char').length;
   const hitVariants = qa('[data-model-id]').length;
@@ -721,32 +721,32 @@ async function runSelection(C) {
 
 /** runCollapseButton 的用例体 */
 async function runCollapseButton(C) {
-  const { sleep, q, snap, click, rec, skip, until, domRows, gameOf, rosterSig, clickGame, charKeysOf, clickChar, GAME_NAMES } = C;
-  if (!GAME_NAMES.length) {
+  const { sleep, q, snap, click, rec, skip, until, domRows, groupOf, rosterSig, clickGroup, charKeysOf, clickChar, GROUP_NAMES } = C;
+  if (!GROUP_NAMES.length) {
     skip('收起按钮', '#btn-collapse', '两级展开数 N→0，变体行归零，面板保留',
       '配置里没有能展开出角色行的游戏，无从验证收起行为');
     return;
   }
   click(q('#btn-collapse'));
   await waitStable(rosterSig, { timeoutMs: 3000, label: '界面稳定' });   // 原 sleep(150)
-  for (const name of GAME_NAMES) {
-    if (!snap().expandedGames.includes(gameOf(name).key)) clickGame(name);
-    await until(() => gameOf(name).status === 'ready');
+  for (const name of GROUP_NAMES) {
+    if (!snap().expandedGroups.includes(groupOf(name).key)) clickGroup(name);
+    await until(() => groupOf(name).status === 'ready');
   }
-  for (const name of GAME_NAMES) {
+  for (const name of GROUP_NAMES) {
     const k = charKeysOf(name)[0];
     if (k && !snap().expandedChars.includes(k)) { clickChar(k); await waitStable(rosterSig, { timeoutMs: 3000, label: '展开角色稳定' }); }
   }
-  const before = { games: snap().expandedGames.length, chars: snap().expandedChars.length };
+  const before = { groups: snap().expandedGroups.length, chars: snap().expandedChars.length };
   const beforeVariants = domRows().variants;
   click(q('#btn-collapse'));
   await waitStable(rosterSig, { timeoutMs: 3000, label: '界面稳定' });   // 原 sleep(300)
-  const after = { games: snap().expandedGames.length, chars: snap().expandedChars.length };
+  const after = { groups: snap().expandedGroups.length, chars: snap().expandedChars.length };
   rec('收起按钮', '#btn-collapse', 'click', '两级展开数 N→0，变体行归零，面板保留',
-    `展开游戏 ${before.games}→${after.games}，展开角色 ${before.chars}→${after.chars}，变体行 ${beforeVariants}→${domRows().variants}，面板隐藏=${q('#left-panel').classList.contains('is-hidden')}`,
+    `展开游戏 ${before.groups}→${after.groups}，展开角色 ${before.chars}→${after.chars}，变体行 ${beforeVariants}→${domRows().variants}，面板隐藏=${q('#left-panel').classList.contains('is-hidden')}`,
     // 只要求"确实展开了东西 → 点收起后全归零 + 面板保留"；
     //   多少个游戏/角色属于环境结构，已由「多游戏切换」那条单独判定，这里不重复设门槛
-    before.games >= 1 && before.chars >= 1 && after.games === 0 && after.chars === 0
+    before.groups >= 1 && before.chars >= 1 && after.groups === 0 && after.chars === 0
       && domRows().variants === 0 && !q('#left-panel').classList.contains('is-hidden'));
 }
 
@@ -890,9 +890,9 @@ async function runPersistKeys(C) {
   //   留在这里的是**只有浏览器能验**的部分（判据 §二·④ 存储与持久化）：
   //   真实交互之后，localStorage 里确实写进了这个键、结构里确实有那四个字段。
   rec('localStorage 持久化结构（写入实际发生）', 'localStorage["modelstage.tree-state.v1"]', '读取',
-    '真实交互后写入过该键，且结构含 games/chars/activeGame/lastByGame（activeGame 存游戏名）',
-    parsed ? `keys=${Object.keys(parsed).join(',')} activeGame=${parsed.activeGame} lastByGame=${JSON.stringify(parsed.lastByGame)}` : '未写入',
-    !!parsed && ['games', 'chars', 'activeGame', 'lastByGame'].every((k) => k in parsed));
+    '真实交互后写入过该键，且结构含 groups/chars/activeGroup/lastByGroup（activeGroup 存游戏名）',
+    parsed ? `keys=${Object.keys(parsed).join(',')} activeGroup=${parsed.activeGroup} lastByGroup=${JSON.stringify(parsed.lastByGroup)}` : '未写入',
+    !!parsed && ['groups', 'chars', 'activeGroup', 'lastByGroup'].every((k) => k in parsed));
 }
 
 
@@ -913,22 +913,22 @@ async function runFullscreen(C) {
 
 /** runKeyboardEnter 的用例体 */
 async function runKeyboardEnter(C) {
-  const { sleep, q, snap, click, rec, until, domRows, gameOf, rosterSig, GAME_NAMES } = C;
+  const { sleep, q, snap, click, rec, until, domRows, groupOf, rosterSig, GROUP_NAMES } = C;
   click(q('#btn-collapse'));
   await waitStable(rosterSig, { timeoutMs: 3000, label: '界面稳定' });   // 原 sleep(150)
-  const kbGame = GAME_NAMES[0] || snap().games[0].name;
-  const row = q(`[data-game-key="${gameOf(kbGame).key}"].tree-game`);
+  const kbGroup = GROUP_NAMES[0] || snap().groups[0].name;
+  const row = q(`[data-group-key="${groupOf(kbGroup).key}"].tree-game`);
   row.focus();
   const focused = document.activeElement === row;
   row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-  await until(() => gameOf(kbGame).status === 'ready');
+  await until(() => groupOf(kbGroup).status === 'ready');
   await waitStable(rosterSig, { timeoutMs: 3000, label: '界面稳定' });   // 原 sleep(200)
-  const expanded = snap().expandedGames.includes(gameOf(kbGame).key);
+  const expanded = snap().expandedGroups.includes(groupOf(kbGroup).key);
   // Enter 与点击等价：判据只能是"展开态被切换"。
   //   角色行数不能当判据 —— 名册冷启动不加载任何游戏（只恢复上次所用模型所在的那个根），
   //   未加载的游戏展开后本来就 0 行；要求 >0 等于逼产品在键盘操作时去触发全量扫描。
-  rec('键盘 Enter 展开游戏', '[data-game-key].tree-game', 'focus + Enter', '可聚焦且 Enter 与点击等价（展开态切换）',
-    `focus=${focused} expandedGames=${JSON.stringify(snap().expandedGames)} 角色行=${domRows().chars}`,
+  rec('键盘 Enter 展开游戏', '[data-group-key].tree-game', 'focus + Enter', '可聚焦且 Enter 与点击等价（展开态切换）',
+    `focus=${focused} expandedGroups=${JSON.stringify(snap().expandedGroups)} 角色行=${domRows().chars}`,
     focused && expanded);
   click(q('#btn-collapse'));
   await waitStable(rosterSig, { timeoutMs: 3000, label: '界面稳定' });   // 原 sleep(150)

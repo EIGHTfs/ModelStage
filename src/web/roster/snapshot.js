@@ -4,16 +4,16 @@
 //   DOM 里真的渲染了几行、最近一次定位动作是什么"一次性摊平，测试只读这份快照。
 
 /**
- * @param {{state: object, listEl: HTMLElement, gameStatus: (game: object) => string}} deps
+ * @param {{state: object, listEl: HTMLElement, groupStatus: (group: object) => string}} deps
  */
-export function snapshotRoster({ state, listEl, gameStatus }) {
-  const games = state.games.map((g) => {
-    const chars = state.gameChars.get(g.key);
+export function snapshotRoster({ state, listEl, groupStatus }) {
+  const groups = state.groups.map((g) => {
+    const chars = state.groupChars.get(g.key);
     return {
       key: g.key,
       name: g.name,
       roots: g.roots.map((r) => r.id),
-      status: gameStatus(g),
+      status: groupStatus(g),
       sources: g.roots.map((r) => (state.loaded.get(r.id) || {}).source || '').filter(Boolean),
       chars: chars ? chars.chars.length : 0,
       variants: chars ? chars.chars.reduce((n, c) => n + c.variants.length, 0) : 0,
@@ -21,8 +21,8 @@ export function snapshotRoster({ state, listEl, gameStatus }) {
     };
   });
   return {
-    games,
-    expandedGames: [...state.expandedGames],
+    groups,
+    expandedGroups: [...state.expandedGroups],
     expandedChars: [...state.expandedChars],
     keyword: state.keyword,
     /** 类型筛选的选中集合（**存储原样**，可能含当前名册里不存在的失效项） */
@@ -37,7 +37,7 @@ export function snapshotRoster({ state, listEl, gameStatus }) {
     /** 最近一次"定位当前角色"的结果（visible / scrolled / skipped-user-scrolling / …） */
     lastReveal: state.lastReveal || null,
     domRows: {
-      games: listEl.querySelectorAll('[data-game-key].tree-game').length,
+      groups: listEl.querySelectorAll('[data-group-key].tree-game').length,
       chars: listEl.querySelectorAll('[data-char-key].tree-char').length,
       variants: listEl.querySelectorAll('[data-model-id]').length,
     },
