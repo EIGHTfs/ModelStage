@@ -144,62 +144,106 @@ export function buildModelServer(root, relPath, baseName, skel, atlas, dirFiles,
 }
 
 /**
- * 建全根文件索引（文件名小写 → 文件记录），供跨目录查找图集页。
- * 必须先建完再建模型：某模型的第 2 页可能位于尚未遍历到的兄弟目录里；
- * 同名文件保留先遇到的（与原版匹配顺序一致）。
+ * **一次遍历**把整棵目录树读进内存（当前唯一碰磁盘的 readdir 入口）。
+ *
+ * 为什么要合并：原来同一棵树被读两遍 —— `indexRootFiles`（readdir 全根）+ `scanRootServer`
+ *   的 `collectDirEntries`（walk 时再 readdir 每个目录）。合并后 walk 阶段**零 IO**。
+ * 结构（键与现有 relPath 口径一致，根用 ''）：
+ *   Map<relPath, { files: [{name, full, ext}], dirs: [{name, full}] }>
+ *   · files 的顺序 = readdir 返回序（**不改**，因为 models 的顺序依赖它）
+ *   · dirs 的顺序同理
+ * 不存 size：`model.fileSize` 已删（死数据），索引里也不需要。
+ *
+ * @param {{path: string, id?: string}} root
+ * @param {{onProgress?: (p: {dirs: number}) => void}} [opts]
+ * @returns {Promise<Map<string, {files: Array, dirs: Array}>>}
  */
-export async function indexRootFiles(root, opts = {}) {
-  const fileIndex = new Map();
-  // 建索引同样是**同步遍历**，在 bd2（431 个目录）上实测占 4.3s。
-  //   不在这里让出的话，这段时间里一帧进度都发不出去（前端会以为卡死）。
-  //   让出策略与 walk 一致：每 20 个目录 或 每 50ms。
+export async function readTreeIntoMemory(root, opts = {}) {
   const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null;
+  const tree = new Map();
   let sinceYield = 0;
   let lastYieldAt = Date.now();
-  let dirsIndexed = 0;
+  let dirsRead = 0;
+
+  const yieldToEventLoop = () => new Promise((resolve) => setImmediate(resolve));
   async function maybeYield() {
     sinceYield += 1;
+    // 与现有策略一致：每 20 个目录 或 每 50ms 让出一次（别丢让出，否则进度帧与静态文件都会被卡）
     if (sinceYield >= 20 || Date.now() - lastYieldAt >= 50) {
       sinceYield = 0;
       lastYieldAt = Date.now();
-      if (onProgress) onProgress({ dirs: dirsIndexed });
-      await new Promise((resolve) => setImmediate(resolve));
+      if (onProgress) onProgress({ dirs: dirsRead });
+      await yieldToEventLoop();
     }
   }
-  async function indexDir(absDir, relPath) {
+
+  async function visit(absDir, relPath) {
     let entries;
     try {
       entries = fs.readdirSync(absDir, { withFileTypes: true });
     } catch {
+      tree.set(relPath, { files: [], dirs: [] });
       return;
     }
+    const files = [];
+    const dirs = [];
     for (const e of entries) {
       if (e.name.startsWith('.')) continue;
       const full = path.join(absDir, e.name);
-      const childRel = relPath ? `${relPath}/${e.name}` : e.name;
-      // **不再逐文件 stat**：实测 bd2（1781 文件）光 statSync 就 11.5s；
-      //   而索引里唯一的 size 消费方是 `model.fileSize` —— 前端从未读过，是死数据。
-      //   目录判定用 readdir 的 Dirent（`e.isDirectory()`），本来就不需要 stat。
       if (e.isDirectory()) {
-        dirsIndexed += 1;
-        await indexDir(full, childRel);
-        await maybeYield();
-        continue;
-      }
-      const key = e.name.toLowerCase();
-      if (!fileIndex.has(key)) {
-        fileIndex.set(key, {
-          name: e.name,
-          full,
-          ext: path.extname(e.name).toLowerCase(),
-          relPath: childRel,
-        });
+        dirs.push({ name: e.name, full });
+      } else {
+        files.push({ name: e.name, full, ext: path.extname(e.name).toLowerCase() });
       }
     }
+    tree.set(relPath, { files, dirs });
+    dirsRead += 1;
+    await maybeYield();
+    // 递归顺序：**先写本节点、再按 dirs 顺序递归**（与原 walk 的深度优先一致）
+    for (const d of dirs) {
+      await visit(d.full, relPath ? `${relPath}/${d.name}` : d.name);
+    }
   }
-  await indexDir(root.path, '');
+
+  await visit(root.path, '');
+  return tree;
+}
+
+/**
+ * 建全根文件索引（文件名小写 → 文件记录），供跨目录查找图集页。
+
+ * 必须先建完再建模型：某模型的第 2 页可能位于尚未遍历到的兄弟目录里；
+ * 同名文件保留先遇到的（与原版匹配顺序一致）。
+ */
+/**
+ * 从**已读进内存的树**建文件索引（纯内存，零 IO）。
+ * @param {Map<string, {files: Array, dirs: Array}>} tree
+ * @returns {Map<string, {name: string, full: string, ext: string, relPath: string}>}
+ */
+export function indexFromTree(tree) {
+  const fileIndex = new Map();
+  for (const [relPath, node] of tree) {
+    for (const f of node.files) {
+      const key = f.name.toLowerCase();
+      // 同名文件保留先遇到的（与原版匹配顺序一致：depth-first + readdir 序）
+      if (fileIndex.has(key)) continue;
+      fileIndex.set(key, {
+        name: f.name,
+        full: f.full,
+        ext: f.ext,
+        relPath: relPath ? `${relPath}/${f.name}` : f.name,
+      });
+    }
+  }
   return fileIndex;
 }
+
+/** 兼容入口：需要索引但手上没有树时用（内部会读一遍树）。scanRootServer 走的是"读一次树、复用"。 */
+export async function indexRootFiles(root, opts = {}) {
+  const tree = await readTreeIntoMemory(root, opts);
+  return indexFromTree(tree);
+}
+
 
 
 /**
@@ -211,44 +255,30 @@ export async function indexRootFiles(root, opts = {}) {
  * @returns {Promise<R[]>}
  */
 /** 读一个目录的文件与子目录清单（文件附带版本/assetKey/PMA 探测结果）。 */
-export function collectDirEntries(absDir, relPath, deps) {
-  // 保持**同步** readdir/stat（已实测：改 fs.promises 会因 libuv 线程池只有 4 个线程、
-  //   而上万次小 stat 的跨线程调度开销 >> 同步阻塞成本，单根扫描从 32.87s 劣化到 43.3s）。
-  //   要真正解决"单 tick 阻塞几十 ms"，方向是 worker_threads（见 docs/待办），不是异步化 IO。
-  let entries;
-  try {
-    entries = fs.readdirSync(absDir, { withFileTypes: true });
-  } catch {
-    return { files: [], dirs: [] };
-  }
-
-  const files = [];
-  const dirs = [];
-  for (const e of entries) {
-    if (e.name.startsWith('.')) continue;
-    const full = path.join(absDir, e.name);
-    // **不再逐文件 stat**：同一批文件 indexRootFiles 已遍历过一次，这里再 stat 就是双倍开销。
-    //   目录判定用 Dirent；size 字段不再填充（下游只有 fileSize 用它，而那是死数据）。
-    if (e.isDirectory()) {
-      dirs.push({ name: e.name, full });
-      continue;
-    }
-    const ext = path.extname(e.name).toLowerCase();
-    files.push({
-      name: e.name,
-      full,
-      ext,
-      // 该文件相对资源根的路径（贴图可能来自其他目录，故每个文件各自记录）
-      relPath: relPath ? `${relPath}/${e.name}` : e.name,
-      // detect* 仍在 assets/probe.mjs（同步读文件头，本批不在范围内改动）；
-      //   它只对 skel/json/atlas 调用（每目录 1~3 次），不是"每个文件都做"，影响远小于 stat。
-      spineVersion: ext === '.skel' ? deps.detectSkelVersion(full)
-        : ext === '.json' ? deps.detectJsonVersion(full) : null,
-      assetKey: ext === '.atlas' ? deps.detectAtlasKey(full) : null,
-      atlasPma: ext === '.atlas' ? deps.detectAtlasPma(full) : null,
-    });
-  }
-  return { files, dirs };
+/**
+ * 取某个目录的文件与子目录清单 —— **纯内存**（从 readTreeIntoMemory 的树取）。
+ *
+ * 与旧版的差异只有一处：不再 `readdirSync`。文件顺序仍是 readdir 返回序（树里保存的就是它），
+ *   所以 groupModelsInDir / buildModelServer 产出的 models **顺序与内容都不变**。
+ * detect* 仍在（同步读文件头）：它只对 skel/json/atlas 调用，每目录 1~3 次，不是"每文件都做"。
+ * @param {Map<string, {files: Array, dirs: Array}>} tree
+ * @param {string} relPath 相对根的目录路径（根为 ''）
+ * @param {object} deps
+ */
+export function collectDirEntries(tree, relPath, deps) {
+  const node = tree.get(relPath);
+  if (!node) return { files: [], dirs: [] };   // 树里没有 = 读该目录时失败过（原逻辑同样返回空）
+  const files = node.files.map((f) => ({
+    name: f.name,
+    full: f.full,
+    ext: f.ext,
+    relPath: relPath ? `${relPath}/${f.name}` : f.name,
+    spineVersion: f.ext === '.skel' ? deps.detectSkelVersion(f.full)
+      : f.ext === '.json' ? deps.detectJsonVersion(f.full) : null,
+    assetKey: f.ext === '.atlas' ? deps.detectAtlasKey(f.full) : null,
+    atlasPma: f.ext === '.atlas' ? deps.detectAtlasPma(f.full) : null,
+  }));
+  return { files, dirs: node.dirs };
 }
 
 /** 由目录内文件按 base name 分组，构造该目录下的模型列表。 */
@@ -289,11 +319,14 @@ export async function scanRootServer(root, deps) {
   const throttle = deps && typeof deps.onProgress === 'function'
     ? createProgressThrottle({ onProgress: deps.onProgress, kind: 'spine', rootId: root.id })
     : null;
-  const fileIndex = await indexRootFiles(root, {
+  // **一次遍历**：整棵树读进内存（walk 阶段零 readdir）。
+  //   原来 indexRootFiles 与 collectDirEntries 各读一遍同一棵树 ⇒ 这里成为唯一的磁盘遍历点。
+  const tree = await readTreeIntoMemory(root, {
     onProgress: throttle
       ? () => throttle.bump({ scanned: models.length, dirs: 0, currentPath: '(建索引)', dirCompleted: false })
       : undefined,
   });
+  const fileIndex = indexFromTree(tree);
   let dirsScanned = 0;
 
   /**
@@ -340,7 +373,7 @@ export async function scanRootServer(root, deps) {
   }
 
   async function walk(absDir, relPath) {
-    const { files, dirs } = collectDirEntries(absDir, relPath, deps);
+    const { files, dirs } = collectDirEntries(tree, relPath, deps);
     collectModels(groupModelsInDir(root, relPath, files, fileIndex, deps));
     dirsScanned += 1;
     if (throttle) {
