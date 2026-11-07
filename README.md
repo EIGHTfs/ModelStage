@@ -181,13 +181,17 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 
 > **版本号唯一权威 = `package.json` 的 `version`**。`bin/modelstage.mjs --version` 直接读它，
 > 这里只是变更留痕。升版时改 `package.json` + 在本表追加一行，不需要再找第三个地方。
+>
+> **排序规则**：版本号严格降序；同一个版本号出现多次时，新日期在前。
+> `0.5.24` / `0.5.25` / `0.5.26` 三个号各被两批独立工作用过一次（2026-11-01 与 2026-11-05，见 `git log -S'"version": "0.5.25"' -- package.json`），
+> 属历史遗留的重号，**不是重复行**，不要合并或删除。
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
-| 0.5.26 | 2026-11-01 | 对齐成熟包的四项：`bin` 加 realpath 直接执行判据（import 不再起服务）、`serve.mjs` 加 EADDRINUSE 人话提示（退出码 2）、新增 `/api/health`（`web.sh status` 优先用它、旧实例回落首页码）、`web.sh` 日志 5MB 轮转（先 stop 再轮转、只留 1 份）；顺带修 health 的 `plugins` 恒为 0（引用了不存在的 ctx） |
-| 0.5.38 | 2026-11-08 | 扫描改为「一次遍历把目录树读进内存，walk 阶段零 readdir」：`readTreeIntoMemory` 只碰一趟磁盘；流式扫描总耗时 39.6s → 28.3s，首模型 6.95s → 5.4s |
-| 0.5.39 | 2026-11-08 | 名册状态收口到 `roster/store.js`（唯一状态持有者 + 27 个动作 + 变更即触发渲染），`view.js` 里不再直接写状态容器；测试工具修正：浏览器套件专用超时 360s、node 套件默认 300s，roster/panel 套件改为按"展开态"而非"角色行"断言（懒加载后未加载的游戏展开本就 0 行），并在动作脚本开头显式等待 `__WEB__` 就绪 |
+| 0.5.41 | 2026-11-08 | `view.js` 按职责拆成 4 个模块（`view` 只留装配 / `load` 加载编排 / `render` 渲染 / `events` 事件），全仓 `game` 口径改名 `group`（613 处；存储字段不兼容旧格式，旧数据静默忽略）；修两个加载 bug：① `setRootModels` 内部统一重算角色树（原先漏归并 ⇒ 加载完显示 0 角色、收起再展开才出现）② `entry` 字段写入改走 store 动作（原 `setRootStatus` 复制对象 ⇒ 根状态永远停在 loading）；删 3 处死代码 |
 | 0.5.40 | 2026-11-08 | 名册剩余 4 个字段也收进 store：`activeGame` → `activeGroup`（分组语义，不再假设"一定是游戏"）+ `scannedRoots` / `probe` / `lastReveal`，`view.js` 的 12 处直写改为动作调用；`persist.js` 读 `activeGroup` 但**存储字段名保持 `activeGame`**（旧数据不失效） |
+| 0.5.39 | 2026-11-08 | 名册状态收口到 `roster/store.js`（唯一状态持有者 + 27 个动作 + 变更即触发渲染），`view.js` 里不再直接写状态容器；测试工具修正：浏览器套件专用超时 360s、node 套件默认 300s，roster/panel 套件改为按"展开态"而非"角色行"断言（懒加载后未加载的游戏展开本就 0 行），并在动作脚本开头显式等待 `__WEB__` 就绪 |
+| 0.5.38 | 2026-11-08 | 扫描改为「一次遍历把目录树读进内存，walk 阶段零 readdir」：`readTreeIntoMemory` 只碰一趟磁盘；流式扫描总耗时 39.6s → 28.3s，首模型 6.95s → 5.4s |
 | 0.5.37 | 2026-11-08 | 类型筛选**不再持久化**（刷新回到不筛选，避免旧筛选把「上次所用模型」挡住）；恢复上次模型时改为走与点击变体相同的加载路径（原来只高亮不装载）；行状态改为单一判定 `resolveGamePhase`（**扫描中不会再同时显示「加载失败」**），catalog 失败且扫描仍在进行时保持 loading 并在 done 帧后自动补取一次 |
 | 0.5.36 | 2026-11-08 | 清单索引不再逐文件 `stat`（实测 1781 文件 stat 11.5s）：索引只留 `{name, full, ext, relPath}`，目录判定改用 `Dirent`；删除无人读取的 `model.fileSize`。`indexRootFiles` 15.6s → 6.2s，流式扫描总耗时 75.6s → 39.6s，首模型 8.5s → 7.0s |
 | 0.5.35 | 2026-11-08 | 名册冷启动只加载「上次所用模型」所在的那一个根（其余展开才加载）；扫描期间流式吐出模型（首模型从 24~30s 降到 8.5s）；扫描并发上限=1 + FIFO 排队；清单 schema 统一为 `{rootId, ts, count, generator, dirStamps, models}`（**去掉 kind / version / rootName / rootPath**，渲染器类型改由 catalog 读取时盖章） |
@@ -200,11 +204,12 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 | 0.5.28 | 2026-11-05 | 名册类型筛选：左栏搜索框下方「类型胶囊」按内容类型过滤（动态派生、多选并集、与关键词交集、计数按当前搜索、`unknown` 归「待解包」、自动换行不折叠、选中态持久化）；类型显示名单一来源 `src/shared/type-labels.mjs` |
 | 0.5.27 | 2026-11-05 | 测试分级迁移 P4：底栏「单动循环」断言判为已覆盖**整条删除**（缺口改由 schema 表断言补）、顶栏按钮集合 → `test/toolbar-contract.test.mjs`（断言 import 的 TOOLBAR_ACTIONS / 图标白名单 / 插件上限）；两个浏览器脚本共删 41 行，套件 33 → 34 |
 | 0.5.26 | 2026-11-05 | 浏览器测试分级迁移（批次 3/5）：panel-actions 的 6 条契约断言迁为静态测试 `test/panel-contract.test.mjs`（断言对象是 schema 导出表与 CSS 规则，不起浏览器）；分组标题由写死 9 个改为 schema 推导；套件 32 → 33 |
+| 0.5.26 | 2026-11-01 | 对齐成熟包的四项：`bin` 加 realpath 直接执行判据（import 不再起服务）、`serve.mjs` 加 EADDRINUSE 人话提示（退出码 2）、新增 `/api/health`（`web.sh status` 优先用它、旧实例回落首页码）、`web.sh` 日志 5MB 轮转（先 stop 再轮转、只留 1 份）；顺带修 health 的 `plugins` 恒为 0（引用了不存在的 ctx） |
+| 0.5.25 | 2026-11-05 | 测试分级迁移批次 2：新增 `test/roster-filter.test.mjs`（搜索/合并语义 unit + 键名静态断言），`roster-actions.js` 删 3 条搜索断言合并为 1 条接线冒烟；顺带修一条既有必红断言（写死渲染上限）与 4 处过时 skip 名；套件 31 → 32 |
 | 0.5.25 | 2026-11-01 | 包体积收窄：`tool/lib/` 整目录放行改为 **6 个运行时文件**（其余 7 个是测试/校验/开发件，`check-perms` / `test-lock` / `test-report` / `contract-checks` / `export-bundle` / `cubism-core` / `spine-runtime`）；发布守卫新增四类禁止项（`test/`、`*.test.*`、`*.map`、开发工具、缓存/上传/日志）；包内 286 → 279 文件 |
+| 0.5.24 | 2026-11-05 | 浏览器测试迁移第 1 批：资源根 CRUD 的 7 条 HTTP 契约断言迁到 `test/roots-api.test.mjs`（浏览器侧只留 3 条交互断言 + 4 条冒烟）；顺带修 `409` 响应丢 `path`/`existing` 的透传缺陷（已补回归断言） |
 | 0.5.24 | 2026-11-01 | 发布准备：补 `THIRD_PARTY_NOTICES.md`、README「合规状态」扩到 Live2D Cubism 与 pixi.js 并注明「服务端把运行时报给浏览器 = 分发行为」；补 author/keywords/bugs、清理 `files` 无效条目；去掉 `private` 以便发布；README 标注项目进入维护为主阶段 |
 | 0.5.23 | 2026-11-01 | 解包节点判据由「名字前缀」改为「结构形式」（`/^CAB-[0-9a-f]{32}$/i`，四处统一 + 防漂移单测）：`.resS` / `.resource`（FSB5 音频银行）不再被误当 serialized file；顺带修好两个包的不完整提取（假节点抛错曾中断循环，真节点没被处理）；测试套件 29 → 30 |
-| 0.5.25 | 2026-11-05 | 测试分级迁移批次 2：新增 `test/roster-filter.test.mjs`（搜索/合并语义 unit + 键名静态断言），`roster-actions.js` 删 3 条搜索断言合并为 1 条接线冒烟；顺带修一条既有必红断言（写死渲染上限）与 4 处过时 skip 名；套件 31 → 32 |
-| 0.5.24 | 2026-11-05 | 浏览器测试迁移第 1 批：资源根 CRUD 的 7 条 HTTP 契约断言迁到 `test/roots-api.test.mjs`（浏览器侧只留 3 条交互断言 + 4 条冒烟）；顺带修 `409` 响应丢 `path`/`existing` 的透传缺陷（已补回归断言） |
 | 0.5.22 | 2026-11-01 | `tool/lib/runtime-package.mjs` 的 `writeAtomic` 写前自建父目录（原子写函数不依赖调用方建目录）；`src/server/http/atomic-json.mjs` 核实后本就有 `ensureDir`，未改动 |
 | 0.5.21 | 2026-11-01 | 修 `document.files` 的 catalog 请求无超时：加 `DOC_FILES_TIMEOUT_MS = 6000` + `AbortSignal.timeout`，`pending` 清理移入 `finally`（挂起后可重试，不再永久占位），失败记 warn 含 rootId/url/reason |
 | 0.5.20 | 2026-10-31 | 全量审计后清理真实硬编码：插件清单 `depsDir` 改 `${MODELSTAGE_DEPS_DIR}` 占位符（换机只改 env）、删 `interpreter` 交给探测链、MIME 字面量各文件提常量、6 个脚本统一 `here(import.meta.url)`、清 5 处注释日期 |
