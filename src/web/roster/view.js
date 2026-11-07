@@ -19,6 +19,7 @@ import { visibleChars } from './filter.js';
 import { deriveTypeCounts, filterCharsByType, typeKeyOf, usableTypeSelection } from './type-filter.js';
 import { typeLabel } from '../../shared/type-labels.mjs';
 import { snapshotRoster } from './snapshot.js';
+import { createRosterStore } from './store.js';
 import { readSaved, saveState, readLastModel, saveLastModel } from './persist.js';
 import {
   createNameIndex, mergeNameTable, loadRootModels, loadRootNames, buildChars,
@@ -52,49 +53,6 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
   // 类型胶囊行：容器由 index.html 提供（#roster-type-filter），这里只取引用；
   //   取不到（旧页面/单测）就整体降级为"没有类型筛选"，不影响名册其余功能。
   const typeFilterEl = typeof document !== 'undefined' ? document.getElementById('roster-type-filter') : null;
-  const state = {
-    games: [],
-    loaded: new Map(),
-    gameChars: new Map(),
-    expandedGames: new Set(),
-    expandedChars: new Set(),
-    keyword: '',
-    /**
-     * 类型筛选的选中集合（**存储原样**，可能含当前名册里已不存在的 key）。
-     * 为什么不在读入时就剪掉失效项：设计上要求"暂时消失的类型再出现时自动恢复选中"，
-     *   剪掉就丢了这条信息；渲染期用 usableTypeSelection 现算生效集合即可。
-     */
-    typeFilter: new Set(),
-    selected: null,
-    activeGame: null,
-    /**
-     * 后台形态探测的进度快照（**本次不做 UI，数据先就绪**）。
-     *
-     * 将来要加面板/进度条时，**直接读这里，不用再改服务端**：
-     *   state.probe = { remaining, at, rootId }
-     *     remaining 剩余待探条目数（服务端 probeRemaining 原值；null = 老服务端没这字段）
-     *     at        这次取到它的时间戳（性能无关，只用于判断"多久没更新了"）
-     *     rootId    最近一次刷新它的资源根（每列一个根都会刷新，值是**全局**队列深度）
-     * 读法示例：`window.__WEB__.state.roster.state.probe.remaining`
-     * 更细的计数（runs/probed/unsupported/unknown/skipped/lastBatchMs/lastTrigger）
-     *   走 `GET /api/entries/probe`，那才是权威，这里只是"最近一次 catalog 响应顺带回来的"。
-     */
-    probe: { remaining: null, at: null, rootId: null },
-    /**
-     * 扫描进度：rootId → { monitor, controller, game }。
-     * 为什么按根而不是按游戏：扫描是"每个资源根一次"（同一个游戏可能挂着 3 个根），
-     *   状态行显示的是**该游戏当前在扫的那个根**的进度。
-     */
-    scan: new Map(),
-    /** 本页生命周期内已经跑过进度流的根（避免每次展开/重渲染都重新订阅） */
-    scannedRoots: new Set(),
-    /**
-     * 已完成根的计数基线：gameKey → { scanned, dirs }。
-     * 为什么需要：多根游戏是逐根扫的，第一根扫完就从活跃集合消失；
-     *   不保留它的计数，界面会从"135 条"掉回"0 条"（看起来像重来一次）。
-     */
-    scanBaseline: new Map(),
-  };
   // 定位控制器：把"选中后滚到可见"的策略外置（见 roster/reveal.js）
   /**
    * 调试计数器（**纯计量**，只做 ++，不影响任何调度与渲染结果）。
@@ -180,6 +138,27 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
   const scheduleRender = scheduler.request;
   const flushRender = scheduler.flush;
 
+  // 名册状态由 store 统一持有（**唯一可写者**）；view 只读 state、通过动作改。
+  //   activeGame / probe / scannedRoots 是**视图自身展示态**（不属于名册数据），仍挂在这里。
+  const store = createRosterStore({ buildChars, onChange: () => scheduleRender() });
+  const state = store.state;
+  state.activeGame = null;
+  /** 本页生命周期内已经跑过进度流的根（避免每次展开/重渲染都重新订阅） */
+  state.scannedRoots = new Set();
+  /**
+   * 后台形态探测的进度快照（**本次不做 UI，数据先就绪**）。
+   *
+   * 将来要加面板/进度条时，**直接读这里，不用再改服务端**：
+   *   state.probe = { remaining, at, rootId }
+   *     remaining 剩余待探条目数（服务端 probeRemaining 原值；null = 老服务端没这字段）
+   *     at        这次取到它的时间戳（性能无关，只用于判断"多久没更新了"）
+   *     rootId    最近一次刷新它的资源根（每列一个根都会刷新，值是**全局**队列深度）
+   * 读法示例：`window.__WEB__.state.roster.state.probe.remaining`
+   * 更细的计数（runs/probed/unsupported/unknown/skipped/lastBatchMs/lastTrigger）
+   *   走 `GET /api/entries/probe`，那才是权威，这里只是"最近一次 catalog 响应顺带回来的"。
+   */
+  state.probe = { remaining: null, at: null, rootId: null };
+
   const reveal = createReveal({ listEl, getState: () => state, render: () => render() });
 
   const nameIndex = createNameIndex();
@@ -229,15 +208,15 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     if (!game) return;
     if (opts.reset) {
       for (const root of game.roots) {
-        state.loaded.delete(root.id);
-        state.scannedRoots.delete(root.id);
-        state.scanBaseline.delete(game.key);
-        const cur = state.scan.get(root.id);
+        const cur = store.getScan(root.id);
         if (cur && cur.controller) { try { cur.controller.abort(); } catch { /* 已结束 */ } }
-        state.scan.delete(root.id);
+        store.resetRoots([root.id]);
+        store.clearScan(root.id);
+        state.scannedRoots.delete(root.id);
       }
+      store.clearScanBaseline(game.key);
     }
-    state.expandedGames.add(game.key);
+    store.expandGame(game.key);
     render();
     try { await ensureGameLoaded(game); } catch { /* 失败由 error 状态与行上的「重试」承载 */ }
     render();
@@ -365,7 +344,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
       onChange: () => applyScanStatusToRow(game, aggregateScan(game)),
     });
     const controller = typeof AbortController === 'function' ? new AbortController() : null;
-    state.scan.set(root.id, { monitor, controller, game });
+    store.updateScan(root.id, { monitor, controller, game });
     monitor.begin();
     const done = (async () => {
       try {
@@ -383,16 +362,16 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     })();
     return done.finally(() => {
       const finalState = monitor.state;
-      const cur = state.scan.get(root.id);
-      if (cur && cur.monitor === monitor) state.scan.delete(root.id);
+      const cur = store.getScan(root.id);
+      if (cur && cur.monitor === monitor) store.clearScan(root.id);
       // 这一根结束了：把它的计数并入"已完成基线"，否则下一个根从 0 开始会让总数倒退
       if (game && (finalState.phase === 'loaded' || finalState.phase === 'failed')) {
-        state.scanBaseline.set(game.key, mergeScanBaseline(state.scanBaseline.get(game.key) || null, finalState));
+        store.setScanBaseline(game.key, mergeScanBaseline(store.getScanBaseline(game.key), finalState));
       }
       applyScanStatusToRow(game, aggregateScan(game) || { phase: 'loaded' });   // 其它根还在扫就继续显示它们
       // 扫描完成 ⇒ 若这根的清单请求当初没回来，现在补取一次（只补一次）
       if (finalState.phase === 'loaded') {
-        const entry = state.loaded.get(root.id);
+        const entry = store.getRoot(root.id);
         if (entry && entry.pendingCatalogRetry) refetchCatalog(root);
       }
       scheduleRender();                            // 紧接着渲染一次，把正常计数补回去
@@ -403,11 +382,11 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
   function retryScan(gameKey) {
     const game = state.games.find((g) => g.key === gameKey);
     if (!game) return;
-    state.scanBaseline.delete(game.key);   // 新一轮：基线清零（否则重试后数字会叠加上一轮）
+    store.clearScanBaseline(game.key);   // 新一轮：基线清零（否则重试后数字会叠加上一轮）
     for (const root of game.roots) {
-      const cur = state.scan.get(root.id);
+      const cur = store.getScan(root.id);
       if (cur && cur.controller) { try { cur.controller.abort(); } catch { /* 已结束 */ } }
-      state.scan.delete(root.id);
+      store.clearScan(root.id);
       state.scannedRoots.delete(root.id);   // 允许重新订阅
     }
     const targets = game.roots.filter((r) => scanStreamUrl(r));
@@ -480,7 +459,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
       entry.promise = null;
       scheduleRender();          // 加载完成：合并到下一帧（不再每个根各渲一次）
     })();
-    state.loaded.set(root.id, entry);
+    store.setRootStatus(root.id, entry);
     scheduleRender();            // 开始加载：同上（视觉上只是把游戏行标成 loading）
     return entry.promise.then(() => entry);
   }
@@ -503,13 +482,8 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
    * @param {object} game
    */
   function rebuildGameChars(game) {
-    const models = [];
-    for (const root of game.roots) {
-      const entry = state.loaded.get(root.id);
-      if (entry && entry.status === 'ready') models.push(...entry.models);
-    }
-    const { chars, stats } = buildChars(models, nameIndex, game.name);
-    state.gameChars.set(game.key, { chars, stats });
+    // 归并逻辑收在 store（store.rebuildChars 与这里原来是同一份实现）
+    store.rebuildChars(game.key, { nameIndex });
   }
 
   /**
@@ -682,7 +656,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
       const agg = aggregateScan(game);
       if (agg) { applyScanStatusToRow(game, agg); continue; }
       // 没有活跃扫描：这一轮结束（该游戏已 ready）⇒ 丢掉基线，免得下次展开时把旧数字算进去
-      if (state.scanBaseline.has(game.key) && gameStatus(game) === 'ready') state.scanBaseline.delete(game.key);
+      if (state.scanBaseline.has(game.key) && gameStatus(game) === 'ready') store.clearScanBaseline(game.key);
     }
 
     // 供自动化断言：把状态投影成可读快照
@@ -699,12 +673,12 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
   /** 点一级：折叠/展开游戏（首次展开触发该游戏所有根的数据加载） */
   async function onGameClick(gameKey) {
     if (state.expandedGames.has(gameKey)) {
-      state.expandedGames.delete(gameKey);
+      store.toggleGame(gameKey);
       render();
       saveState(state);
       return;
     }
-    state.expandedGames.add(gameKey);
+    store.expandGame(gameKey);
     // 先渲染一次：已加载过的游戏直接出角色行（ensureGameLoaded 在无待加载根时不会单独渲染）
     render();
     const game = state.games.find((g) => g.key === gameKey);
@@ -714,8 +688,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
 
   /** 点二级：折叠/展开角色（变体已在内存，不发请求） */
   function onCharClick(charKey) {
-    if (state.expandedChars.has(charKey)) state.expandedChars.delete(charKey);
-    else state.expandedChars.add(charKey);
+    store.toggleChar(charKey);
     render();
     saveState(state);
   }
@@ -723,7 +696,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
   /** 点三级：选中变体（高亮 + 记录状态，M4 用它去渲染） */
   function onVariantClick(modelId, gameKey, charKey) {
     const game = state.games.find((g) => g.key === gameKey);
-    state.selected = { modelId, gameKey, gameName: game ? game.name : null, charKey };
+    store.selectModel({ modelId, gameKey, gameName: game ? game.name : null, charKey });
     state.activeGame = game ? game.name : state.activeGame;
     // 记「上次所用模型」指针（rootId/kind/modelId）：下次冷启动只加载它所在的那一个根
     try { saveLastModel((modelById.get(modelId) || {}).model || null); } catch { /* 指针只是加速启动 */ }
@@ -772,12 +745,11 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
         const button = event.target && event.target.closest ? event.target.closest('button') : null;
         if (!button || !typeFilterEl.contains(button)) return;
         if (button.dataset.role === 'clear-type-filter') {
-          state.typeFilter.clear();
+          store.clearTypeFilter();
         } else {
           const typeKey = button.dataset.typeKey;
           if (!typeKey) return;
-          if (state.typeFilter.has(typeKey)) state.typeFilter.delete(typeKey);
-          else state.typeFilter.add(typeKey);
+          store.toggleTypeFilter(typeKey);
         }
         // 不写 localStorage：筛选只在内存里生效（刷新后回到不筛选），
         //   否则旧的筛选会在下次启动时把上次所用的模型挡住。
@@ -804,7 +776,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     });
 
     searchEl.addEventListener('input', () => {
-      state.keyword = searchEl.value.trim().toLowerCase();
+      store.setKeyword(searchEl.value);
       // 搜索要全局数据：首次输入时把所有游戏补上（之后都走缓存，不再请求）
       if (state.keyword && [...state.gameChars.keys()].length < state.games.length) {
         ensureAllLoaded();
@@ -815,8 +787,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
 
     // 「收起」：只清空两级展开状态，面板保留
     collapseBtn.addEventListener('click', () => {
-      state.expandedGames.clear();
-      state.expandedChars.clear();
+      store.collapseAll();
       render();
       saveState(state);
     });
@@ -830,22 +801,14 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
   function mount(roots, opts) {
     const restoreExpanded = !opts || opts.restoreExpanded !== false;
     // 类型筛选不再持久化：每次打开都是不筛选（筛选是当次会话内的临时动作）
-    state.typeFilter = new Set();
-    // 同名根合并成一个游戏节点（照 char-tree.js：name 是归一 key）
-    const byName = new Map();
-    for (const root of roots) {
-      const name = root.name || root.id;
-      if (!byName.has(name)) byName.set(name, { key: `game:${name}`, name, roots: [] });
-      byName.get(name).roots.push(root);
-    }
-    state.games = [...byName.values()];
+    store.setTypeFilter([]);
+    // 同名根合并成游戏节点：合并规则收在 store.setRoots（与原来同一份实现）
+    store.setRoots(roots);
 
     const saved = readSaved();
     if (restoreExpanded) {
       // 展开状态恢复：只恢复仍存在的游戏，避免历史配置残留导致空节点
-      const gameKeys = new Set(state.games.map((g) => g.key));
-      for (const k of saved.games) if (gameKeys.has(k)) state.expandedGames.add(k);
-      for (const c of saved.chars) state.expandedChars.add(c);
+      store.restoreExpanded({ games: saved.games, chars: saved.chars });
       state.activeGame = saved.activeGame;
     }
 
@@ -945,12 +908,12 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
       }
       const hit = findVariant(game, modelId);
       if (!hit) continue;
-      state.selected = { modelId, gameKey: game.key, gameName: game.name, charKey: hit.charKey };
+      store.selectModel({ modelId, gameKey: game.key, gameName: game.name, charKey: hit.charKey });
       state.activeGame = game.name;
       try { saveLastModel(hit.variant && hit.variant.model ? hit.variant.model : null); } catch { /* 忽略 */ }
       // 不展开的话目标行根本没渲染出来，高亮也就无从显示
-      state.expandedGames.add(game.key);
-      state.expandedChars.add(hit.charKey);
+      store.expandGame(game.key);
+      store.expandChar(hit.charKey);
       render();
       if (opts.reveal !== false) state.lastReveal = reveal.revealActive();
       saveState(state);
@@ -983,7 +946,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
       return { restored: false, reason: 'load-failed', rootId: pointer.rootId };
     }
     rebuildGameChars(game);
-    state.expandedGames.add(game.key);
+    store.expandGame(game.key);
 
     const hit = findVariant(game, pointer.modelId);
     if (!hit) {
@@ -991,7 +954,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
       saveState(state);
       return { restored: false, reason: 'model-gone', rootId: pointer.rootId };
     }
-    state.expandedChars.add(hit.charKey);
+    store.expandChar(hit.charKey);
     // 关键：复用"用户点击变体"的同一入口 —— 它会写入选中态、存盘，并调用 onSelect 真正装载模型。
     //   只设置 state.selected + render() 是不够的：那只是"列表里高亮"，画布上什么都不会出现。
     onVariantClick(pointer.modelId, game.key, hit.charKey);

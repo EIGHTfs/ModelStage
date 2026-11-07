@@ -41,7 +41,12 @@ const PROFILE_PREFIX = path.join(os.tmpdir(), 'check-console-profile-');
 /** 单套超时：正常一套 10～60s，180s 足够；超时视为"未产出结果"并重试一次 */
 const SUITE_TIMEOUT_MS = Number(process.env.TEST_SUITE_TIMEOUT_MS) > 0
   ? Number(process.env.TEST_SUITE_TIMEOUT_MS)
-  : 180000;
+  : 300000;   // 300s：本机实测 check-plugin 在负载下会跑到 150~180s，180s 上限会把它判成超时（不是断言失败）
+
+/** 浏览器套件单独的超时：它们要真的扫资源目录（单根 20~40s，多根累加），量级与 node 套件完全不同；仍可由 TEST_BROWSER_TIMEOUT_MS 覆盖 */
+const BROWSER_SUITE_TIMEOUT_MS = Number(process.env.TEST_BROWSER_TIMEOUT_MS) > 0
+  ? Number(process.env.TEST_BROWSER_TIMEOUT_MS)
+  : 360000;
 
 /** 套件清单：顺序固定（从"接线自检"到"重交互回归"） */
 // 并发互斥（任务 15）：同一项目同时只允许一个测试实例。
@@ -706,7 +711,7 @@ function runSuite(suite) {
   const res = spawnSync(process.execPath, [
     path.join(PROJECT, 'tool', 'check-console.mjs'), url,
     '--wait', String(suite.wait), '--json', '--script', script, '--out', outFile,
-  ], { cwd: PROJECT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: SUITE_TIMEOUT_MS });
+  ], { cwd: PROJECT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: BROWSER_SUITE_TIMEOUT_MS });
 
   let parsed = null;
   try { parsed = JSON.parse(fs.readFileSync(outFile, 'utf8')); } catch { parsed = null; }

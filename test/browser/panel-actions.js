@@ -695,8 +695,10 @@ async function runWired(C) {
   const gameRow = q('[data-game-key].tree-game');
   if (gameRow) {
     click(gameRow);
-    // 等名册行真的渲染出来（盲等 900ms 在快机器上白等、在慢机器上不够）
-    await waitFor(() => qa('[data-char-key]').length > 0, { timeoutMs: 6000, label: '名册角色行渲染' });
+    // 这一步只想验证「左栏收起」把展开态清空，判据是展开态、不是角色行：
+    //   名册冷启动不加载任何游戏（只恢复上次所用模型所在的那个根），未加载的游戏展开后本来就 0 行
+    await waitFor(() => window.__WEB__.rosterSnapshot().expandedGames.length > 0,
+      { timeoutMs: 6000, label: '名册展开态生效' });
   }
   const expandedBefore = window.__WEB__.rosterSnapshot().expandedGames.length;
   click(q('#btn-collapse'));

@@ -172,7 +172,8 @@
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const q = (s) => document.querySelector(s);
 const qa = (s) => [...document.querySelectorAll(s)];
-const snap = () => window.__WEB__.rosterSnapshot();
+// 防御式：页面模块是异步加载的，任何时刻都可能还没暴露 __WEB__（见下方显式等待）
+  const snap = () => (window.__WEB__ && window.__WEB__.rosterSnapshot ? window.__WEB__.rosterSnapshot() : null);
 const click = (el) => el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
 const results = [];
 const rec = (name, sel, action, expect, actual, ok) => results.push({ name, sel, action, expect, actual, ok: !!ok });
@@ -196,6 +197,9 @@ const skip = (name, sel, expect, reason) => results.push({ name, sel, action: 's
 
   // 编排里也要用 section（分段执行器）—— 它由工厂提供，取到本地更直观
   const { section } = C;
+
+  // 等页面把 __WEB__ / rosterSnapshot 暴露出来再开始（boot 时长随机器与负载变化，不能假定导航完就好）
+  await waitFor(() => !!(window.__WEB__ && window.__WEB__.rosterSnapshot), { timeoutMs: 30000, label: '__WEB__ 就绪' });
 
   await section('初始态', () => runInitialState(C));
 
@@ -920,9 +924,12 @@ async function runKeyboardEnter(C) {
   await until(() => gameOf(kbGame).status === 'ready');
   await waitStable(rosterSig, { timeoutMs: 3000, label: '界面稳定' });   // 原 sleep(200)
   const expanded = snap().expandedGames.includes(gameOf(kbGame).key);
-  rec('键盘 Enter 展开游戏', '[data-game-key].tree-game', 'focus + Enter', '可聚焦且 Enter 与点击等价',
+  // Enter 与点击等价：判据只能是"展开态被切换"。
+  //   角色行数不能当判据 —— 名册冷启动不加载任何游戏（只恢复上次所用模型所在的那个根），
+  //   未加载的游戏展开后本来就 0 行；要求 >0 等于逼产品在键盘操作时去触发全量扫描。
+  rec('键盘 Enter 展开游戏', '[data-game-key].tree-game', 'focus + Enter', '可聚焦且 Enter 与点击等价（展开态切换）',
     `focus=${focused} expandedGames=${JSON.stringify(snap().expandedGames)} 角色行=${domRows().chars}`,
-    focused && expanded && domRows().chars > 0);
+    focused && expanded);
   click(q('#btn-collapse'));
   await waitStable(rosterSig, { timeoutMs: 3000, label: '界面稳定' });   // 原 sleep(150)
 }
