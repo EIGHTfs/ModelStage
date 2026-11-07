@@ -10,12 +10,14 @@
 import fs from 'node:fs';
 import { createLogger } from '../core/log.mjs';
 import { dirSignature, signatureMatches, generatorFingerprint } from './manifest-stamp.mjs';
-import { live2dManifestFile, ensureManifestDir } from './manifest-cache.mjs';
+import { live2dManifestFile, ensureManifestDir, live2dManifestBase } from './manifest-cache.mjs';
 import path from 'node:path';
 import { encodePath } from '../assets/probe.mjs';
 import { resolveLive2DRuntimes } from '../../../tool/resolve-live2d-runtimes.mjs';
 // 进度节流：与 Spine 侧共用同一份实现
 import { createProgressThrottle } from './scan-progress.mjs';
+// P1：清单改 JSONL（边扫边写）+ 双读兼容
+import { openManifestWriter, readManifest } from './manifest-jsonl.mjs';
 
 /** 本模块日志（统一形状 {at,level,tag,msg,detail}） */
 const log = createLogger('live2d');
@@ -209,7 +211,13 @@ export async function scanLive2DRootServer(root, opts = {}) {
       return;
     }
     const found = modelsInDir(root, absDir, relPath, entries);
-    models.push(...found.models);
+    // 边扫边写挂点（P1）：不传则完全无副作用
+    if (found.models.length) {
+      models.push(...found.models);
+      if (typeof opts.onModel === 'function') {
+        for (const m of found.models) opts.onModel(m);
+      }
+    }
     dirsScanned += 1;
     if (throttle) {
       throttle.bump({ scanned: models.length, dirs: dirsScanned, currentPath: relPath, dirCompleted: true });
@@ -229,44 +237,89 @@ export async function scanLive2DRootServer(root, opts = {}) {
  * 取 Live2D 模型列表（带落盘缓存，逻辑与 Spine 的 getModels 一致）。
  * 为什么缓存：天命之子有 2000+ 角色目录，每次刷新全量扫描会明显变慢。
  */
+/**
+ * 在跑的扫描：key = `live2d:<rootId>` → promise（与 spine 同口径，理由见 spine.mjs 里的注释）。
+ */
+const live2dInflight = new Map();
+
 export async function getLive2DModels(configFile, cfg, force, onProgress, onStart) {
-  const file = live2dModelsFile(configFile, cfg.id);
-  if (!force && fs.existsSync(file)) {
-    try {
-      const payload = JSON.parse(fs.readFileSync(file, 'utf8'));
-      if (payload.version === LIVE2D_MANIFEST_VERSION && Array.isArray(payload.models)) {
-        // 与 spine 清单同口径：两道判据 —— 生成者指纹（解析代码变）+ 目录签名（资源增删）
+  const key = `live2d:${cfg.id}`;
+  const existing = live2dInflight.get(key);
+  if (existing) return existing;
+  // 先占位再启动（同 spine，理由见其注释）
+  let settleResolve;
+  let settleReject;
+  const gate = new Promise((resolve, reject) => { settleResolve = resolve; settleReject = reject; });
+  live2dInflight.set(key, gate);
+  doGetLive2DModels(configFile, cfg, force, onProgress, onStart)
+    .then(settleResolve, settleReject)
+    .finally(() => { if (live2dInflight.get(key) === gate) live2dInflight.delete(key); });
+  return gate;
+}
+
+/** 真正干活的实现（单飞包装见上面的 getLive2DModels） */
+async function doGetLive2DModels(configFile, cfg, force, onProgress, onStart) {
+  const base = live2dManifestBase(configFile, cfg.id);
+  // 与 spine 同口径：默认 .json，env=jsonl 才写 JSONL（两种都能读）
+  const wantJsonl = String(process.env.MODELSTAGE_MANIFEST_FORMAT || 'json').toLowerCase() === 'jsonl';
+
+  if (!force) {
+    // 双读：.jsonl 优先，缺则回落 .json（视为 complete=true）
+    const m = readManifest(base);
+    if (m.format !== 'none') {
+      if (!m.complete) {
+        log.info('清单不完整（complete 非 true），重建', { id: cfg.id, badLines: m.badLines });
+      } else {
         const gen = generatorFingerprint();
-        if (payload.generator !== gen) {
-          log.info('解析器已变化，清单失效重建', { id: cfg.id, from: payload.generator || null, to: gen });
-        } else if (signatureMatches(payload.dirStamps, cfg.path)) {
-          return { models: payload.models, cached: true, ts: payload.ts };
+        if (m.meta.generator !== gen) {
+          log.info('解析器已变化，清单失效重建', { id: cfg.id, from: m.meta.generator || null, to: gen });
+        } else if (signatureMatches(m.meta.dirStamps, cfg.path)) {
+          return { models: m.models, cached: true, ts: m.meta.ts };
         } else {
           log.info('目录已变化，清单失效重建', { id: cfg.id });
         }
       }
-    } catch {
-      /* 缓存损坏则重扫 */
     }
   }
-  const models = await scanLive2DRootServer(cfg, {
-    ...(onProgress ? { onProgress } : {}),
-    ...(typeof onStart === 'function' ? { onStart } : {}),
-  });
+
   const ts = Date.now();
+  const generator = generatorFingerprint();
+  const dirStamps = dirSignature(cfg.path);
+  ensureManifestDir(configFile);
+
+  const writer = wantJsonl
+    ? openManifestWriter(base, { kind: 'live2d', rootId: cfg.id, ts, generator, dirStamps })
+    : null;
+
+  let models;
   try {
-    // 目录建一次就够（ensureManifestDir 内部就是 mkdir -p）。原先它前面还有一句
-    //   fs.mkdirSync(path.dirname(file)) —— 建的是同一个目录，重复调用，已删。
-    ensureManifestDir(configFile);
+    models = await scanLive2DRootServer(cfg, {
+      ...(onProgress ? { onProgress } : {}),
+      ...(typeof onStart === 'function' ? { onStart } : {}),
+      ...(writer ? { onModel: (m) => writer.append(m) } : {}),
+    });
+    if (writer) writer.finish(models.length);
+  } catch (e) {
+    if (writer) writer.abort();
+    throw e;
+  }
+
+  if (wantJsonl) {
+    log.info('已生成清单（jsonl）', { id: cfg.id, count: models.length, bytes: writer.bytesWritten });
+    return { models, cached: false, ts };
+  }
+
+  // 回退：只写 .json（旧格式）
+  try {
+    const file = `${base}.json`;
     const body = JSON.stringify({
       version: LIVE2D_MANIFEST_VERSION,
       rootId: cfg.id,
       ts,
-      dirStamps: dirSignature(cfg.path),   // 同上：目录签名供下次读清单时比对
-      generator: generatorFingerprint(),   // 解析器指纹：解析代码一改，清单自动失效
+      dirStamps,
+      generator,
       models,
     });
-    // 与 spine 清单同口径：先写临时文件再 rename，避免并发读拿到半份 JSON
     fs.writeFileSync(`${file}.tmp`, body, 'utf8');
     fs.renameSync(`${file}.tmp`, file);
   } catch (e) {

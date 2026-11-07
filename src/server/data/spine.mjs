@@ -12,12 +12,14 @@ import fs from 'node:fs';
 import { createLogger } from '../core/log.mjs';
 import { dirSignature, signatureMatches, generatorFingerprint } from './manifest-stamp.mjs';
 import {
-  spineManifestFile, ensureManifestDir, invalidateManifests,
+  spineManifestFile, spineManifestBase, ensureManifestDir, invalidateManifests,
 } from './manifest-cache.mjs';
 import path from 'node:path';
 import { MIME, encodePath, parseAtlasPages } from '../assets/probe.mjs';
 // 进度节流：与单飞层共用同一份实现（P0 起扫描可见进度，节流规则见设计 §5.1）
 import { createProgressThrottle } from './scan-progress.mjs';
+// P1：清单改 JSONL（边扫边写）+ 双读兼容
+import { openManifestWriter, readManifest } from './manifest-jsonl.mjs';
 
 
 
@@ -313,9 +315,19 @@ export async function scanRootServer(root, deps) {
     }
   }
 
+  // 边扫边写挂点：每产出一条模型就回调一次（P1）。不传则完全无副作用。
+  const onModel = deps && typeof deps.onModel === 'function' ? deps.onModel : null;
+  function collectModels(produced) {
+    if (!produced.length) return;
+    models.push(...produced);
+    if (onModel) {
+      for (const m of produced) onModel(m);
+    }
+  }
+
   async function walk(absDir, relPath) {
     const { files, dirs } = collectDirEntries(absDir, relPath, deps);
-    models.push(...groupModelsInDir(root, relPath, files, fileIndex, deps));
+    collectModels(groupModelsInDir(root, relPath, files, fileIndex, deps));
     dirsScanned += 1;
     if (throttle) {
       throttle.bump({ scanned: models.length, dirs: dirsScanned, currentPath: relPath, dirCompleted: true });
@@ -343,27 +355,62 @@ export function invalidateCaches(configFile, rootId) {
 }
 
 /** 取模型列表（优先读落盘清单，缺失或 force 时才扫描）。同步实现。 */
-export async function getSpineModels(configFile, root, force, deps) {
-  const f = spineFile(configFile, root.id);
+/**
+ * 在跑的扫描：key = `spine:<rootId>` → promise。
+ *
+ * 为什么单飞要放在**这里**（而不是只放在 stream 路由层）：
+ *   非流式请求（`/api/spine/models` 不带 stream）原本各自起一次扫描 ——
+ *   实测同一根 30s 内出现 4 次"清单失效重建"，一次 curl 等了 171s。
+ *   放到扫描本体这里，**所有调用方**（流式 / 非流式 / catalog / 探测）自然共用同一次扫描。
+ * force=1 时若已有扫描在跑也**复用**（用户在 UI 上狂点刷新不该变成 N 次全量扫描）。
+ */
+const spineInflight = new Map();
 
-  if (!force && fs.existsSync(f)) {
-    try {
-      const j = JSON.parse(fs.readFileSync(f, 'utf8'));
-      if (j && Array.isArray(j.models)) {
-        // 两道判据，缺一不可：
-        //   ① 生成者指纹 —— 解析代码变了就该重建（dirStamps 只感知目录增删，感知不到代码改动）
-        //   ② 目录签名  —— 资源文件增删后重建，不必等 ?refresh=1
+export async function getSpineModels(configFile, root, force, deps) {
+  const key = `spine:${root.id}`;
+  const existing = spineInflight.get(key);
+  if (existing) return existing;
+
+  // **先占位，再启动** —— 这一步不能省。
+  //   doGetSpineModels 的第一个 await（onStart 后的 setImmediate）会**让出事件循环**；
+  //   如果先调它、后 set，那么同一 tick 里进来的并发请求都会看到"没人跑" ⇒ 各起一次扫描
+  //   （实测：4 个并发 refresh=1 ⇒ 重建 4 次、总墙钟 334s）。
+  //   先塞一个 pending promise 进表，后来者立刻拿到同一个 promise。
+  let settleResolve;
+  let settleReject;
+  const gate = new Promise((resolve, reject) => { settleResolve = resolve; settleReject = reject; });
+  spineInflight.set(key, gate);
+  doGetSpineModels(configFile, root, force, deps)
+    .then(settleResolve, settleReject)
+    .finally(() => { if (spineInflight.get(key) === gate) spineInflight.delete(key); });
+  return gate;
+}
+
+/** 真正干活的实现（单飞包装见上面的 getSpineModels） */
+async function doGetSpineModels(configFile, root, force, deps) {
+  const base = spineManifestBase(configFile, root.id);
+  // 写入格式：**默认 .json（保持原有行为）**；MODELSTAGE_MANIFEST_FORMAT=jsonl 才写 JSONL。
+  //   两种格式都可读（readManifest 优先当前格式、缺失回落另一种），切换不需要迁移历史文件。
+  const wantJsonl = String(process.env.MODELSTAGE_MANIFEST_FORMAT || 'json').toLowerCase() === 'jsonl';
+
+  if (!force) {
+    // 双读：.jsonl 优先，缺则回落 .json（历史格式，视为 complete=true —— 兼容关键）
+    const m = readManifest(base);
+    if (m.format !== 'none') {
+      if (!m.complete) {
+        // 第三道门：半成品不当结果（进程被杀 / 写入中断）。先重建，别把半截清单当答案。
+        log.info('清单不完整（complete 非 true），重建', { root: root.id, badLines: m.badLines, err: m.error || null });
+      } else {
+        // 前两道门原样保留（现在从 meta 读）：① 解析器指纹 ② 目录签名
         const gen = generatorFingerprint();
-        if (j.generator !== gen) {
-          log.info('解析器已变化，清单失效重建', { root: root.id, from: j.generator || null, to: gen });
-        } else if (signatureMatches(j.dirStamps, root.path)) {
-          return { models: j.models, cached: true, ts: j.ts || Date.now() };
+        if (m.meta.generator !== gen) {
+          log.info('解析器已变化，清单失效重建', { root: root.id, from: m.meta.generator || null, to: gen });
+        } else if (signatureMatches(m.meta.dirStamps, root.path)) {
+          return { models: m.models, cached: true, ts: m.meta.ts || Date.now() };
         } else {
           log.info('目录已变化，清单失效重建', { root: root.id });
         }
       }
-    } catch (e) {
-      log.warn('清单读取失败，将重新扫描', { file: f, err: e.message });
     }
   }
 
@@ -375,25 +422,44 @@ export async function getSpineModels(configFile, root, force, deps) {
     //   不让出的话首帧照样要等到扫描启动才到达 —— 那样 onStart 就白加了。
     await new Promise((resolve) => setImmediate(resolve));
   }
-  const models = await scanRootServer(root, deps);
-  const payload = {
-    rootId: root.id,
-    rootName: root.name,
-    rootPath: root.path,
-    ts: Date.now(),
-    count: models.length,
-    // 生成时的目录签名：下次读清单先比对它，目录增删即自动重建（详见 manifest-stamp.mjs）
-    dirStamps: dirSignature(root.path),
-    // 生成时的解析器指纹：解析代码一改，这份清单自动失效（无需手工删文件）
-    generator: generatorFingerprint(),
-    models,
-  };
-  // 原子写入，避免写到一半被读到损坏内容
+
+  const ts = Date.now();
+  const generator = generatorFingerprint();
+  // 目录签名在扫描**前**算：它只扫根的一层子目录 mtime（ms 级），不影响首帧；
+  //   而且它必须与"这次扫描看到的内容"对应，放扫描后算反而可能记进别人刚改的结果。
+  const dirStamps = dirSignature(root.path);
+
   ensureManifestDir(configFile);   // 清单目录（config/models/）可能还不存在：首次运行或目录被清空
+
+  // 边扫边写：writer 在 run 内创建、与这次扫描同生命周期 —— 单飞保证同一 key 只有一个 writer。
+  //   同步 append 是微秒级（几十~几百字节），不会像目录遍历那样长时间占住事件循环。
+  const writer = wantJsonl
+    ? openManifestWriter(base, { kind: 'spine', rootId: root.id, ts, generator, dirStamps })
+    : null;
+  const scanDeps = writer ? { ...deps, onModel: (m) => writer.append(m) } : deps;
+
+  let models;
+  try {
+    models = await scanRootServer(root, scanDeps);
+    if (writer) writer.finish(models.length);
+  } catch (e) {
+    // 失败只 abort：正式 .jsonl 保持上一次的完整版本（tmp 留着供排查）
+    if (writer) writer.abort();
+    throw e;
+  }
+
+  if (wantJsonl) {
+    log.info('已生成清单（jsonl）', { file: path.basename(base) + '.jsonl', count: models.length, bytes: writer.bytesWritten });
+    return { models, cached: false, ts };
+  }
+
+  // 回退：只写 .json（旧格式，一次性序列化 —— 这个分支本来就不支持"边扫边写"）
+  const payload = { rootId: root.id, rootName: root.name, rootPath: root.path, ts, count: models.length, dirStamps, generator, models };
+  const f = `${base}.json`;
   fs.writeFileSync(`${f}.tmp`, JSON.stringify(payload), 'utf8');
   fs.renameSync(`${f}.tmp`, f);
-  log.info('已生成清单', { file: path.basename(f), count: models.length });
-  return { models, cached: false, ts: payload.ts };
+  log.info('已生成清单（json 回退）', { file: path.basename(f), count: models.length });
+  return { models, cached: false, ts };
 }
 
 /**
