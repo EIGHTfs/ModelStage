@@ -11,6 +11,10 @@
 // 状态全部收在 state 里，DOM 只是投影：这样"点一下到底改了什么"可以直接读 state 验证。
 
 import { createReveal } from './reveal.js';
+import {
+  aggregateScanSnapshots, createScanMonitor, formatScanStatus, mergeScanBaseline,
+  readNdjsonStream, scanNeedsRetry, scanStreamUrl,
+} from './scan-stream.js';
 import { visibleChars } from './filter.js';
 import { deriveTypeCounts, filterCharsByType, typeKeyOf, usableTypeSelection } from './type-filter.js';
 import { typeLabel } from '../../shared/type-labels.mjs';
@@ -76,6 +80,20 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
      *   走 `GET /api/entries/probe`，那才是权威，这里只是"最近一次 catalog 响应顺带回来的"。
      */
     probe: { remaining: null, at: null, rootId: null },
+    /**
+     * 扫描进度：rootId → { monitor, controller, game }。
+     * 为什么按根而不是按游戏：扫描是"每个资源根一次"（同一个游戏可能挂着 3 个根），
+     *   状态行显示的是**该游戏当前在扫的那个根**的进度。
+     */
+    scan: new Map(),
+    /** 本页生命周期内已经跑过进度流的根（避免每次展开/重渲染都重新订阅） */
+    scannedRoots: new Set(),
+    /**
+     * 已完成根的计数基线：gameKey → { scanned, dirs }。
+     * 为什么需要：多根游戏是逐根扫的，第一根扫完就从活跃集合消失；
+     *   不保留它的计数，界面会从"135 条"掉回"0 条"（看起来像重来一次）。
+     */
+    scanBaseline: new Map(),
   };
   // 定位控制器：把"选中后滚到可见"的策略外置（见 roster/reveal.js）
   /**
@@ -199,6 +217,151 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
    * @param {object} root
    * @returns {Promise<object>} 该根的加载状态条目（ready / error）
    */
+  /** 某根属于哪个游戏（状态行按游戏显示，扫描按根进行） */
+  function gameOfRoot(root) {
+    return state.games.find((g) => g.roots.some((r) => r.id === root.id)) || null;
+  }
+
+  /** 找到该游戏当前的游戏行（渲染是整棵重建的，所以每次都要重新查，不能缓存节点） */
+  function gameRowOf(game) {
+    if (!game) return null;
+    return [...listEl.querySelectorAll('[data-game-key].tree-game')]
+      .find((row) => row.dataset.gameKey === game.key) || null;
+  }
+
+  /**
+   * 把扫描状态贴到游戏行的状态位上（**就地改文本**，不整棵重渲染）。
+   * 为什么不重渲染：一次扫描会发几十帧，每帧重建 400+ 行会把主线程占死 —— 而状态行就是一行文本。
+   * @param {object|null} game
+   * @param {object} snap createScanMonitor().state
+   */
+  /**
+   * 把一个游戏下**所有正在扫描的根**聚合成一个状态（含"已完成根"的计数基线）。
+   * 具体口径在 scan-stream.js:aggregateScanSnapshots（纯函数，有单测）；
+   *   这里只负责把视图里活跃的 monitor 与基线凑起来。
+   * @param {object|null} game
+   * @returns {object|null} null = 该游戏当前没有扫描在进行
+   */
+  function aggregateScan(game) {
+    if (!game) return null;
+    const snaps = [];
+    for (const [rootId, cur] of state.scan) {
+      if (game.roots.some((r) => r.id === rootId)) snaps.push(cur.monitor.state);
+    }
+    return aggregateScanSnapshots(snaps, state.scanBaseline.get(game.key) || null);
+  }
+
+  function applyScanStatusToRow(game, snap) {
+    const row = gameRowOf(game);
+    if (!row) return;
+    let slot = row.querySelector('.tree-count');
+    if (!slot) {
+      slot = el('span', 'tree-count', '');
+      row.append(slot);
+    }
+    const text = formatScanStatus(snap);
+    if (text) {
+      slot.textContent = text;
+      slot.classList.add('is-scanning');
+      slot.title = snap.currentPath ? `当前：${snap.currentPath}` : '';
+    } else if (slot.classList.contains('is-scanning')) {
+      // 扫描结束（loaded/idle）⇒ 把进度文案收拾掉；正常计数由下一次 render 补上
+      slot.textContent = '';
+      slot.classList.remove('is-scanning');
+      slot.title = '';
+    }
+    // 〔重试〕：只在 stalled/failed 出现；点击由 listEl 上的委托统一处理（见 bindEvents）
+    let retry = row.querySelector('[data-scan-retry]');
+    if (scanNeedsRetry(snap)) {
+      if (!retry) {
+        retry = el('button', 'tree-scan-retry', '重试');
+        retry.type = 'button';
+        retry.dataset.scanRetry = game.key;
+        retry.title = '重新订阅扫描进度（服务端有单飞，不会重复扫描）';
+        row.append(retry);
+      }
+    } else if (retry) {
+      retry.remove();
+    }
+  }
+
+  /**
+   * 首次展开时用 `stream=1` 订阅扫描进度（NDJSON 帧）。
+   *
+   * 为什么先流后 JSON：首次扫描（缓存未命中）要几十秒，这段时间原来只有"加载中…"；
+   *   先订阅流拿到 progress，扫描结束后再走原来的 `/api/catalog`（那时已落盘、命中缓存很快）。
+   * 失败一律**不阻断**名册：进度是增强，读不到就照旧等 JSON（只是看不到数字）。
+   *
+   * @param {object} root
+   * @returns {Promise<void>} 流结束（done/cached/error/网络失败）后 resolve —— 永不 reject
+   */
+  function trackScanProgress(root) {
+    const url = scanStreamUrl(root);
+    if (!url || state.scannedRoots.has(root.id)) return Promise.resolve();
+    state.scannedRoots.add(root.id);
+    const game = gameOfRoot(root);
+    const monitor = createScanMonitor({
+      // 阈值来源：服务端 /api/web-config 下发（可选），缺省用 shared 里的常量——不在这里写死数字
+      stallMs: (window.__WEB_CONFIG__ && window.__WEB_CONFIG__.scanStallMs) || undefined,
+      // 每次变化都用"该游戏的聚合状态"刷新状态行（多根并行时不能互相覆盖）
+      onChange: () => applyScanStatusToRow(game, aggregateScan(game)),
+    });
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    state.scan.set(root.id, { monitor, controller, game });
+    monitor.begin();
+    const done = (async () => {
+      try {
+        const res = await fetch(url, {
+          headers: { accept: 'application/x-ndjson' },
+          signal: controller ? controller.signal : undefined,
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        await readNdjsonStream(res, (frame) => monitor.frame(frame));
+        monitor.end();     // 流结束但没有完成帧 ⇒ 判失败（不假装完成）
+      } catch (error) {
+        if (controller && controller.signal.aborted) return;   // 主动关流（重试/换游戏）不算失败
+        monitor.fail((error && error.message) || String(error));
+      }
+    })();
+    return done.finally(() => {
+      const finalState = monitor.state;
+      const cur = state.scan.get(root.id);
+      if (cur && cur.monitor === monitor) state.scan.delete(root.id);
+      // 这一根结束了：把它的计数并入"已完成基线"，否则下一个根从 0 开始会让总数倒退
+      if (game && (finalState.phase === 'loaded' || finalState.phase === 'failed')) {
+        state.scanBaseline.set(game.key, mergeScanBaseline(state.scanBaseline.get(game.key) || null, finalState));
+      }
+      applyScanStatusToRow(game, aggregateScan(game) || { phase: 'loaded' });   // 其它根还在扫就继续显示它们
+      scheduleRender();                            // 紧接着渲染一次，把正常计数补回去
+    });
+  }
+
+  /** 重试：关掉当前流 → 重新以 stream=1 订阅（服务端单飞，不会重复扫描） */
+  function retryScan(gameKey) {
+    const game = state.games.find((g) => g.key === gameKey);
+    if (!game) return;
+    state.scanBaseline.delete(game.key);   // 新一轮：基线清零（否则重试后数字会叠加上一轮）
+    for (const root of game.roots) {
+      const cur = state.scan.get(root.id);
+      if (cur && cur.controller) { try { cur.controller.abort(); } catch { /* 已结束 */ } }
+      state.scan.delete(root.id);
+      state.scannedRoots.delete(root.id);   // 允许重新订阅
+    }
+    const targets = game.roots.filter((r) => scanStreamUrl(r));
+    if (!targets.length) return;
+    Promise.all(targets.map((root) => trackScanProgress(root)))
+      // 进度流跑完（成功或失败）后，若该根还没数据就顺手补一次正常加载
+      .then(() => {
+        const needLoad = game.roots.filter((r) => {
+          const e = state.loaded.get(r.id);
+          return !e || e.status === 'idle' || e.status === 'error';
+        });
+        return Promise.all(needLoad.map((r) => ensureRootLoaded(r)));
+      })
+      .then(() => { rebuildGameChars(game); scheduleRender(); })
+      .catch(() => { /* 重试失败不影响名册本身 */ });
+  }
+
   function ensureRootLoaded(root) {
     counters.ensureRootLoaded += 1;
     // 名册计时：从**第一次**请求某根开始，到"所有已知根都 settle"结束。
@@ -217,6 +380,10 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
           const table = await loadRootNames(root.id);
           if (table) mergeNameTable(nameIndex, table);
         }
+        // 进度流**并行**订阅（不阻塞取清单）：
+        //   服务端扫描有单飞，catalog 自己也会触发/加入同一次扫描；先 await 流会把首屏拖慢一整轮扫描，
+        //   而进度只是"看得见"，不该成为加载的前置条件。失败也不阻断（trackScanProgress 自身不 reject）。
+        trackScanProgress(root);
         const { models, source, serverSource, probeRemaining } = await loadRootModels(root);
         for (const m of models) {
         // 名册持有的就是这个对象本身（buildChars 的 variants[].model 也是它），
@@ -425,6 +592,14 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
       ? `搜索「${state.keyword}」：${totalChars} 角色 / ${totalVariants} 变体`
       : `${prefix}：${totalChars} 角色 / ${totalVariants} 变体`;
 
+    // 重建会把行换成新节点：仍在扫描的根要把状态行重新贴回去（否则一次别的渲染就把进度冲掉）
+    for (const game of state.games) {
+      const agg = aggregateScan(game);
+      if (agg) { applyScanStatusToRow(game, agg); continue; }
+      // 没有活跃扫描：这一轮结束（该游戏已 ready）⇒ 丢掉基线，免得下次展开时把旧数字算进去
+      if (state.scanBaseline.has(game.key) && gameStatus(game) === 'ready') state.scanBaseline.delete(game.key);
+    }
+
     // 供自动化断言：把状态投影成可读快照
     document.documentElement.dataset.rosterReady = '1';
     document.documentElement.dataset.rosterSnapshot = JSON.stringify(snapshot());
@@ -522,6 +697,15 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
         render();
       });
     }
+
+    // 扫描状态行上的〔重试〕：事件委托（行会被重建，逐个绑会漏）
+    listEl.addEventListener('click', (event) => {
+      const button = event.target && event.target.closest ? event.target.closest('[data-scan-retry]') : null;
+      if (!button) return;
+      event.preventDefault();
+      event.stopPropagation();     // 别让点重试顺带把游戏行折叠/展开
+      retryScan(button.dataset.scanRetry);
+    });
 
     searchEl.addEventListener('input', () => {
       state.keyword = searchEl.value.trim().toLowerCase();

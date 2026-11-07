@@ -27,6 +27,12 @@ export function snapshotRoster({ state, listEl, gameStatus }) {
     keyword: state.keyword,
     /** 类型筛选的选中集合（**存储原样**，可能含当前名册里不存在的失效项） */
     typeFilter: state.typeFilter ? [...state.typeFilter] : [],
+    /** 正在扫描的根（断言"状态行数字在动"时读这里，不必解析文案） */
+    scan: state.scan ? [...state.scan.entries()].map(([rootId, cur]) => ({
+      rootId, phase: cur.monitor.state.phase, scanned: cur.monitor.state.scanned,
+      dirs: cur.monitor.state.dirs, currentPath: cur.monitor.state.currentPath,
+      stalledFor: cur.monitor.state.stalledFor,
+    })) : [],
     selected: state.selected,
     /** 最近一次"定位当前角色"的结果（visible / scrolled / skipped-user-scrolling / …） */
     lastReveal: state.lastReveal || null,

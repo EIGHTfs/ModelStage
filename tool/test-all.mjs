@@ -132,6 +132,8 @@ const SUITES = [
   // VirtualFS 纯模块（注册/命中/归一化/revoke/重复注册/懒创建缓存/统计口径）：
   //   它是插件资源进渲染层的唯一通道，纯函数秒级，必须是契约级保护而非交互套件的副产品
   { name: 'vfs', runner: 'node-test', file: 'test/vfs.test.mjs' },
+  // 扫描进度：NDJSON 切帧 + 状态机（scanning/stalled/loaded/failed）+ 判死阈值单一来源
+  { name: 'scan-stream', runner: 'node-test', file: 'test/scan-stream.test.mjs' },
   // 就绪阶段跟踪：超时必须留下可归因记录、且不能把"已有画面"判成失败（纯 node，假画布）
   { name: 'ready-track', runner: 'node-test', file: 'test/ready-track.test.mjs' },
   // 名册类型筛选（纯函数：类型派生 / 计数口径 / 多选并集 / 与关键词交集 / 持久化收敛）
