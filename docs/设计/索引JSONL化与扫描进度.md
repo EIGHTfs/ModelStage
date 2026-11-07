@@ -78,17 +78,28 @@ config/models/<kind>.<rootId>.json         历史格式（只读兼容，P2 删�
 ### 4.2 记录格式（三种行）
 
 ```jsonl
-{"_":"meta","v":1,"kind":"spine","rootId":"azurlane_spine","ts":1793991336537,"generator":"642803b7","dirStamps":{"root":1793370056514,"dirs":{"A":1,"B":2}},"complete":false}
-{"t":"m","k":"azurlane_spine/chara/xxx/xxx.skel","v":{"id":"…","name":"…","kind":"spine","meta":{"motions":[]}}}
+{"_":"meta","rootId":"azurlane_spine","ts":1793991336537,"generator":"642803b7","dirStamps":{"root":1793370056514,"dirs":{"A":1,"B":2}},"complete":false}
+{"t":"m","k":"azurlane_spine/chara/xxx/xxx.skel","v":{"id":"…","name":"…","meta":{"motions":[]}}}
 {"t":"m","k":"azurlane_spine/chara/yyy/yyy.skel","v":{…}}
 {"t":"meta","k":"complete","v":{"count":2188,"ts":1793991352000}}
 ```
 
 | 行 | 必需 | 字段 | 说明 |
 |---|---|---|---|
-| meta（首行） | 是 | `_`="meta"、`v`（格式版本，从 1 起）、`kind`、`rootId`、`ts`、`generator`、`dirStamps`、`complete` | 恰好一行；`complete:false` 起始 |
+| meta（首行） | 是 | `_`="meta"、`rootId`、`ts`、`generator`、`dirStamps`、`complete` | 恰好一行；`complete:false` 起始 |
 | 数据行 | 是 | `t`="m"、`k`（模型 key）、`v`（模型对象，形状与现有 `models[i]` **逐字段一致**） | 一条模型一行 |
 | complete（末行） | 是（成功时） | `t`="meta"、`k`="complete"、`v`={count,ts} | last-wins 覆盖首行的 `complete` |
+
+> **⚠️ 本表初版写错了三处（实现时被发现并已全仓修正，此处同步更正）**
+>
+> | 初版写的 | 问题 | 现行做法 |
+> |---|---|---|
+> | meta 行带 `"kind":"spine"` | 清单是可分发数据，**渲染器类型属于"由谁读出来"**，不该存进数据；且会让两种清单字段不一致 | **不存 kind**；由 `catalog` 在读取时盖章（`toSpineEntry` → 'spine'、`toLive2DEntry` → 'live2d'） |
+> | meta 行带 `"v":1` 格式版本 | 版本号会带来"版本不认识怎么办"的分支；而格式本身已由扩展名与 `_:"meta"` 行区分 | **不存版本号**，`FORMAT_VERSION` 常量一并删除 |
+> | 模型对象示例里带 `"kind":"spine"` | 同上：模型条目也不该带渲染器类型 | 模型条目**无 kind** |
+>
+> 另外 JSON 清单头也统一成同一套字段：`{rootId, ts, count, generator, dirStamps, models}`
+> （去掉只在 spine 有的 `rootName`/`rootPath`——grep 确认无消费方；去掉只在 live2d 有的 `version`；live2d 补 `count`）。
 
 **key 规则**：`k` = 现有模型 `id`（已含 root 内相对路径，天然避免"不同子目录同名文件"冲突）。
 同一 key 重复出现 ⇒ **后写覆盖先写**（重扫时不必先删旧行，直接追加即可）。
