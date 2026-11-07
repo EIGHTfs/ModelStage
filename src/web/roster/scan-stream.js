@@ -273,6 +273,53 @@ export function aggregateScanSnapshots(snaps, baseline) {
 }
 
 /**
+ * **游戏行状态的唯一判定**（单一真相）。
+ *
+ * 为什么必须只有一处：曾经行上的状态位来自"扫描监控"，而"加载失败 · 重试"来自 catalog 的 entry.status，
+ *   两者各画一套 ⇒ 同一行同时出现「扫描中 · 已读取 89 条」和「加载失败 · 重试」，
+ *   用户看到的是"明明还在读却说失败"。这里把两个来源合成一个枚举，视图只认它。
+ *
+ * 优先级（高 → 低）：
+ *   scanning   扫描流活着（未 stalled）⇒ 只能是"扫描中"，**绝不允许同时显示失败**
+ *   stalled    流超过阈值无帧 ⇒ 显示"疑似卡住"（可重试）
+ *   loading    没有流在跑，但有根正在取清单
+ *   error      取清单失败且**没有**活跃扫描（这才是真失败）
+ *   ready      至少一个根有数据
+ *   idle       从没加载过
+ *
+ * @param {{scan?: object|null, rootStates?: string[]}} input
+ *        scan = aggregateScanSnapshots(...) 的返回值；rootStates = 每个根的 entry.status
+ * @returns {'scanning'|'stalled'|'loading'|'error'|'ready'|'idle'}
+ */
+export function resolveGamePhase({ scan, rootStates } = {}) {
+  const states = Array.isArray(rootStates) ? rootStates.filter(Boolean) : [];
+  const phase = scan && scan.phase ? String(scan.phase) : '';
+  // 流在推进：无论 catalog 那边报什么，行状态只能是扫描中
+  if (phase === 'scanning') return 'scanning';
+  if (phase === 'stalled') return 'stalled';
+  if (states.includes('loading')) return 'loading';
+  if (states.length && states.every((state) => state === 'error')) return 'error';
+  if (states.includes('error') && !states.includes('ready') && !states.includes('loading')) return 'error';
+  if (states.includes('ready')) return 'ready';
+  if (phase === 'failed') return 'error';
+  if (states.includes('idle') || !states.length) return 'idle';
+  return 'ready';
+}
+
+/**
+ * catalog 失败时该不该"暂缓判死"。
+ *
+ * 判据只有一条：该根的扫描流**仍在推进**（phase='scanning'）⇒ 清单没回来是"还在扫"，
+ *   不是"失败了"；应当保持 loading，等 done 帧后自动补取一次。
+ * 流已 stalled（超过阈值无帧）/ failed / 已结束 ⇒ 不再等，按失败处理。
+ * @param {string} scanPhase createScanMonitor().state.phase
+ * @returns {boolean}
+ */
+export function shouldDeferCatalogFailure(scanPhase) {
+  return String(scanPhase || '') === 'scanning';
+}
+
+/**
  * 状态行文案（设计 §7.2）。返回 '' 表示"不显示额外提示"（交给原有渲染）。
  * @param {object} snap createScanMonitor().state
  * @returns {string}

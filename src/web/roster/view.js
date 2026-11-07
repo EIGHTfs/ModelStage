@@ -13,13 +13,13 @@
 import { createReveal } from './reveal.js';
 import {
   aggregateScanSnapshots, createScanMonitor, formatScanStatus, mergeScanBaseline,
-  readNdjsonStream, scanNeedsRetry, scanStreamUrl,
+  readNdjsonStream, resolveGamePhase, scanNeedsRetry, scanStreamUrl, shouldDeferCatalogFailure,
 } from './scan-stream.js';
 import { visibleChars } from './filter.js';
 import { deriveTypeCounts, filterCharsByType, typeKeyOf, usableTypeSelection } from './type-filter.js';
 import { typeLabel } from '../../shared/type-labels.mjs';
 import { snapshotRoster } from './snapshot.js';
-import { readSaved, saveState, readTypeFilter, saveTypeFilter, readLastModel, saveLastModel } from './persist.js';
+import { readSaved, saveState, readLastModel, saveLastModel } from './persist.js';
 import {
   createNameIndex, mergeNameTable, loadRootModels, loadRootNames, buildChars,
 } from './list.js';
@@ -244,6 +244,37 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     saveState(state);
   }
 
+  /**
+   * 扫描完成（done / cached 帧）之后补取一次清单。
+   *
+   * 为什么由完成帧驱动而不是定时器：扫描完成后清单已落盘，此时取一次是毫秒级；
+   *   用固定等待猜时机既慢又不准。只补一次，仍失败就落到 error，由行上的「加载失败 · 重试」按钮重来。
+   * @param {object} root
+   */
+  async function refetchCatalog(root) {
+    const entry = state.loaded.get(root.id);
+    if (!entry) return;
+    entry.pendingCatalogRetry = false;
+    entry.status = 'loading';
+    entry.error = null;
+    scheduleRender();
+    try {
+      const { models, source, serverSource, probeRemaining } = await loadRootModels(root);
+      for (const m of models) modelById.set(m.id, { model: m, rootId: root.id });
+      entry.status = 'ready';
+      entry.models = models;
+      entry.source = source;
+      noteProbeProgress(root.id, probeRemaining);
+      recordRootLoad(root.id, performance.now(), models.length, serverSource || 'built', null);
+      const game = gameOfRoot(root);
+      if (game) rebuildGameChars(game);
+    } catch (err) {
+      entry.status = 'error';
+      entry.error = formatError(err);
+    }
+    scheduleRender();
+  }
+
   /** 某根属于哪个游戏（状态行按游戏显示，扫描按根进行） */
   function gameOfRoot(root) {
     return state.games.find((g) => g.roots.some((r) => r.id === root.id)) || null;
@@ -359,6 +390,11 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
         state.scanBaseline.set(game.key, mergeScanBaseline(state.scanBaseline.get(game.key) || null, finalState));
       }
       applyScanStatusToRow(game, aggregateScan(game) || { phase: 'loaded' });   // 其它根还在扫就继续显示它们
+      // 扫描完成 ⇒ 若这根的清单请求当初没回来，现在补取一次（只补一次）
+      if (finalState.phase === 'loaded') {
+        const entry = state.loaded.get(root.id);
+        if (entry && entry.pendingCatalogRetry) refetchCatalog(root);
+      }
       scheduleRender();                            // 紧接着渲染一次，把正常计数补回去
     });
   }
@@ -425,8 +461,18 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
         noteProbeProgress(root.id, probeRemaining);
         recordRootLoad(root.id, rootT0, models.length, serverSource || 'built', null);
       } catch (err) {
-        entry.status = 'error';
-        entry.error = formatError(err);
+        // 扫描流仍在推进 ⇒ 暂缓判死：保持 loading，等完成帧后自动补取一次清单
+        //   （服务端扫描有单飞，done 之后清单已落盘，取一次是毫秒级）
+        const liveScan = state.scan.get(root.id);
+        if (shouldDeferCatalogFailure(liveScan && liveScan.monitor.state.phase)) {
+          entry.status = 'loading';
+          entry.error = null;
+          entry.pendingCatalogRetry = true;
+          stageLog('info', `清单请求未回来（扫描仍在进行，完成后自动补取）：${root.id}`, { source: 'roster' });
+        } else {
+          entry.status = 'error';
+          entry.error = formatError(err);
+        }
         // 失败也要进 perRoot（source:'error'）：否则"某个根挂了"在计时里凭空消失，
         //   总耗时看起来还挺快 —— 那正是这个功能最该暴露的情形。
         recordRootLoad(root.id, rootT0, 0, 'error', entry.error);
@@ -442,13 +488,12 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
   /** 某游戏的全部根是否都已就绪（有失败也算"可渲染"，错误在游戏节点下提示） */
   function gameStatus(game) {
     const entries = game.roots.map((r) => state.loaded.get(r.id));
-    if (entries.some((e) => e && e.status === 'loading')) return 'loading';
-    // 部分加载也算 ready：冷启动只按"上次模型的根"加载一个根，此时游戏已经有数据可展示，
-    //   若还报 idle 就会在行上显示「未加载」（明明有 247 个角色）。缺的那些根等用户展开时再补。
-    if (entries.some((e) => e && e.status === 'ready')) return 'ready';
-    if (entries.some((e) => !e || e.status === 'idle')) return 'idle';
-    if (entries.every((e) => e && e.status === 'error')) return 'error';
-    return 'ready';
+    // 唯一判定：根加载状态 + 扫描聚合状态一起交给 resolveGamePhase（纯函数，有单测）。
+    //   视图里不再有第二套推导 —— 那会让「扫描中」与「加载失败」同时出现。
+    return resolveGamePhase({
+      scan: aggregateScan(game),
+      rootStates: entries.map((e) => (e && e.status ? e.status : 'idle')),
+    });
   }
 
   /**
@@ -583,6 +628,11 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
       }
       if (status === 'error') {
         listEl.append(el('p', 'error-banner', `加载失败：${game.roots.map((r) => r.id).join(', ')}`));
+        continue;
+      }
+      if (status === 'scanning' || status === 'stalled') {
+        // 扫描还在推进：不显示"没有模型"这种结论，也不出失败横幅
+        if (!chars.length) listEl.append(el('p', 'muted-hint tree-hint', '正在读取清单…'));
         continue;
       }
       if (status === 'idle') {
@@ -729,8 +779,8 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
           if (state.typeFilter.has(typeKey)) state.typeFilter.delete(typeKey);
           else state.typeFilter.add(typeKey);
         }
-        // 写失败静默（隐私模式/配额满）：筛选是增强，不能因此让页面报错
-        saveTypeFilter(state.typeFilter);
+        // 不写 localStorage：筛选只在内存里生效（刷新后回到不筛选），
+        //   否则旧的筛选会在下次启动时把上次所用的模型挡住。
         render();
       });
     }
@@ -779,8 +829,8 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
    */
   function mount(roots, opts) {
     const restoreExpanded = !opts || opts.restoreExpanded !== false;
-    // 类型筛选：读存储原样恢复（失效项保留在集合里，渲染期再按当前类型集合筛掉）
-    state.typeFilter = new Set(readTypeFilter());
+    // 类型筛选不再持久化：每次打开都是不筛选（筛选是当次会话内的临时动作）
+    state.typeFilter = new Set();
     // 同名根合并成一个游戏节点（照 char-tree.js：name 是归一 key）
     const byName = new Map();
     for (const root of roots) {
@@ -942,11 +992,10 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
       return { restored: false, reason: 'model-gone', rootId: pointer.rootId };
     }
     state.expandedChars.add(hit.charKey);
-    state.selected = { modelId: pointer.modelId, gameKey: game.key, gameName: game.name, charKey: hit.charKey };
-    state.activeGame = game.name;
-    render();
+    // 关键：复用"用户点击变体"的同一入口 —— 它会写入选中态、存盘，并调用 onSelect 真正装载模型。
+    //   只设置 state.selected + render() 是不够的：那只是"列表里高亮"，画布上什么都不会出现。
+    onVariantClick(pointer.modelId, game.key, hit.charKey);
     state.lastReveal = reveal.revealActive();
-    saveState(state);
     return { restored: true, modelId: pointer.modelId, rootId: pointer.rootId, gameKey: game.key };
   }
 

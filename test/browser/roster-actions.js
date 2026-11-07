@@ -549,48 +549,6 @@ function typeFilterBadgeOf(row) {
   return cls ? cls.replace('tree-type-', '') : '';
 }
 
-/** 用同一份存储新起一个视图实例，观察"存储 → 状态 → 渲染"的恢复链 */
-async function probeTypeFilterRestore(roots, sleep) {
-  const out = { stateTypes: null, chipKeys: [], pressed: [] };
-  const realHost = document.getElementById('roster-type-filter');
-  const savedHostId = realHost ? realHost.id : '';
-  let holder = null;
-  try {
-    // 新实例按 id 找容器：先让真容器让出 id，否则命中的还是它（断言就成了自证）
-    if (realHost) realHost.id = 'roster-type-filter--real';
-    const { createRosterView } = await import('/roster/view.js');
-    holder = document.createElement('div');
-    holder.id = 'roster-type-filter';
-    holder.style.cssText = 'position:fixed;left:-9999px;top:0;width:304px';
-    document.body.appendChild(holder);
-    const view = createRosterView({
-      listEl: document.createElement('div'),
-      countEl: document.createElement('span'),
-      searchEl: document.createElement('input'),
-      collapseBtn: document.createElement('button'),
-      onSelect: () => {},
-    });
-    await view.mount(roots, { restoreExpanded: false });
-    out.stateTypes = [...(view.state.typeFilter || [])];
-    try {
-      const firstGame = view.state.games[0];
-      if (firstGame) await view.ensureGameLoaded(firstGame);
-      view.render();
-      await sleep(80);
-      const chips = [...holder.querySelectorAll('.roster-type-chip')];
-      out.chipKeys = chips.map((chip) => chip.dataset.typeKey);
-      out.pressed = chips.filter((chip) => chip.getAttribute('aria-pressed') === 'true')
-        .map((chip) => chip.dataset.typeKey);
-    } catch { /* 数据没取到就只断言"存储 → 状态"这一段 */ }
-  } catch (error) {
-    out.stateTypes = `error: ${(error && error.message) || error}`;
-  } finally {
-    if (holder) holder.remove();
-    if (realHost) realHost.id = savedHostId;
-  }
-  return out;
-}
-
 /** 类型筛选 ①渲染 + ②布局几何 */
 async function runTypeFilterSurface(C) {
   const { q, qa, rec, sleep } = C;
@@ -674,38 +632,20 @@ async function runTypeFilterClicks(C) {
   return { variantsBefore };
 }
 
-/** 类型筛选 ④存储持久化：写入 + 新实例恢复（状态层 / 渲染层） */
+/** 类型筛选：当次会话生效、**不写 localStorage**（口径：筛选不再持久化） */
 async function runTypeFilterPersistence(C) {
-  const { q, qa, rec, skip, sleep } = C;
+  const { q, qa, rec, sleep } = C;
   const chips = () => qa('#roster-type-filter .roster-type-chip');
+  if (!chips().length) return;
   chips()[0].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-  await sleep(120);
+  await sleep(150);
+  const pressedNow = chips().filter((chip) => chip.getAttribute('aria-pressed') === 'true').length;
   const savedRaw = localStorage.getItem('roster.typeFilter');
-  const savedList = savedRaw ? JSON.parse(savedRaw) : null;
-  const savedKey = Array.isArray(savedList) ? savedList[0] : undefined;
-  const currentKey = chips()[0] ? chips()[0].dataset.typeKey : undefined;
-  const written = Array.isArray(savedList) && savedList.length === 1 && savedList[0] === currentKey;
-
-  const roots = (window.__WEB__ && window.__WEB__.state && window.__WEB__.state.roots) || [];
-  const restored = await probeTypeFilterRestore(roots, sleep);
-  rec('切换后写入 localStorage', 'localStorage["roster.typeFilter"]', '点击一个胶囊后读取',
-    '值 = 该胶囊 typeKey 的单元素数组',
-    `saved=${savedRaw}`, written);
-  rec('新实例 mount 后从存储恢复选中（状态层）', 'view.state.typeFilter', '读存储 → mount',
-    '状态里含存储的 key（失效项也一并保留，渲染期再忽略）',
-    `state.typeFilter=${JSON.stringify(restored.stateTypes)}`,
-    Array.isArray(restored.stateTypes) && savedKey !== undefined && restored.stateTypes.includes(savedKey));
-  if (savedKey !== undefined && restored.chipKeys.includes(savedKey)) {
-    rec('恢复后的胶囊为选中态（渲染层）', '.roster-type-chip[aria-pressed="true"]', '新实例渲染后查询',
-      `typeKey=${savedKey} 的胶囊 aria-pressed=true`,
-      `chips=${JSON.stringify(restored.chipKeys)} pressed=${JSON.stringify(restored.pressed)}`,
-      restored.pressed.includes(savedKey));
-  } else {
-    skip('恢复后的胶囊为选中态（渲染层）', '.roster-type-chip', '新实例渲染后 aria-pressed=true',
-      `该游戏这次没取到数据（chips=${JSON.stringify(restored.chipKeys)}），渲染层断言跳过；状态层已断言`);
-  }
-
-  // 收尾：把筛选清空，避免影响后续段（后面的用例假设"未筛选"）
+  rec('当次点击即生效', '.roster-type-chip[aria-pressed="true"]', '点击一个胶囊',
+    '该胶囊 aria-pressed=true（会话内生效）', `pressed=${pressedNow}`, pressedNow >= 1);
+  rec('切换筛选不写 localStorage', 'localStorage["roster.typeFilter"]', '点击胶囊后读取',
+    '该键不存在（筛选不持久化；刷新后回到不筛选）',
+    `saved=${savedRaw === null ? 'null（未写入）' : savedRaw}`, savedRaw === null);
   const clear = q('#roster-type-filter [data-role="clear-type-filter"]');
   if (clear) { clear.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); await sleep(80); }
 }

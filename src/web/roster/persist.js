@@ -6,13 +6,6 @@
 
 import * as uiState from '../app/ui-state.js';
 
-/**
- * 类型筛选的存储键。
- *
- * 为什么不并进 TREE_STATE_KEY：两者的生命周期不同——展开态是"临时视图状态"，
- *   类型筛选是跨会话保留的选择；分开存也让"读不懂的值直接忽略"只影响筛选，不牵动整棵树。
- */
-export const TYPE_FILTER_KEY = 'roster.typeFilter';
 
 /**
  * 名册状态存储键（**当前唯一键**，不是历史遗留）。
@@ -59,37 +52,6 @@ export function saveState(state) {
   }
 }
 
-/**
- * 读类型筛选的选中集合（数组；读不到/形状不对一律当空）。
- * 注意：这里**不校验 key 是否仍然有效**——失效项的忽略发生在渲染期（见 roster/type-filter.js
- *   的 usableTypeSelection），这样存储里的值不会被我们悄悄删掉。
- * @returns {string[]}
- */
-export function readTypeFilter() {
-  try {
-    const raw = localStorage.getItem(TYPE_FILTER_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.filter((key) => typeof key === 'string' && key) : [];
-  } catch {
-    return [];
-  }
-}
-
-/**
- * 写类型筛选（失败静默：筛选是增强，隐私模式/配额满都不该影响当前会话）。
- * @param {Iterable<string>} keys
- * @returns {boolean} 是否写入成功（调用方一般不需要它，测试用）
- */
-export function saveTypeFilter(keys) {
-  try {
-    const list = [...(keys || [])].map(String).filter(Boolean);
-    localStorage.setItem(TYPE_FILTER_KEY, JSON.stringify(list));
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * 「上次所用模型」指针的存储键。

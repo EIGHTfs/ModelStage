@@ -78,7 +78,11 @@ export function renderGameRow(game, view) {
   //   为什么不自动加载：一次性把 9 个根全拉一遍 = 9 次全量扫描（几分钟），页面会像"什么都打不开"。
   //   加载只能由用户动作触发（展开这一行 / 点这两个按钮）。
   if (view.status === 'ready') row.append(el('span', 'tree-count', `${view.charCount} 角色`));
-  else if (view.status === 'loading') row.append(el('span', 'tree-count', '加载中…'));
+  else if (view.status === 'scanning' || view.status === 'stalled') {
+    // 扫描中/疑似卡住：文案由 view.js 的扫描状态行写入（同一行同一个槽位），
+    //   这里只占位，避免和「加载失败」两套状态同时出现。
+    row.append(el('span', 'tree-count is-scanning', ''));
+  } else if (view.status === 'loading') row.append(el('span', 'tree-count', '加载中…'));
   else if (view.status === 'error') {
     const retry = el('button', 'tree-game-retry', '加载失败 · 重试');
     retry.type = 'button';
