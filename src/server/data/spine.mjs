@@ -129,7 +129,6 @@ export function buildModelServer(root, relPath, baseName, skel, atlas, dirFiles,
     atlasFile: mk(atlas),
     textureFiles: textures.map(mk),
     textureCount: textures.length,
-    fileSize: skel.size + atlas.size + textures.reduce((s, t) => s + t.size, 0),
     // atlasPma：true/false/null(未声明=未知)。不可硬编码 false —— 那等于断言"非预乘"
     atlasPma: atlas.atlasPma ?? null,
     // avatarRoot 来自 paths（可配置：--avatar-root > MODELSTAGE_AVATAR_ROOT > <root>/avatars）
@@ -177,13 +176,10 @@ export async function indexRootFiles(root, opts = {}) {
     for (const e of entries) {
       if (e.name.startsWith('.')) continue;
       const full = path.join(absDir, e.name);
-      let st;
-      try {
-        st = fs.statSync(full);
-      } catch {
-        continue;
-      }
       const childRel = relPath ? `${relPath}/${e.name}` : e.name;
+      // **不再逐文件 stat**：实测 bd2（1781 文件）光 statSync 就 11.5s；
+      //   而索引里唯一的 size 消费方是 `model.fileSize` —— 前端从未读过，是死数据。
+      //   目录判定用 readdir 的 Dirent（`e.isDirectory()`），本来就不需要 stat。
       if (e.isDirectory()) {
         dirsIndexed += 1;
         await indexDir(full, childRel);
@@ -196,7 +192,6 @@ export async function indexRootFiles(root, opts = {}) {
           name: e.name,
           full,
           ext: path.extname(e.name).toLowerCase(),
-          size: st.size,
           relPath: childRel,
         });
       }
@@ -232,12 +227,8 @@ export function collectDirEntries(absDir, relPath, deps) {
   for (const e of entries) {
     if (e.name.startsWith('.')) continue;
     const full = path.join(absDir, e.name);
-    let st;
-    try {
-      st = fs.statSync(full);
-    } catch {
-      continue;
-    }
+    // **不再逐文件 stat**：同一批文件 indexRootFiles 已遍历过一次，这里再 stat 就是双倍开销。
+    //   目录判定用 Dirent；size 字段不再填充（下游只有 fileSize 用它，而那是死数据）。
     if (e.isDirectory()) {
       dirs.push({ name: e.name, full });
       continue;
@@ -247,7 +238,6 @@ export function collectDirEntries(absDir, relPath, deps) {
       name: e.name,
       full,
       ext,
-      size: st.size,
       // 该文件相对资源根的路径（贴图可能来自其他目录，故每个文件各自记录）
       relPath: relPath ? `${relPath}/${e.name}` : e.name,
       // detect* 仍在 assets/probe.mjs（同步读文件头，本批不在范围内改动）；

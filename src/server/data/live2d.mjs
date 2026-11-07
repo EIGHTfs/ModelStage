@@ -144,9 +144,6 @@ export function buildLive2DModel(root, relPath, defName, cubism) {
     motions,
     // 列表缩略图：模型目录里的 icon.png（有则用）
     iconUrl: fileObj('icon.png') ? fileUrl('icon.png') : null,
-    fileSize: [defName, mocName, ...textures, ...expressions.map((e) => e.file),
-      ...Object.values(motions).flat().map((mo) => mo.file)]
-      .map(fileObj).filter(Boolean).reduce((sum, f) => sum + f.size, 0),
   };
 }
 
@@ -158,17 +155,15 @@ function modelsInDir(root, absDir, relPath, entries) {
   for (const e of entries) {
     if (e.name.startsWith('.')) continue;
     const full = path.join(absDir, e.name);
-    let st;
-    try {
-      st = fs.statSync(full);
-    } catch {
-      continue;
-    }
+    // **不再逐文件 stat**：目录判定用 Dirent（`e.isDirectory()`）；
+    //   这里原来的 size 唯一用途是 `model.fileSize`（前端从未读过，死数据）。
+    //   注意：`fileObj()` 里的 stat **保留** —— 它要 `st.isFile()` 判「文件真的在不在」，
+    //   去掉会让「引用不存在的贴图」从告警变成沉默（缺贴图页数会变多）。
     if (e.isDirectory()) {
       dirs.push({ name: e.name, full });
       continue;
     }
-    files.set(e.name, { name: e.name, size: st.size });
+    files.set(e.name, { name: e.name });
   }
   const out = [];
   const def4 = [...files.keys()].find((n) => /\.model3\.json$/i.test(n)) || null;

@@ -209,7 +209,6 @@ export function toSpineEntry(cfg, m) {
       skins: m.skins || [],
       expressions: [],
       textureCount: m.textureCount,
-      fileSize: m.fileSize,
       extras: {
         versionLabel: m.version,
         format: m.format,
@@ -316,7 +315,6 @@ function buildLive2DMeta(lm, fromDef, textureCheck) {
     textureCount: (lm.textureFiles || []).length,
     // 声明了但磁盘缺失的纹理（前端据此预判并给出明确提示，不必等渲染报错）
     missingTextures: textureCheck.missing,
-    fileSize: lm.fileSize,
     extras: { cubism: lm.cubism, defFile: lm.defFile, mocFile: lm.mocFile },
   };
 }
