@@ -142,23 +142,6 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
   //   activeGame / probe / scannedRoots 是**视图自身展示态**（不属于名册数据），仍挂在这里。
   const store = createRosterStore({ buildChars, onChange: () => scheduleRender() });
   const state = store.state;
-  state.activeGame = null;
-  /** 本页生命周期内已经跑过进度流的根（避免每次展开/重渲染都重新订阅） */
-  state.scannedRoots = new Set();
-  /**
-   * 后台形态探测的进度快照（**本次不做 UI，数据先就绪**）。
-   *
-   * 将来要加面板/进度条时，**直接读这里，不用再改服务端**：
-   *   state.probe = { remaining, at, rootId }
-   *     remaining 剩余待探条目数（服务端 probeRemaining 原值；null = 老服务端没这字段）
-   *     at        这次取到它的时间戳（性能无关，只用于判断"多久没更新了"）
-   *     rootId    最近一次刷新它的资源根（每列一个根都会刷新，值是**全局**队列深度）
-   * 读法示例：`window.__WEB__.state.roster.state.probe.remaining`
-   * 更细的计数（runs/probed/unsupported/unknown/skipped/lastBatchMs/lastTrigger）
-   *   走 `GET /api/entries/probe`，那才是权威，这里只是"最近一次 catalog 响应顺带回来的"。
-   */
-  state.probe = { remaining: null, at: null, rootId: null };
-
   const reveal = createReveal({ listEl, getState: () => state, render: () => render() });
 
   const nameIndex = createNameIndex();
@@ -181,7 +164,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
    */
   function noteProbeProgress(rootId, remaining) {
     if (!Number.isFinite(remaining)) return;      // 没这个字段 ⇒ 不更新、不记录（不把未知当 0）
-    state.probe = { remaining: Number(remaining), at: Date.now(), rootId };
+    store.setProbe({ remaining: Number(remaining), at: Date.now(), rootId });
     if (remaining === lastLoggedProbeRemaining) return;
     lastLoggedProbeRemaining = remaining;
     stageLog('info', `后台形态探测：还剩 ${remaining} 个容器待探（UI 未实现，数据已挂 state.probe）`, {
@@ -212,7 +195,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
         if (cur && cur.controller) { try { cur.controller.abort(); } catch { /* 已结束 */ } }
         store.resetRoots([root.id]);
         store.clearScan(root.id);
-        state.scannedRoots.delete(root.id);
+        store.unmarkRootSubscribed(root.id);
       }
       store.clearScanBaseline(game.key);
     }
@@ -334,8 +317,8 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
    */
   function trackScanProgress(root) {
     const url = scanStreamUrl(root);
-    if (!url || state.scannedRoots.has(root.id)) return Promise.resolve();
-    state.scannedRoots.add(root.id);
+    if (!url || store.hasRootSubscribed(root.id)) return Promise.resolve();
+    store.markRootSubscribed(root.id);
     const game = gameOfRoot(root);
     const monitor = createScanMonitor({
       // 阈值来源：服务端 /api/web-config 下发（可选），缺省用 shared 里的常量——不在这里写死数字
@@ -387,7 +370,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
       const cur = store.getScan(root.id);
       if (cur && cur.controller) { try { cur.controller.abort(); } catch { /* 已结束 */ } }
       store.clearScan(root.id);
-      state.scannedRoots.delete(root.id);   // 允许重新订阅
+      store.unmarkRootSubscribed(root.id);   // 允许重新订阅
     }
     const targets = game.roots.filter((r) => scanStreamUrl(r));
     if (!targets.length) return;
@@ -697,11 +680,11 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
   function onVariantClick(modelId, gameKey, charKey) {
     const game = state.games.find((g) => g.key === gameKey);
     store.selectModel({ modelId, gameKey, gameName: game ? game.name : null, charKey });
-    state.activeGame = game ? game.name : state.activeGame;
+    store.setActiveGroup(game ? game.name : state.activeGroup);
     // 记「上次所用模型」指针（rootId/kind/modelId）：下次冷启动只加载它所在的那一个根
     try { saveLastModel((modelById.get(modelId) || {}).model || null); } catch { /* 指针只是加速启动 */ }
     render();
-    state.lastReveal = reveal.revealActive(); // 选中后把这一行滚到可视区（已可见/用户正在滚都会跳过）
+    store.setLastReveal(reveal.revealActive()); // 选中后把这一行滚到可视区（已可见/用户正在滚都会跳过）
     saveState(state);
     if (typeof onSelect === 'function') {
       const hit = modelById.get(modelId);
@@ -809,7 +792,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     if (restoreExpanded) {
       // 展开状态恢复：只恢复仍存在的游戏，避免历史配置残留导致空节点
       store.restoreExpanded({ games: saved.games, chars: saved.chars });
-      state.activeGame = saved.activeGame;
+      store.setActiveGroup(saved.activeGame);   // 存储字段仍叫 activeGame（旧格式）
     }
 
     bindEvents();
@@ -909,13 +892,13 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
       const hit = findVariant(game, modelId);
       if (!hit) continue;
       store.selectModel({ modelId, gameKey: game.key, gameName: game.name, charKey: hit.charKey });
-      state.activeGame = game.name;
+      store.setActiveGroup(game.name);
       try { saveLastModel(hit.variant && hit.variant.model ? hit.variant.model : null); } catch { /* 忽略 */ }
       // 不展开的话目标行根本没渲染出来，高亮也就无从显示
       store.expandGame(game.key);
       store.expandChar(hit.charKey);
       render();
-      if (opts.reveal !== false) state.lastReveal = reveal.revealActive();
+      if (opts.reveal !== false) store.setLastReveal(reveal.revealActive());
       saveState(state);
       return { ok: true, gameKey: game.key, charKey: hit.charKey };
     }
@@ -958,7 +941,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     // 关键：复用"用户点击变体"的同一入口 —— 它会写入选中态、存盘，并调用 onSelect 真正装载模型。
     //   只设置 state.selected + render() 是不够的：那只是"列表里高亮"，画布上什么都不会出现。
     onVariantClick(pointer.modelId, game.key, hit.charKey);
-    state.lastReveal = reveal.revealActive();
+    store.setLastReveal(reveal.revealActive());
     return { restored: true, modelId: pointer.modelId, rootId: pointer.rootId, gameKey: game.key };
   }
 

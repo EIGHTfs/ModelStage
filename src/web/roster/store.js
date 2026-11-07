@@ -31,6 +31,14 @@ export function createRosterStore({ buildChars, onChange } = {}) {
     typeFilter: new Set(),
     /** gameKey → { scanned, dirs }（多根逐根扫描时的计数基线） */
     scanBaseline: new Map(),
+    /** 当前活跃的**分组**名（注意：语义是"分组"，不假设它一定是游戏） */
+    activeGroup: null,
+    /** 本页生命周期内已经跑过进度流的根（防止重复订阅） */
+    scannedRoots: new Set(),
+    /** 后台形态探测队列快照：{ remaining, at, rootId }（UI 未实现，数据先就绪） */
+    probe: { remaining: null, at: null, rootId: null },
+    /** 最近一次"定位到当前项"的结果（滚动/已可见/用户正在滚动…） */
+    lastReveal: null,
   };
 
   const notify = () => {
@@ -217,6 +225,42 @@ export function createRosterStore({ buildChars, onChange } = {}) {
     /** 一次性把筛选集合替换掉（测试/外部恢复用；正常交互请用 toggleTypeFilter） */
     setTypeFilter(keys) {
       state.typeFilter = new Set(keys || []);
+    },
+
+    // ---------------------------------------------------------------- 分组 / 订阅标记 / 探测 / 定位
+    /**
+     * 写"当前活跃分组"（分组名，不是 gameKey）。
+     * @param {string|null} name
+     */
+    setActiveGroup(name) {
+      state.activeGroup = name ? String(name) : null;
+      notify();
+    },
+
+    /** 标记某根已订阅过进度流（防重复订阅） */
+    markRootSubscribed(rootId) {
+      state.scannedRoots.add(String(rootId));
+    },
+
+    unmarkRootSubscribed(rootId) {
+      state.scannedRoots.delete(String(rootId));
+    },
+
+    hasRootSubscribed(rootId) {
+      return state.scannedRoots.has(String(rootId));
+    },
+
+    /**
+     * 写后台形态探测快照。
+     * @param {{remaining:number|null, at:number, rootId:string|null}} snapshot
+     */
+    setProbe(snapshot) {
+      state.probe = { ...(snapshot || {}) };
+    },
+
+    /** 写"最近一次定位结果"（reveal 的返回值，排障与断言读它） */
+    setLastReveal(result) {
+      state.lastReveal = result || null;
     },
   };
 

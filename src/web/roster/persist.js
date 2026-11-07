@@ -40,11 +40,13 @@ export function saveState(state) {
   try {
     const s = readSaved();
     const lastByGame = { ...s.lastByGame };
-    if (state.activeGame && state.selected) lastByGame[state.activeGame] = state.selected.modelId;
+    // 内存里叫 activeGroup（分组语义），存储字段仍叫 activeGame（旧格式，改名会让既有用户状态丢失）
+    const activeGroup = state.activeGroup || null;
+    if (activeGroup && state.selected) lastByGame[activeGroup] = state.selected.modelId;
     uiState.setTreeState({
       games: [...state.expandedGames],
       chars: [...state.expandedChars],
-      activeGame: state.activeGame || s.activeGame,
+      activeGame: activeGroup || s.activeGame,
       lastByGame,
     });
   } catch {

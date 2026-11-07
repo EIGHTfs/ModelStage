@@ -187,6 +187,7 @@ node tool/resolve-live2d-runtimes.mjs     # 查看 Live2D 运行时探测结果�
 | 0.5.26 | 2026-11-01 | 对齐成熟包的四项：`bin` 加 realpath 直接执行判据（import 不再起服务）、`serve.mjs` 加 EADDRINUSE 人话提示（退出码 2）、新增 `/api/health`（`web.sh status` 优先用它、旧实例回落首页码）、`web.sh` 日志 5MB 轮转（先 stop 再轮转、只留 1 份）；顺带修 health 的 `plugins` 恒为 0（引用了不存在的 ctx） |
 | 0.5.38 | 2026-11-08 | 扫描改为「一次遍历把目录树读进内存，walk 阶段零 readdir」：`readTreeIntoMemory` 只碰一趟磁盘；流式扫描总耗时 39.6s → 28.3s，首模型 6.95s → 5.4s |
 | 0.5.39 | 2026-11-08 | 名册状态收口到 `roster/store.js`（唯一状态持有者 + 27 个动作 + 变更即触发渲染），`view.js` 里不再直接写状态容器；测试工具修正：浏览器套件专用超时 360s、node 套件默认 300s，roster/panel 套件改为按"展开态"而非"角色行"断言（懒加载后未加载的游戏展开本就 0 行），并在动作脚本开头显式等待 `__WEB__` 就绪 |
+| 0.5.40 | 2026-11-08 | 名册剩余 4 个字段也收进 store：`activeGame` → `activeGroup`（分组语义，不再假设"一定是游戏"）+ `scannedRoots` / `probe` / `lastReveal`，`view.js` 的 12 处直写改为动作调用；`persist.js` 读 `activeGroup` 但**存储字段名保持 `activeGame`**（旧数据不失效） |
 | 0.5.37 | 2026-11-08 | 类型筛选**不再持久化**（刷新回到不筛选，避免旧筛选把「上次所用模型」挡住）；恢复上次模型时改为走与点击变体相同的加载路径（原来只高亮不装载）；行状态改为单一判定 `resolveGamePhase`（**扫描中不会再同时显示「加载失败」**），catalog 失败且扫描仍在进行时保持 loading 并在 done 帧后自动补取一次 |
 | 0.5.36 | 2026-11-08 | 清单索引不再逐文件 `stat`（实测 1781 文件 stat 11.5s）：索引只留 `{name, full, ext, relPath}`，目录判定改用 `Dirent`；删除无人读取的 `model.fileSize`。`indexRootFiles` 15.6s → 6.2s，流式扫描总耗时 75.6s → 39.6s，首模型 8.5s → 7.0s |
 | 0.5.35 | 2026-11-08 | 名册冷启动只加载「上次所用模型」所在的那一个根（其余展开才加载）；扫描期间流式吐出模型（首模型从 24~30s 降到 8.5s）；扫描并发上限=1 + FIFO 排队；清单 schema 统一为 `{rootId, ts, count, generator, dirStamps, models}`（**去掉 kind / version / rootName / rootPath**，渲染器类型改由 catalog 读取时盖章） |
