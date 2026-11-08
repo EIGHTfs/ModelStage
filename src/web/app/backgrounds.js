@@ -42,15 +42,13 @@ export function describeFailure(body, status) {
 /**
  * 统一请求封装：解析 JSON、把失败翻成 {ok:false, reason, message}。
  * @param {string} url 目标地址
- * @param {object} [init] fetch 参数（传 signal 可覆盖兜底超时）
+ * @param {object} [init] fetch 参数（可传 signal 主动取消）
  * @returns {Promise<object>} 成功时为响应体（含 ok:true），失败时 {ok:false, reason, message}
  */
 async function request(url, init) {
   let res;
   try {
-    // 兜底超时 8s：本文件四个调用点（列表/改名/删除/重置）都是读改写一份小 JSON，
-    //   同源同类接口实测 10~58ms（/api/plugins 10ms、/api/config/export 58ms），留 100 倍余量。
-    //   上传那处 body 最大 4MB（dataURL）⇒ 由调用方传更长的 signal 覆盖（见 uploadBackground）。
+    // 不设时限：调用方要取消就传 signal。
     res = await fetch(url, { ...(init || {}), ...(init && init.signal ? { signal: init.signal } : {}) });
   } catch (e) {
     return { ok: false, reason: 'network', message: `网络请求失败：${(e && e.message) || e}` };

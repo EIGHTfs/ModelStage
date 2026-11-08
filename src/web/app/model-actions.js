@@ -212,7 +212,7 @@ async function probeSkelVersion(url) {
   try {
     const vfs = getSharedVirtualFS();
     const real = (vfs && typeof vfs.resolve === 'function' ? vfs.resolve(url) : null) || url;
-    // 归 **B 类（只加超时，不走 api.js）**：这里要的是二进制头，不是 JSON —— getJson 会 res.json() 解坏。
+    // 不走 api.js：这里要的是二进制头，不是 JSON —— getJson 会 res.json() 解坏。
     //   注意 `.slice(0,32)` 是在**已拿到的 blob** 上切，不是 HTTP Range ⇒ 实际仍下载整个 .skel。
     //   不设时限。
     const res = await fetch(real);

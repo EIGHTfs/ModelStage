@@ -42,6 +42,24 @@ src/web/live2d/
 - 顺序错了的典型报错：`PIXI.live2d 不存在：运行时库顺序或版本不匹配`
 - 加载失败必须报出**具体是哪个文件**，否则只看到"Live2D 起不来"
 
+### 2.1 实际支持的版本（页面内读到的真值，不是文档抄的）
+
+两套运行时都随仓库提供，由 `tool/resolve-live2d-runtimes.mjs` 选用；默认**选 v6**（更稳）。
+
+| 组合 | PIXI | pixi-live2d-display | Cubism Core | 可渲染的模型 |
+|---|---|---|---|---|
+| **v6（默认）** | 6.5.3 | 0.4.0 | **4.2.2** | Cubism 2（`.moc`）、Cubism 4（`.moc3`） |
+| v8（对照） | 8.19.0 | 1.3.5 | **6.0.1** | 同上；Core 6.x 具备 Cubism 5 能力，但**未用真实 v5 模型验证过** |
+
+> 上表三个版本号分别来自页面内实测：`window.PIXI.VERSION`、
+> `PIXI.live2d.VERSION`、`Live2DCubismCore.Version.csmGetVersion()`（返回打包整数，
+> 按 `(v>>>24).(v>>>16&0xff).(v&0xffff)` 拆）。换运行时目录后这三个值会变，表单随之变化。
+
+- **Cubism 2 的核心** `live2d.min.js` 文件内无可读版本串（混淆产物），`live2d.min.js` 一列故不列版本。
+- **切到 v8**：`LIVE2D_RUNTIME_DIR=<项目>/src/live2d-runtimes/v8-8.19.0` 启动服务即可（env 优先级最高）。
+- **要新增其它版本**：把四个同名文件放进某个目录，用 `LIVE2D_RUNTIME_DIR` 指向它；
+  或放进数据根 `runtimes/live2d/`（探测链会找它）。运行时库因许可原因不入库。
+
 ---
 
 ## 三、覆盖层与几何

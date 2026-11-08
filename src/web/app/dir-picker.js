@@ -75,10 +75,8 @@ export function createDirPicker({ onPick, formatError, getLastError } = {}) {
     body.append(text('div', 'dir-picker-hint', '加载中…'));
     let data = null;
     try {
-      // 幂等 GET（连点同一目录会被 api.js 去重）⇒ 走统一层；超时 30s 的依据：
-      //   本机 CIFS（vers=3.02）实测 75 条目 5.5ms、241 条目 19ms，**未实测到慢例**，
-      //   按项目既有「catalog 冷启动最坏 31s」（同属目录扫描链路）**类推**取 30s。
-      data = await getJson(`/api/browse?path=${encodeURIComponent(currentPath)}`, { timeoutMs: 30000 });
+      // 幂等 GET（连点同一目录会被 api.js 去重）⇒ 走统一层；统一层不设时限，慢就等。
+      data = await getJson(`/api/browse?path=${encodeURIComponent(currentPath)}`);
       if (!data || data.error) throw new Error((data && data.error) || '服务端返回空目录数据');
     } catch (err) {
       body.replaceChildren(text('div', 'dir-picker-error',
