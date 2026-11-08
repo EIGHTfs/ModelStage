@@ -444,9 +444,9 @@ export function toBundleEntry(cfg, file, provider, owner = null) {
 /**
  * 容器列举的规模上限 —— 值来自**实测**，不是拍脑袋。
  *
- * 实测 6 个 enabled 资源根（2026-10 现场）：
- *   文件最大深度 3（bd2）｜目录数 max 535（azurlane）｜容器命中最多 19（azurlane_bundle，全在根层）
- *   nikke_2 的 3 个容器在**第二层**（`<角色名>/<包>`）—— 这正是"只扫根层"会漏掉的那类。
+ * 实测多个真实资源根：
+ *   文件最大深度 3 ｜ 目录数数百 ｜ 容器命中十几个
+ *   也有根的容器在**第二层**（`<角色名>/<包>`）—— 这正是"只扫根层"会漏掉的那类。
  * 深度取「实测 max + 1」，给未来更深的 Mod 类根留一层余量。
  *
  * 超限**绝不静默截断**：stopped 带回原因，由调用方写进 warnings
@@ -467,7 +467,7 @@ const BUNDLE_SCAN_MAX_HITS = 500;
  *   "顺手统一成 listTree"会把冷启动拖回 31 秒 —— 这条注释就是防这个的。
  *
  * 只对**未知扩展名**的文件读 8 字节魔数，扩展名集合复用 tree 的 `KNOWN_FILE_EXT`（同一份真相）：
- *   实测 bd2 / azurlane / azurlane_spine 三个大根的未知扩展名文件数都是 **0**，
+ *   实测常见资源根的未知扩展名文件数为 **0**，
  *   即这三个根一次文件打开都不需要，成本全在 readdir 本身。
  *
  * 返回 `byDir`（按目录聚合）是为将来「按 dirSignature 缓存」留的钩子：
@@ -533,9 +533,8 @@ export function findContainerFiles(rootPath, detectContainer, opts = {}) {
 /**
  * 列资源包根下的条目（递归，不再只看根层）。
  *
- * 为什么必须递归：资源包的实际摆法不统一 —— 有的根把包平铺在根层
- *   （azurlane_bundle：19 个包全在 L0），有的按 `<角色名>/<包>` 分目录
- *   （nikke_2：3 个包都在 L1）。只看根层时后者 catalog 条目为 0，
+ * 为什么必须递归：资源包的实际摆法不统一 —— 有的根把包平铺在根层，
+ *   有的按 `<角色名>/<包>` 分目录。只看根层时后者 catalog 条目为 0，
  *   表现是"资源包明明在盘上，模型列表里却没有"。
  *
  * @returns {{entries: Array, warnings: string[], skipped: number}}

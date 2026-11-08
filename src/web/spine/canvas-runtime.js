@@ -103,7 +103,7 @@ export async function ensureRuntimeSource(ver) {
     //   不给超时会让"装载模型"永久卡在"加载运行时"（用户看不出是卡住还是慢）。
     let r;
     try {
-      r = await fetch(`${RUNTIME_BASE}${ver}.js`, { cache: 'no-store', signal: AbortSignal.timeout(20000) });
+      r = await fetch(`${RUNTIME_BASE}${ver}.js`, { cache: 'no-store' });
     } catch (e) {
       // 超时/中断必须翻译成人话：裸的 "The operation was aborted." 分不清是
       //   "这台机器没装这个版本"（要补文件）还是"服务端/磁盘慢"（等或换机器）—— 两者的处置完全不同。

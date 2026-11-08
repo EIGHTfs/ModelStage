@@ -144,7 +144,7 @@ export function createRosterLoad({
   }
 
   /**
-   * 显式加载一个游戏（用户点「未加载 · 点击加载」/「加载失败 · 重试」/ 展开该行时调用）。
+   * 显式加载一个游戏（「加载失败 · 重试」或搜索/翻页按需触发时调用）。
    *
    * 只动这个游戏自己的根：不碰其它游戏，也不做任何预取 —— 这是"页面加载不扇出"的关键落点。
    * @param {string} groupKey
@@ -372,9 +372,68 @@ export function createRosterLoad({
     flushRender();
   }
 
+  // ---------------------------------------------------------------- 串行加载队列
+  //
+  // 为什么要有队列：名册一打开就要把多个分组都加载完，但服务端的扫描是重活，
+  //   并发跑会互相抢 IO（实测 3 个根同时扫，单根从 24s 恶化到 180s+，连静态资源都超时）。
+  //   所以：**同一时刻只加载一个分组**，按名册显示顺序推进，其余在队列里等。
+  //   队列只影响"谁先谁后"，不影响"最终都会加载完"。
+  /** @type {string[]} 待加载的分组 key（显示顺序） */
+  const pendingQueue = [];
+  let pumping = false;
+
+  /** 该分组在队列里的位次（1 起）；0 = 不在队列（已就绪/正在加载/不存在） */
+  function queuePositionOf(group) {
+    if (!group) return 0;
+    const idx = pendingQueue.indexOf(group.key);
+    return idx >= 0 ? idx + 1 : 0;
+  }
+
+  /** 把还没就绪的分组按显示顺序放进队列（已在队列/正在加载的跳过） */
+  function enqueueRemaining() {
+    for (const group of state.groups) {
+      if (pendingQueue.includes(group.key)) continue;
+      const entry = state.groupChars.get(group.key);
+      if (entry && Array.isArray(entry.chars) && entry.chars.length) continue;  // 已加载
+      const anyLoading = group.roots.some((r) => {
+        const e = store.getRoot(r.id);
+        return e && (e.promise || e.status === 'loading');
+      });
+      if (anyLoading) continue;                                                // 正在加载
+      pendingQueue.push(group.key);
+    }
+    scheduleRender();
+  }
+
+  /** 开始推进队列（可重复调用；已在推进时直接返回） */
+  async function startQueue() {
+    if (pumping) return;
+    pumping = true;
+    try {
+      for (;;) {
+        if (!pendingQueue.length) break;
+        const key = pendingQueue[0];
+        const group = state.groups.find((g) => g.key === key);
+        if (!group) { pendingQueue.shift(); continue; }
+        // 轮到它了：先重画一次（行上从"排队中（第 1 位）"变成"加载中"）
+        scheduleRender();
+        try {
+          await ensureGroupLoaded(group);
+        } catch {
+          // 单个分组失败不阻塞队列：后面还有别的分组要加载
+        }
+        if (pendingQueue[0] === key) pendingQueue.shift();
+        scheduleRender();
+      }
+    } finally {
+      pumping = false;
+    }
+  }
+
   return {
     loadGroup, refetchCatalog, trackScanProgress, retryScan,
     ensureRootLoaded, ensureGroupLoaded, ensureAllLoaded,
+    queuePositionOf, enqueueRemaining, startQueue,
     /** 名册加载计时快照（`window.__WEB__.rosterStats()` 用它；口径见本文件"名册加载计时"注释） */
     rosterStats,
   };

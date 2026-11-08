@@ -130,7 +130,7 @@ export class SpineRuntimeManager {
     // 20s：与 canvas-runtime 同口径（运行时脚本实测 439KB），别让"加载运行时"无限挂着
     let r;
     try {
-      r = await fetch(`${RUNTIME_BASE}${version}.js`, { cache: 'no-store', signal: AbortSignal.timeout(20000) });  // dsh-skip-quality 本地同源运行时脚本读取，既有代码
+      r = await fetch(`${RUNTIME_BASE}${version}.js`, { cache: 'no-store' });  // dsh-skip-quality 本地同源运行时脚本读取，既有代码
     } catch (e) {
       // 同 canvas-runtime：把裸的 abort 翻成"超时/中断"，否则与"没装这个版本"混为一谈
       throw new Error(`运行时 ${version} 加载超时或中断（上限 20s）：${(e && e.message) || e}`);

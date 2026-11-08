@@ -282,7 +282,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* 游戏行的「未加载 · 点击加载」/「加载失败 · 重试」：与扫描〔重试〕同一尺寸语言 */
+/* 游戏行的「加载失败 · 重试」：与扫描〔重试〕同一尺寸语言 */
 .tree-game-load,
 .tree-game-retry {
   height: 20px;

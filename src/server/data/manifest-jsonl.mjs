@@ -30,7 +30,7 @@ const BAD_LINE_RATIO_LIMIT = 0.01;
 /**
  * 打开一个清单写入器。
  *
- * @param {string} base 不带扩展名的路径（如 `…/config/models/spine.bd2`）
+ * @param {string} base 不带扩展名的路径（如 `…/config/models/spine.<rootId>`）
  * @param {object} meta 首行要写的元信息：{rootId, ts, generator, dirStamps}
  *   （**不含 kind**：清单是可分发数据，渲染器类型由读取方按来源判断）
  * @returns {{
@@ -46,7 +46,7 @@ export function openManifestWriter(base, meta) {
   // tmp 文件名**每次扫描唯一**：<base>.<pid>.<seq>.jsonl.tmp
   //   为什么不能固定名：并发场景下（另一个根的 refresh、或任何一次 invalidate）会清理"看起来像残留"的 tmp，
   //   固定名的话它会把**正在写**的那份删掉 ⇒ finish 时 rename ENOENT（实测踩到：
-  //   `rename 'spine.nikke_2.jsonl.tmp' -> 'spine.nikke_2.jsonl'` ENOENT）。
+  //   `rename 'spine.<rootId>.jsonl.tmp' -> 'spine.<rootId>.jsonl'` ENOENT）。
   //   唯一名让"两个扫描互不干扰"，也让"清理残留"能安全地只删老的。
   const tmpFile = `${base}.${process.pid}.${(tmpSeq += 1)}.jsonl.tmp`;
   const finalFile = `${base}.jsonl`;

@@ -49,9 +49,12 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
   function render() { return renderModule.render(); }
   function snapshot() { return snapshotRoster({ state, listEl, groupStatus: renderModule.groupStatus }); }
 
+  // 队列位次由 load 提供，但 render 要先建出来 ⇒ 用一层转发，避免两个工厂互相引用
+  let queuePositionOfRef = () => 0;
   const renderModule = createRosterRender({
     store, counters, listEl, countEl, typeFilterEl,
     snapshotOf: () => snapshot(),
+    queuePositionOf: (group) => queuePositionOfRef(group),
   });
 
   const load = createRosterLoad({
@@ -61,6 +64,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     aggregateScan: renderModule.aggregateScan,
     applyScanStatusToRow: renderModule.applyScanStatusToRow,
   });
+  queuePositionOfRef = load.queuePositionOf;
 
   const events = createRosterEvents({
     store, listEl, searchEl, collapseBtn, typeFilterEl, reveal, render, load, modelById, onSelect,
@@ -72,6 +76,7 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
    */
   function mount(roots, opts) {
     const restoreExpanded = !opts || opts.restoreExpanded !== false;
+    const skipRestore = !!(opts && opts.skipRestore);
     store.setTypeFilter([]);          // 类型筛选不持久化：每次打开都是不筛选（当次会话内的临时动作）
     store.setRoots(roots);            // 同名根合并成游戏节点：规则收在 store.setRoots
     const saved = readSaved();
@@ -82,8 +87,22 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     }
     events.bindEvents();
     render();
-    // **不再**在启动时把"上次展开的游戏"全部加载：那等于页面一开就把所有资源根拉一遍（每根一次全量扫描，
-    //   串行排队 ⇒ 后面的必然超时）。恢复的展开态只保留视觉状态，数据等用户点这一行时再取。
+    // 启动后：上次所用模型所在的那一个根**优先**加载（restoreLast），其余分组排进队列按顺序串行加载。
+    //   不再需要用户点「点击加载」：队列会自己往下走，行上只显示"排队中（第 N 位）/ 加载中"。
+    //   串行而不是并行，是因为服务端扫描是重活，并发会互相抢 IO 把整站拖慢。
+    //   **队列必须等首个模型装载落地再放行**：restoreLast 里 await 的是"根清单 + 装载完成"，
+    //   真正确认能出画才算 settle；否则队列一开始扫别的根，就把首模型的资源请求挤到后面
+    //   （现象就是"列表全加载完，模型才出来"）。失败同样放行，避免一个坏根把队列卡死。
+    //   **返回这个 promise**：调用方（loadRoots）要拿恢复结果，不要再自己调一次 restoreLast。
+    return (async () => {
+      let info = { restored: false, reason: skipRestore ? 'skipped' : 'no-pointer' };
+      if (!skipRestore) {
+        try { info = await restoreLast(); } catch { /* 恢复失败不影响队列 */ }
+      }
+      load.enqueueRemaining();
+      load.startQueue();
+      return info;
+    })();
   }
 
   /** 某组是否已归并出角色（判据是"真有 chars"，不是"根有 models"） */
@@ -210,7 +229,9 @@ export function createRosterView({ listEl, countEl, searchEl, collapseBtn, onSel
     store.expandChar(hit.charKey);
     // 关键：复用"用户点击变体"的同一入口 —— 它写入选中态、存盘，并调用 onSelect 真正装载模型。
     //   只设置 state.selected + render() 是不够的：那只是"列表里高亮"，画布上什么都不会出现。
-    events.onVariantClick(pointer.modelId, group.key, hit.charKey);
+    //   **等它落地**：调用方（mount）要等首个模型真的出来才放行加载队列，
+    //   否则队列的整根扫描会和首个模型的资源请求抢同一份磁盘 IO。
+    await events.onVariantClick(pointer.modelId, group.key, hit.charKey);
     store.setLastReveal(reveal.revealActive());
     return { restored: true, modelId: pointer.modelId, rootId: pointer.rootId, groupKey: group.key };
   }

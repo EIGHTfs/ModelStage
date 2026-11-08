@@ -126,8 +126,8 @@ function readHeader() {
  * 按 name（显示名称 = 归一 key）把资源根归并成组，供前端直接渲染。
  *
  * 归一语义：name 相同的多个资源根合并为一个条目。
- *   例：「棕色尘埃2 原版」与「棕色尘埃2 mod」两个目录若都命名为"棕色尘埃2"，
- *      界面合并成一个"棕色尘埃2"，其下汇总各 root 的模型（原版 + mod 共存不覆盖）。
+ *   例：原版目录与 Mod 目录若填了同一个显示名，界面合并成一个条目，
+ *      其下汇总各 root 的模型（原版 + Mod 共存不覆盖）。
  *
  * @param {Array} roots 资源根数组
  * @returns {Array<{name:string, rootCount:number, roots:Array}>}

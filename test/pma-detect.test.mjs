@@ -42,8 +42,8 @@ test('planTextureUpload：unpack 与 pmaFlag 都从 decision 派生，三档各�
 // 上传口径（unpack 与否）必须由 needPremultiply 决定 —— 三种输入各钉一条。
 //   这三条直接对应三块真实资产：
 //     · Nikke c072_00（atlas pma:true）        —— 源图已预乘，再乘就是黑圈
-//     · 碧蓝档案 airi0_home（3.8，不支持直通） —— 源图 straight，必须乘，否则白斑
-//     · 棕色尘埃2 / 4.1+ 的 straight 资源      —— 源图 straight，走 straight 混合，不许乘
+//     · 3.8 且不支持直通的模型 —— 源图 straight，必须乘，否则白斑
+//     · 4.1+ 的 straight 资源 —— 源图 straight，走 straight 混合，不许乘
 test('shouldPremultiplyOnUpload：三种输入（源图预乘 / straight+不支持直通 / straight+支持直通）', () => {
   // ① 源图已预乘（atlas pma:true）⇒ 上传必须原样
   const pm = resolvePmaInfo('auto', { finalIsPremultiplied: true }, false);

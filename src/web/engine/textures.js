@@ -80,9 +80,8 @@ export async function decodeImageSource(entry) {
  *
  * **必须避免"预乘 → 非预乘"往返**：直接把 <img> 画进 2D canvas 再 getImageData 时，
  *   canvas 内部按预乘存储、读回时再除一次 alpha ⇒ 半透明区域相对误差被放大（除以很小的 a），
- *   会产生 `r > a` 的**假违反**。现场：bd2 的图半透明边缘多 ⇒ 假违反 9.8%~22.4%
+ *   会产生 `r > a` 的**假违反**。半透明边缘多的图会把假违反放大，
  *   ⇒ 被判成"非预乘" ⇒ 走 upload 又乘一次 alpha ⇒ 双重预乘（嘴巴黑圈）。
- *   azurlane 的图边缘干净 ⇒ 0.1% ⇒ 判对。
  *
  * 做法：用 `createImageBitmap(img, { premultiplyAlpha: 'none' })` 拿到**未预乘**的位图再画；
  *   浏览器不支持或失败时退回原路径（并保持"能检测就检测"的语义，不因取不到样本而阻塞装载）。

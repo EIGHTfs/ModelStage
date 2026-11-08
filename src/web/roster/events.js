@@ -2,7 +2,7 @@
 //
 // 负责什么：
 //   · 树行的事件委托（点击 + 键盘 Enter/空格，两者共用同一个 activate 分派）；
-//   · 类型胶囊（点击 / 清除）、游戏行「点击加载 / 加载失败·重试」、扫描状态行〔重试〕；
+//   · 类型胶囊（点击 / 清除）、游戏行「加载失败·重试」、扫描状态行〔重试〕；
 //   · 搜索框输入（含"首次输入补全量"）、「收起」按钮、用户滚动信号挂载。
 //
 // 不负责什么：DOM 结构与文案（render.js）、加载编排（load.js）、装配（view.js）。
@@ -64,7 +64,9 @@ export function createRosterEvents({
     saveState(state);
     if (typeof onSelect === 'function') {
       const hit = modelById.get(modelId);
-      onSelect(hit ? hit.model : null);
+      // 把装载的 promise 交回调用方：冷启动要能等"首个模型真的出来"再放行后面的加载队列，
+      //   否则队列的整根扫描会和首个模型的资源请求抢同一份磁盘 IO。
+      return onSelect(hit ? hit.model : null);
     }
   }
 
@@ -116,13 +118,14 @@ export function createRosterEvents({
       });
     }
 
-    // 游戏行的「未加载 · 点击加载」/「加载失败 · 重试」：事件委托，且不能顺带折叠/展开这一行
+    // 游戏行的「加载失败 · 重试」：事件委托，且不能顺带折叠/展开这一行。
+    //   「未加载 · 点击加载」按钮已经取消（改由加载队列自动推进），所以这里只处理重试。
     listEl.addEventListener('click', (event) => {
-      const target = event.target && event.target.closest ? event.target.closest('[data-group-load], [data-group-retry]') : null;
+      const target = event.target && event.target.closest ? event.target.closest('[data-group-retry]') : null;
       if (!target) return;
       event.preventDefault();
       event.stopPropagation();
-      load.loadGroup(target.dataset.groupLoad || target.dataset.groupRetry, { reset: !!target.dataset.groupRetry });
+      load.loadGroup(target.dataset.groupRetry, { reset: true });
     });
 
     // 扫描状态行上的〔重试〕：事件委托（行会被重建，逐个绑会漏）

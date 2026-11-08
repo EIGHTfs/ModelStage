@@ -36,8 +36,9 @@ function renderLimitPerGame() {
  * @param {HTMLElement} deps.countEl 顶部计数节点
  * @param {HTMLElement|null} deps.typeFilterEl 类型胶囊行容器（取不到时整体降级为"没有类型筛选"）
  * @param {() => object} deps.snapshotOf 状态快照（render 末尾写进 dataset 供自动化断言）
+ * @param {(group: object) => number} [deps.queuePositionOf] 该分组在加载队列里的位次（1 起；0 = 不在队列）
  */
-export function createRosterRender({ store, counters, listEl, countEl, typeFilterEl, snapshotOf }) {
+export function createRosterRender({ store, counters, listEl, countEl, typeFilterEl, snapshotOf, queuePositionOf }) {
   const state = store.state;
 
   /** 找到该游戏当前的游戏行（渲染是整棵重建的，所以每次都要重新查，不能缓存节点） */
@@ -203,6 +204,7 @@ export function createRosterRender({ store, counters, listEl, countEl, typeFilte
         open: state.expandedGroups.has(group.key),
         status,
         charCount: chars.length,
+        queuePosition: typeof queuePositionOf === 'function' ? queuePositionOf(group) : 0,
       }));
       if (!open) continue;
 
@@ -220,8 +222,10 @@ export function createRosterRender({ store, counters, listEl, countEl, typeFilte
         continue;
       }
       if (status === 'idle') {
-        // 恢复展开态但没加载（启动不预取）⇒ 明确告诉用户"要点一下"，而不是假装没有模型
-        listEl.append(el('p', 'muted-hint tree-hint', '未加载 · 点这一行的「点击加载」'));
+        // 未加载：队列会自动轮到它，这里只说清"现在排在哪儿"
+        const pos = typeof queuePositionOf === 'function' ? queuePositionOf(group) : 0;
+        listEl.append(el('p', 'muted-hint tree-hint',
+          pos > 0 ? `排队中（第 ${pos} 位），轮到后自动加载` : '等待加载队列'));
         continue;
       }
 

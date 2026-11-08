@@ -51,7 +51,7 @@ async function request(url, init) {
     // 兜底超时 8s：本文件四个调用点（列表/改名/删除/重置）都是读改写一份小 JSON，
     //   同源同类接口实测 10~58ms（/api/plugins 10ms、/api/config/export 58ms），留 100 倍余量。
     //   上传那处 body 最大 4MB（dataURL）⇒ 由调用方传更长的 signal 覆盖（见 uploadBackground）。
-    res = await fetch(url, { ...(init || {}), signal: (init && init.signal) || AbortSignal.timeout(8000) });
+    res = await fetch(url, { ...(init || {}), ...(init && init.signal ? { signal: init.signal } : {}) });
   } catch (e) {
     return { ok: false, reason: 'network', message: `网络请求失败：${(e && e.message) || e}` };
   }
@@ -93,9 +93,7 @@ export function uploadBackground(file) {
       'x-filename': encodeURIComponent(file.name || ''),
     },
     body: file,
-    // 上传单独覆盖成 15s：body 最大 4MB（MAX_BYTES），服务端要收满 + 落盘（CIFS 上写几 MB 可能数秒），
-    //   兜底的 8s 对这一步太紧；其余三个调用点都是小 JSON，用兜底值即可。
-    signal: AbortSignal.timeout(15000),
+    // 不设时限。
   });
 }
 

@@ -52,7 +52,7 @@ function arrowEl(open) {
 
 /**
  * 一级：游戏行（按资源根配置的 name 合并后的节点）。
- * 一个游戏可能由多个资源根供给（碧蓝航线 = 3 个根），所以徽标显示根数量、title 列出具体根 id，
+ * 一个游戏可能由多个资源根供给，所以徽标显示根数量、title 列出具体根 id，
  * 数据属性 data-root-ids 供自动化断言核对"这些根都在同一个游戏节点下"。
  * @param {{key: string, name: string, roots: object[]}} group
  * @param {{open: boolean, status: string, charCount: number}} view
@@ -77,6 +77,8 @@ export function renderGroupRow(group, view) {
   // 状态位：ready/loading 是原有口径；idle（从没展开过）与 error 各给一个**显式入口**。
   //   为什么不自动加载：一次性把 9 个根全拉一遍 = 9 次全量扫描（几分钟），页面会像"什么都打不开"。
   //   加载只能由用户动作触发（展开这一行 / 点这两个按钮）。
+  // 状态只有"进度"含义，没有"要你点一下"的含义：加载由队列自动推进（见 load.js 的串行队列）。
+  //   失败态也保留重试按钮，因为那是用户唯一能做的动作。
   if (view.status === 'ready') row.append(el('span', 'tree-count', `${view.charCount} 角色`));
   else if (view.status === 'scanning' || view.status === 'stalled') {
     // 扫描中/疑似卡住：文案由 view.js 的扫描状态行写入（同一行同一个槽位），
@@ -90,11 +92,11 @@ export function renderGroupRow(group, view) {
     retry.title = '重新请求这个游戏的资源根清单';
     row.append(retry);
   } else {
-    const load = el('button', 'tree-game-load', '未加载 · 点击加载');
-    load.type = 'button';
-    load.dataset.groupLoad = group.key;
-    load.title = '展开时才加载（避免一次拉全部资源根）';
-    row.append(load);
+    // 未加载：排队中（第 N 位）/ 等待队列。**没有按钮**，队列会自动轮到它。
+    const label = typeof view.queuePosition === 'number' && view.queuePosition > 0
+      ? `排队中（第 ${view.queuePosition} 位）`
+      : '等待加载';
+    row.append(el('span', 'tree-count is-queued', label));
   }
   return row;
 }

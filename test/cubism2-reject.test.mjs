@@ -7,7 +7,7 @@
 //   ④ 链路：canHandle false 时 explainReject 能给出结构化原因，且 warn 日志确实发出一条
 //
 // ⚠️ 资源里当前**没有真的 .moc 包**（已实测：所有资源根 0 个 .moc 文件；
-//   azurlane_bundle 的 live2d/ 下 75 个包全部有 moc3）。所以正向样本用**构造字节**：
+//   真实样本里的包都带 moc3）。所以正向样本用**构造字节**：
 //   判据实现只依赖 MonoBehaviour 字节数组，构造即可精确覆盖三个分支。
 //   .moc 魔数取证：Cubism 2 官方运行时 live2d.min.js 的 loadModel() 校验 `109 && 111 && 99`
 //   （'m','o','c'），随后一个字节是版本号 —— 不是 "moc\0"。

@@ -6,7 +6,7 @@
 //
 // 记录形状（与前端同一套字段名）：{ at, level, tag, msg, detail }
 // 输出格式（单行，人读 + 可解析兼顾）：
-//   14:32:07.981 INFO  [models] 已生成清单 models.bd2.json {"count":389}
+//   14:32:07.981 INFO  [models] 已生成清单 spine.<rootId>.json {"count":0}
 //   └ 固定宽度前缀 ⇒ 正则 /^(\d{2}:\d{2}:\d{2}\.\d{3}) (\w+)\s+\[(\S+)\] (.*?)(\{.*\})?$/ 可切四段
 // 流向：error → stderr（真正的异常），debug/info/warn → stdout。
 //   项目启动脚本是 `nohup … >"$LOG_FILE" 2>&1`，两流合并写同一文件，所以分流不丢日志，

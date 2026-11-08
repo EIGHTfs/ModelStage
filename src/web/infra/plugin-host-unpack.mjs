@@ -447,7 +447,7 @@ async function resolveViaProvider(file, bytes) {
  *
  * 为什么必须有：同一个 UnityFS 包可能被多个 bundle 插件都判成"我能处理" ——
  *   它们的判定只看包结构，不看"解出来的东西是否自洽"。
- *   实测（NIKKE 的 spine 资源包）：live2d 插件抢先返回 ok，但它生成的 `model3.json`
+ *   实测：live2d 插件抢先返回 ok，但它生成的 `model3.json`
  *   里 Moc 指向的 `moc3.moc3` 内容只有 4 字节、字面量 `null`（包里根本没有 moc3）
  *   ⇒ 后续按 live2d 装载必然失败（控制台只有一句 Network error），
  *   而真正能解这个包的 spine 插件永远轮不到 ⇒ 表现为"点一次不出画，

@@ -6,7 +6,7 @@
 //      "stored（不压缩）"，2048² 得到 16.8MB 的假大文件（实测踩过，见 fixtures/spine-bundle/README.md）。
 //      用生产装载路径，正好把这条隐式依赖钉进测试。
 //
-// 样本策略：外部资源不入库（NIKKE 单包 5.6~6.6MB），按路径引用 + 缺失即 skip，
+// 样本策略：外部资源不入库，按路径引用 + 缺失即 skip，
 //   与 test/unpack-filesview.test.mjs 引用 ../live2d 同口径。坏包由正例样本截断构造。
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { ensurePlugin } from '../src/server/unpack/plugin-runner.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const NIKKE_ROOT = path.resolve(ROOT, '..', 'NIKKE', 'Rupee - 露菲');
+const BUNDLE_SAMPLE_ROOT = path.resolve(ROOT, '..', 'NIKKE', 'Rupee - 露菲');
 const LIVE2D_ROOT = path.resolve(ROOT, '..', 'live2d');
 
 const SPINE_PLUGIN = 'unity-spine-bundle';
@@ -24,9 +24,9 @@ const LIVE2D_PLUGIN = 'unity-live2d-bundle';
 
 /** 取一个 spine 正例（NIKKE 包：无扩展名的 UnityFS 文件）；无样本返回 null 由调用方 skip */
 function pickSpineSample() {
-  if (!fs.existsSync(NIKKE_ROOT)) return null;
-  const names = fs.readdirSync(NIKKE_ROOT).filter((n) => !n.toLowerCase().endsWith('.7z')).sort();
-  return names.length ? path.join(NIKKE_ROOT, names[0]) : null;
+  if (!fs.existsSync(BUNDLE_SAMPLE_ROOT)) return null;
+  const names = fs.readdirSync(BUNDLE_SAMPLE_ROOT).filter((n) => !n.toLowerCase().endsWith('.7z')).sort();
+  return names.length ? path.join(BUNDLE_SAMPLE_ROOT, names[0]) : null;
 }
 
 /** 取一个 live2d 包（互斥反例）；无样本返回 null */
@@ -269,7 +269,7 @@ test('estimateMemory：只给 256KB 头部时返回 null（块表在尾 ⇒ 让�
 // 插件这份读的是**内存文本**，但规则必须与服务端 probe.mjs 完全一致，否则
 //   "插件落盘的 png 文件名" 与 "扫描器去找的页名" 会对不上（本文件上方注释早有此要求）。
 // 根因：JS 的 \s 包含 U+FEFF，AssetStudio 导出的 atlas 首行是「BOM + 页名」
-//   ⇒ 不剥 BOM 就把第一页当"有前导空白"整行跳过（NIKKE 247 个模型丢第一页贴图）。
+//   ⇒ 不剥 BOM 就把第一页当"有前导空白"整行跳过（带 BOM 的 atlas 全丢第一页贴图）。
 const TWO_PAGES_BODY = [
   'size: 2048,2048',
   'format: RGBA8888',

@@ -55,7 +55,7 @@ export function invalidateManifests(configFile, rootId) {
   //
   //   为什么 tmp 不能删：tmp 是"扫描正在写的那份"。invalidate 可能被**并发触发**
   //   （另一个根 refresh、或任何一次失效），删掉正在写的 tmp ⇒ 那个扫描 finish 时 rename ENOENT
-  //   （实测日志：`rename 'spine.nikke_2.jsonl.tmp' -> 'spine.nikke_2.jsonl'`）。
+  //   （实测日志：`rename 'spine.<rootId>.jsonl.tmp' -> 'spine.<rootId>.jsonl'`）。
   //   tmp 现在带 pid+seq 唯一名，靠"年龄"清理：只删老到不可能是"正在写"的。
   const FINAL_SUFFIXES = ['.jsonl', '.json'];
   const TMP_MAX_AGE_MS = 60 * 60 * 1000;   // 1 小时：正常扫描远用不到，超过即视为残留

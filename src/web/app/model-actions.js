@@ -213,9 +213,9 @@ async function probeSkelVersion(url) {
     const vfs = getSharedVirtualFS();
     const real = (vfs && typeof vfs.resolve === 'function' ? vfs.resolve(url) : null) || url;
     // 归 **B 类（只加超时，不走 api.js）**：这里要的是二进制头，不是 JSON —— getJson 会 res.json() 解坏。
-    //   注意 `.slice(0,32)` 是在**已拿到的 blob** 上切，不是 HTTP Range ⇒ 实际仍下载整个 .skel，
-    //   所以超时按"整文件下载"给：20s（CIFS 上几 MB 骨架可能数秒，实测运行时脚本读取同量级）。
-    const res = await fetch(real, { signal: AbortSignal.timeout(20000) });
+    //   注意 `.slice(0,32)` 是在**已拿到的 blob** 上切，不是 HTTP Range ⇒ 实际仍下载整个 .skel。
+    //   不设时限。
+    const res = await fetch(real);
     if (!res || !res.ok) return null;
     // 读前 64 字节：3.8 格式是「hash 串 + 版本串」，两段加起来可能 40+ 字节（实测 1+27+1+7=36）
     const head = new Uint8Array(await (await res.blob()).slice(0, 64).arrayBuffer());
@@ -289,11 +289,11 @@ async function expandContainerEntry(src, name) {
   let fetchNote = '';
   try {
     if (fetchUrl) {
-      // 归 **B 类（只加超时）**：这里必须保留 `cache: 'no-store'`（entry.json 是解包产物，
+      // 归 **B 类**：这里必须保留 `cache: 'no-store'`（entry.json 是解包产物，
       //   读到浏览器缓存会拿到上一版产物）；而 getJson/fetchWithRetry 都不透传 cache 选项，
-      //   走 api.js 会静默丢掉这个语义 ⇒ 宁可只补超时。
-      //   8.5s 与 api.js 默认一致（entry.json 是小 JSON，实测同量级接口 10~58ms）。
-      const res = await fetch(fetchUrl, { cache: 'no-store', signal: AbortSignal.timeout(8500) });
+      //   走 api.js 会静默丢掉这个语义。
+      //   不设时限。
+      const res = await fetch(fetchUrl, { cache: 'no-store' });
       if (res && res.ok) meta = await res.json();
       else fetchNote = `HTTP ${res && res.status}`;
     } else fetchNote = 'resolve 返回空';
@@ -494,8 +494,9 @@ function mountEntry(entry, name) {
   };
 
   // 唯一的装载通路：来源解析在 loadModel 内部完成，这里不再按 kind/source 分支
+  //   **返回这个 promise**：冷启动要能等"首个模型真的出来"再放行加载队列。
   const loadPromise = loadModel(entry, name);
-  loadPromise
+  return loadPromise
     .then((info) => {
       // null = 本次请求被排队/被更新的选择取代（Surface 的 last-wins 语义）：
       //   不能当成功读结果字段，否则出现"旧面已释放 + 新面没装"的空白 + TypeError
@@ -571,7 +572,7 @@ function onSelectModel(model) {
 
   // 换模型 = 换内容：先把「当前动作」的副本清掉（动作是模型属性，见设计 §1.9）。
   //   必须在这里清而不是装载成功后清：装载失败/被拒时也不该残留上一个模型的动作名，
-  //   否则新模型的清单里只要恰好有同名项（碧蓝航线 live2d 全都叫 idle/home/…）就会被继续播。
+  //   否则新模型的清单里只要恰好有同名项，就会被继续播。
   resetMotionState();
   // 无残缺（绝大多数情况）：直接走统一装载入口
   return mountEntry(entry, name);
@@ -602,12 +603,14 @@ async function loadRoots(opts = {}) {
       onSelect: onSelectModel,
     });
     state.roster = roster;
-    // 关闭自动恢复时，连"上次展开的节点"也不还原：保持空舞台、空展开
-    await roster.mount(roots, { restoreExpanded: autoRestore });
+    // 关闭自动恢复时，连"上次展开的节点"也不还原：保持空舞台、空展开。
+    //   mount 内部会做恢复并返回结果 —— 恢复只允许有一个所有者，不再在这里二次调用 restoreLast
+    //   （两个入口会让"先恢复、后排队"的次序随时序漂移而失效）。
     state.autoRestore = autoRestore;
-    state.restore = (autoRestore && !opts.skipRestore)
-      ? await roster.restoreLast()
-      : { restored: false, reason: opts.skipRestore ? 'roots-changed' : 'config-off' };
+    state.restore = await roster.mount(roots, {
+      restoreExpanded: autoRestore,
+      skipRestore: !(autoRestore && !opts.skipRestore),
+    });
     // 资源根管理（F4）：首次建实例并渲染；之后每次刷新都用最新列表重画
     if (!state.rootManager) {
       state.rootManager = createRootManager({

@@ -99,7 +99,57 @@ const GENERATOR_FILES = [
 let generatorCache = { sig: null, value: '0' };
 
 /**
- * 生成者指纹：解析器文件内容哈希的前 8 位。
+ * 去掉注释与多余空白后再参与哈希。
+ *
+ * 为什么不能直接哈希整份文件：指纹一变就**全部清单作废、所有根重扫**（每个根几十秒）。
+ *   而注释、缩进、换行都属于"改字不改行为"的编辑，不该有这种代价。
+ *   所以这里按语法位置剥掉 `//` 与 `/* *​/`（跳过字符串/模板字面量里的同形字符），再压掉空白，
+ *   只让**真正会改变解析结果的改动**影响指纹。
+ * @param {string} text
+ * @returns {string}
+ */
+function stripCommentsAndSpace(text) {
+  let out = '';
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    const ch = text[i];
+    const next = text[i + 1];
+    // 行注释
+    if (ch === '/' && next === '/') {
+      while (i < n && text[i] !== '\n') i += 1;
+      continue;
+    }
+    // 块注释
+    if (ch === '/' && next === '*') {
+      i += 2;
+      while (i < n && !(text[i] === '*' && text[i + 1] === '/')) i += 1;
+      i += 2;
+      continue;
+    }
+    // 字符串 / 模板字面量：整段原样保留（里面的 // 不是注释）
+    if (ch === '"' || ch === "'" || ch === '`') {
+      const quote = ch;
+      out += ch;
+      i += 1;
+      while (i < n) {
+        const c = text[i];
+        out += c;
+        if (c === '\\') { out += text[i + 1] || ''; i += 2; continue; }
+        i += 1;
+        if (c === quote) break;
+      }
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  // 压空白：换行也统一成单空格，避免"重排代码"改指纹
+  return out.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * 生成者指纹：解析器文件**去掉注释与空白后**内容哈希的前 8 位。
  * @param {string} [root] 项目根（缺省按本文件位置推，不写死绝对路径）
  * @returns {string} 8 位十六进制（一个文件都读不到时为 '0'）
  */
@@ -125,7 +175,7 @@ export function generatorFingerprint(root = PROJECT_ROOT) {
     if (!ok) continue;
     try {
       h.update(rel);
-      h.update(fs.readFileSync(path.join(root, rel)));
+      h.update(stripCommentsAndSpace(fs.readFileSync(path.join(root, rel), 'utf8')));
       used += 1;
     } catch { /* 单个文件读不了不影响其它文件 */ }
   }

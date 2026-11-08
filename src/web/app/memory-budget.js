@@ -92,7 +92,6 @@ async function fetchServerJudgement(sourceMb) {
     fetchCount += 1;
     const res = await fetch(`/api/unpack/capacity${qs}`, {
       headers: { Accept: 'application/json' },
-      signal: AbortSignal.timeout(2000),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const j = await res.json();

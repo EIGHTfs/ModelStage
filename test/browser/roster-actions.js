@@ -185,7 +185,7 @@ const skip = (name, sel, expect, reason) => results.push({ name, sel, action: 's
 
 /**
  * /api/roots 按 name 分组的期望根数（roster 的"一级节点按 name 合并"要拿它做**相对断言**）。
- * ⚠️ 本机会有三个根都叫「碧蓝航线」⇒ 任何"该游戏有几个根"的断言都必须现算，不能写死数字。
+ * ⚠️ 同一显示名可能对应多个根 ⇒ 任何"该游戏有几个根"的断言都必须现算，不能写死数字。
  */
 
   // 基础上下文（其余 helper 由两个工厂提供；工厂内同名解构 ⇒ helper 体内一字不改）
@@ -356,10 +356,13 @@ async function runInitialState(C) {
   const nameSet = new Set(s.groups.map((g) => g.name));
   const expectByName = await rootsByName();
   const mergedOk = s.groups.every((g) => (g.roots || []).length === (expectByName[g.name] || 0));
+  // 只断言"合并语义"：名字唯一 + 每个节点的根数 = /api/roots 里同名的根数。
+  //   加载状态不能进判据 —— 启动后队列会自动逐个加载，任何时刻各组的 status 都可能不同
+  //   （ready / loading / idle 并存是正常态），拿"全部 idle"当条件等于要求"永远别开始加载"。
   rec('一级节点按 name 合并', '.tree-game', '读取',
-    '每个游戏名唯一（同名根合并成一个节点）；每个节点的根数 = /api/roots 里同 name 的根数；初始未加载',
+    '每个游戏名唯一（同名根合并成一个节点）；每个节点的根数 = /api/roots 里同 name 的根数',
     `groups=${names.join(' / ')}（去重后 ${nameSet.size} 个）；各节点根数=${JSON.stringify(s.groups.map((g) => [g.name, (g.roots || []).length]))}；期望=${JSON.stringify(expectByName)}；status=${s.groups.map((g) => g.status).join('/')}`,
-    nameSet.size === s.groups.length && mergedOk && s.groups.every((g) => g.status === 'idle'));
+    nameSet.size === s.groups.length && mergedOk);
 
   if (s.groups.length < 2) {
     // 这两条是**能力前置**，对应断言是动态名（`游戏 <名> 展开` / `游戏 <名> 折叠`），

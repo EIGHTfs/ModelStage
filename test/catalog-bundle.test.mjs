@@ -1,8 +1,8 @@
 // test/catalog-bundle.test.mjs —— 资源包（容器单文件）在模型列表里的可见性
 //
 // 锁两类回归：
-//   ① **递归**：资源包的摆法不统一 —— 有的根平铺在根层（azurlane_bundle，19 个都在 L0），
-//      有的按 `<角色名>/<包>` 分目录（nikke_2，3 个都在 L1）。只扫根层时后者条目为 0，
+//   ① **递归**：资源包的摆法不统一 —— 有的根平铺在根层，
+//      有的按 `<角色名>/<包>` 分目录。只扫根层时后者条目为 0，
 //      表现是「包明明在盘上、模型列表里却没有」。
 //   ② **kind 归属**：多个 asset-provider 插件并存时，解包前无法确定内容类型，
 //      必须留 null 交由解包产物判定。取第一个插件会让 spine 包被标成 live2d
@@ -19,7 +19,7 @@ import { createServerData } from '../src/server/index.mjs';
 import { findContainerFiles, resolveBundleProvider, toBundleEntry } from '../src/server/data/catalog.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const NIKKE_ROOT = path.resolve(ROOT, '..', 'NIKKE');
+const BUNDLE_SAMPLE_ROOT = path.resolve(ROOT, '..', 'NIKKE');
 const LIVE2D_BUNDLE_ROOT = path.resolve(ROOT, '..', 'live2d');
 
 const data = createServerData({ root: ROOT, dataRoot: ROOT });
@@ -43,7 +43,7 @@ function detectContainer(abs) {
 }
 
 test('递归：多层目录下的容器也能列出（nikke_2 的包在第二层）', async () => {
-  if (!fs.existsSync(NIKKE_ROOT)) return;   // 样本不在本机：skip
+  if (!fs.existsSync(BUNDLE_SAMPLE_ROOT)) return;   // 样本不在本机：skip
   const r = await data.catalog.listCatalog('nikke_2');
   assert.equal(r.status, 200);
   const entries = r.body.entries || [];

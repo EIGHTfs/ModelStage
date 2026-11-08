@@ -3,7 +3,7 @@
 // 锁的核心回归：**带 BOM 的 atlas 首行必须被识别为第一页**。
 //   根因：JS 的 \s **包含 U+FEFF**，而 AssetStudio 导出的 atlas 首行是「BOM + 页名」，
 //   `/^[^\s]/` 会把首行判成"有前导空白"而整行跳过 ⇒ 多页图集第一页页名丢失
-//   （现场：NIKKE 根 247 个模型里 34 份 atlas 带 BOM，均丢第一页 ⇒ 画面空白）。
+//   （现场：带 BOM 的 atlas 全部丢第一页 ⇒ 贴图拿不到、画面空白）。
 // 三份"同口径"实现的差异（别再改回去）：
 //   · 服务端 probe.mjs        —— 读文件后**先剥 BOM**再按行匹配
 //   · 插件 unity-spine-bundle —— 读内存文本后**先剥 BOM**（同口径）
@@ -45,7 +45,7 @@ const TWO_PAGES = [
   '',
 ].join('\n');
 
-test('带 BOM 的首行必须被识别为第一页（NIKKE 现场根因）', () => {
+test('带 BOM 的首行必须被识别为第一页', () => {
   const text = `\uFEFFc010_00.png\n${TWO_PAGES}c010_00_2.png\n`;
   const pages = parseText(text);
   assert.deepEqual(pages, ['c010_00.png', 'c010_00_2.png']);

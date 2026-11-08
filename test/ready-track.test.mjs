@@ -65,7 +65,8 @@ test('模型阶段：有画面但到不了 interactive ⇒ 只记录，阶段保
   assert.equal(stage.reason, undefined);
 });
 
-test('模型阶段：全程没有任何观测 ⇒ 判 failed 且带可读原因', async () => {
+test('模型阶段：全程没有任何观测 ⇒ 只记录 no-observation，不判 failed', async () => {
+  resetStage('model');
   const before = stats().trackStops.length;
   trackModelStage({
     kind: 'test', id: 'case-none', canvas: null,
@@ -74,9 +75,10 @@ test('模型阶段：全程没有任何观测 ⇒ 判 failed 且带可读原因'
   await waitUntil(() => stats().trackStops.length > before, { label: '超时记录' });
   const record = stats().trackStops[stats().trackStops.length - 1];
   assert.equal(record.outcome, 'no-observation');
+  // 轮询等不到不等于坏（机器忙、资源大都会慢）：结论只能是"观测到多少"，不能是"失败"。
   const stage = snapshot('model');
-  assert.equal(stage.state, 'failed');
-  assert.match(String(stage.reason), /无任何观测/);
+  assert.notEqual(stage.state, 'failed', '没有观测也不能把阶段判成 failed');
+  assert.equal(stage.state, 'pending');
 });
 
 test('模型阶段：外部 stop() ⇒ 记为 cancelled，不报成超时、不判 failed', async () => {

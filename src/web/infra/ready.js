@@ -225,8 +225,9 @@ function flush(opts) {
   };
   try {
     if (keepalive) {
-      // 卸载前：**不重试**（页面已经在走，没时间退避），keepalive 保证尽力送达
-      fetch('/api/ready', { method: 'POST', headers, body: payload, keepalive: true, signal: AbortSignal.timeout(5000) })
+      // 卸载前：**不重试**（页面已经在走，没时间退避），keepalive 保证尽力送达。
+      //   不设时限：页面卸载时浏览器自己会掐断。
+      fetch('/api/ready', { method: 'POST', headers, body: payload, keepalive: true })
         .catch((e) => onFail(e, 1))
         .finally(() => { st.inflight = false; });
     } else {
@@ -415,11 +416,10 @@ function createTrackFinisher(spec) {
       const observed = last && (last.connected === true || last.mounted === true
         || Number(last.frames) > 0 || Number(last.actions) > 0 || last.seen === true);
       const outcome = kind === 'cancelled' ? 'cancelled' : (observed ? 'not-interactive' : 'no-observation');
+      // 只记录，不判死：这里等的是"画布自己走到 interactive"，没有任何事件可以订阅，
+      //   所以只能轮询；但轮询的结论只能是"观测到多少"，不能是"失败"——
+      //   慢（机器忙、资源大）不等于坏。真要判失败只有一种情形：调用方明确要求（allowFail）。
       recordTrackStop({ stage: spec.stage, outcome, waitedMs, timeoutMs: spec.timeoutMs, state: stateNow, last });
-      // 只有"什么都没观测到"且调用方允许判失败时才标 failed —— 已有画面时绝不撒谎
-      if (outcome === 'no-observation' && spec.allowFail()) {
-        markStage(spec.stage, 'failed', { ...spec.failDetail(), waitedMs }, spec.failReason(waitedMs));
-      }
     }
     scheduleFlush();
   };

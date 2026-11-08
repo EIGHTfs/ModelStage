@@ -55,7 +55,7 @@ export function createDirPicker({ onPick, formatError, getLastError } = {}) {
         <div class="dir-picker-alert" data-role="alert" role="alert" hidden></div>
         <div class="dir-picker-foot">
           <span class="muted-hint">显示名称（同名会合并成一个游戏，用于归类原版／Mod）</span>
-          <input type="text" data-role="name" placeholder="如：棕色尘埃2" aria-label="资源根显示名称" />
+          <input type="text" data-role="name" placeholder="显示名称" aria-label="资源根显示名称" />
           <button type="button" class="mini-btn is-accent" data-role="add">添加</button>
         </div>
       </div>`;

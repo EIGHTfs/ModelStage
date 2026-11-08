@@ -463,7 +463,7 @@ export function enabledPluginKinds(pluginsDir, switchFile) {
 /**
  * 按**魔数**识别资源包容器（kind:"bundle" 的资源根用）。
  *
- * 为什么不能按扩展名：碧蓝航线的 Live2D 资源包就是**无扩展名**的单文件（实测样本 `adaerbote_3`），
+ * 为什么不能按扩展名：Live2D 资源包常是**无扩展名**的单文件，
  *   按扩展名过滤会一个都列不出来。容器标识在文件头，读前 8 字节即可判定，成本可忽略。
  *
  * @param {string} abs 文件绝对路径

@@ -98,15 +98,17 @@ test('⑥ POST 不合并：同一 URL 同时 3 次 POST → 真实请求 = 3', a
   } finally { await s.close(); }
 });
 
-test('⑦ 超时生效：端点挂死 → 到 timeoutMs 抛错，不无限挂着', async () => {
+test('⑦ 慢不等于失败：端点迟迟不响应时，请求会继续等（不再到点抛错）', async () => {
   __clearInflightForTest();
-  const s = await serve(() => { /* 永不响应 */ });
+  // 服务端 2s 后才响应：如果客户端还留着"到点判死"，这里会抛超时；正确的行为是等到响应。
+  const s = await serve((req, res) => setTimeout(() => json(res, 200, { ok: true }), 2000));
   try {
     const t0 = Date.now();
-    await assert.rejects(() => getJson(`${s.url}/hang`, { timeoutMs: 300, retries: 0 }), /失败|timeout|aborted/i);
+    const body = await getJson(`${s.url}/slow`, { retries: 0 });
     const ms = Date.now() - t0;
-    assert.ok(ms < 3000, `应在超时附近返回（实测 ${ms}ms）`);
-    console.log(`    超时实测 ${ms}ms（timeoutMs=300）`);
+    assert.deepEqual(body, { ok: true }, '慢响应也必须拿到结果，而不是被判超时');
+    assert.ok(ms >= 1500, `应真的等到了响应（实测 ${ms}ms）`);
+    console.log(`    慢响应实测 ${ms}ms（服务端延迟 2000ms）`);
   } finally { await s.close().catch(() => {}); }
 });
 

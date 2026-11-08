@@ -255,7 +255,7 @@ export function streamScanFrames({ res, buildStartFrame, emitter, buildDoneFrame
 
   // start 的**首选**触发点：调用方在"确认缓存未命中、马 上要开始扫描"时主动 emit('start')。
   //   为什么不能只靠"第一条 progress 才发"：扫描前还有一步 `indexRootFiles`（建全根索引）是同步的，
-  //   在实测 bd2（431 条）上它占了 4.19s —— 那样首帧仍然要等 4s+，达不到"<2s 可见"的目标。
+  //   建全根索引这一步在实测中占了数秒 —— 那样首帧仍然要等数秒，达不到"<2s 可见"的目标。
   function onStart() {
     if (startSent) return;
     startSent = true;

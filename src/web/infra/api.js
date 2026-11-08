@@ -20,8 +20,7 @@
 //   · 去重键是「method + path」，不含请求头；同路径不同 Accept 会被合并——本项目 API 都是同源 JSON，
 //     不存在这种用法。
 
-/** 单次请求默认超时：8.5s（比常见反代 10s 略短，让"卡住"更早暴露成本地超时而非网关 504） */
-const DEFAULT_TIMEOUT_MS = 8500;
+// 本文件不设请求时限。需要取消的调用方自己传 signal；测试里可以设超时。
 
 /** 退避基准（毫秒）：第 1/2/3 次重试前的等待；抖动 ±20% */
 const BACKOFF_MS = [100, 300, 900];
@@ -62,12 +61,13 @@ function retryableStatus(status) {
   return status >= 500 && status <= 599;
 }
 
-/** 是否"网络层失败"（fetch 抛 TypeError，或超时导致的 TimeoutError） */
+/**
+ * 是否"网络层失败"：只有真正的连接层错误才重试；慢不算失败。
+ */
 function retryableNetworkError(err) {
   if (!err) return false;
   const name = String(err.name || '');
   const msg = String(err.message || '');
-  if (name === 'TimeoutError') return true;   // AbortSignal.timeout 触发的超时
   if (name === 'AbortError') return false;    // 调用方主动取消：不能重试
   return err instanceof TypeError || /Failed to fetch|network|fetch failed/i.test(msg);
 }
@@ -93,12 +93,8 @@ async function readBody(res, path, method) {
 }
 
 /** 单次尝试：返回解析后的 body，或抛出带 status 的错误 */
-async function attemptOnce(path, { method, body, headers, timeoutMs, signal, cache }) {
-  // 每次尝试都有独立超时（AbortSignal.timeout）：卡死的请求不会无限挂住页面
-  const timeoutSignal = AbortSignal.timeout(timeoutMs);
-  const merged = signal && typeof AbortSignal.any === 'function'
-    ? AbortSignal.any([signal, timeoutSignal])
-    : (signal || timeoutSignal);
+async function attemptOnce(path, { method, body, headers, signal, cache }) {
+  // 不设时限；只透传调用方的 signal（用户取消）。
   const res = await fetch(path, {
     method,
     headers: {
@@ -110,7 +106,7 @@ async function attemptOnce(path, { method, body, headers, timeoutMs, signal, cac
     // cache 必须能透传：插件清单 / 运行时清单这类"改完要立刻看到"的请求带 no-store，
     //   丢掉它会读到浏览器缓存（新增插件在前端看不见）。以前 api.js 不透传，调用方只能裸 fetch。
     ...(cache ? { cache } : {}),
-    signal: merged,
+    ...(signal ? { signal } : {}),
   });
 
   if (res.ok) return readBody(res, path, method);
@@ -239,7 +235,6 @@ attachRetryStats();
  * @returns {Promise<Response>} 成功（res.ok）的响应；4xx/重试耗尽会抛错
  */
 export async function fetchWithRetry(url, opts = {}) {
-  const timeoutMs = Number(opts.timeoutMs) || DEFAULT_TIMEOUT_MS;
   // 非幂等方法默认不重试（重发写请求=重复写）；调用方显式给 retries 时以显式为准
   const retries = Number.isInteger(opts.retries)
     ? opts.retries
@@ -261,16 +256,13 @@ export async function fetchWithRetry(url, opts = {}) {
   for (let i = 0; i < maxAttempts; i += 1) {
     retryStats.attemptsTotal += 1;
     try {
-      const timeoutSignal = AbortSignal.timeout(timeoutMs);
-      const merged = opts.signal && typeof AbortSignal.any === 'function'
-        ? AbortSignal.any([opts.signal, timeoutSignal])
-        : (opts.signal || timeoutSignal);
+      // 不设时限（慢 ≠ 失败）。只透传调用方的 signal（用户主动取消）。
       const res = await fetch(url, {
         method: opts.method || 'GET',
         headers: opts.headers,
         ...(opts.body !== undefined ? { body: typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body) } : {}),
         ...(opts.keepalive ? { keepalive: true } : {}),
-        signal: merged,
+        ...(opts.signal ? { signal: opts.signal } : {}),
       });
       if (res.ok) {
         retryStats.inflight -= 1;
@@ -316,7 +308,6 @@ export async function fetchWithRetry(url, opts = {}) {
  */
 async function requestJson(path, opts = {}) {
   const method = opts.method || 'GET';
-  const timeoutMs = Number(opts.timeoutMs) || DEFAULT_TIMEOUT_MS;
   // 非幂等方法默认不重试（重发写请求=重复写）；调用方显式给 retries 时以显式为准
   const retries = Number.isInteger(opts.retries)
     ? opts.retries
@@ -326,7 +317,7 @@ async function requestJson(path, opts = {}) {
 
   for (let i = 0; i < maxAttempts; i += 1) {
     try {
-      return await attemptOnce(path, { method, body: opts.body, headers: opts.headers, timeoutMs, signal: opts.signal, cache: opts.cache });
+      return await attemptOnce(path, { method, body: opts.body, headers: opts.headers, signal: opts.signal, cache: opts.cache });
     } catch (e) {
       lastErr = e;
       const status = e && e.status;

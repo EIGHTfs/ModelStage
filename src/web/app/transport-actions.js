@@ -129,7 +129,7 @@ async function stepVariant(dir, peersArg) {
  * 翻模型（**按左栏树从上到下的顺序**，末尾回绕）。
  *
  * 池子必须是树，不能是某个接口的清单：
- *   树的「游戏」节点是**同名根合并**出来的（例如「碧蓝航线」= azurlane + azurlane_spine + azurlane_bundle），
+ *   树的「游戏」节点是**同名根合并**出来的，
  *   按单个 rootId 取清单会漏掉同名的其它根 ⇒ 表现为"只能在 live2d 之间翻、翻不到 spine"（实测过的现场）。
  * @param {number} dir -1 上一个 / +1 下一个
  * @param {object[]} [flatArg] 已取到的树序序列
