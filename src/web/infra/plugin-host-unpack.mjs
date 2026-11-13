@@ -34,10 +34,20 @@ import { histogramFromObjects, isAssetDependencyHistogram, dependencyReason } fr
  */
 /** 未知二进制类型的兜底 MIME（扩展名对照表、Blob 回落、fetch 兜底三处共用一个） */
 const MIME_OCTET = 'application/octet-stream';
-export function createUnpack({ io, state, limits }) {
+export function createUnpack({ io, state, limits, getHost }) {
   const { say, emit } = io;
   const { providers, getDiscovered } = state;
   const { base } = limits;
+
+  /**
+   * 取宿主注入面（延迟取值）。
+   *
+   * 为什么是函数而不是创建时捕获：plugin-host.js 里 `createUnpack(...)` 在前、
+   *   `const hostApi = {...}` 在后 —— 创建时那个绑定还在 TDZ 里，捕获到就永远拿不到值
+   *   （页面报 `hostApi is not defined` 正是这条）。改成每次用时才调用，顺序就无所谓了。
+   * @returns {object|undefined}
+   */
+  const hostOf = () => (typeof getHost === 'function' ? getHost() : undefined);
 
 /**
  * 把各种"字节样"入参归一成 Uint8Array（契约 §1.1 要求的类型）。
@@ -425,7 +435,7 @@ async function resolveViaProvider(file, bytes) {
   }
   let res = null;
   try {
-    res = await provider.resolve({ ...file, bytes, host: hostApi });
+    res = await provider.resolve({ ...file, bytes, host: hostOf() });
   } catch (e) {
     return { ok: false, reason: 'resolve-failed', message: `提供者 ${provider.id} 解析失败：${(e && e.message) || e}` };
   }
@@ -944,7 +954,7 @@ function providersFor(fileKinds) {
  */
 function findProvider(file) {
   if (!file || typeof file !== 'object') return null;
-  const probe = { ...file, host: hostApi };
+  const probe = { ...file, host: hostOf() };
   if (file.bytes !== undefined && file.bytes !== null) {
     const normalized = toUint8Array(file.bytes);
     if (normalized) probe.bytes = normalized;

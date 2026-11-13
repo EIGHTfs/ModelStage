@@ -151,6 +151,50 @@
   }
 
   /**
+   * 从对象表取 TextAsset：名字 / 类型 / 骨架版本 / 字节数。
+   *
+   * 为什么走 typetree 的 rawStrings 而不是 extract 的文本分支：
+   *   m_Script 是二进制（.skel），按 UTF-8 字符串读再编码回去会毁字节
+   *   （实测 651994 字节 → 641818 字符含 165995 个 U+FFFD，长度都对不上）。
+   *
+   * 骨架版本的正则与 src/server/assets/probe.mjs 的 detectSkelVersion 完全一致：
+   *   两处必须同口径，否则"分析说 4.1.11、扫描器说默认 4.0"会各说一套。
+   *
+   * @param {object} sf serialized.parse() 结果
+   * @returns {Array<{name: string, kind: string, spineVersion: string|null, size: number}>}
+   */
+  function collectTextAssets(sf) {
+    const CLASS_ID_TEXT_ASSET = 49;
+    const out = [];
+    for (const obj of NS.serialized.byClass(sf, CLASS_ID_TEXT_ASSET)) {
+      let fields;
+      try {
+        fields = NS.typetree.readObject(sf, obj, { rawStrings: true });
+      } catch {
+        continue;   // 单个对象读不出来不影响其它 TextAsset
+      }
+      const name = (fields.m_Name && typeof fields.m_Name.text === 'string')
+        ? fields.m_Name.text : String(fields.m_Name || '');
+      const raw = fields.m_Script && fields.m_Script.bytes;
+      if (!raw || !raw.length) continue;
+      const lower = name.toLowerCase();
+      let kind = 'bytes';
+      if (lower.endsWith('.skel')) kind = 'skel';
+      else if (lower.endsWith('.atlas')) kind = 'atlas';
+      else if (lower.endsWith('.json')) kind = 'json';
+      let spineVersion = null;
+      if (kind === 'skel') {
+        // 只看前 512 字节：二进制骨架的版本串在文件头附近，整份读进来没有意义
+        const head = new TextDecoder('latin1').decode(raw.subarray(0, 512));
+        const m = head.match(/(2\.\d+|3\.[5-8]|4\.[0-3])\.\d+[\w-]*/);
+        if (m) spineVersion = m[0];
+      }
+      out.push({ name, kind, spineVersion, size: raw.length });
+    }
+    return out;
+  }
+
+  /**
    * 预检一个资源包。
    * @param {Uint8Array} bytes 资源包字节
    * @returns {object} { ok, code?, error?, container?, objects?, moc3?, physics3?, textures?, motions? }
@@ -230,12 +274,18 @@
         nodes: parsed.nodes.length,
         bytes: bytes.length,
       },
+      // 节点列表（path + size）：只读分析接口要逐条列出来回答"包里有什么"。
+      //   预检自己只用 nodes 的**个数**，多给一层列表不增加解析成本。
+      nodes: parsed.nodes.map((n) => ({ path: n.path, size: n.size })),
       objects: (sf.objects || []).length,
       moc3: got.moc3 ? { bytes: got.moc3.length } : null,
       cubism2Moc: cubism2.count > 0 ? { count: cubism2.count, names: cubism2.names, version: cubism2.sample ? cubism2.sample.version : null } : null,
       reject,
       physics3: got.physics3 ? { bytes: got.physics3.length } : null,
       nativeFiles: (got.nativeFiles || []).map((f) => f.name),
+      // TextAsset 明细（名字 / 类型 / 骨架版本 / 字节数）：只读分析接口要用它回答
+      //   "这个包里有哪些骨架、各是什么版本"，而预检本身只要"有没有"就够 —— 多给一层不增加解析成本。
+      textAssets: collectTextAssets(sf),
       textures,
       // 动作数 = AnimationClip 对象数（与装载时的 motion 数同源，但不跑转换）
       motions: countByClass(sf, 'AnimationClip'),

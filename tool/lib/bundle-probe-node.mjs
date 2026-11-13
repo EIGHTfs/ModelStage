@@ -224,7 +224,9 @@ export function probeBundleBytes(bytes) {
     }
   } catch { /* 形态探测失败不影响主结论（探不到就不下依赖包结论） */ }
 
-  return Object.assign({}, res || {}, shape || {});
+  // 带上提供者 id：调用方（/api/analyze）要用它回答"这份结论是哪个插件给的"，
+  //   缺了就只能给 null，等于把"解耦可见"这条验收做成摆设。
+  return Object.assign({ pluginId: provider.pluginId }, res || {}, shape || {});
 }
 
 // 路径与清单都**不再导出成常量**（常量会诱使别人继续手写第二份）；

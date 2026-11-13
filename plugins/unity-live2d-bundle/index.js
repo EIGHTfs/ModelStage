@@ -886,10 +886,8 @@ function install() {
       container: res.container || null,
       objects: typeof res.objects === 'number' ? res.objects : null,
       textures: Array.isArray(res.textures) ? res.textures : null,
-      // 契约 §1.1 的 textAssets：当前 lib/bundle-probe.js 只统计对象数、不单独列 TextAsset 名，
-      //   所以显式给 null（rather than 留一个"看起来有值"的空数组骗调用方）。
-      //   第 2 步做单文件分析时再从 serialized 对象表里取。
-      textAssets: null,
+      // 契约 §1.1 的 textAssets：名字 / 类型 / 骨架版本 / 字节数，由 lib/bundle-probe.js 从对象表取出
+      textAssets: Array.isArray(res.textAssets) ? res.textAssets : null,
       warnings: Array.isArray(res.warnings) ? res.warnings : [],
       // 透传既有字段：/api/bundle/probe 与页面预检此前就在用它们，
       //   新增 analyze 不能把它们丢掉，否则行为会变。

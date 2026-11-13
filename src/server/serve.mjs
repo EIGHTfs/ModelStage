@@ -39,6 +39,8 @@ import { handleReady } from './routes/ready.mjs';
 import { handleBackgrounds } from './routes/backgrounds.mjs';
 import { handleBackgroundSolids } from './routes/background-solids.mjs';
 import { handleEntries, createContextFor } from './routes/entries.mjs';
+// 只读分析接口（/api/analyze）：按 provides 找分析插件，一个都没有时降级为魔数判定
+import { handleAnalyze } from './analyze/index.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const WEB_ROOT = path.join(ROOT, 'src', 'web');
@@ -296,6 +298,8 @@ async function dispatch(req, res, p, url) {
   if (handleBackgrounds(req, res, p, ctx)) return true;
   // 条目状态（写读一体）：必须在 handleData 之前认领，否则 /api/ 前缀兜底会当未知接口 404
   if (handleEntries(req, res, p, url, ctx)) return true;
+  // 只读分析：不依赖资源根，路径直接来自参数；必须在这里认领，否则会被 /api/ 前缀兜底判成未知接口
+  if (await handleAnalyze(req, res, p, url, ctx)) return true;
   // handleData 已 async 化（内部要等扫描）：必须 await，否则 Promise 恒真会让所有请求都被它认领
   if (await handleData(req, res, p, url, ctx)) return true;
   if (staticRoutes.serveAssets(req, res, p)) return true;

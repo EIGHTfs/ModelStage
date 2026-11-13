@@ -179,6 +179,9 @@ export function createPluginHost(opts = {}) {
     io: { say: ctx.say, emit: ctx.emit },
     state: { providers: ctx.providers, getDiscovered: () => ctx.discovered },
     limits: { base },
+    // hostApi 在本函数后面才定义（const），创建时捕获会落在 TDZ 里 ⇒ 必须延迟取值。
+    //   闭包引用在**调用时**才求值，所以顺序无所谓。
+    getHost: () => hostApi,
   });
   const { materialize, fetchFile, providersFor, findProvider, prefilterReason, pool: workerPool } = unpack;
 

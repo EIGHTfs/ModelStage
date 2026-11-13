@@ -517,9 +517,8 @@ function install() {
       container: res.container || null,
       objects: typeof res.objects === 'number' ? res.objects : null,
       textures: Array.isArray(res.textures) ? res.textures : null,
-      // 契约 §1.1 的 textAssets：当前 lib/bundle-probe.js 只统计对象数、不单独列 TextAsset 名，
-      //   所以显式给 null（不留一个"看起来有值"的空数组骗调用方）。
-      textAssets: null,
+      // 契约 §1.1 的 textAssets：名字 / 类型 / 骨架版本 / 字节数，由 lib/bundle-probe.js 从对象表取出
+      textAssets: Array.isArray(res.textAssets) ? res.textAssets : null,
       warnings: Array.isArray(res.warnings) ? res.warnings : [],
       // 透传既有字段（与 live2d 插件同一套键，便于核心与诊断两端同口径）
       ok: res.ok,

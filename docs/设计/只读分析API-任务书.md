@@ -99,3 +99,123 @@ tool/lib/bundle-probe-node.mjs:49       （无此过滤）                      
    （项目里插件的启用/禁用机制以 registry.mjs 为准，不要另造一套）
 ```
 
+---
+
+# 第 2 步：单文件分析接口
+
+## 路由
+
+```
+GET /api/analyze?path=<绝对路径>
+```
+
+- **只读**：不写文件、不改配置、不动被分析文件；打开文件只读
+- **不限路径**：不要求路径在某资源根内（这是既定要求）
+- 错误一律给可读原因 + 结构化 code，不抛未捕获异常
+
+## 返回形状
+
+```jsonc
+{
+  "ok": true,
+  "path": "…",
+  "bytes": 1731276,
+  "verdict": "spine",          // spine | live2d-cubism4 | live2d-cubism2 | unity-3d | bundle-unknown | archive | encrypted | unknown
+  "analyzedBy": { "pluginId": "unity-spine-bundle" } | { "fallback": true, "magic": "UnityFS" },
+  "container": { "kind": "UnityFS", "version": 8, "engine": "2021.3.32f1", "nodes": 2 },
+  "nodes": [{ "path": "CAB-xxxx", "size": 4385184 }],
+  "objects": [{ "className": "TextAsset", "size": 172152 }],
+  "textAssets": [{ "name": "npc_ellin.skel", "kind": "skel", "spineVersion": "4.1.11", "size": 172152 },
+                 { "name": "npc_ellin.atlas", "kind": "atlas", "size": 4156 }],
+  "textures": [{ "name": "npc_ellin", "width": 1024, "height": 1024, "format": "RGBA32", "supported": true }],
+  "warnings": ["…"],
+  "summary": "一句话结论（人可读）"
+}
+```
+
+## 关键实现点
+
+```
+① textAssets 不能再是 null：要真正列出名字、类型（skel / atlas / json / bytes）、骨架版本
+   方法：TextAsset 对象体前 4 字节是名字长度（小端 i32），随后是名字；正文里能读到版本串（如 4.1.11）
+   两个 bundle 插件各自的 bundle-probe.js 都要提供，且保持逐字节相同（parity 用例已钉）
+② textures 要带 supported 标记：ASTC_* 等我们不解码的格式标 false 并进 warnings
+③ 非容器输入也要给结论：moc3（读 "MOC3" + 版本字节）、model3.json、zip（含加密 zip 提示）、纯文本
+④ analyzedBy 必须体现"是哪个插件分析的"或"降级了"——这是解耦的可见证据
+```
+
+## 验收
+
+```
+· 对 资源/棕色尘埃 2 的 8 个 __data：返回 skel 名 + 版本（4.1.11 / 4.1.24）+ 纹理数与格式
+· 对 LPK：给 encrypted/archive 判定 + 可读说明，不抛错
+· 对 /etc/passwd 这类非模型文件：给 unknown + 可读说明，不抛错
+· 对不存在的路径：404 + 结构化 code
+· 两个插件都禁用时：仍返回魔数级结论（analyzedBy.fallback=true）
+```
+
+---
+
+# 第 3 步：目录递归分析
+
+## 路由
+
+```
+GET /api/analyze?dir=<绝对路径>
+```
+
+## 要求
+
+```
+① 递归扫目录，找"可能是容器/模型"的文件：
+   · 魔数命中：UnityFS / CAB- / MOC3 / PK( zip ) / { ( json )
+   · 已知扩展名：.skel .atlas .moc .moc3 .model3.json .lpk .unity3d .bundle .ab
+② 逐个分析，**并发上限 1**（服务端扫描已有并发上限的既有做法，别另造一套）
+③ 聚合输出：
+   {
+     "ok": true, "dir": "…", "scanned": 16, "candidates": 8,
+     "counts": { "spine": 7, "live2d-cubism4": 0, "unity-3d": 1, "archive": 0, "unknown": 0 },
+     "items": [ { "path": "…", "bytes": …, "verdict": "spine", "summary": "…" } ],
+     "warnings": []
+   }
+④ 大目录：给 maxFiles 上限（默认 500），超限写进 warnings 而不是静默截断
+```
+
+## 验收
+
+```
+· 对 资源/棕色尘埃 2 一次调用：8 个候选全部列出，7 spine + 无 3d（那两包其实是 spine，已实测）
+· 对 资源/live2dviewex 一次调用：14 个 lpk 全部判为 encrypted，1 个 mp4 判为 unknown/archive
+· 对不存在目录：404 + 结构化 code
+```
+
+---
+
+# 第 4 步：限额、文档、测试
+
+## 限额（不是超时）
+
+```
+① 单文件：只读解析所需字节；超过上限（如 512MB）直接拒绝并说明，不做流式全解析
+② 内存：复用 src/server/unpack/capacity.mjs 的可用内存探测，峰值预估超预算时拒绝并说明
+③ 并发：单文件分析也走既有的单飞/队列机制，避免同文件重复解析
+④ 明确不写超时：产品代码不得出现 AbortSignal.timeout（测试里可以有）
+```
+
+## 文档
+
+```
+· docs/参考/支持边界.md 增加一节「只读分析（/api/analyze）」：能回答什么、不回答什么
+· docs/契约/插件.md 若接口有调整，同步 §1.1
+```
+
+## 测试（node，能自证红）
+
+```
+· 造临时文件：UnityFS 假头 / ZIP / JSON / MOC3 / 随机字节 → 各自 verdict 正确
+· 目录递归：嵌套目录、超过 maxFiles、空目录、不可读目录
+· 错误路径：不存在、是目录但当文件传、当文件传但给目录参数
+· 只读性：分析后被分析文件的 mtime 与内容不变
+```
+
+
