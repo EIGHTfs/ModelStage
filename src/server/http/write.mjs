@@ -244,14 +244,15 @@ function selfCheckImportedFiles(configDir, written, files) {
  * 为什么两件事分开 try：它们互相独立，一个失败不该连累另一个；
  *   失败信息汇总到 `error` 回给调用方（缓存没清只是"下次更慢"，不该让导入失败）。
  *
+ * @param {string} configFile 资源配置文件路径（失效清单要它推清单目录）
  * @param {object} spine data/spine.mjs 实例
  * @param {object} names data/names.mjs 实例
  * @returns {{models:boolean, names:boolean, error:string|null}}
  */
-function invalidateImportCaches(models, names) {
+function invalidateImportCaches(configFile, spine, names) {
   const out = { models: false, names: false, error: null };
   try {
-    spine.invalidateCaches();
+    spine.invalidateCaches(configFile);
     out.models = true;
   } catch (e) {
     out.error = String((e && e.message) || e);
@@ -272,11 +273,11 @@ function invalidateImportCaches(models, names) {
  * @param {{paths: object, config: object, models: object, names: object}} deps
  *   paths  = core/paths.mjs 的路径表（configDir / configFile / root）
  *   config = core/config.mjs（readConfigRaw / writeConfig / readConfig / buildGroups）
- *   spine = data/spine.mjs（invalidateCaches：不传参 = 失效全部）
+ *   spine = data/spine.mjs（invalidateCaches(configFile, rootId)：不传 rootId = 失效全部）
  *   names  = data/names.mjs（clearNameCache：导入替换名表后必须清缓存）
  * @returns {{writeRoots: Function, writeConfigImport: Function}}
  */
-export function createWriteApi({ paths, config, models, names }) {
+export function createWriteApi({ paths, config, spine, names }) {
   // 串行队列：两个写请求并发时会各自读旧配置再写回，后写的覆盖先写的（丢一次改动）。
   // 排队保证「读-改-写」这一串不交错；前一个失败不影响后一个继续排队。
   let queue = Promise.resolve();
@@ -543,7 +544,7 @@ export function createWriteApi({ paths, config, models, names }) {
           : plan.changed.id;
       const invalidated = { models: false, rootId: affectedId, error: null };
       try {
-        spine.invalidateCaches(affectedId);
+        spine.invalidateCaches(paths.configFile, affectedId);
         invalidated.models = true;
       } catch (e) {
         // 清理失败不影响本次写入结果：配置已生效，下次请求会重新生成清单
@@ -625,7 +626,7 @@ export function createWriteApi({ paths, config, models, names }) {
           { backup, written: w.written });
       }
 
-      const invalidated = invalidateImportCaches(models, names);
+      const invalidated = invalidateImportCaches(paths.configFile, spine, names);
       const { readback, selfCheckFailed } = selfCheckImportedFiles(paths.configDir, w.written, files);
       if (selfCheckFailed) {
         return fail(500, `导入后自检未通过（备份可回滚）: ${selfCheckFailed}`,

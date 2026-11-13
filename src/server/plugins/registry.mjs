@@ -12,10 +12,10 @@ import { parseJsonc } from '../../../tool/parse-jsonc.mjs';
 import { validateDeclaredSlots, validateDeclaredSettings } from './slot-catalog.mjs';
 
 /**
- * 插件角色集合（契约 插件契约 §一）：五类角色，**别处不得自创角色名**。
+ * 插件角色集合（契约 插件契约 §一）：六类角色，**别处不得自创角色名**。
  * 一个插件可以同时担任多个角色（provides 是数组）。
  */
-export const PLUGIN_ROLES = ['asset-provider', 'renderer', 'editor', 'exporter', 'panel'];
+export const PLUGIN_ROLES = ['asset-provider', 'bundle-analyzer', 'renderer', 'editor', 'exporter', 'panel'];
 
 // ---------------- 契约 §九（受限扩展点 effects / controls）的共用校验 ----------------
 // 这份实现同时被「运行期注册」（本文件 readPluginManifest）与「离线门禁」（tool/check-plugin.mjs）

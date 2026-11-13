@@ -799,7 +799,7 @@ function createMemoryEstimator({ NS }) {
 
 /** 浏览器侧：把本插件登记进宿主的资产提供者注册表（node 侧 host 为 null，整块跳过）。 */
 function registerWithHost({ host, PLUGIN_ID, api }) {
-  const { canHandle, resolve, estimateMemory, explainReject } = api;
+  const { canHandle, resolve, estimateMemory, explainReject, analyze } = api;
 
   // 契约 §一：plugin.json 的 provides=["asset-provider"] 让宿主把本插件登记进资产提供者注册表。
   //   注册对象上 kind 是产出内容类型（live2d），与 fileKinds 的容器类型 bundle 正交；
@@ -814,6 +814,9 @@ function registerWithHost({ host, PLUGIN_ID, api }) {
       resolve,
       // 可选扩展：宿主在 not-handled 时用它拿到"为什么不认领"（浏览器侧与 node 侧同一份实现）
       explainReject,
+      // 契约 §1.1 bundle-analyzer：只读分析容器字节流（不产模型、不写文件）。
+      //   核心按 plugin.json 的 provides 找提供者，不认插件名。
+      analyze,
       // 契约 §2.2：让宿主与检查器都能发现"本插件能自己算内存代价"（估得准不准由本插件负责）
       estimateMemory,
       kind: 'live2d',
@@ -863,6 +866,45 @@ function install() {
   const provider = createProvider({ NS, host, PLUGIN_ID, ulbLog, MIME_OCTET, MIME_JSON, MIME_PNG, loadProfile, container, coreMeta });
   const mem = createMemoryEstimator({ NS });
 
+  // 契约 §1.1 bundle-analyzer：只读分析容器字节流。
+  //   实现直接复用 lib/bundle-probe.js（不重写解析），这里只做"事实 → 契约字段"的映射。
+  //   verdict（model / asset-dependency）不在这里算：那是核心的判据（src/shared/bundle-shape.mjs），
+  //   插件只提供事实，判据只留一份。
+  function analyze(bytes) {
+    const bp = NS && NS.bundleProbe;
+    if (!bp || typeof bp.run !== 'function') {
+      return {
+        container: null,
+        objects: null,
+        textures: null,
+        warnings: ['插件内缺少 bundle-probe 实现（lib/bundle-probe.js 未加载）'],
+      };
+    }
+    const res = bp.run(bytes) || {};
+    return {
+      // 契约字段
+      container: res.container || null,
+      objects: typeof res.objects === 'number' ? res.objects : null,
+      textures: Array.isArray(res.textures) ? res.textures : null,
+      // 契约 §1.1 的 textAssets：当前 lib/bundle-probe.js 只统计对象数、不单独列 TextAsset 名，
+      //   所以显式给 null（rather than 留一个"看起来有值"的空数组骗调用方）。
+      //   第 2 步做单文件分析时再从 serialized 对象表里取。
+      textAssets: null,
+      warnings: Array.isArray(res.warnings) ? res.warnings : [],
+      // 透传既有字段：/api/bundle/probe 与页面预检此前就在用它们，
+      //   新增 analyze 不能把它们丢掉，否则行为会变。
+      ok: res.ok,
+      code: res.code,
+      error: res.error,
+      moc3: res.moc3 || null,
+      cubism2Moc: res.cubism2Moc || null,
+      physics3: res.physics3 || null,
+      motions: res.motions,
+      reject: res.reject || null,
+      nativeFiles: res.nativeFiles,
+    };
+  }
+
   // 键顺序与原 return 字面量完全一致
   const api = {
     canHandle: provider.canHandle,
@@ -871,6 +913,8 @@ function install() {
     explainReject: provider.explainReject,
     estimateMemory: mem.estimateMemory,
     peakFromDecompressed: mem.peakFromDecompressed,
+    // 契约 §1.1：只读分析能力（核心按 provides 找提供者）
+    analyze,
     PLUGIN_ID,
   };
   registerWithHost({ host, PLUGIN_ID, api });

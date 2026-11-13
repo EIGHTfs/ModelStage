@@ -498,6 +498,42 @@ function install() {
     }
   }
 
+  // 契约 §1.1 bundle-analyzer：只读分析容器字节流。
+  //   实现直接复用 lib/bundle-probe.js（与本插件同目录的那份，与 live2d 插件的逐字节相同），
+  //   这里只做"事实 → 契约字段"的映射。verdict 不在这里算：那是核心的判据（src/shared/bundle-shape.mjs）。
+  function analyze(bytes) {
+    const bp = NS && NS.bundleProbe;
+    if (!bp || typeof bp.run !== 'function') {
+      return {
+        container: null,
+        objects: null,
+        textures: null,
+        warnings: ['插件内缺少 bundle-probe 实现（lib/bundle-probe.js 未加载）'],
+      };
+    }
+    const res = bp.run(bytes) || {};
+    return {
+      // 契约字段
+      container: res.container || null,
+      objects: typeof res.objects === 'number' ? res.objects : null,
+      textures: Array.isArray(res.textures) ? res.textures : null,
+      // 契约 §1.1 的 textAssets：当前 lib/bundle-probe.js 只统计对象数、不单独列 TextAsset 名，
+      //   所以显式给 null（不留一个"看起来有值"的空数组骗调用方）。
+      textAssets: null,
+      warnings: Array.isArray(res.warnings) ? res.warnings : [],
+      // 透传既有字段（与 live2d 插件同一套键，便于核心与诊断两端同口径）
+      ok: res.ok,
+      code: res.code,
+      error: res.error,
+      moc3: res.moc3 || null,
+      cubism2Moc: res.cubism2Moc || null,
+      physics3: res.physics3 || null,
+      motions: res.motions,
+      reject: res.reject || null,
+      nativeFiles: res.nativeFiles,
+    };
+  }
+
   if (host) {
     host.register({
       id: PLUGIN_ID,
@@ -507,6 +543,8 @@ function install() {
       resolve,
       // 契约 §2.2：让宿主与检查器都能发现"本插件能自己算内存代价"
       estimateMemory,
+      // 契约 §1.1 bundle-analyzer：只读分析容器字节流（不产模型、不写文件）
+      analyze,
       // kind 的唯一权威来源是 plugin.json 的 produces.kind（契约 §3.2），这里带上只为调试可读。
       kind: 'spine',
       fileKinds: ['bundle'],
@@ -516,7 +554,7 @@ function install() {
   // node 侧返回解析入口：服务端解包直接从返回值取 canHandle/resolve，不经过宿主注册。
   // __test 只给单测用（纯函数、无副作用、宿主不读它）：parseAtlasPages 是闭包内私有函数，
   //   没有它就无法为"带 BOM 的 atlas 首行"补单测（这正是 NIKKE 根 34 份带 BOM 的 atlas 丢第一页贴图的根因）。
-  return { canHandle, resolve, estimateMemory, probeContainer, PLUGIN_ID, __test: { parseAtlasPages } };
+  return { canHandle, resolve, estimateMemory, probeContainer, analyze, PLUGIN_ID, __test: { parseAtlasPages } };
 }
 
 // 执行安装。为什么不用 `export { canHandle }`：那会把文件变成 ESM，

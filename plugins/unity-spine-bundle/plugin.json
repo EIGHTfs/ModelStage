@@ -2,7 +2,8 @@
   "id": "unity-spine-bundle",
   "name": "Unity Spine 资源包",
   "provides": [
-    "asset-provider"
+    "asset-provider",
+    "bundle-analyzer"
   ],
   "label": "Spine包",
   "accent": "#2b6cb0",
@@ -69,6 +70,7 @@
     "lib/etc2.js",
     "lib/dxt.js",
     "lib/texdecode.js",
+    "lib/bundle-probe.js",
     "lib/png.js",
     "index.js"
   ]

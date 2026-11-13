@@ -2,7 +2,8 @@
   "id": "unity-live2d-bundle",
   "name": "Unity Live2D 资源包",
   "provides": [
-    "asset-provider"
+    "asset-provider",
+    "bundle-analyzer"
   ],
   "label": "Live2D包",
   "accent": "#6d28d9",
