@@ -68,7 +68,7 @@ export function createServerData({ root, dataRoot, avatarRoot, log, activity }) 
     if (typeof fn === 'function') { try { fn.call(log, msg, detail); } catch { /* 同上 */ } }
   };
   const entryStates = getSharedEntryStates({ root, log: logFn });
-  const catalog = createCatalog({ config, spine, live2d, tree, plugins, entryStates });
+  const catalog = createCatalog({ config, spine, live2d, tree, plugins, entryStates, configFile: paths.configFile });
   // 后台形态探测（契约 §八）：**事件驱动**，由 catalog 在"这一根清单重建完"时喊一声。
   //   · 没有待探测项时内部立刻返回（指纹没变 ⇒ 零读包、零计数，S10）
   //   · 单轮串行 + 包间限速 + 跑完即停，不留常驻定时器（INV-D7）

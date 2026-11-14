@@ -24,6 +24,8 @@ import { encodePath } from '../assets/probe.mjs';
 import { KNOWN_FILE_EXT } from './tree.mjs';
 // 指纹判据只有一份实现：catalog / 上报路由 / 解包路径三处必须同源（INV-D6）
 import { providerFingerprintOf, assetFingerprintOf } from './entry-states.mjs';
+// 列表显示名缓存：只按 key 存取，本文件不认识任何容器格式（名字的语义归插件）
+import { readDisplayNameCache, lookupDisplayName, displayNameCacheFile } from './display-name-cache.mjs';
 
 /**
  * 路径式文件 URL（Live2D 定义文件内部用相对路径引用，必须用 /files/ 前缀）。
@@ -643,7 +645,26 @@ const ROOT_PATH_PROBLEM_TEXT = {
  * 装配模型目录（合并该资源根下的 Spine 与 Live2D 两路扫描）。
  * @param {{config: object, spine: object, live2d: object}} deps
  */
-export function createCatalog({ config, spine, live2d, tree, plugins, unpack = null, entryStates = null }) {
+export function createCatalog({ config, spine, live2d, tree, plugins, unpack = null, entryStates = null, configFile = null }) {
+  /**
+   * 显示名缓存的**进程内快照**：按缓存文件的 mtime 判是否重读。
+   *
+   * 为什么不在每条条目上读盘：一次 catalog 会过上百条，每条 `readFileSync` 一次是白费；
+   *   而缓存文件只在"取到新名字"时变一次，用 mtime 就能精确知道该不该重读。
+   */
+  let displayNameSnapshot = { file: null, mtimeMs: -1, table: {} };
+  function displayNameTable() {
+    if (!configFile) return {};
+    const file = displayNameCacheFile(configFile);
+    let mtimeMs = -1;
+    try { mtimeMs = Number(fs.statSync(file).mtimeMs); } catch { return {}; }   // 文件不存在 ⇒ 空表
+    if (displayNameSnapshot.file === file && displayNameSnapshot.mtimeMs === mtimeMs) {
+      return displayNameSnapshot.table;
+    }
+    const table = readDisplayNameCache(configFile);
+    displayNameSnapshot = { file, mtimeMs, table };
+    return table;
+  }
   /**
    * 解包缓存句柄（只读用途：查"这个包被哪个插件解出来过"）。
    * 装配顺序上 store 在 data 之后创建（serve.mjs），所以留 setter 注入，
@@ -886,6 +907,8 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
     e.display = computed.display;
     e.support = computed.support;
     e.loadResult = computed.loadResult;
+    // 第四字段：列表显示名（工厂产出，前端只渲染）。null 表示没取到 ⇒ 前端回落既有规则。
+    e.displayName = computed.displayName || null;
     applyOwnerFallback(e, common.providers);
     // 回报给调用方：assembleEntryStates 要靠 pendingProbe 判断"这轮探测是不是能力变化引起的"
     return computed;
@@ -937,8 +960,13 @@ export function createCatalog({ config, spine, live2d, tree, plugins, unpack = n
         ...entryFacts,
         providerFingerprint: providerFp,
         assetFingerprint: assetFingerprintOf(e.size),
+        // 列表显示名：只从缓存里查（缓存由"选中/装载时触发 analyze"写入），
+        //   这里不做任何解析。查不到 ⇒ recompute 产出 null ⇒ 前端回落既有规则。
+        //   判失效用 size（条目自带），够用且不用为展示态多做一次 stat。
+        displayNameFor: () => lookupDisplayName(displayNameTable(), cfg.id, e.rel || e.name, { size: e.size }),
       })
-      : { display: { accent: null, provider: null, candidates: e.candidates }, support: { state: 'unknown', detail: null }, loadResult: null, pendingProbe: false };
+      // 没注入 entryStates 时的等价形状：displayName 也要在（否则调用方要判 "字段在不在"）
+      : { display: { accent: null, provider: null, candidates: e.candidates }, support: { state: 'unknown', detail: null }, loadResult: null, displayName: null, pendingProbe: false };
     // 待探测登记（§八 判据 a/b）：**同步路径只登记**，绝不在这次请求里解析包体。
     //   · 容器条目：从没结论，或旧结论因能力/文件变化作废 ⇒ 都要排
     //   · 目录型条目：support 来自资产检查（缺贴图），与包内形态无关 ⇒ 不排

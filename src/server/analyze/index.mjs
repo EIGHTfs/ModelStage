@@ -283,6 +283,9 @@ export async function analyzeFile(absPath, opts = {}) {
       textAssets: Array.isArray(r.textAssets) ? r.textAssets : [],
       textures,
       warnings,
+      // 契约 §1.3：显示名由插件给（可缺省）。核心**不推导**——不知道 .skel/.atlas 的名字含义，
+      //   也不做去后缀/拼接。插件没给就是 null，由上层回落到文件名。
+      displayName: (typeof r.displayName === 'string' && r.displayName.trim()) ? r.displayName.trim() : null,
       summary: buildSummary(verdict, r, bytes),
     },
   };

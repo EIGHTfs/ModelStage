@@ -279,10 +279,31 @@ export function createEntryStates(opts = {}) {
       }
     }
 
+    /**
+     * 列表显示名（工厂第四字段）。
+     *
+     * 只从调用方注入的 `ctx.displayNameFor` 取，本函数**不解析、不猜语义**：
+     *   名字是内容语义，归插件；这里是"把缓存里的值原样带出"。
+     * 拿不到 / 抛错 / 空串 / 全空白 一律 null ⇒ 前端回落既有规则（costume > 目录名 > 文件名），
+     *   即"插件未声明"与"缓存没命中"对上层是同一个表现，旧行为不变。
+     */
+    let displayName = null;
+    if (typeof ctx.displayNameFor === 'function') {
+      try {
+        const got = ctx.displayNameFor(state);
+        displayName = typeof got === 'string' && got.trim() ? got.trim() : null;
+      } catch {
+        displayName = null;   // 显示名是展示态，不能因为取它失败而让整条状态算不出来
+      }
+    }
+
     return {
       display: { accent, provider, candidates },
       support,
       loadResult,
+      // 第四字段：列表显示名。由调用方经 ctx.displayNameFor 注入（缓存里查出来的），
+      //   本函数不认识任何格式知识，只把值原样带出；null 表示"没取到"，前端据此回落旧规则。
+      displayName,
       // 结论已作废 / 从没结论 ⇒ 需要 §八 后台探测（调用方据此排队，不在同步路径解析包体）
       pendingProbe,
     };

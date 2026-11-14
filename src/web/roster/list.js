@@ -217,7 +217,10 @@ export function variantLabel(m) {
 export function variantText(m, nm) {
   const dirName = String(m.srcDir || '').split('/').slice(-1)[0] || '';
   const origName = String(m.name || '');
-  const text = nm && nm.costume ? nm.costume : (dirName || origName);
+  // 回落顺序：工厂给的 displayName → 名表 costume → 目录名 → 文件名。
+  //   displayName 是 null 时整条链与改造前**逐字节相同**（插件未声明就是这条路径）。
+  const given = typeof m.displayName === 'string' ? m.displayName.trim() : '';
+  const text = given || (nm && nm.costume ? nm.costume : (dirName || origName));
   return { text, origName };
 }
 
@@ -242,7 +245,10 @@ export function buildChars(models, nameIndex, groupName = '') {
     } else {
       stats.miss += 1;
     }
-    const groupName = nm ? nm.name : charKeyOf(m.name);
+    // 分组键与标题都用显示名：工厂给了 displayName 就用它（同角色的多个包能并到一组），
+    //   没给就完全走旧规则（名表 → 从文件名派生的 charKey）—— 未声明时行为不变。
+    const given = typeof m.displayName === 'string' ? m.displayName.trim() : '';
+    const groupName = given || (nm ? nm.name : charKeyOf(m.name));
     const key = groupName ? `char:${groupName}|${groupName}` : `char:${groupName}`;
     if (!charMap.has(key)) {
       charMap.set(key, {

@@ -10,6 +10,7 @@
 //   load 提供"点开要加载"的动作，render 提供"改完重画"，本文件只做分派。
 
 import { saveState, saveLastModel } from './persist.js';
+import { fetchDisplayName, paintDisplayName } from './display-name.js';
 
 /**
  * @param {object} deps 全部由 view 注入
@@ -62,15 +63,38 @@ export function createRosterEvents({
     render();
     store.setLastReveal(reveal.revealActive()); // 选中后把这一行滚到可视区（已可见/用户正在滚都会跳过）
     saveState(state);
+    // 选中时顺手取一次显示名（服务端命中缓存就不跑分析）。
+    //   **不 await**：名字是展示态，晚到几百毫秒不影响装载；但绝不能因为等它而拖慢 onSelect。
     if (typeof onSelect === 'function') {
       const hit = modelById.get(modelId);
+      void hydrateDisplayName(hit ? hit.model : null, charKey);
       // 把装载的 promise 交回调用方：冷启动要能等"首个模型真的出来"再放行后面的加载队列，
-      //   否则队列的整根扫描会和首个模型的资源请求抢同一份磁盘 IO。
+      //   否则队列的整根扫描和首个模型的资源请求会抢同一份磁盘 IO。
       return onSelect(hit ? hit.model : null);
     }
   }
 
   /** 事件委托：树行是动态生成的，统一在容器上监听一次 */
+  /**
+   * 取一次显示名并就地贴到列表上（不重建 chars）。
+   *
+   * 为什么只对选中项取：181 个包全量取名要 2~5 分钟，且大包会 OOM；用户实际只看少数几个。
+   * 为什么失败不提示：名字是展示增强，取不到就保持文件名；弹错会把"列表能用"变成"每次点都弹错"。
+   * 为什么改 DOM 而不是重画：重画会丢展开态、滚动位置和当前选中项。
+   *
+   * @param {object|null} model 选中的条目（catalog 里的那条）
+   * @param {string} [charKey] 所属角色键（用于同时更新角色行标题）
+   */
+  async function hydrateDisplayName(model, charKey) {
+    if (!model || !model.rootId || !model.rel) return;
+    // 已有名字（缓存命中过、或插件当场给了）就不重复请求
+    if (typeof model.displayName === 'string' && model.displayName.trim()) return;
+    const name = await fetchDisplayName({ base: '', rootId: model.rootId, rel: model.rel });
+    if (!name) return;
+    model.displayName = name;   // 记在内存里：同一会话再点它不必再请求
+    paintDisplayName(document, { modelId: model.id, charKey, displayName: name });
+  }
+
   function bindEvents() {
     /** 按行的类型分派到对应动作（鼠标与键盘共用，避免两套逻辑走偏） */
     function activate(row) {
