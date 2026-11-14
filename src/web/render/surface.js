@@ -111,12 +111,59 @@ export function createStageSurface({ root, log } = {}) {
   /** 取覆盖层内的 canvas（Live2D 渲染目标） */
   function overlayCanvas() {
     ensureOverlay();
-    return document.getElementById(OVERLAY_CANVAS_ID);
+    const cv = document.getElementById(OVERLAY_CANVAS_ID);
+    watchContextLoss(cv, 'Live2D 面');
+    return cv;
   }
 
   /** 取 Spine 面 canvas（舞台里已有的那块，Surface 负责尺寸/DPR） */
   function spineCanvas() {
-    return document.getElementById('stage-canvas');
+    const cv = document.getElementById('stage-canvas');
+    watchContextLoss(cv, 'Spine 面');
+    return cv;
+  }
+
+  // ---------------------------------------------------------------- WebGL 上下文丢失 / 恢复
+  //
+  // 标签页在后台停留较久、或 GPU 压力大时，浏览器会回收 WebGL 上下文。两件事必须做：
+  //   ① lost 时 `preventDefault()` —— 不做的话浏览器**根本不会**尝试恢复（规范如此），
+  //      切回前台就是全白，且 `restoreContext()` 也无效（实测：lost 恒为 true）。
+  //   ② restored 时重建渲染资源 —— 上下文回来了不代表画面对：纹理/着色器/缓冲随上下文一起丢弃，
+  //      实测恢复后读像素仍全为 0（没有任何重绘）。
+  //
+  // 重建方式是「重新激活当前文档」：走既有 activate 入口，由各渲染面自己重建，
+  //   Surface 不碰 GL 资源（画布所有权与渲染器职责的既有边界不变）。
+  // 全程事件驱动，不依赖任何定时器。
+  const contextWatch = new WeakSet();
+
+  /**
+   * 给一块 canvas 挂上下文丢失/恢复监听（同一元素只挂一次）。
+   * @param {HTMLCanvasElement|null} canvas
+   * @param {string} label 日志里的面名
+   */
+  function watchContextLoss(canvas, label) {
+    if (!canvas || contextWatch.has(canvas)) return;
+    contextWatch.add(canvas);
+    canvas.addEventListener('webglcontextlost', (event) => {
+      // 必须阻止默认行为，否则浏览器不会恢复这个上下文
+      event.preventDefault();
+      note(`${label}：WebGL 上下文丢失（等浏览器恢复后重建）`, 'warn');
+      try { document.documentElement.dataset.contextLost = '1'; } catch { /* 可观测性字段 */ }
+    }, false);
+    canvas.addEventListener('webglcontextrestored', () => {
+      note(`${label}：WebGL 上下文已恢复，重建渲染资源`, 'info');
+      try { document.documentElement.dataset.contextLost = '0'; } catch { /* 可观测性字段 */ }
+      const current = st.document;
+      if (current) {
+        // 串行锁在 activate 内部；这里不再并发保护，避免与用户切模型打架
+        Promise.resolve()
+          .then(() => activate(current))
+          .catch((err) => note(`${label}：上下文恢复后重建失败：${(err && err.message) || err}`, 'error'));
+      } else {
+        // 没有文档（空舞台）：只需重画一次背景
+        requestRender();
+      }
+    }, false);
   }
 
   // ---------------------------------------------------------------- 尺寸 / DPR
