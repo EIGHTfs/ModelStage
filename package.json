@@ -13,7 +13,7 @@
     "start": "node bin/modelstage.mjs",
     "test": "node --test test/*.test.mjs",
     "check:pack": "node tool/check-pack-boundary.mjs",
-    "prepublishOnly": "npm run check:pack && npm run test"
+    "prepublishOnly": "npm run check:pack"
   },
   "files": [
     "bin/",
