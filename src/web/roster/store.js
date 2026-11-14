@@ -187,6 +187,54 @@ export function createRosterStore({ buildChars, nameIndex, onChange } = {}) {
       return rebuildCharsFor(groupKey);
     },
 
+    /**
+     * 重建分组并**迁移展开态与选中项**。
+     *
+     * 为什么需要：分组键由显示名派生（`buildChars` 里的 `groupName` 优先用 displayName）。
+     *   显示名是**选中后**才取到的，届时分组结构会变 —— 旧 charKey 全部失效。
+     *   只改 DOM 文本不重建 ⇒ 分组、角色标题、别名（baseName）都还是旧值，
+     *   表现为"刷新浏览器才正确"；只重建不迁移 ⇒ 用户展开的角色全被收起。
+     * 展开态与选中项都按 **model id** 迁移（charKey 会变，model id 不变）。
+     * @param {string} groupKey
+     * @returns {object|null} 重建后的 { chars, stats }
+     */
+    rebuildCharsPreservingExpansion(groupKey) {
+      const key = String(groupKey);
+      const group = state.groups.find((g) => g.key === key);
+      if (!group) return null;
+      const before = state.groupChars.get(key);
+      const expandedModelIds = new Set();
+      for (const c of (before && before.chars) || []) {
+        if (!state.expandedChars.has(c.key)) continue;   // 角色展开态在 expandedChars（组展开态是 expandedGroups）
+        for (const v of c.variants || []) if (v.model && v.model.id) expandedModelIds.add(v.model.id);
+      }
+      // 旧 charKey 已不属于任何现存角色，先摘掉，避免展开集合里留垃圾
+      for (const c of (before && before.chars) || []) state.expandedChars.delete(c.key);
+      const built = rebuildCharsFor(key);
+      if (!built) return null;
+      if (expandedModelIds.size) {
+        for (const c of built.chars || []) {
+          if ((c.variants || []).some((v) => v.model && expandedModelIds.has(v.model.id))) {
+            state.expandedChars.add(c.key);
+          }
+        }
+      }
+      const selectedId = state.selected && state.selected.modelId;
+      if (selectedId) {
+        for (const c of built.chars || []) {
+          if ((c.variants || []).some((v) => v.model && v.model.id === selectedId)) {
+            state.selected = { ...state.selected, charKey: c.key };
+            // 选中项的所属角色必须保持展开：分组键变了，若不补这一下，
+            //   用户刚点的行会在重建后"消失"（新 char 默认收起），看起来像点击没生效。
+            state.expandedChars.add(c.key);
+            break;
+          }
+        }
+      }
+      notify();
+      return built;
+    },
+
     // ---------------------------------------------------------------- 展开态
     toggleGroup(groupKey) {
       const key = String(groupKey);

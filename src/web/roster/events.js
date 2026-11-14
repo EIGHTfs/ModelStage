@@ -92,6 +92,21 @@ export function createRosterEvents({
     const name = await fetchDisplayName({ base: '', rootId: model.rootId, rel: model.rel });
     if (!name) return;
     model.displayName = name;   // 记在内存里：同一会话再点它不必再请求
+    // 名字是**分组键的输入**（buildChars 优先用 displayName 分组），所以不能只改文本：
+    //   只改文本的话分组结构、角色标题、别名都还是旧值 —— 表现为"刷新浏览器才正确"。
+    // 重建会重算分组/标题/别名；展开态与选中项在 store 内按 model id 迁移。
+    const group = state.groups.find((g) => g.roots.some((r) => r.id === model.rootId));
+    let rebuilt = null;
+    try {
+      if (group && typeof store.rebuildCharsPreservingExpansion === 'function') {
+        rebuilt = store.rebuildCharsPreservingExpansion(group.key);
+      }
+    } catch { rebuilt = null; }
+    if (rebuilt) {
+      render();   // 整组重画（展开态已迁移，滚动位置由 reveal 逻辑保持）
+      return;
+    }
+    // 兜底：拿不到分组（或 store 不支持重建）时仍只改文本，保证名字能显示
     paintDisplayName(document, { modelId: model.id, charKey, displayName: name });
   }
 
