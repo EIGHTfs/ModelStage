@@ -10,6 +10,8 @@
 // 什么时候调：条目被选中/装载时，前端按需发一次（不批量、不后台预扫）。
 
 import { analyzeFile } from '../analyze/index.mjs';
+import { findAnalyzerProvider, libDirFor, libOrderFor } from '../../../tool/lib/bundle-probe-node.mjs';
+import fs from 'node:fs';
 import {
   readDisplayNameCache,
   writeDisplayNameCache,
@@ -17,6 +19,32 @@ import {
   lookupDisplayName,
   hasDisplayNameRecord,
 } from '../data/display-name-cache.mjs';
+
+/**
+ * 分析器指纹：当前提供者 `lib/bundle-probe.js` 的 size+mtime。
+ *
+ * 为什么需要：缓存里会写"这个包取不到名字"（null）。插件后来支持了 displayName 后，
+ *   那条旧记录仍会命中 ⇒ 列表永远显示文件名，且没有任何迹象说明原因。
+ * 判据取**实现文件**而不是 plugin.json 的 version：版本号未必随 lib 变化更新，
+ *   而 size/mtime 一定跟着实现走。
+ * @returns {string|null} 没有提供者时 null（此时不参与失效判定）
+ */
+function analyzerFingerprint() {
+  try {
+    const provider = findAnalyzerProvider();
+    if (!provider) return null;
+    const dir = libDirFor(provider);
+    const parts = [];
+    for (const rel of libOrderFor(provider)) {
+      if (!/bundle-probe/i.test(rel)) continue;
+      const st = fs.statSync(`${dir}/${rel}`);
+      parts.push(`${rel}:${st.size}:${Math.round(st.mtimeMs)}`);
+    }
+    return parts.length ? `${provider.pluginId}|${parts.join(',')}` : provider.pluginId;
+  } catch {
+    return null;   // 算不出指纹就不参与失效判定（宁可用旧结论，也不因此报错）
+  }
+}
 
 /**
  * POST /api/entries/display-name  body: { rootId, rel }
@@ -80,7 +108,7 @@ export async function handleDisplayName(req, res, p, ctx) {
       sendJson(res, 404, { ok: false, error: `文件不存在：${rel}` });
       return;
     }
-    if (hasDisplayNameRecord(table, rootId, rel, { size })) {
+    if (hasDisplayNameRecord(table, rootId, rel, { size }, analyzerFingerprint())) {
       const cachedName = lookupDisplayName(table, rootId, rel, { size });
       sendJson(res, 200, { ok: true, displayName: cachedName, cached: true });
       return;
@@ -104,7 +132,7 @@ export async function handleDisplayName(req, res, p, ctx) {
       : null;
 
     // ③ 无论有没有拿到都写一条（写 null 也是有效结论：下次不再为它重跑一遍分析）
-    setDisplayNameEntry(table, rootId, rel, { displayName, mtimeMs: 0, size });
+    setDisplayNameEntry(table, rootId, rel, { displayName, mtimeMs: 0, size, analyzerFingerprint: analyzerFingerprint() });
     try {
       writeDisplayNameCache(configFile, table);
     } catch (e) {

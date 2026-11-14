@@ -169,3 +169,30 @@ test('契约面：PROBE_PATHS 暴露 findAnalyzerProvider（不再暴露插件 i
   // 反证：旧实现导出过 PROBE_PLUGIN_ID 这类"写死插件名"的常量，现在不该再有
   assert.equal(PROBE_PATHS.PROBE_PLUGIN_ID, undefined);
 });
+
+test('实现位置：displayName 挂在 lib/bundle-probe.js 的 run() 里（不是 index.js）', () => {
+  // 这条钉住"改错地方会静默无效"：核心只调 NS.bundleProbe.run(bytes)。
+  //   行为级验证需要真实容器样本（~MB 级，不适合进单测），所以这里做源码契约断言，
+  //   真实样本的端到端验证走手工实测（见交付报告）。
+  const declared = [];
+  for (const name of fs.readdirSync(PLUGINS_DIR, { withFileTypes: true })) {
+    if (!name.isDirectory()) continue;
+    const manifestPath = path.join(PLUGINS_DIR, name.name, 'plugin.json');
+    let manifest;
+    try { manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); } catch { continue; }
+    const provides = Array.isArray(manifest.provides) ? manifest.provides : [];
+    if (!provides.includes(ANALYZER_ROLE)) continue;
+    const probeFile = path.join(PLUGINS_DIR, name.name, 'lib', 'bundle-probe.js');
+    if (!fs.existsSync(probeFile)) continue;
+    const src = fs.readFileSync(probeFile, 'utf8');
+    declared.push({
+      id: manifest.id || name.name,
+      // run() 的返回体里必须有 displayName 这个键
+      hasDisplayNameKey: /\bdisplayName\s*:/.test(src),
+    });
+  }
+  assert.ok(declared.length >= 2, '至少两个提供者');
+  for (const d of declared) {
+    assert.equal(d.hasDisplayNameKey, true, `${d.id} 的 lib/bundle-probe.js 里 run() 未提供 displayName`);
+  }
+});

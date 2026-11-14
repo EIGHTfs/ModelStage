@@ -286,6 +286,31 @@
       // TextAsset 明细（名字 / 类型 / 骨架版本 / 字节数）：只读分析接口要用它回答
       //   "这个包里有哪些骨架、各是什么版本"，而预检本身只要"有没有"就够 —— 多给一层不增加解析成本。
       textAssets: collectTextAssets(sf),
+      /**
+       * 列表显示名（契约 §1.3）。
+       *
+       * 取值顺序（各条都是"容器里的入口文件名去后缀"，不认识业务语义、不编名字）：
+       *   ① `.skel`            —— Spine 的入口
+       *   ② `.model3.json`（TextAsset 形式）—— Cubism 4 的入口
+       *   ③ `.model3.json`（原生文件形式，见 nativeFiles）
+       *   ④ `.moc3`（原生文件形式）
+       * 多骨架时取**对象表顺序第一个**（本步不拼多个）；都没有 ⇒ null（不是空串）。
+       */
+      displayName: (() => {
+        const assets = collectTextAssets(sf);
+        const skel = assets.find((t) => t && t.kind === 'skel');
+        if (skel && skel.name) return String(skel.name).replace(/\.skel$/i, '');
+        const model3Text = assets.find((t) => t && typeof t.name === 'string' && /\.model3\.json$/i.test(t.name));
+        if (model3Text) return String(model3Text.name).replace(/\.model3\.json$/i, '');
+        const natives = Array.isArray(got.nativeFiles)
+          ? got.nativeFiles.map((f) => f && f.name).filter((n) => typeof n === 'string' && n)
+          : [];
+        const model3Native = natives.find((n) => /\.model3\.json$/i.test(n));
+        if (model3Native) return String(model3Native).replace(/\.model3\.json$/i, '');
+        const moc3Native = natives.find((n) => /\.moc3$/i.test(n));
+        if (moc3Native) return String(moc3Native).replace(/\.moc3$/i, '');
+        return null;
+      })(),
       textures,
       // 动作数 = AnimationClip 对象数（与装载时的 motion 数同源，但不跑转换）
       motions: countByClass(sf, 'AnimationClip'),

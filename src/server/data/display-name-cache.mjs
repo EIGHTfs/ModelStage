@@ -73,10 +73,16 @@ export function writeDisplayNameCache(configFile, table) {
  * @param {{mtimeMs?: number, size: number}} [stat]
  * @returns {boolean}
  */
-export function hasDisplayNameRecord(table, rootId, rel, stat) {
+export function hasDisplayNameRecord(table, rootId, rel, stat, analyzerFingerprint = null) {
   const key = `${rootId}/${rel}`;
   const hit = table && table[key];
   if (!hit) return false;
+  if (analyzerFingerprint !== null) {
+    // 分析器变了 ⇒ 旧结论（尤其"取不到名字"这种）不能继续挡住新能力：
+    //   插件从"没有 displayName"升级到"有"时，旧的 null 记录若继续命中，
+    //   列表会永远显示文件名，且没有任何迹象说明原因。
+    if (String(hit.analyzerFingerprint || '') !== String(analyzerFingerprint)) return false;
+  }
   if (stat) {
     if (Number(hit.size) !== Number(stat.size)) return false;
     if (Number.isFinite(stat.mtimeMs) && Number(hit.mtimeMs) !== Number(stat.mtimeMs)) return false;
@@ -124,6 +130,10 @@ export function setDisplayNameEntry(table, rootId, rel, entry) {
     displayName: name || null,
     mtimeMs: Number(entry.mtimeMs),
     size: Number(entry.size),
+    // 分析器指纹：插件升级（lib 变化）后旧结论自动失效，见 hasDisplayNameRecord
+    analyzerFingerprint: entry.analyzerFingerprint === undefined || entry.analyzerFingerprint === null
+      ? null
+      : String(entry.analyzerFingerprint),
     at: Date.now(),
   };
   return table;
