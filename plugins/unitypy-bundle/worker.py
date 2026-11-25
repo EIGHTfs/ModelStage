@@ -26,6 +26,7 @@ TextAsset 的二进制还原（实测踩到的坑）：
 import atexit
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -117,20 +118,36 @@ def texture_png(data, out_path):
 
 
 def parse_atlas_pages(atlas_text):
-    """从 atlas 文本里取页名（每个纹理页 = 一个图片文件名 + 若干属性行）。
+    """从 atlas 文本里取每个页的**页名 + 声明的尺寸**：`[{page, w, h}]`。
 
-    spine atlas 的结构：页名单独一行，后面跟 size/format/filter… 直到下一个页名。
-    这里只需要页名列表（用来把 Texture2D 对上号），不需要解析 region。
+    spine atlas 的结构：页名单独一行，后面跟 `size: W,H` / format / filter… 直到下一个页名。
+
+    为什么要连 `size` 一起取：同角色多套外观会有**同名不同尺寸**的贴图
+    （实测两份 `char_010_chen`：256x256 与 512x512），而两份 atlas 也都声明
+    页名 `char_010_chen.png`。只按名字对号 ⇒ 会把 256² 的图贴到按 512² 算的
+    region 坐标上 ⇒ 错位/缺图。尺寸是这两边唯一能互相印证的东西。
     """
     pages = []
+    cur = None
     for raw in atlas_text.splitlines():
         line = raw.strip()
-        if not line or ":" in line or line.startswith("#"):
-            # 属性行形如 "size: 1024,1024"；页名本身不带冒号
+        if not line or line.startswith("#"):
             continue
+        if line.startswith("size:"):
+            if cur is not None and cur["w"] is None:
+                parts = line.split(":", 1)[1].split(",")
+                try:
+                    cur["w"] = int(parts[0].strip())
+                    cur["h"] = int(parts[1].strip())
+                except (ValueError, IndexError):
+                    pass
+            continue
+        if ":" in line:
+            continue          # format / filter / repeat / pma / scale 等属性行
         # 页名一般带扩展名（foo.png）—— 用这一条把页名与其它裸名字区分开
         if "." in line.split("/")[-1]:
-            pages.append(line.split("/")[-1])
+            cur = {"page": line.split("/")[-1], "w": None, "h": None}
+            pages.append(cur)
     return pages
 
 
@@ -186,6 +203,79 @@ class _FileCollector:
         self.items.append({"name": name, "tmpPath": payload_path, "size": int(size or 0)})
 
 
+def _disambiguated(orig, path_id):
+    """同名资源的最终落盘名：`<stem>__<pathId><ext>`。
+
+    为什么不用序号（`__2`）：序号落在哪一份取决于**对象遍历顺序**，同一包两次导出
+    或换 UnityPy 版本就可能挂到另一份上 ⇒ 缓存指纹漂移、配对结论变化、排障时
+    "昨天还好好的"。pathID 在同一 serialized file 内天然唯一，同一个对象永远
+    同一个名字 ⇒ **顺序无关、可回溯**。
+    """
+    stem, ext = os.path.splitext(orig)
+    return f"{stem}__{path_id}{ext}"
+
+
+def _find_texture(textures, name, w=None, h=None):
+    """按**原纹理名**查；同名多份时**优先尺寸匹配**，都对不上才回落第一份。
+
+    为什么必须尺寸优先：同角色多套外观会有同名不同尺寸的贴图（实测两份
+    `char_010_chen`：256x256 与 512x512），而两份 atlas 都声明页名
+    `char_010_chen.png`。只按名字取第一份 ⇒ 把 256² 的图贴到按 512² 算的
+    region 坐标上 ⇒ 错位/缺图。
+    """
+    cands = [t for t in textures if t["name"] == name]
+    if not cands:
+        return None
+    if w and h:
+        for t in cands:
+            if t.get("w") == w and t.get("h") == h:
+                return t
+    return cands[0]                     # 尺寸对不上（或 atlas 没声明）⇒ 回落第一份
+
+
+def _atlas_regions(payload):
+    """atlas 文本里的 region 名：行首无缩进、且不是属性行/页名行。"""
+    if not payload:
+        return []
+    out = []
+    for raw in payload.decode("utf-8", errors="replace").replace("\r", "").split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        if raw[:1] in (" ", "\t"):
+            continue
+        if re.match(r"^(size|format|filter|repeat|pma|scale):", line):
+            continue
+        if line.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+            continue
+        out.append(line)
+    return out
+
+
+def _pick_atlas_for_skel(skel, atlases):
+    """按 **region 命中率** 选与 skel 匹配的 atlas。
+
+    为什么不能按名字配对：同名覆盖后 `char_010_chen.skel` 与 `char_010_chen.atlas`
+    名字永远对得上，哪怕它们来自不同的一套。只有"atlas 里的 region 名能否在 skel
+    的 string table 里找到"才是内容层面的真判据。
+
+    为什么不能要求唯一命中（100%/0%）：同一角色的多套外观（`char_x` 与 `build_char_x`）
+    **会共享一部分 region 名**，实测有 1~2 个噪声。所以取"命中数最高"，
+    并列时按 atlas 在对象表里的先后取第一个（**稳定**，不按 set 顺序）。
+    """
+    skel_bytes = skel.get("payload") or b""
+    best = None
+    best_hits = -1
+    for a in atlases:
+        hits = 0
+        for r in _atlas_regions(a.get("payload")):
+            if r and r.encode("utf-8") in skel_bytes:
+                hits += 1
+        if hits > best_hits:          # 严格大于 ⇒ 并列时保留先遇到的
+            best, best_hits = a, hits
+    return best or (atlases[0] if atlases else None)
+
+
 def _export_objects(env, out_dir, collector):
     """遍历对象表，把 TextAsset / Texture2D 导出到 out_dir。
 
@@ -193,63 +283,110 @@ def _export_objects(env, out_dir, collector):
     单个对象读不出来只跳过并记 stderr —— 一个坏对象不该让整包失败。
     @returns {{'texts': dict, 'textures': dict}} 名字 → 内容 / 落盘路径
     """
-    texts = {}
-    textures = {}
+    # `m_Name` 不保证唯一（实测单包 2 份 char_010_chen.skel / 2 份 char_010_chen.atlas）。
+    #   拿它当 dict 键或文件名会让后写覆盖先写 ⇒ skel 与 atlas 可能来自不同套 ⇒ 渲染全黑。
+    #
+    # 两遍走：
+    #   第一遍只收集（TextAsset 读字节、Texture2D 只留 obj 引用，省内存）
+    #   第二遍才落盘 —— 因为"要不要加后缀"取决于**同名出现几次**，得先知道全量。
+    pending_texts = []   # [{orig, payload, path_id}]
+    pending_texs = []    # [{orig, obj, path_id}]
     for obj in env.objects:
         type_name = getattr(obj.type, "name", str(obj.type))
-        try:
-            data = obj.read()
-        except Exception:
-            sys.stderr.write(f"skip unreadable object {type_name}: {traceback.format_exc(limit=1)}\n")
-            continue
-
         if type_name == "TextAsset":
-            name = getattr(data, "m_Name", None) or f"asset-{obj.path_id}"
+            try:
+                data = obj.read()
+            except Exception:
+                sys.stderr.write(f"skip unreadable TextAsset: {traceback.format_exc(limit=1)}\n")
+                continue
             payload = text_asset_bytes(data)
             if payload is None:
                 continue
-            texts[name] = payload
-            dst = os.path.join(out_dir, name)
-            if os.path.dirname(dst):
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
-            with open(dst, "wb") as f:
-                f.write(payload)
-            collector.add(name, dst, len(payload))
-
+            orig = getattr(data, "m_Name", None) or f"asset-{obj.path_id}"
+            pending_texts.append({"orig": orig, "payload": payload, "path_id": obj.path_id})
         elif type_name == "Texture2D":
-            name = getattr(data, "m_Name", None) or f"tex-{obj.path_id}"
-            # 先用**自己的名字 + .png** 落盘（Unity 里贴图名通常等于 atlas 页名去掉扩展名）。
-            #   早前用 "__tex__<name>.png" 占位、只按第一个 atlas 改名，多 atlas 的包会把
-            #   内部前缀漏给用户 —— 实现细节不该出现在产物里。
-            dst = os.path.join(out_dir, f"{name}.png")
-            size = texture_png(data, dst)
-            if size is None:
+            try:
+                data = obj.read()
+            except Exception:
+                sys.stderr.write(f"skip unreadable Texture2D: {traceback.format_exc(limit=1)}\n")
                 continue
-            textures[name] = dst
-            collector.add(f"{name}.png", dst, size)
+            orig = getattr(data, "m_Name", None) or f"tex-{obj.path_id}"
+            pending_texs.append({"orig": orig, "obj": obj, "path_id": obj.path_id})
+
+    # 同名计数：texts 与 textures 合并统计（贴图占 `<name>.png`，与无扩展名的 TextAsset 不会撞，
+    #   但同名贴图自己要能区分）
+    counts = {}
+    for it in pending_texts:
+        counts[it["orig"]] = counts.get(it["orig"], 0) + 1
+    for it in pending_texs:
+        key = f'{it["orig"]}.png'
+        counts[key] = counts.get(key, 0) + 1
+
+    texts = []      # [{name, orig, payload, pathId}]
+    textures = []   # [{name, file, path, pathId}]
+
+    for it in pending_texts:
+        name = it["orig"] if counts.get(it["orig"], 1) == 1 else _disambiguated(it["orig"], it["path_id"])
+        dst = os.path.join(out_dir, name)
+        if os.path.dirname(dst):
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+        with open(dst, "wb") as f:
+            f.write(it["payload"])
+        texts.append({"name": name, "orig": it["orig"], "payload": it["payload"], "pathId": str(it["path_id"])})
+        collector.add(name, dst, len(it["payload"]))
+
+    for it in pending_texs:
+        key = f'{it["orig"]}.png'
+        name = key if counts.get(key, 1) == 1 else _disambiguated(key, it["path_id"])
+        dst = os.path.join(out_dir, name)
+        # 先用**自己的名字 + .png** 落盘（Unity 里贴图名通常等于 atlas 页名去掉扩展名）。
+        #   早前用 "__tex__<name>.png" 占位、只按第一个 atlas 改名，多 atlas 的包会把
+        #   内部前缀漏给用户 —— 实现细节不该出现在产物里。
+        data = it["obj"].read()
+        size = texture_png(data, dst)
+        if size is None:
+            continue
+        # 记下宽高：同角色多套外观有同名不同尺寸的贴图，配对时靠它区分
+        textures.append({
+            "name": it["orig"], "file": name, "path": dst, "pathId": str(it["path_id"]),
+            "w": int(getattr(data, "m_Width", 0) or 0),
+            "h": int(getattr(data, "m_Height", 0) or 0),
+        })
+        collector.add(name, dst, size)
+
     return {"texts": texts, "textures": textures}
 
 
-def _rename_texture(src_path, final, collector):
+def _rename_texture(src_path, final, collector, path_id=None):
     """把纹理改成 atlas 声明的页名，并同步产物清单里的条目。
 
     单独成函数，是为了把"改名 + 回写 files[]"这几层循环从 `_align_atlas_pages` 里挪出来 ——
     原来它和"遍历 atlas / 遍历页名"叠在一起是 7 层嵌套，读起来得数缩进。
-    @returns {boolean} 是否（或本来就）已是目标名
+
+    目标名被**别的还在的文件**占用时（两份 atlas 声明同一个页名），改用 `<stem>__<pathId><ext>`，
+    不能直接 replace —— 那会把先落盘的那份无声覆盖掉。
+    @returns {string|null} 最终路径（失败为 None）
     """
     if os.path.abspath(src_path) == os.path.abspath(final):
-        return True                      # 名字本来就对，只需记下页名归属
+        return src_path                  # 名字本来就对，只记下页名归属
+    target = final
+    if os.path.exists(final) and os.path.abspath(final) != os.path.abspath(src_path):
+        # 撞名：用 pathID 区分（顺序无关、可复现），与 _export_objects 的命名口径一致
+        if path_id is None:
+            return None
+        target = _disambiguated(final, path_id)
     try:
-        os.replace(src_path, final)
+        os.replace(src_path, target)
     except OSError:
-        return False
+        return None
+    final = target
     for item in collector.items:
         if item["tmpPath"] == src_path:
             item["name"] = os.path.basename(final)
             item["tmpPath"] = final
             item["size"] = os.path.getsize(final)
             break
-    return True
+    return final                         # 返回新路径：调用方要同步自己的记录
 
 
 def _align_atlas_pages(exported, out_dir, collector):
@@ -260,22 +397,30 @@ def _align_atlas_pages(exported, out_dir, collector):
     前端是按 atlas 里写的页名去找 png 的，所以名字必须对齐。
     """
     texts, textures = exported["texts"], exported["textures"]
-    page_to_atlas = {}
+    # 用 list 而不是 dict：两份同名 atlas 都要能各自登记自己的页，dict 会让后者覆盖前者。
+    page_to_atlas = []          # [{page, atlas}]
     existing = {f["name"] for f in collector.items}
-    for tname in list(texts.keys()):
+    for t in texts:
+        tname = t["name"]
         if not tname.lower().endswith(".atlas"):
             continue
         try:
-            pages = parse_atlas_pages(texts[tname].decode("utf-8", errors="replace"))
+            pages = parse_atlas_pages(t["payload"].decode("utf-8", errors="replace"))
         except Exception:
             continue
-        for page in pages:
+        for pg in pages:
+            page, pw, ph = pg["page"], pg["w"], pg["h"]
             stem = page.rsplit(".", 1)[0] if "." in page else page
-            if stem in textures:
-                if _rename_texture(textures[stem], os.path.join(out_dir, page), collector):
-                    page_to_atlas[page] = tname
+            # 按 atlas 声明的尺寸找同尺寸的那份（同名多份时唯一能互相印证的判据）
+            tex = _find_texture(textures, stem, pw, ph)
+            if tex is not None:
+                moved = _rename_texture(tex["path"], os.path.join(out_dir, page), collector, tex.get("pathId"))
+                if moved:
+                    tex["path"] = moved             # 同步：后续按新路径取
+                    tex["file"] = os.path.basename(moved)
+                    page_to_atlas.append({"page": os.path.basename(moved), "atlas": tname})
             elif page in existing:
-                page_to_atlas[page] = tname       # 贴图名本来就带扩展名
+                page_to_atlas.append({"page": page, "atlas": tname})   # 贴图名本来就带扩展名
     return page_to_atlas
 
 
@@ -287,7 +432,7 @@ def _build_entry_doc(texts, collector, page_to_atlas):
     · 都没有            ⇒ None（调用方退化成文件表，如实反映"这里面没有模型定义"）
     """
     def ending_with(suffix):
-        return [n for n in texts if n.lower().endswith(suffix)]
+        return [t for t in texts if t["name"].lower().endswith(suffix)]
 
     skels = ending_with(".skel")
     atlases = ending_with(".atlas")
@@ -296,20 +441,23 @@ def _build_entry_doc(texts, collector, page_to_atlas):
     if skels and atlases:
         # 一个包里可能有多个模型（实测大厅包 = 背景 + 角色）。选**数据量最大**的作主模型：
         #   通用判据（主角色/主场景的数据量通常远大于附属），不依赖任何名字约定。
-        main_skel = max(skels, key=lambda n: len(texts.get(n) or b""))
-        stem = main_skel.rsplit(".", 1)[0]
-        main_atlas = next((a for a in atlases if a.rsplit(".", 1)[0] == stem), atlases[0])
-        texs = [page for page, at in page_to_atlas.items() if at == main_atlas]
+        #   注意：只有修掉同名覆盖后这里才是完整候选集（否则少一份，max 可能选错套）。
+        main_skel = max(skels, key=lambda t: len(t.get("payload") or b""))
+        # 配对按内容（region 命中率），**不按名字** —— 名字在同名覆盖下永远"对得上"，
+        #   却可能把两套不同的资源拼在一起。
+        main_atlas = _pick_atlas_for_skel(main_skel, atlases)
+        atlas_name = main_atlas["name"] if main_atlas else None
+        texs = [p["page"] for p in page_to_atlas if p["atlas"] == atlas_name]
         if not texs:
             texs = [f["name"] for f in collector.items if f["name"].lower().endswith(".png")]
-        doc = {"skeletonFile": main_skel, "atlasFile": main_atlas, "textureFiles": texs}
+        doc = {"skeletonFile": main_skel["name"], "atlasFile": atlas_name, "textureFiles": texs}
         if len(skels) > 1:
             # 同包内的其它模型（前端可忽略；列出是为了"不藏东西"）
-            doc["otherSkeletons"] = [s for s in skels if s != main_skel]
+            doc["otherSkeletons"] = [t["name"] for t in skels if t is not main_skel]
         return doc
     if model3s:
         return {
-            "model3File": model3s[0],
+            "model3File": model3s[0]["name"],
             "textureFiles": [f["name"] for f in collector.items if f["name"].lower().endswith(".png")],
         }
     return None

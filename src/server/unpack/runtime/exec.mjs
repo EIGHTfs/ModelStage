@@ -547,12 +547,30 @@ export function loadExecPlugin(meta, ctx) {
       }
       const list = Array.isArray(resp.files) ? resp.files : [];
       const out = {};
+      const usedNames = new Set();
       for (const f of list) {
         const name = String((f && (f.name || f.path)) || '');
         if (!name) continue;
         const tmp = f && f.tmpPath ? String(f.tmpPath) : '';
         if (!tmp) continue;             // 没有 tmpPath 的条目拿不到字节，宁可少一个也不报假成功
-        out[name] = lazyBytes(tmp, f.size);
+        // 兜底去重：容器里的 m_Name **不保证唯一**（实测单包有 2 份同名 .skel 与 2 份同名 .atlas）。
+        //   用普通对象按 name 赋值会让后一条覆盖前一条 —— 产物少文件，且下游按名字配对时
+        //   可能把两套不同的资源拼在一起。这是通用正确性问题，与具体资源格式无关。
+        //
+        // 唯一性**主要由上游 worker 负责**：它按 pathID 生成 `<stem>__<pathId><ext>`
+        //   （顺序无关、可复现）。这里只防"上游没做或做漏"的意外重复，不承担唯一性职责；
+        //   真走到这个分支时加的是序号（仅兜底，不保证跨版本可复现）。
+        let unique = name;
+        if (usedNames.has(unique)) {
+          const dot = name.lastIndexOf('.');
+          const stem = dot > 0 ? name.slice(0, dot) : name;
+          const ext = dot > 0 ? name.slice(dot) : '';
+          let i = 2;
+          while (usedNames.has(`${stem}__${i}${ext}`)) i += 1;
+          unique = `${stem}__${i}${ext}`;
+        }
+        usedNames.add(unique);
+        out[unique] = lazyBytes(tmp, f.size);
       }
       return {
         prefix: resp.prefix,

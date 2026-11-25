@@ -69,6 +69,7 @@
     "lib/extract.js",
     "lib/etc2.js",
     "lib/dxt.js",
+    "lib/astc.js",
     "lib/texdecode.js",
     "lib/bundle-probe.js",
     "lib/png.js",

@@ -85,6 +85,26 @@
 
 ---
 
+## 6. ASTC 解码器（移植自 Android drawElements / basis_universal）
+
+```
+组件         ASTC（Adaptive Scalable Texture Compression）解码逻辑
+权利方       Copyright 2016 The Android Open Source Project
+协议         Apache License 2.0
+原始出处     Android drawElements 测试套件的 ASTC 解码器
+             经 basis_universal 的整理版（basisu_astc_decomp.cpp）转发
+本仓库位置   plugins/unity-spine-bundle/lib/astc.js
+             plugins/unity-live2d-bundle/lib/astc.js（与上面逐字节相同）
+```
+
+该文件是上述 C++ 实现的**逐函数移植版**：算法、查表与常量沿用原实现，只做了平台相关改写
+（128 bit 取值、8 bit 输出通路、错误处理）。原始声明随代码保留在文件头注释里；
+按 Apache-2.0 要求，分发包含该文件的版本时应同时保留本声明。
+
+不涉及 HDR 端点模式与 FP16 相关分支（原始整理版同样已移除）。
+
+---
+
 ## 维护说明
 
 本声明随项目维护更新。若你发现遗漏的第三方组件，请提交 issue 指出。

@@ -60,11 +60,13 @@ test('ETC2_RGBA1：数据不足时抛 ULB_ERR_TEX_DATA_SHORT（不是静默返�
   );
 });
 
-test('texdecode：48 号已登记进 DECODERS（不再落到"分发分支缺失"）', () => {
+test('texdecode：46（ETC2_RGBA1）已登记进 DECODERS', () => {
   const NS = loadLibs('plugins/unity-spine-bundle', ['lib/errors.js', 'lib/etc2.js', 'lib/dxt.js', 'lib/texdecode.js']);
   assert.equal(typeof NS.texdecode.canDecode, 'function', 'canDecode 应已导出');
-  // canDecode(48) 为真 ⇒ DECODERS 与 FORMATS 两侧都齐（这是"能解"的对外判据）
-  assert.equal(NS.texdecode.canDecode(48), true, 'ETC2_RGBA1(48) 必须可解码');
+  // canDecode(fmt) 为真 ⇒ DECODERS 与 FORMATS 两侧都齐（这是"能解"的对外判据）
+  // 编号要点：ETC2_RGBA1 是 **46**；48 是 ASTC_RGB_4x4（解码器在 lib/astc.js，不在这条用例的装载范围里）
+  assert.equal(NS.texdecode.formatName(46), 'ETC2_RGBA1', '46 必须是 ETC2_RGBA1');
+  assert.equal(NS.texdecode.canDecode(46), true, 'ETC2_RGBA1(46) 必须可解码');
 });
 
 test('/api/bundle/probe 的预检模块路径能从 src/server/assets/ 解析', async () => {

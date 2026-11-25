@@ -2,8 +2,9 @@
 // plugins/unity-live2d-bundle/lib/texdecode.js —— 纹理格式分发
 //
 // 职责：读 Texture2D 的 m_TextureFormat，分发给对应解码器，返回 RGBA 字节。
-//   · 已实现：ETC2_RGBA8(47) / ETC2_RGB(45) / ETC1_RGB4(34) / 未压缩 RGBA32/RGB24/Alpha8 等直通格式
-//   · 未实现：ASTC / PVRTC / BCn 等 —— **抛可读错误**并把格式名与格式号带上，
+//   · 已实现：ASTC 全系列(48~59，解码器在 lib/astc.js) / ETC2_RGBA8(47) / ETC2_RGBA1(46)
+//     / ETC2_RGB(45) / ETC1_RGB4(34) / DXT1/3/4/5(10/12/26/27) / 未压缩 RGBA32/RGB24/Alpha8 等直通格式
+//   · 未实现：PVRTC / BC6H / BC7 等 —— **抛可读错误**并把格式名与格式号带上，
 //     绝不返回空白图或猜出来的图（否则上层会把"解码失败"当成"资源损坏"）。
 //
 // 纹理尺寸与数据量的自检：按格式的块大小算出期望数据量，与给的字节数比对；
@@ -27,8 +28,24 @@
     7: { name: 'RGB565', block: 2, size: 1 },
     34: { name: 'ETC_RGB4', compress: 'etc1', block: 8, size: 4 },
     45: { name: 'ETC2_RGB', compress: 'etc2', block: 8, size: 4 },
+    46: { name: 'ETC2_RGBA1', compress: 'etc2a1', block: 16, size: 4 },
     47: { name: 'ETC2_RGBA8', compress: 'etc2a8', block: 16, size: 4 },
-    48: { name: 'ETC2_RGBA1', compress: 'etc2a1', block: 16, size: 4 },
+    // 48~59 是 ASTC 系列（UnityPy/enums/TextureFormat.py；并被真实包的 m_CompleteImageSize
+    //   反推验证：440x440/87616 只有 6x6 唯一解、1024x1024/672400 只有 5x5）。
+    //   **48 不是 ETC2_RGBA1**（那个是 46）。块边长各不相同，必须逐条写 bw/bh，
+    //   否则 expectedSize 会按 4x4 算错长度，把"格式未支持"错报成"数据不足"。
+    48: { name: 'ASTC_RGB_4x4', block: 16, size: 4, bw: 4, bh: 4 },
+    49: { name: 'ASTC_RGB_5x5', block: 16, size: 4, bw: 5, bh: 5 },
+    50: { name: 'ASTC_RGB_6x6', block: 16, size: 4, bw: 6, bh: 6 },
+    51: { name: 'ASTC_RGB_8x8', block: 16, size: 4, bw: 8, bh: 8 },
+    52: { name: 'ASTC_RGB_10x10', block: 16, size: 4, bw: 10, bh: 10 },
+    53: { name: 'ASTC_RGB_12x12', block: 16, size: 4, bw: 12, bh: 12 },
+    54: { name: 'ASTC_RGBA_4x4', block: 16, size: 4, bw: 4, bh: 4 },
+    55: { name: 'ASTC_RGBA_5x5', block: 16, size: 4, bw: 5, bh: 5 },
+    56: { name: 'ASTC_RGBA_6x6', block: 16, size: 4, bw: 6, bh: 6 },
+    57: { name: 'ASTC_RGBA_8x8', block: 16, size: 4, bw: 8, bh: 8 },
+    58: { name: 'ASTC_RGBA_10x10', block: 16, size: 4, bw: 10, bh: 10 },
+    59: { name: 'ASTC_RGBA_12x12', block: 16, size: 4, bw: 12, bh: 12 },
     // BC/DXT 家族（PC/主机资源包常用；块式压缩，解码实现见 lib/dxt.js）
     10: { name: 'DXT1', compress: 'bc1', block: 8, size: 4 },
     12: { name: 'DXT5', compress: 'bc3', block: 16, size: 4 },
@@ -46,8 +63,10 @@
     const f = FORMATS[fmt];
     if (!f) return null;
     if (f.size === 1) return width * height * f.block;
-    const bw = Math.ceil(width / 4);
-    const bh = Math.ceil(height / 4);
+    // 块边长按格式取（缺省 4）：ETC/BC 全是 4x4 走缺省，ASTC 是 4~12 各不相同。
+    //   写死 4 会让 ASTC 算出偏大的期望长度 ⇒ 抛 TEX_DATA_SHORT，把"格式未支持"藏成"数据不足"。
+    const bw = Math.ceil(width / (f.bw || 4));
+    const bh = Math.ceil(height / (f.bh || 4));
     return bw * bh * f.block;
   }
 
@@ -128,19 +147,42 @@
    *   调用方**不得依赖**返回的 rgba 与入参共享底层 buffer（有的格式共享、有的不共享，
    *   原地修改它可能改到源数据、也可能改不到）。
    */
+  /**
+   * 生成"某个 ASTC 格式号"的解码器入口。
+   *
+   * 为什么要工厂而不是十二条手写箭头函数：块边长（4x4 ~ 12x12）只有 FORMATS 一处真相，
+   *   手抄一份数字到 DECODERS 就多了一处会漂移的副本 —— FORMATS 改了而这里没改时，
+   *   解码器会按错的块尺寸切块，表现为"图能出但整片错位"，比直接报错难查得多。
+   */
+  const astcDecoder = (fmt) => (d, w, h) => {
+    const entry = FORMATS[fmt];
+    // astc.js 由文件清单在 texdecode.js 之前注入；缺了要说清是"没加载"而不是"格式不支持"
+    if (!NS.astc || typeof NS.astc.decodeAstc !== 'function') {
+      throw NS.errors.fail('ULB_ERR_TEX_DECODE',
+        `ASTC 解码器未加载（lib/astc.js 未按序注入？），无法解码 ${entry.name}（${fmt}）`);
+    }
+    return NS.astc.decodeAstc(d, w, h, entry.bw, entry.bh);
+  };
+
   const DECODERS = {
     // 压缩格式：解码器自身产出 RGBA
     34: (d, w, h) => NS.etc2.decodeEtc1Rgb(d, w, h),
     45: (d, w, h) => NS.etc2.decodeEtc2Rgb(d, w, h),
     47: (d, w, h) => NS.etc2.decodeEtc2Rgba8(d, w, h),
-    // 48 ETC2_RGBA1：ETC2 RGB 块（8 字节）+ 1bit alpha 平面（8 字节）。块布局与位序见
-    //   lib/etc2.js 的 decodeEtc2Rgba1 注释。此格式长期"格式表里有、解码器没登记"，
-    //   导致该格式的包整包报 ULB_ERR_TEX_DECODE（现场：蔚蓝档案部分 spinebackground 包）。
-    48: (d, w, h) => NS.etc2.decodeEtc2Rgba1(d, w, h),
+    // 46 ETC2_RGBA1：ETC2 RGB 块（8 字节）+ 1bit alpha 平面（8 字节）。块布局与位序见
+    //   lib/etc2.js 的 decodeEtc2Rgba1 注释。
+    //   注意编号：ETC2_RGBA1 是 **46**，不是 48（48 是 ASTC_RGB_4x4，见 FORMATS 注释）。
+    46: (d, w, h) => NS.etc2.decodeEtc2Rgba1(d, w, h),
     10: (d, w, h) => NS.dxt.decodeBc1(d, w, h),
     12: (d, w, h) => NS.dxt.decodeBc3(d, w, h),
     26: (d, w, h) => NS.dxt.decodeBc4(d, w, h),
     27: (d, w, h) => NS.dxt.decodeBc5(d, w, h),
+    // ASTC 全系列（48~53 无 alpha 变体 / 54~59 带 alpha 变体）：同一个解码器，只有块边长不同。
+    //   块边长从 FORMATS 的 bw/bh 取（见 astcDecoder 的注释），这里只登记"哪个格式号归 ASTC"。
+    48: astcDecoder(48), 49: astcDecoder(49), 50: astcDecoder(50),
+    51: astcDecoder(51), 52: astcDecoder(52), 53: astcDecoder(53),
+    54: astcDecoder(54), 55: astcDecoder(55), 56: astcDecoder(56),
+    57: astcDecoder(57), 58: astcDecoder(58), 59: astcDecoder(59),
     // 未压缩格式：切片后按通道展开
     4: (d, w, h, need) => d.slice(0, need),
     5: (d, w, h, need) => argbToRgba(d.slice(0, need)),
@@ -159,12 +201,15 @@
   function decode(meta, data, opts) {
     const fmt = meta.format;
     const f = FORMATS[fmt];
-    if (!f) throw NS.errors.fail('ULB_ERR_TEX_FORMAT_UNSUPPORTED', `暂不支持纹理格式 ${fmt}（${meta.name || ''}）——已支持：ETC2_RGBA8(47)、ETC2_RGBA1(48)、ETC2_RGB(45)、ETC_RGB4(34)、DXT1(10)、DXT5(12)、BC4(26)、BC5(27)、RGBA32(4)、ARGB32(5)、RGB24(3)、Alpha8(1)、RGB565(7)；暂未实现：ASTC(50 系列)、PVRTC(30/31)、BC6H(24)、BC7(25)`);
+    if (!f) throw NS.errors.fail('ULB_ERR_TEX_FORMAT_UNSUPPORTED', `暂不支持纹理格式 ${fmt}（${meta.name || ''}）——已支持：ETC2_RGBA8(47)、ETC2_RGBA1(46)、ETC2_RGB(45)、ETC_RGB4(34)、DXT1(10)、DXT5(12)、BC4(26)、BC5(27)、ASTC 全系列(48~59)、RGBA32(4)、ARGB32(5)、RGB24(3)、Alpha8(1)、RGB565(7)；未实现：PVRTC(30~33)、BC6H(24)、BC7(25)`);
+    // 解码器检查放在长度检查**之前**：表里有、但没登记解码器（PVRTC / BC6H / BC7 这类）
+    //   属于"格式未支持"，不是"数据不足"。顺序反了会用尺寸错误掩盖真实原因。
+    const decoder = DECODERS[fmt];
+    if (!decoder) {
+      throw NS.errors.fail('ULB_ERR_TEX_FORMAT_UNSUPPORTED', `纹理格式 ${f.name}（${fmt}）尚未实现解码器——当前未接入的格式只有 PVRTC / BC6H / BC7`);
+    }
     const need = expectedSize(fmt, meta.width, meta.height);
     if (data.length < need) throw NS.errors.fail('ULB_ERR_TEX_DATA_SHORT', `纹理 ${meta.name || ''}（${f.name} ${meta.width}x${meta.height}）数据不足：需要 ${need} 字节，实际 ${data.length}`);
-    // 表里有格式、但没有登记解码器（如 ASTC 50 系列）⇒ 继续走这条兜底
-    const decoder = DECODERS[fmt];
-    if (!decoder) throw NS.errors.fail('ULB_ERR_TEX_DECODE', `纹理格式 ${f.name} 的分发分支缺失`);
     const rgba = decoder(data, meta.width, meta.height, need);
     // 统一翻转：原实现用 finish() 包住每个 return，等价于在这里一次做完
     return !opts || opts.flipY !== false ? flipY(rgba, meta.width, meta.height) : rgba;
@@ -174,8 +219,8 @@
    * 某个 Unity TextureFormat 能否**真正解码**。
    *
    * 为什么需要它：FORMATS 是"格式字典"（名称 / 尺寸 / block 布局），**不代表能解码** ——
-   *   例如 ASTC(50 系列) 在 FORMATS 里可能有条目、但 DECODERS 没登记，decode() 会抛
-   *   ULB_ERR_TEX_DECODE。若外部（预检 / 面板提示）拿 `!!FORMATS[fmt]` 当"支持"，
+   *   例如 PVRTC 可能在 FORMATS 里有条目、但 DECODERS 没登记，decode() 会抛
+   *   ULB_ERR_TEX_FORMAT_UNSUPPORTED。若外部（预检 / 面板提示）拿 `!!FORMATS[fmt]` 当"支持"，
    *   就会先报"支持"、真正解包时才炸 —— 同一件事两套判据。
    * ⇒ 能力判定只认这张表：**这是"能不能解码"的唯一真相**。
    *

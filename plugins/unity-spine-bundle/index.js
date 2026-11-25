@@ -125,8 +125,9 @@ function install() {
         ? fields.m_Name.text : String(fields.m_Name || '');
       const raw = fields.m_Script && fields.m_Script.bytes;
       if (!raw) continue;
-      if (/\.skel$/i.test(name)) skel.push({ name, bytes: raw });
-      else if (/\.atlas$/i.test(name)) atlas.push({ name, bytes: raw });
+      // 带上 pathID：同名的资源靠它区分（m_Name 不保证唯一，实测单包有 2 份同名 .skel / .atlas）
+      if (/\.skel$/i.test(name)) skel.push({ name, bytes: raw, pathId: String(obj.pathID) });
+      else if (/\.atlas$/i.test(name)) atlas.push({ name, bytes: raw, pathId: String(obj.pathID) });
     }
     return { skel, atlas };
   }
@@ -148,6 +149,118 @@ function install() {
       if (/^[^\s].*\.(png|jpg|jpeg|webp)\s*$/i.test(line)) pages.push(line.trim());
     }
     return pages;
+  }
+
+  /**
+   * 与 parseAtlasPages 同源，但**连每页声明的尺寸一起返回**：`[{page, w, h}]`。
+   *
+   * 为什么不改 parseAtlasPages 本身：它被单测与 `__test` 直接调用（返回值是纯页名数组）。
+   * 新增函数而不是改签名 ⇒ 现有调用方零影响。
+   *
+   * 为什么需要尺寸：同角色多套外观会有**同名不同尺寸**的贴图（实测两份 char_010_chen：
+   * 256x256 与 512x512），而两份 atlas 也都声明页名 char_010_chen.png。只按名字对号
+   * ⇒ 把 256² 的图贴到按 512² 算的 region 坐标上 ⇒ 错位/缺图。
+   */
+  function parseAtlasPagesDetailed(atlasBytes) {
+    const text = new TextDecoder('utf-8').decode(atlasBytes).replace(/^\uFEFF/, '');
+    const out = [];
+    let cur = null;
+    for (const raw of text.split('\n')) {
+      const line = raw.replace(/\r$/, '');
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      if (/^size\s*:/i.test(trimmed)) {
+        if (cur && cur.w == null) {
+          const parts = trimmed.split(':')[1].split(',');
+          const w = parseInt(parts[0], 10);
+          const h = parseInt(parts[1], 10);
+          if (Number.isFinite(w) && Number.isFinite(h)) { cur.w = w; cur.h = h; }
+        }
+        continue;
+      }
+      // 行首无空白 + 以图片扩展名结尾 ⇒ 页名行（与 parseAtlasPages 同判据）
+      if (/^[^\s].*\.(png|jpg|jpeg|webp)\s*$/i.test(line)) {
+        cur = { page: trimmed, w: null, h: null };
+        out.push(cur);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * 同名资源的键名：`<stem>__<pathId><ext>`（与 Python worker 同口径）。
+   *
+   * 为什么需要：`m_Name` 不保证唯一。用名字当 Map 键时后写的会覆盖先写的，
+   *   覆盖后 entry 里写的名字可能指向**另一套**的内容 ⇒ 前端报 Region not found。
+   * 为什么用 pathID 而不是序号：pathID 在同一 serialized file 内天然唯一，
+   *   与对象遍历顺序无关 ⇒ 同一包两次导出结果一致（可复现）。
+   */
+  function disambiguateKey(name, pathId) {
+    const dot = String(name).lastIndexOf('.');
+    const stem = dot > 0 ? String(name).slice(0, dot) : String(name);
+    const ext = dot > 0 ? String(name).slice(dot) : '';
+    return `${stem}__${pathId}${ext}`;
+  }
+
+  /**
+   * 按 **region 命中率** 选与 skel 匹配的 atlas（与 worker 的 _pick_atlas_for_skel 同判据）。
+   *
+   * 为什么不能按名字配对：同名覆盖下 `char_010_chen.skel` 与 `char_010_chen.atlas`
+   * 名字永远对得上，哪怕它们来自不同的一套。只有"atlas 的 region 名能否在 skel 的
+   * string table 里找到"才是内容层面的真判据。
+   *
+   * 为什么不能要求唯一命中：同一角色的多套外观会**共享一部分 region 名**（实测 1~2 个噪声），
+   * 所以取命中数最高者；并列时按 atlas 在包内的先后取第一个（稳定，不依赖遍历细节）。
+   */
+  function pickAtlasForSkel(skelBytes, atlases) {
+    // ⚠️ 必须先把 skel 的字节**当成字符串**再查子串：
+    //   `Uint8Array.prototype.includes()` 是"数组里有没有这个**字节值**"，
+    //   传一个 Uint8Array 进去永远 false —— 那会让命中率恒为 0、配对悄悄退化成"取第一个"。
+    //   latin1 解码是 1:1 字节映射，所以 latin1 字符串的 includes 等价于字节子串查找。
+    const haystack = new TextDecoder('latin1').decode(skelBytes);
+    let best = null;
+    let bestHits = -1;
+    for (const a of atlases) {
+      let hits = 0;
+      // region 名（行首无缩进、非属性、非页名）才是 skel string table 里的东西；
+      //   页名带 `.png` 后缀，skel 里不会有，不参与统计。
+      for (const region of atlasRegions(a.bytes)) {
+        if (region && haystack.includes(region)) hits += 1;
+      }
+      if (hits > bestHits) { best = a; bestHits = hits; }
+    }
+    return best || (atlases[0] || null);
+  }
+
+  /** atlas 里的 region 名：行首无缩进、非属性行、非页名行（与 worker 的 _atlas_regions 同判据）。 */
+  function atlasRegions(atlasBytes) {
+    const text = new TextDecoder('utf-8').decode(atlasBytes).replace(/^\uFEFF/, '');
+    const out = [];
+    for (const raw of text.split('\n')) {
+      const line = raw.replace(/\r$/, '');
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      if (line[0] === ' ' || line[0] === '\t') continue;                       // 属性行
+      if (/^(size|format|filter|repeat|pma|scale)\s*:/i.test(trimmed)) continue;
+      if (/\.(png|jpg|jpeg|webp)\s*$/i.test(trimmed)) continue;                // 页名行
+      out.push(trimmed);
+    }
+    return out;
+  }
+
+  /**
+   * 按名字 + **尺寸**找纹理（与 worker 的 _find_texture 同判据）：
+   * 尺寸匹配优先，对不上才回落同名第一份。
+   */
+  function findTextureForPage(textures, pageStem, w, h) {
+    const cands = textures.filter((t) => String(t.name) === pageStem
+      || String(t.name).toLowerCase() === pageStem.toLowerCase());
+    if (!cands.length) return null;
+    if (w && h) {
+      const exact = cands.find((t) => t.width === w && t.height === h);
+      if (exact) return exact;
+    }
+    return cands[0];
   }
 
   /**
@@ -297,9 +410,12 @@ function install() {
 
       // 按「去扩展名的同名」配对（c200_01.skel ↔ c200_01.atlas）；配不上就退第一个，不猜内容
       const stemOf = (n) => String(n).replace(/\.[^.\\/]+$/, '');
-      const skelPick = skel[0];
-      const stem = stemOf(skelPick.name);
-      const atlasPick = atlas.find((a) => stemOf(a.name) === stem) || atlas[0];
+      // 选**数据量最大**的骨架作主模型（与 worker 的 max(skels, key=字节数) 同判据）。
+      //   为什么不能取第一个：一个包里可能有多套外观（实测 char_010_chen 与 build_char_010_chen），
+      //   取第一个取决于对象序，换版本就可能变。主角色的数据量通常远大于附属，这条判据不依赖命名。
+      const skelPick = skel.reduce((a, b) => ((b.bytes && b.bytes.length) > (a.bytes && a.bytes.length) ? b : a), skel[0]);
+      // 配对按 **region 命中率**，不按 stem 同名（同名永远对得上，却可能跨套）。
+      const atlasPick = pickAtlasForSkel(skelPick.bytes, atlas);
       if (!atlasPick) throw NS.errors.fail(NS.errors.CODES.NO_ATLAS, `有 ${skelPick.name} 但包里没有 .atlas`);
 
       // 版本串读不到只记录不失败：不同 Spine 版本的头部布局可能不同，硬失败会误拒可用的包
@@ -307,16 +423,17 @@ function install() {
       if (!spineVersion) ulbLog('warn', `.skel 头部未识别出 Spine 版本串（${skelPick.name}），继续解包`);
 
       // —— 纹理：按 atlas 页名找同名 Texture2D，解码后编 PNG ——
-      const pages = parseAtlasPages(atlasPick.bytes);
+      const pages = parseAtlasPagesDetailed(atlasPick.bytes);
       if (!pages.length) throw NS.errors.fail(NS.errors.CODES.NO_ATLAS, 'atlas 里没有解析到贴图页名');
       const allTextures = NS.extract.findTextures(sf);
 
       const files = new Map();
       const textureFiles = [];
-      for (const page of pages) {
+      for (const pg of pages) {
+        const page = pg.page;
         const pageStem = stemOf(page);
-        const tex = allTextures.find((t) => t.name === pageStem)
-          || allTextures.find((t) => String(t.name).toLowerCase() === pageStem.toLowerCase());
+        // 按 **atlas 声明的尺寸** 找同名纹理（尺寸是这几者唯一能互相印证的东西）
+        const tex = findTextureForPage(allTextures, pageStem, pg.w, pg.h);
         if (!tex) {
           throw NS.errors.fail(NS.errors.CODES.EXTRACT,
             `atlas 声明了贴图页「${page}」，但包里找不到同名 Texture2D（${pageStem}）`);
@@ -340,14 +457,32 @@ function install() {
         textureFiles.push(page);
       }
 
-      // —— 骨架 / 图集（原始字节，绝不走字符串回编码）——
-      files.set(skelPick.name, new Blob([skelPick.bytes], { type: 'application/octet-stream' }));
-      files.set(atlasPick.name, new Blob([atlasPick.bytes], { type: 'application/octet-stream' }));
+      // —— 骨架 / 图集：**全部**同名资源都进表，不再互相覆盖 ——
+      //
+      //   `Map.set` 用 name 当键时，同名的后一份会把前一份覆盖掉：实测本包有 2 份
+      //   `char_010_chen.skel`（328066 / 114901）与 2 份 `char_010_chen.atlas`（3969 / 6703）。
+      //   一旦覆盖，entry 里写的名字可能指向**另一套**的内容 ⇒ atlas 的 region 在 skel
+      //   里一个都找不到 ⇒ 前端报 "Region not found in atlas"。
+      //   同名时按 `<stem>__<pathId><ext>` 区分（与 Python worker 完全同口径：pathID 天然唯一、
+      //   与对象遍历顺序无关，所以可复现）。
+      const allTextAssets = [...skel, ...atlas];
+      const nameCount = new Map();
+      for (const t of allTextAssets) nameCount.set(t.name, (nameCount.get(t.name) || 0) + 1);
+      const fileKeyOf = (t) => {
+        if (!t || !t.name) return null;
+        // 只出现一次 ⇒ 保持原名（零回归：单套资源的包产物与以前完全一样）
+        if ((nameCount.get(t.name) || 1) <= 1) return t.name;
+        return disambiguateKey(t.name, t.pathId);
+      };
+      for (const t of allTextAssets) {
+        const key = fileKeyOf(t);
+        if (key && !files.has(key)) files.set(key, new Blob([t.bytes], { type: 'application/octet-stream' }));
+      }
 
       // —— 入口清单：字段名与前端约定一致（skeletonFile / atlasFile / textureFiles）——
       const entryJson = {
-        skeletonFile: skelPick.name,
-        atlasFile: atlasPick.name,
+        skeletonFile: fileKeyOf(skelPick),
+        atlasFile: fileKeyOf(atlasPick),
         textureFiles,
       };
       const entryBytes = new TextEncoder().encode(JSON.stringify(entryJson, null, 2));
@@ -553,7 +688,7 @@ function install() {
   // node 侧返回解析入口：服务端解包直接从返回值取 canHandle/resolve，不经过宿主注册。
   // __test 只给单测用（纯函数、无副作用、宿主不读它）：parseAtlasPages 是闭包内私有函数，
   //   没有它就无法为"带 BOM 的 atlas 首行"补单测（这正是 NIKKE 根 34 份带 BOM 的 atlas 丢第一页贴图的根因）。
-  return { canHandle, resolve, estimateMemory, probeContainer, analyze, PLUGIN_ID, __test: { parseAtlasPages } };
+  return { canHandle, resolve, estimateMemory, probeContainer, analyze, PLUGIN_ID, __test: { parseAtlasPages, parseAtlasPagesDetailed, pickAtlasForSkel, atlasRegions, findTextureForPage, disambiguateKey } };
 }
 
 // 执行安装。为什么不用 `export { canHandle }`：那会把文件变成 ESM，

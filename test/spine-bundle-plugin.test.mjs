@@ -304,3 +304,102 @@ test('atlas：CRLF 页名不带 \\r；缩进行与注释行不被误吞', () => 
   assert.deepEqual(pages, ['c010_00.png', 'c010_00_2.png']);
   assert.ok(pages.every((p) => !p.includes('\r')), '页名里不能残留 \\r');
 });
+
+// ── region 配对 / 尺寸匹配（同名资源不唯一时的判据）──
+// 背景：Unity 的 m_Name 不保证唯一（实测单包 2 份 char_010_chen.skel、2 份 atlas、
+//   2 份同名不同尺寸的 png）。按名字配对会把两套不同资源拼在一起 ⇒ 渲染全黑。
+
+test('parseAtlasPagesDetailed：页名 + 每页声明的尺寸', () => {
+  const api = apiOf(SPINE_PLUGIN);
+  const atlas = [
+    '', 'chen.png', 'size: 512,512', 'format: RGBA8888', 'filter: Linear,Linear',
+    'BG', '  rotate: false', '  xy: 1, 2', '  size: 113, 101',
+  ].join('\n');
+  const pages = api.__test.parseAtlasPagesDetailed(new TextEncoder().encode(atlas));
+  assert.equal(pages.length, 1, '应解析出 1 个页');
+  assert.equal(pages[0].page, 'chen.png');
+  assert.equal(pages[0].w, 512);
+  assert.equal(pages[0].h, 512);
+  // region 的 "size: 113, 101" 带缩进，不该被当成页尺寸
+});
+
+test('atlasRegions：行首无缩进、非属性、非页名', () => {
+  const api = apiOf(SPINE_PLUGIN);
+  const atlas = ['chen.png', 'size: 512,512', 'BG', '  rotate: false', 'B_Bandage', '  xy: 1, 2'].join('\n');
+  const regions = api.__test.atlasRegions(new TextEncoder().encode(atlas));
+  // 跨 vm 沙箱返回的数组原型不同，deepEqual 会判 reference-equal 失败；比 JSON 更稳
+  assert.equal(JSON.stringify(regions), JSON.stringify(['BG', 'B_Bandage']));
+});
+
+test('pickAtlasForSkel：按 region 命中率选，不按名字', () => {
+  const api = apiOf(SPINE_PLUGIN);
+  const enc = (s) => new TextEncoder().encode(s);
+  // 两个同名 atlas，只有第二个的 region 出现在 skel 里
+  const skelBytes = enc('\x00\x01ONLY_IN_SECOND_REGION\x00tail');
+  const atlases = [
+    { name: 'chen.atlas', bytes: enc('chen.png\nsize: 256,256\nREGION_A\nREGION_B\n') },
+    { name: 'chen.atlas', bytes: enc('chen.png\nsize: 512,512\nONLY_IN_SECOND_REGION\nREGION_C\n') },
+  ];
+  const picked = api.__test.pickAtlasForSkel(skelBytes, atlases);
+  assert.equal(picked.bytes.length, atlases[1].bytes.length, '应选中 region 命中的那份');
+});
+
+test('pickAtlasForSkel：命中并列时稳定取第一个', () => {
+  const api = apiOf(SPINE_PLUGIN);
+  const enc = (s) => new TextEncoder().encode(s);
+  const skelBytes = enc('\x00SHARED_REGION\x00');
+  const atlases = [
+    { name: 'a.atlas', bytes: enc('p.png\nsize: 1,1\nSHARED_REGION\n') },
+    { name: 'b.atlas', bytes: enc('p.png\nsize: 1,1\nSHARED_REGION\n') },
+  ];
+  const picked = api.__test.pickAtlasForSkel(skelBytes, atlases);
+  assert.equal(picked.name, 'a.atlas', '并列取第一个（稳定，不随遍历变化）');
+});
+
+test('findTextureForPage：尺寸匹配优先，对不上回落第一份', () => {
+  const api = apiOf(SPINE_PLUGIN);
+  const textures = [
+    { name: 'chen', width: 256, height: 256, format: 34 },
+    { name: 'chen', width: 512, height: 512, format: 34 },
+  ];
+  assert.equal(api.__test.findTextureForPage(textures, 'chen', 512, 512).width, 512, '尺寸命中');
+  assert.equal(api.__test.findTextureForPage(textures, 'chen', 256, 256).width, 256, '尺寸命中（另一份）');
+  assert.equal(api.__test.findTextureForPage(textures, 'chen', 999, 999).width, 256, '尺寸不符回落第一份');
+  assert.equal(api.__test.findTextureForPage(textures, 'chen').width, 256, '未给尺寸回落第一份');
+  assert.equal(api.__test.findTextureForPage(textures, 'nope', 1, 1), null, '查不到返回 null');
+});
+
+// ── files 表键名：同名不互相覆盖 ──
+// 实测单包有 2 份 char_010_chen.skel（328066/114901）与 2 份 .atlas（3969/6703）。
+// 用名字当 Map 键时后写的覆盖先写的 ⇒ entry 指向的名字可能对应**另一套**的内容
+//   ⇒ atlas 的 region 在 skel 里一个都找不到 ⇒ "Region not found in atlas"。
+
+test('disambiguateKey：同名带 pathID，且可复现', () => {
+  const api = apiOf(SPINE_PLUGIN);
+  const k1 = api.__test.disambiguateKey('char_010_chen.atlas', '6145740781893473888');
+  assert.equal(k1, 'char_010_chen__6145740781893473888.atlas');
+  assert.equal(
+    api.__test.disambiguateKey('char_010_chen.atlas', '6145740781893473888'), k1,
+    '同 pathID 两次调用必须一致（可复现）',
+  );
+  // 负数 pathID 也要能用（实测本包就有 -5683791583939886497）
+  assert.equal(api.__test.disambiguateKey('a.skel', '-5683791583939886497'), 'a__-5683791583939886497.skel');
+  // 无扩展名的名字不炸
+  assert.equal(api.__test.disambiguateKey('noext', '7'), 'noext__7');
+});
+
+test('files 键唯一：两份同名 atlas 得到**两个不同键**（不覆盖）', () => {
+  const api = apiOf(SPINE_PLUGIN);
+  // 构造"同名两份"的场景：按 plugin 的规则算 key，再放进 Map 验证不覆盖
+  const dup = [
+    { name: 'char_010_chen.atlas', pathId: '-3767390279579324023', bytes: 'A' },
+    { name: 'char_010_chen.atlas', pathId: '6145740781893473888', bytes: 'B' },
+  ];
+  const files = new Map();
+  for (const t of dup) files.set(api.__test.disambiguateKey(t.name, t.pathId), t.bytes);
+  assert.equal(files.size, 2, '两份同名资源必须都在表里（不是覆盖成 1 份）');
+  // 关键断言：**第二份的键必须存在且指向第二份的内容**
+  //   —— 只测"单份时正常"抓不到覆盖 bug，必须断言第二份可被取到。
+  assert.equal(files.get('char_010_chen__6145740781893473888.atlas'), 'B', '第二份必须可单独取到');
+  assert.equal(files.get('char_010_chen__-3767390279579324023.atlas'), 'A', '第一份也还在');
+});
