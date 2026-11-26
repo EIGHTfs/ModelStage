@@ -416,7 +416,23 @@ function createContainerTools({ NS, host, ulbLog, MIME_OCTET, MIME_JSON, MIME_PN
    */
   async function buildFileSet(extracted, profile) {
     const files = new Map();      // 相对键 → Blob（契约 §1.2：Blob|string；二进制一律 Blob）
-    const put = (key, bytes, mime) => { files.set(key, new Blob([bytes], { type: mime || MIME_OCTET })); return key; };
+
+    // 已写入键的**原始字节**，只用于同名冲突判定（多数包无同名，所以这条路径基本不触发）。
+    const written = new Map();
+
+    /**
+     * 写入文件表；**同名不再静默覆盖**。
+     *
+     * 为什么不照 spine 那样加 pathID 改名：spine 的 entry.json 是插件自己生成的，名字随便定；
+     *   Cubism 的 model3.json 是**包内原有文件**，它的 FileReferences 写的是原始文件名 ——
+     *   插件改了名，模型就找不到纹理/moc3，除非同时重写 model3.json（那是更大的改动，
+     *   且会改变包内文件的原始语义）。所以这里只能"判断是不是同一份"，不能"改名区分"。
+     *
+     * 同名 + 字节相同 ⇒ 合并（同内容重复出现是合法的，不报错）；
+     * 同名 + 字节不同 ⇒ 抛可读错误（需要人工确认用哪份，而不是让后写的悄悄赢）。
+     */
+    // 委托给模块级实现（判据只有一份，且可被单测直接验证）
+    const put = (key, bytes, mime) => putFile(files, written, key, bytes, mime, NS);
 
     const KEY_MOC3 = 'moc3.moc3';
     const KEY_PHYSICS = 'physics3.json';
@@ -609,7 +625,7 @@ function createProvider({ NS, host, PLUGIN_ID, ulbLog, MIME_OCTET, MIME_JSON, MI
       //   这些相对路径与包内文件同根，核心注册 prefix 后可直接解析。
       const textures = collectTextures(got, resSBytes);
       for (const f of got.nativeFiles) {
-        files.set(f.name, new Blob([f.bytes], { type: /\.json$/i.test(f.name) ? MIME_JSON : MIME_OCTET }));
+        put(f.name, f.bytes, /\.json$/i.test(f.name) ? MIME_JSON : MIME_OCTET);
         if (/\.model3\.json$/i.test(f.name)) entry = f.name;
       }
       // 原生 Cubism 文件集：包内可能自带 .png/.moc3 等原始文件（TextAsset 形态），直接进表；
@@ -618,7 +634,7 @@ function createProvider({ NS, host, PLUGIN_ID, ulbLog, MIME_OCTET, MIME_JSON, MI
       let hasPngTexture = false;
       for (const f of got.nativeFiles) {
         if (/\.png$/i.test(f.name)) {
-          files.set(f.name, new Blob([f.bytes], { type: MIME_PNG }));
+          put(f.name, f.bytes, MIME_PNG);
           hasPngTexture = true;
         }
       }
@@ -627,7 +643,7 @@ function createProvider({ NS, host, PLUGIN_ID, ulbLog, MIME_OCTET, MIME_JSON, MI
           if (!t.comp) continue;
           const rgba = NS.texdecode.decode(t, t.comp);   // 局部变量，编完即释放
           const png = await NS.png.encodePngAsync(rgba, t.width, t.height);
-          files.set(`${t.name}.png`, new Blob([png], { type: MIME_PNG }));
+          put(`${t.name}.png`, png, MIME_PNG);
         }
       }
       if (!entry) throw NS.errors.fail('ULB_ERR_MODEL_BUILD', '原生文件集里找不到 model3.json 入口');
@@ -844,6 +860,46 @@ function install() {
   // lib 挂载点：各 lib 文件自己往 globalThis.__ULB__ 挂能力，浏览器里 window 即 globalThis，
   //   所以统一从 globalThis 取即可（node 侧同样落在 globalThis）。
   const NS = (typeof globalThis !== 'undefined' && globalThis.__ULB__) || null;
+
+  /**
+   * 逐字节比较（只在同名时调用，正常包零开销）。
+   * 提到模块级是为了可单测 —— 这条判据是"防静默覆盖"的核心，不能被闭包埋掉。
+   */
+  function sameBytes(a, b) {
+    if (a === b) return true;
+    if (!a || !b || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return false;
+    return true;
+  }
+
+  /**
+   * 写入文件表；**同名不再静默覆盖**（与 spine 的 pathID 改名是两种不同修法）。
+   *
+   * 为什么不照 spine 那样加 pathID：spine 的 entry.json 是插件自己生成的，名字随便定；
+   *   Cubism 的 model3.json 是**包内原有文件**，它的 FileReferences 写的是原始文件名 ——
+   *   插件改了名，模型就找不到纹理/moc3，除非同时重写 model3.json（那是更大的改动，
+   *   且会改变包内文件的原始语义）。所以这里只能"判断是不是同一份"，不能"改名区分"。
+   *
+   * 同名 + 字节相同 ⇒ 合并（同内容重复出现合法，不报错）
+   * 同名 + 字节不同 ⇒ 抛可读错误（而不是让后写的悄悄赢 —— 那样只表现为"纹理缺失/渲染错乱"，
+   *   日志看不出原因，正是要多轮才能定位的那类静默失败）
+   */
+  function putFile(files, written, key, bytes, mime, ns) {
+    const prev = written.get(key);
+    if (prev) {
+      if (!sameBytes(prev, bytes)) {
+        throw ns.errors.fail('ULB_ERR_MODEL_BUILD',
+          `包内存在同名资源 ${key} 且内容不同（Cubism 按 model3.json 的原始文件名引用，插件无法改名区分）——当前不支持，需要人工确认用哪一份`);
+      }
+      return key;                          // 同内容重复写入：无害，保留已写的那份
+    }
+    written.set(key, bytes);
+    files.set(key, new Blob([bytes], { type: mime || MIME_OCTET }));
+    return key;
+  }
+
+  if (NS) NS.live2dFiles = { sameBytes, putFile };   // live2d 前缀，避免污染共享命名空间
+
   if (!NS || !NS.unityfs || !NS.serialized || !NS.extract) {
     if (hasDom) {
       console.warn('[unity-live2d-bundle] lib 未加载完整（需要 bytes/common-strings/unityfs/serialized/typetree/extract），插件未注册');
@@ -914,6 +970,8 @@ function install() {
     // 契约 §1.1：只读分析能力（核心按 provides 找提供者）
     analyze,
     PLUGIN_ID,
+    // 单测钩子："同名不覆盖"的判据是这几轮最贵的教训，必须能被直接验证
+    __test: { sameBytes, putFile },
   };
   registerWithHost({ host, PLUGIN_ID, api });
   return api;
