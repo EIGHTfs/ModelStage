@@ -71,6 +71,25 @@ destination[texelIndex * 4 + channel] = (blended16 * 255 + 32768) >> 16;
 | 3 · 通道循环分支外提 | 未做 | — | 未验证（profile 当前未进前 10） |
 | 4 · 容器改 TypedArray | 未做 | — | 未验证 |
 
+### 第 3 轮结论：3 / 4 / 5 全部无收益（2026-11-27）
+
+| 候选 | 做法 | 实测 | 结论 |
+|---|---|---|---|
+| 3 · 内层索引预算 | `texelIndex * 4` 提到通道循环外做 `dstBase` | **0.98×**（噪声内）；0 差异 | ❌ 不落地 |
+| 4 · 容器改 TypedArray | `unquantizedWeights: new Array(N)` → `new Int32Array(N)` | **1.01×**；0 差异 | ❌ 不落地 |
+| 5 · 单平面特化 | `plane` 循环拆分 | **1.01×**；0 差异 | ❌ 不落地 |
+
+**结论：JS 层的低成本优化空间已基本榨干。**
+
+```
+现有缓冲里 5 个已经是 Int32Array（endpointPairs / texelWeights / weightGrid / endpointValues / unquantizedEndpoints），
+只有 unquantizedWeights 是普通数组 —— 改了也没收益（V8 对 packed 数组同样快）。
+内层循环的索引乘法、plane 循环、三元分支，V8 都已经自己优化掉了。
+
+⇒ 再有数量级提升只能靠：① 算法层重构（减少每块工作量）② WASM。
+   两者都不是「改几行」的量级，所以候选 1 / 2 之后停手是合理的选择。
+```
+
 **第 2 轮 profile（落地候选 1 之后）热点**：`decodeAstc` 17.4% / `decompressBlock` 13.7% / `interpolateWeights` 10.8% / `decodeQuintBlock` 6.4% / `divRoundUp` 5.5%。
 `interpolateWeights` 虽占 10.8%，但手工特化零收益 —— **占比高不等于能优化**，必须实测。
 
