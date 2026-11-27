@@ -474,7 +474,12 @@ function install() {
         if ((nameCount.get(t.name) || 1) <= 1) return t.name;
         return disambiguateKey(t.name, t.pathId);
       };
-      for (const t of allTextAssets) {
+      // **只写选中的那一套**（未选中的同名副本不落盘）：
+      //   产物因此是 4 个文件（skel + atlas + 贴图 + entry），而不是把包内所有文本资源都存一遍。
+      //   但文件名仍带 pathID —— 同名文件在包里确实存在，名字必须能区分，
+      //   否则前端拿到 `char_010_chen.atlas` 这种歧义名，无法自证用的是哪一份。
+      for (const t of [skelPick, atlasPick]) {
+        if (!t) continue;
         const key = fileKeyOf(t);
         if (key && !files.has(key)) files.set(key, new Blob([t.bytes], { type: 'application/octet-stream' }));
       }

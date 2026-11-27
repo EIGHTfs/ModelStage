@@ -403,3 +403,21 @@ test('files 键唯一：两份同名 atlas 得到**两个不同键**（不覆盖
   assert.equal(files.get('char_010_chen__6145740781893473888.atlas'), 'B', '第二份必须可单独取到');
   assert.equal(files.get('char_010_chen__-3767390279579324023.atlas'), 'A', '第一份也还在');
 });
+
+// ── 产物只含选中那一套（4 文件），未选中的同名副本不落盘 ──
+// 背景：包里常有 2~3 套同名资源（char_x 与 build_char_x，各带自己的 skel/atlas）。
+//   全量入表会让每包多存约 300KB 无用副本；只存选中的那套既保证能出画，
+//   又让产物稳定为 4 个文件。名字仍带 pathID（同名在包里确实存在，名字必须能区分）。
+
+test('files 表只写选中的那套（不是包内全部同名资源）', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'plugins', 'unity-spine-bundle', 'index.js'), 'utf8');
+  // 只允许对 [skelPick, atlasPick] 这一对写文件表
+  assert.match(
+    src,
+    /for \(const t of \[skelPick, atlasPick\]\)/,
+    'files 表应只遍历选中的 skel/atlas',
+  );
+  // 反证：不允许再出现"遍历全部文本资源并写表"的形态
+  const fullWrite = /for \(const t of allTextAssets\)\s*\{[^}]*files\.set/s;
+  assert.equal(fullWrite.test(src), false, '不允许把包内全部文本资源都写进 files 表');
+});
