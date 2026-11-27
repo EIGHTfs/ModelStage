@@ -62,6 +62,18 @@ destination[texelIndex * 4 + channel] = (blended16 * 255 + 32768) >> 16;
 | 4 | `textureWeights` / `endpointPairs` 的容器类型 | 若非 TypedArray（普通数组），换 `Int32Array`/`Uint16Array` | 读代码确认现有类型 |
 | 5 | `interpolateWeights`（1.7%） | 尝试内联进 `decompressBlock` | V8 是否已自动内联（看 profile 调用次数） |
 
+### 已验证结论（第 2 轮，2026-11-27）
+
+| 候选 | 做法 | 实测 | 结论 |
+|---|---|---|---|
+| **2 · divRoundUp** | `Math.floor((v+d-1)/d)` → `((v+d-1)/d) \| 0`（入参均非负） | 7 次交替采样：中位 **170 → 155ms（1.10×）**，最小 154 → 142（1.08×）；1024²/440² 逐字节 0 差异 | **✅ 已落地** |
+| **5 · interpolateWeights 单平面特化** | 把 `plane` 循环拆成「单平面直算 / 双平面循环」 | **1.01×（无收益）**；等价性 0 差异 | **❌ 不落地** —— V8 已把该循环展开，手工特化没有收益 |
+| 3 · 通道循环分支外提 | 未做 | — | 未验证（profile 当前未进前 10） |
+| 4 · 容器改 TypedArray | 未做 | — | 未验证 |
+
+**第 2 轮 profile（落地候选 1 之后）热点**：`decodeAstc` 17.4% / `decompressBlock` 13.7% / `interpolateWeights` 10.8% / `decodeQuintBlock` 6.4% / `divRoundUp` 5.5%。
+`interpolateWeights` 虽占 10.8%，但手工特化零收益 —— **占比高不等于能优化**，必须实测。
+
 ---
 
 ## 四、结论（已落地）
